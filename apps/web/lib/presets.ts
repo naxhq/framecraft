@@ -17,6 +17,28 @@ export const PRESET_LABELS: Record<string, string> = {
   "san-francisco-fidi": "San Francisco — Financial District",
 };
 
+/**
+ * The `{city}` token's value for each preset: the city name alone ("Chicago",
+ * not "Chicago, Loop" -- `PRESET_LABELS` already carries the neighbourhood for
+ * display). This is the top-priority source `lib/tokens.ts`'s caller resolves
+ * `{city}` from: a preset click never needs a Nominatim round trip, since the
+ * place it names is already known (DECISIONS [V3-P1]).
+ */
+export const PRESET_CITY_NAMES: Record<string, string> = {
+  "chicago-loop": "Chicago",
+  "new-york-midtown": "New York",
+  "paris-eiffel": "Paris",
+  "tokyo-shinjuku": "Tokyo",
+  "london-city": "London",
+  "san-francisco-fidi": "San Francisco",
+};
+
+/** The city name for a preset id, or null for a custom (non-preset) location. */
+export function presetCityName(presetId: string | null | undefined): string | null {
+  if (!presetId) return null;
+  return PRESET_CITY_NAMES[presetId] ?? null;
+}
+
 /** Display order, so the row does not reshuffle if the API changes order. */
 export const PRESET_ORDER: string[] = [
   "chicago-loop",

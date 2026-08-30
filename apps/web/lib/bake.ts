@@ -10,7 +10,53 @@
  */
 
 import { fileUrl } from "./api";
-import type { BakeResult } from "./contracts";
+import type { BakeResult, PrintParams } from "./contracts";
+import { resolvedOutputLines } from "./resolvedOutput";
+import type { TokenContext } from "./tokens";
+
+/**
+ * Token expansion happens ONCE, client-side, right here: every `{token}`
+ * FrameCraft knows about is fully resolved against `ctx` before the request
+ * ever reaches `POST /bake` (DECISIONS [V3-P1]). Two rules this enforces:
+ *
+ *  - An engraving line (or the underside mark) that resolves EMPTY is never
+ *    sent as `""`: the whole entry is OMITTED, so the bake never has to guess
+ *    whether an empty string was deliberate. `lib/resolvedOutput.ts` is the
+ *    single source of truth for which lines are cut vs skipped -- the Issues
+ *    badge, the "Resolved output" panel and this function all read the same
+ *    rows, so what the panel promises is exactly what gets sent.
+ *  - With the frame off, every engraving line is omitted outright (the frame
+ *    edges do not exist to cut into); the underside mark is unaffected, since
+ *    it lives on the base, not the frame.
+ *
+ * Every other field of `params` passes through unchanged.
+ */
+export function resolveParamsForBake(
+  params: PrintParams,
+  ctx: TokenContext,
+): PrintParams {
+  const lines = resolvedOutputLines(params, ctx);
+  const engravings = (params.engravings ?? []).flatMap((engraving, index) => {
+    const line = lines.find((l) => l.index === index && l.id === `engraving-${index}`);
+    if (!line || line.status !== "cut") return [];
+    return [{ ...engraving, text: line.text }];
+  });
+
+  const underside = params.underside_mark;
+  const undersideLine = lines.find((l) => l.id === "underside-mark");
+  const resolvedUnderside =
+    underside?.enabled && undersideLine?.status === "cut"
+      ? { ...underside, template: undersideLine.text }
+      : underside?.enabled
+        ? { ...underside, enabled: false }
+        : underside;
+
+  return {
+    ...params,
+    engravings,
+    underside_mark: resolvedUnderside,
+  };
+}
 
 /** `idle` is client-only; the other four are the contract's status values. */
 export type BakePhase = "idle" | "queued" | "running" | "done" | "failed";

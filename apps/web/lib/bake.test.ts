@@ -20,9 +20,12 @@ import {
   isTerminal,
   markBakeStale,
   reduceBake,
+  resolveParamsForBake,
   shouldPoll,
 } from "./bake";
-import type { BakeResult } from "./contracts";
+import { defaultPrintParams } from "./contracts";
+import type { BakeResult, PrintParams } from "./contracts";
+import type { TokenContext } from "./tokens";
 
 const queued: BakeResult = {
   job_id: "job-1",
@@ -205,5 +208,106 @@ describe("transport failures", () => {
     expect(state.jobId).toBe("job-1");
     expect(state.error).toContain("Cannot reach");
     expect(shouldPoll(state)).toBe(false);
+  });
+});
+
+// ==========================================================================
+// resolveParamsForBake ([V3-P1]: token expansion happens once, client-side)
+// ==========================================================================
+
+describe("resolveParamsForBake", () => {
+  const ctx: TokenContext = {
+    lat: 41.8827,
+    lon: -87.6233,
+    scale_mm_per_m: 168 / 1800,
+    radius_m: 900,
+    date: "2026-08-29",
+    buildings: 994,
+    city: "Chicago",
+  };
+  const noCity: TokenContext = { ...ctx, city: "" };
+
+  function withParams(overrides: Partial<PrintParams>): PrintParams {
+    return { ...defaultPrintParams(), ...overrides };
+  }
+
+  it("passes the contract defaults through unchanged", () => {
+    expect(resolveParamsForBake(defaultPrintParams(), ctx)).toEqual(defaultPrintParams());
+  });
+
+  it("sends the fully expanded text, not the raw {token} template", () => {
+    const params = withParams({
+      frame: true,
+      engravings: [{ edge: "top", text: "{city} — {radius}" }],
+    });
+    const resolved = resolveParamsForBake(params, ctx);
+    expect(resolved.engravings).toEqual([
+      { edge: "top", text: "Chicago — 900 m" },
+    ]);
+  });
+
+  it("omits an engraving line that resolves empty, never sends it as \"\"", () => {
+    const params = withParams({
+      frame: true,
+      engravings: [
+        { edge: "top", text: "{city}" },
+        { edge: "bottom", text: "a real line" },
+      ],
+    });
+    const resolved = resolveParamsForBake(params, noCity);
+    expect(resolved.engravings).toEqual([{ edge: "bottom", text: "a real line" }]);
+  });
+
+  it("omits every engraving line when the frame is off, rather than failing", () => {
+    const params = withParams({
+      frame: false,
+      engravings: [{ edge: "top", text: "{city}" }, { edge: "bottom", text: "real text" }],
+    });
+    const resolved = resolveParamsForBake(params, ctx);
+    expect(resolved.engravings).toEqual([]);
+  });
+
+  it("resolves the underside mark template", () => {
+    const params = withParams({
+      underside_mark: { enabled: true, template: "{city} {scale} {date}" },
+    });
+    const resolved = resolveParamsForBake(params, ctx);
+    expect(resolved.underside_mark).toEqual({
+      enabled: true,
+      template: "Chicago 1:10,714 2026-08-29",
+    });
+  });
+
+  it("turns the underside mark off, rather than sending an empty template, when it resolves empty", () => {
+    const params = withParams({
+      underside_mark: { enabled: true, template: "{city}" },
+    });
+    const resolved = resolveParamsForBake(params, noCity);
+    expect(resolved.underside_mark?.enabled).toBe(false);
+  });
+
+  it("leaves an already-disabled underside mark alone", () => {
+    const params = withParams({
+      underside_mark: { enabled: false, template: "{city}" },
+    });
+    const resolved = resolveParamsForBake(params, noCity);
+    expect(resolved.underside_mark).toEqual({ enabled: false, template: "{city}" });
+  });
+
+  it("leaves every other field untouched", () => {
+    const params = withParams({ plate_mm: 220, base_thickness_mm: 5, hanger: "keyhole" });
+    const resolved = resolveParamsForBake(params, ctx);
+    expect(resolved.plate_mm).toBe(220);
+    expect(resolved.base_thickness_mm).toBe(5);
+    expect(resolved.hanger).toBe("keyhole");
+  });
+
+  it("an unknown {token} survives verbatim: it is someone's literal text, not empty", () => {
+    const params = withParams({
+      frame: true,
+      engravings: [{ edge: "top", text: "{unknown}" }],
+    });
+    const resolved = resolveParamsForBake(params, ctx);
+    expect(resolved.engravings).toEqual([{ edge: "top", text: "{unknown}" }]);
   });
 });

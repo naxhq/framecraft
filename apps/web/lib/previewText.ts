@@ -410,6 +410,11 @@ export function textTokenContext(
     date,
     buildings: graph ? graph.stats.building_count : 0,
     city: params.city_label ?? "",
+    country: params.place?.country ?? "",
+    state: params.place?.state ?? "",
+    neighbourhood: params.place?.neighbourhood ?? "",
+    author: params.place?.author ?? "",
+    hero_count: (params.hero_building_ids ?? []).length,
   };
 }
 
@@ -430,6 +435,8 @@ export function textParamsKey(params: PrintParams): string {
     params.frame,
     params.nozzle_mm,
     params.city_label ?? "",
+    params.place ?? null,
+    (params.hero_building_ids ?? []).length,
     params.engravings ?? [],
     params.north_arrow ?? null,
     params.scale_bar ?? null,

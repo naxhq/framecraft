@@ -8,6 +8,8 @@ import {
   bakeStatusLabel,
   isTerminal,
 } from "@/lib/bake";
+import { textTokenContext } from "@/lib/previewText";
+import { resolvedOutputLines, type ResolvedLine } from "@/lib/resolvedOutput";
 import { shareUrl } from "@/lib/share";
 import { MAX_HEIGHT_MM } from "@/lib/transform";
 import { bakeBlockReason, predictedTopMm, warningDeps } from "@/lib/warnings";
@@ -56,6 +58,17 @@ export function OutputPanel({
     warningDeps(graph, params),
   );
   const blockReason = bakeBlockReason(graph, params);
+
+  /**
+   * `{date}` is pinned once, the same reason `CityPreview` and `FrameTextGroup`
+   * both pin it: the shared token table never reads a clock, so this is the one
+   * place it is consulted (DECISIONS [V2-P2]).
+   */
+  const [today] = useState(() => new Date().toISOString().slice(0, 10));
+  const resolvedLines = useMemo(
+    () => resolvedOutputLines(params, textTokenContext(graph, params, today)),
+    [graph, params, today],
+  );
   const baking = bake.phase === "queued" || bake.phase === "running";
   const generating = sceneStatus === "loading";
   const hasScene = graph !== null;
@@ -231,8 +244,61 @@ export function OutputPanel({
           </div>
         ) : null}
 
+        {showResults ? <ResolvedOutputCard lines={resolvedLines} /> : null}
         {showResults ? <StatsCard /> : null}
       </div>
+    </div>
+  );
+}
+
+/**
+ * "Resolved output": one row per text FrameCraft will try to cut, in the
+ * order the bake sees them -- exactly `lib/bake.ts`'s `resolveParamsForBake`
+ * inputs, so nothing that bakes is ever missing from this list and nothing
+ * listed here as "cuts" fails to reach the bake request.
+ */
+function ResolvedOutputCard({ lines }: { lines: readonly ResolvedLine[] }) {
+  if (lines.length === 0) {
+    return (
+      <p data-testid="resolved-output-empty" className="text-2xs text-ink-faint">
+        Nothing configured to cut yet: add a line of lettering or turn on the
+        underside mark.
+      </p>
+    );
+  }
+  return (
+    <div className="space-y-2" data-testid="resolved-output">
+      <h3 className="font-display text-2xs font-semibold uppercase tracking-[0.14em] text-ink-faint">
+        Resolved output
+      </h3>
+      <ul className="space-y-1.5">
+        {lines.map((line) => (
+          <li
+            key={line.id}
+            data-testid={`resolved-output-row-${line.id}`}
+            data-status={line.status}
+            className="rounded-milled border border-line bg-plate-sunken px-2 py-1.5 text-2xs"
+          >
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-ink-faint">{line.surface}</span>
+              <span
+                className={
+                  line.status === "cut" ? "text-positive" : "text-ink-faint"
+                }
+              >
+                {line.status === "cut" ? "cuts" : "skipped"}
+              </span>
+            </div>
+            {line.status === "cut" ? (
+              <p className="mt-0.5 truncate text-ink" title={line.text}>
+                {line.text}
+              </p>
+            ) : (
+              <p className="mt-0.5 text-ink-faint">{line.reason}</p>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

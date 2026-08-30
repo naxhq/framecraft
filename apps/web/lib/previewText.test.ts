@@ -626,7 +626,6 @@ describe("textParamsKey and facesNeeded", () => {
       ["water", false],
       ["color_mode", "parts"],
       ["hero_mode", "both"],
-      ["hero_building_ids", ["w1"]],
     ] as Array<[keyof PrintParams, unknown]>) {
       expect(textParamsKey({ ...base, [field]: value } as PrintParams), field).toBe(key);
     }
@@ -640,6 +639,10 @@ describe("textParamsKey and facesNeeded", () => {
       ["frame", false],
       ["nozzle_mm", 0.8],
       ["city_label", "Chicago"],
+      // {hero} counts them, {country}/{state}/{neighbourhood}/{author} read
+      // `place` (DECISIONS [V3-P1]).
+      ["hero_building_ids", ["w1"]],
+      ["place", { country: "US" }],
       ["engravings", [{ edge: "top", text: "X" }]],
       ["north_arrow", { enabled: true }],
       ["scale_bar", { enabled: true }],
@@ -808,6 +811,11 @@ describe("textTokenContext", () => {
       date: "2026-08-30",
       buildings: 42,
       city: "Chicago",
+      country: "",
+      state: "",
+      neighbourhood: "",
+      author: "",
+      hero_count: 0,
     });
   });
 
@@ -815,5 +823,18 @@ describe("textTokenContext", () => {
     const ctx = textTokenContext(null, defaultPrintParams(), "2026-08-30");
     expect(ctx.scale_mm_per_m).toBe(0);
     expect(ctx.radius_m).toBe(0);
+  });
+
+  it("reads place and the hero count off params, for {country}/{state}/{neighbourhood}/{author}/{hero}", () => {
+    const params = withText({
+      place: { country: "United States", state: "Illinois", neighbourhood: "The Loop", author: "Vahid Alizadeh" },
+      hero_building_ids: ["w1", "w2", "w3"],
+    });
+    const ctx = textTokenContext(null, params, "2026-08-30");
+    expect(ctx.country).toBe("United States");
+    expect(ctx.state).toBe("Illinois");
+    expect(ctx.neighbourhood).toBe("The Loop");
+    expect(ctx.author).toBe("Vahid Alizadeh");
+    expect(ctx.hero_count).toBe(3);
   });
 });

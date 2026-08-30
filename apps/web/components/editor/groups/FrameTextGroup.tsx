@@ -6,7 +6,7 @@ import { useShallow } from "zustand/react/shallow";
 import { DEFAULT_PRINT_PARAMS, PARAM_LIMITS, PARAM_RANGES } from "@/lib/contracts";
 import type { NorthArrow, ScaleBar, UndersideMark } from "@/lib/contracts";
 import { textParamsKey } from "@/lib/previewText";
-import { expand_tokens, type TokenContext } from "@/lib/tokens";
+import { resolve_text, type TokenContext } from "@/lib/tokens";
 import * as T from "@/lib/transform";
 import { useEditorStore } from "@/store/editor";
 import EngravingsEditor from "../EngravingsEditor";
@@ -83,6 +83,8 @@ export function FrameTextGroup() {
    * never read inside the token table (DECISIONS [V2-P2]), so this is the one
    * place the clock is consulted.
    */
+  const heroCount = (params.hero_building_ids ?? []).length;
+
   const context: TokenContext = useMemo(
     () => {
       const sceneRadius = graph ? T.radius_m_from_bounds(graph.bounds) : radius_m;
@@ -94,17 +96,37 @@ export function FrameTextGroup() {
         date: today,
         buildings: graph ? graph.stats.building_count : 0,
         city: params.city_label ?? "",
+        country: params.place?.country ?? "",
+        state: params.place?.state ?? "",
+        neighbourhood: params.place?.neighbourhood ?? "",
+        author: params.place?.author ?? "",
+        hero_count: heroCount,
       };
     },
     // NEVER `params`: `store.setParam` rebuilds it by spread on every write, so
     // a dependency on the object missed on every slider tick, colour change and
     // hero pick, rebuilt this context with a fresh identity, and re-ran
     // `lettering_layout` below each time -- the exact trap `CityPreview`'s
-    // `previewDeps` exists to avoid (audit v2-06 finding 7). These four are all
-    // the context actually reads: the scale is `usable_span_mm`, i.e. the plate
-    // and the frame.
+    // `previewDeps` exists to avoid (audit v2-06 finding 7). These are all the
+    // primitives the context actually reads: the scale is `usable_span_mm`,
+    // i.e. the plate and the frame; `place` and the hero count feed
+    // `{country}`/`{state}`/`{neighbourhood}`/`{author}`/`{hero}` ([V3-P1]).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [graph, lat, lon, radius_m, today, params.plate_mm, params.frame, params.city_label],
+    [
+      graph,
+      lat,
+      lon,
+      radius_m,
+      today,
+      params.plate_mm,
+      params.frame,
+      params.city_label,
+      params.place?.country,
+      params.place?.state,
+      params.place?.neighbourhood,
+      params.place?.author,
+      heroCount,
+    ],
   );
 
   /**
@@ -151,8 +173,8 @@ export function FrameTextGroup() {
 
       {!params.frame ? (
         <Note tone="warn" testId="frame-off-notice">
-          Lettering, the north arrow and the scale bar all live on the frame.
-          Turn the frame on to use them.
+          The north arrow and the scale bar live on the frame. Turn on Frame
+          to use them.
         </Note>
       ) : null}
 
@@ -253,16 +275,27 @@ export function FrameTextGroup() {
               }`}
               onChange={(value) => setNested("underside_mark", { template: value })}
             />
-            <p
-              data-testid="underside_mark-preview"
-              className="rounded-milled border border-line bg-plate-raised px-2 py-1 text-2xs text-ink-muted"
-            >
-              Cuts as:{" "}
-              <span className="text-ink">
-                {expand_tokens(underside.template ?? "", context) ||
-                  "nothing yet"}
-              </span>
-            </p>
+            {(() => {
+              const resolved = resolve_text(underside.template ?? "", context);
+              const emptyToken = resolved.tokens.find((t) => t.empty)?.token ?? null;
+              return (
+                <p
+                  data-testid="underside_mark-preview"
+                  className="rounded-milled border border-line bg-plate-raised px-2 py-1 text-2xs text-ink-muted"
+                >
+                  Cuts as:{" "}
+                  {resolved.text ? (
+                    <span className="text-ink">{resolved.text}</span>
+                  ) : (
+                    <span className="text-ink-faint">
+                      {emptyToken !== null
+                        ? `nothing yet — the {${emptyToken}} token has no value`
+                        : "nothing yet — the template has no text"}
+                    </span>
+                  )}
+                </p>
+              );
+            })()}
           </div>
         ) : null}
       </Field>

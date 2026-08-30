@@ -44,6 +44,7 @@ import {
 } from "@/lib/previewText";
 import * as T from "@/lib/transform";
 import {
+  letteringWarnings,
   predictedTopDeps,
   predictedTopMm,
   sceneWarnings,
@@ -379,9 +380,16 @@ export function CityPreview() {
   );
 
   const warnings = useMemo(
-    () => sceneWarnings(graph, params),
+    () => [
+      ...sceneWarnings(graph, params),
+      // The Issues badge integration for rule 4/5 ([V3-P1]): one warn-level
+      // entry per line (or the underside mark) that resolves empty, naming
+      // the exact token, and one info-level entry when the frame is off with
+      // lettering configured for it.
+      ...letteringWarnings(params, textTokenContext(graph, params, today)),
+    ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    warningDeps(graph, params),
+    [...warningDeps(graph, params), textParamsKey(params), today],
   );
 
   const treeFloor =

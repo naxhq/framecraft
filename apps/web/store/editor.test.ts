@@ -23,6 +23,7 @@ import { HERO_CAP } from "@/lib/heroes";
 import { encodeShare } from "@/lib/share";
 import {
   activePresetId,
+  IDLE_PLACE_DETECT,
   INITIAL_LOCATION,
   locationToRequest,
   useEditorStore,
@@ -97,6 +98,21 @@ const PARAM_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintParams]]> = 
   ["underside_mark", { enabled: true, template: "{coords}" }],
   ["hero_building_ids", ["w1"]],
   ["hero_mode", "both"],
+  // schema_version 3 additions (docs/IMPLEMENTATION_PLAN.md's "Contracts v3").
+  ["place", { country: "US", state: "IL", neighbourhood: "Loop", author: "Vahid" }],
+  ["regions", { roads: { depth_mm: 1.0 }, building_skirt_mm: 0.6 }],
+  ["colour", { palette: "noir", preview_theme: "light" }],
+  ["printer_profile", "bambu-x1c"],
+  ["custom_profile", { plate_x_mm: 256, plate_y_mm: 256 }],
+  ["export_target", "stl"],
+  ["terrain", { enabled: true, smoothing: 3 }],
+  ["heights", { floor_height_m: 3.5 }],
+  ["bridges", { enabled: false }],
+  ["height_exaggeration", { multiplier: 1.5 }],
+  ["hero_auto", { enabled: true, count: 5 }],
+  ["tiling", { enabled: true, cols: 2, rows: 2 }],
+  ["frame_style", { profile: "chamfer", corner: "mitred" }],
+  ["hanger_magnet", { diameter_mm: 8, thickness_mm: 3, count: 4 }],
 ];
 
 let fetchSpy: ReturnType<typeof vi.fn>;
@@ -111,6 +127,7 @@ beforeEach(() => {
     scene: { status: "idle", graph: null, message: null, request: null, stale: false },
     bake: { ...initialBakeState },
     presets: { status: "idle", items: [], message: null },
+    placeDetect: { ...IDLE_PLACE_DETECT },
     presetChosen: false,
   });
   fetchSpy = vi.fn();
@@ -234,6 +251,244 @@ describe("location changes", () => {
       preset_id: "tokyo-shinjuku",
     });
     expect(useEditorStore.getState().scene.stale).toBe(true);
+  });
+});
+
+// ==========================================================================
+// Place resolution ([V3-P1]: preset > geocode > user override)
+// ==========================================================================
+
+/** A localStorage stand-in, the same shape `lib/groups.test.ts` uses. */
+function fakeStorage(initial: Record<string, string> = {}) {
+  const data = new Map(Object.entries(initial));
+  return {
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem: (key: string, value: string) => void data.set(key, value),
+    removeItem: (key: string) => void data.delete(key),
+    clear: () => data.clear(),
+    key: () => null,
+    length: 0,
+  };
+}
+
+describe("place resolution", () => {
+  it("a preset click resolves the city name client-side, no fetch", () => {
+    useEditorStore.getState().applyPreset({
+      lat: 41.8827,
+      lon: -87.6233,
+      radius_m: 900,
+      rotation_deg: 0,
+      preset_id: "chicago-loop",
+    });
+    const state = useEditorStore.getState();
+    expect(state.params.city_label).toBe("Chicago");
+    expect(state.placeDetect).toEqual({
+      status: "ready",
+      source: "preset",
+      detectedCity: "Chicago",
+      overridden: false,
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("an unknown preset id leaves the label empty rather than guessing", () => {
+    useEditorStore.getState().applyPreset({
+      lat: 1,
+      lon: 1,
+      radius_m: 500,
+      rotation_deg: 0,
+      preset_id: "somewhere-else",
+    });
+    const state = useEditorStore.getState();
+    expect(state.params.city_label).toBe("");
+    expect(state.placeDetect.detectedCity).toBeNull();
+    expect(state.placeDetect.source).toBe("none");
+  });
+
+  it("dropping a pin clears a previously auto-filled label and marks detection resolving", () => {
+    useEditorStore.getState().applyPreset({
+      lat: 41.8827,
+      lon: -87.6233,
+      radius_m: 900,
+      rotation_deg: 0,
+      preset_id: "chicago-loop",
+    });
+    expect(useEditorStore.getState().params.city_label).toBe("Chicago");
+
+    useEditorStore.getState().setPin(48.8566, 2.3522);
+    const state = useEditorStore.getState();
+    expect(state.params.city_label).toBe("");
+    expect(state.placeDetect.status).toBe("resolving");
+    expect(state.placeDetect.detectedCity).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("a pin drop never clears the user's own typed label", () => {
+    useEditorStore.getState().setPlaceName("My favourite spot");
+    useEditorStore.getState().setPin(48.8566, 2.3522);
+    const state = useEditorStore.getState();
+    expect(state.params.city_label).toBe("My favourite spot");
+    expect(state.placeDetect.overridden).toBe(true);
+  });
+
+  it("setPlaceName marks the field overridden and writes city_label", () => {
+    useEditorStore.getState().setPlaceName("Bergen");
+    const state = useEditorStore.getState();
+    expect(state.params.city_label).toBe("Bergen");
+    expect(state.placeDetect.overridden).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("an override survives a later preset click", () => {
+    useEditorStore.getState().setPlaceName("My favourite spot");
+    useEditorStore.getState().applyPreset({
+      lat: 35.6896,
+      lon: 139.7006,
+      radius_m: 800,
+      rotation_deg: 0,
+      preset_id: "tokyo-shinjuku",
+    });
+    const state = useEditorStore.getState();
+    expect(state.params.city_label).toBe("My favourite spot");
+    // ...but the detected value the "reset to detected" affordance targets
+    // still moves, so resetting later goes to Tokyo, not to whatever was
+    // detected before the override.
+    expect(state.placeDetect.detectedCity).toBe("Tokyo");
+    expect(state.placeDetect.overridden).toBe(true);
+  });
+
+  it("resetPlaceNameToDetected restores the detected value and clears the override", () => {
+    useEditorStore.getState().applyPreset({
+      lat: 41.8827,
+      lon: -87.6233,
+      radius_m: 900,
+      rotation_deg: 0,
+      preset_id: "chicago-loop",
+    });
+    useEditorStore.getState().setPlaceName("Something else");
+    expect(useEditorStore.getState().params.city_label).toBe("Something else");
+
+    useEditorStore.getState().resetPlaceNameToDetected();
+    const state = useEditorStore.getState();
+    expect(state.params.city_label).toBe("Chicago");
+    expect(state.placeDetect.overridden).toBe(false);
+  });
+
+  it("resetPlaceNameToDetected clears the field when nothing has been detected", () => {
+    useEditorStore.getState().setPlaceName("Something else");
+    useEditorStore.getState().resetPlaceNameToDetected();
+    expect(useEditorStore.getState().params.city_label).toBe("");
+  });
+
+  describe("applyGeocodeResult", () => {
+    it("fills the label and place from a successful geocode", () => {
+      useEditorStore.getState().setPin(41.8827, -87.6233);
+      useEditorStore.getState().applyGeocodeResult(41.8827, -87.6233, {
+        city: "Chicago",
+        state: "Illinois",
+        country: "United States",
+        neighbourhood: "The Loop",
+      });
+      const state = useEditorStore.getState();
+      expect(state.params.city_label).toBe("Chicago");
+      expect(state.params.place).toEqual({
+        country: "United States",
+        state: "Illinois",
+        neighbourhood: "The Loop",
+        author: "",
+      });
+      expect(state.placeDetect).toEqual({
+        status: "ready",
+        source: "geocode",
+        detectedCity: "Chicago",
+        overridden: false,
+      });
+    });
+
+    it("a failed lookup (null) marks detection failed without inventing a city", () => {
+      useEditorStore.getState().setPin(0, 0);
+      useEditorStore.getState().applyGeocodeResult(0, 0, null);
+      const state = useEditorStore.getState();
+      expect(state.params.city_label).toBe("");
+      expect(state.placeDetect.status).toBe("error");
+      expect(state.placeDetect.detectedCity).toBeNull();
+    });
+
+    it("ignores a result for a pin that has since moved on", () => {
+      useEditorStore.getState().setPin(41.8827, -87.6233);
+      useEditorStore.getState().setPin(48.8566, 2.3522);
+      useEditorStore.getState().applyGeocodeResult(41.8827, -87.6233, {
+        city: "Chicago",
+        state: null,
+        country: null,
+        neighbourhood: null,
+      });
+      const state = useEditorStore.getState();
+      expect(state.params.city_label).toBe("");
+      expect(state.placeDetect.detectedCity).toBeNull();
+    });
+
+    it("never overwrites a user override, but still updates the detected value and place fields", () => {
+      useEditorStore.getState().setPlaceName("My favourite spot");
+      useEditorStore.getState().applyGeocodeResult(
+        useEditorStore.getState().location.lat,
+        useEditorStore.getState().location.lon,
+        { city: "Chicago", state: "Illinois", country: "United States", neighbourhood: "The Loop" },
+      );
+      const state = useEditorStore.getState();
+      expect(state.params.city_label).toBe("My favourite spot");
+      expect(state.params.place?.country).toBe("United States");
+      expect(state.placeDetect.detectedCity).toBe("Chicago");
+      expect(state.placeDetect.overridden).toBe(true);
+    });
+
+    it("never touches fetch itself: it only folds an already-fetched result in", () => {
+      useEditorStore.getState().applyGeocodeResult(
+        useEditorStore.getState().location.lat,
+        useEditorStore.getState().location.lon,
+        { city: "X", state: null, country: null, neighbourhood: null },
+      );
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("author", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("setAuthor writes params.place.author and persists to localStorage", () => {
+      const storage = fakeStorage();
+      vi.stubGlobal("window", { localStorage: storage });
+      useEditorStore.getState().setAuthor("Vahid Alizadeh");
+      expect(useEditorStore.getState().params.place?.author).toBe("Vahid Alizadeh");
+      expect(storage.getItem("framecraft.author.v1")).toBe("Vahid Alizadeh");
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("initAuthor prefills from localStorage once, without clobbering a real value", () => {
+      vi.stubGlobal("window", { localStorage: fakeStorage({ "framecraft.author.v1": "Vahid Alizadeh" }) });
+      useEditorStore.getState().initAuthor();
+      expect(useEditorStore.getState().params.place?.author).toBe("Vahid Alizadeh");
+
+      // A second call, after the field already carries a value (e.g. from a
+      // shared link), must not stomp on it.
+      useEditorStore.getState().setAuthor("Someone Else");
+      vi.stubGlobal("window", { localStorage: fakeStorage({ "framecraft.author.v1": "Vahid Alizadeh" }) });
+      useEditorStore.getState().initAuthor();
+      expect(useEditorStore.getState().params.place?.author).toBe("Someone Else");
+    });
+
+    it("does nothing when there is nothing stored", () => {
+      vi.stubGlobal("window", { localStorage: fakeStorage() });
+      useEditorStore.getState().initAuthor();
+      expect(useEditorStore.getState().params.place?.author).toBe("");
+    });
+
+    it("initAuthor is a no-op without a window", () => {
+      vi.stubGlobal("window", undefined);
+      expect(() => useEditorStore.getState().initAuthor()).not.toThrow();
+    });
   });
 });
 
@@ -646,6 +901,19 @@ describe("the params object the store hands out", () => {
         "scale_bar",
         "underside_mark",
         "hero_building_ids",
+        // schema_version 3 additions.
+        "place",
+        "regions",
+        "colour",
+        "custom_profile",
+        "terrain",
+        "heights",
+        "bridges",
+        "height_exaggeration",
+        "hero_auto",
+        "tiling",
+        "frame_style",
+        "hanger_magnet",
       ].sort(),
     );
   });

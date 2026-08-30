@@ -1,5 +1,6 @@
 /**
- * The eight text tokens FrameCraft expands in engravings and the underside mark.
+ * The thirteen text tokens FrameCraft expands in engravings and the underside
+ * mark.
  *
  * This module is one half of a MIRRORED PAIR: `services/bake/app/geom/tokens.py`
  * is the same table with the same snake_case names, so the string the editor
@@ -11,8 +12,18 @@
  *
  * Rules:
  *
- * - `{city}` is the user's own typed label. FrameCraft never reverse-geocodes,
- *   so an unset label expands to the empty string rather than to a guess.
+ * - This module is a pure FORMATTER. It never decides what `{city}` (or
+ *   `{country}`, `{state}`, `{neighbourhood}`, `{author}`) actually says - the
+ *   CALLER resolves that (a preset's city name, a Nominatim reverse geocode, a
+ *   user's own typed override or Author field: `lib/geocode.ts`,
+ *   `store/editor.ts`) and hands the resolved string in on `TokenContext`. An
+ *   unresolved field is `""`, exactly like an unset `city` always was, never a
+ *   guess synthesised here.
+ * - `{hero}` is the COUNT of selected hero buildings, not a building's real
+ *   name: `SceneGraph.Building` (the frozen contract) carries no `name` field,
+ *   so there is nothing honest to print in its place. Empty when no hero is
+ *   selected, exactly like every other token that has nothing to say
+ *   (DECISIONS [V3-P1]).
  * - An unknown `{token}` is left exactly as written - it is far likelier to be
  *   a deliberate brace in someone's text than a typo we should silently eat.
  * - Every number is formatted by hand (`fixed`, `group_thousands`,
@@ -30,6 +41,11 @@ export const TOKENS = [
   "radius",
   "date",
   "buildings",
+  "country",
+  "state",
+  "neighbourhood",
+  "author",
+  "hero",
 ] as const;
 
 export type TokenName = (typeof TOKENS)[number];
@@ -57,6 +73,12 @@ export interface TokenContext {
   date: string;
   buildings: number;
   city?: string;
+  country?: string;
+  state?: string;
+  neighbourhood?: string;
+  author?: string;
+  /** How many hero buildings are selected. `{hero}` formats this, not a name. */
+  hero_count?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +189,38 @@ export function format_buildings(ctx: TokenContext): string {
   return group_thousands(Math.trunc(ctx.buildings));
 }
 
+/** The resolved country name, verbatim; empty when nothing resolved one. */
+export function format_country(ctx: TokenContext): string {
+  return ctx.country ?? "";
+}
+
+/** The resolved state or province, verbatim; empty when nothing resolved one. */
+export function format_state(ctx: TokenContext): string {
+  return ctx.state ?? "";
+}
+
+/** The resolved neighbourhood, verbatim; empty when nothing resolved one. */
+export function format_neighbourhood(ctx: TokenContext): string {
+  return ctx.neighbourhood ?? "";
+}
+
+/** The author's own typed name, verbatim; empty when they typed nothing. */
+export function format_author(ctx: TokenContext): string {
+  return ctx.author ?? "";
+}
+
+/**
+ * `3` - how many hero buildings are selected, or `""` when none are.
+ *
+ * Not a building's name: see the module docstring for why. `group_thousands`
+ * is harmless overkill at the twelve-hero cap and keeps this formatter the
+ * same shape as `format_buildings`.
+ */
+export function format_hero(ctx: TokenContext): string {
+  const count = Math.trunc(ctx.hero_count ?? 0);
+  return count > 0 ? group_thousands(count) : "";
+}
+
 /**
  * token name -> formatter. A formatter returning null means "cannot be
  * expanded"; the token is then left in the text exactly as written.
@@ -180,6 +234,11 @@ export const FORMATTERS: Record<string, (ctx: TokenContext) => string | null> = 
   radius: format_radius,
   date: format_date,
   buildings: format_buildings,
+  country: format_country,
+  state: format_state,
+  neighbourhood: format_neighbourhood,
+  author: format_author,
+  hero: format_hero,
 };
 
 /**
@@ -195,4 +254,40 @@ export function expand_tokens(text: string, ctx: TokenContext): string {
     const value = formatter(ctx);
     return value === null ? whole : value;
   });
+}
+
+/** One token found in a `resolve_text` call, and whether it had anything to say. */
+export interface TokenResolution {
+  token: string;
+  empty: boolean;
+}
+
+export interface ResolvedText {
+  text: string;
+  /** One entry per KNOWN token found, in the order it appears. An unknown
+   *  `{brace}` is not tracked here (see `expand_tokens`'s own rule). */
+  tokens: TokenResolution[];
+}
+
+/**
+ * `expand_tokens`, plus a list of which known tokens had nothing to say.
+ *
+ * TS-only: this is how the editor decides an engraving line or the underside
+ * template is EFFECTIVELY empty and names the exact token responsible ("the
+ * {city} token has no value"), for the Issues badge and the Resolved output
+ * panel (`lib/resolvedOutput.ts`). The bake never needs this - by the time a
+ * string reaches `POST /bake` it is already fully resolved client-side
+ * (DECISIONS [V3-P1]) - so it has no Python mirror and is not part of the
+ * `tokens-expected.json` parity fixture.
+ */
+export function resolve_text(text: string, ctx: TokenContext): ResolvedText {
+  const tokens: TokenResolution[] = [];
+  const out = text.replace(TOKEN_RE, (whole, name: string) => {
+    const formatter = FORMATTERS[name];
+    if (formatter === undefined) return whole;
+    const value = formatter(ctx);
+    tokens.push({ token: name, empty: value === null || value === "" });
+    return value === null ? whole : value;
+  });
+  return { text: out, tokens };
 }

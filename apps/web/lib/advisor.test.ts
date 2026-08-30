@@ -248,6 +248,24 @@ describe("advisorDeps", () => {
     underside_mark: { enabled: true },
     hero_building_ids: ["w0"],
     hero_mode: "both",
+    // schema_version 3 additions (docs/IMPLEMENTATION_PLAN.md's "Contracts
+    // v3"): the advisor does not read any of them yet, so none of these needs
+    // to appear in `advisorDeps` -- they only have to be listed here so the
+    // walk below is not vacuous for them.
+    place: { country: "US", state: "IL", neighbourhood: "Loop", author: "Vahid" },
+    regions: { roads: { depth_mm: 1.0 }, building_skirt_mm: 0.6 },
+    colour: { palette: "noir", preview_theme: "light" },
+    printer_profile: "bambu-x1c",
+    custom_profile: { plate_x_mm: 256, plate_y_mm: 256 },
+    export_target: "stl",
+    terrain: { enabled: true, smoothing: 3 },
+    heights: { floor_height_m: 3.5 },
+    bridges: { enabled: false },
+    height_exaggeration: { multiplier: 1.5 },
+    hero_auto: { enabled: true, count: 5 },
+    tiling: { enabled: true, cols: 2, rows: 2 },
+    frame_style: { profile: "chamfer", corner: "mitred" },
+    hanger_magnet: { diameter_mm: 8, thickness_mm: 3, count: 4 },
   };
 
   it("has a moved value for every non-boolean parameter", () => {

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 
 import MapPane from "@/components/map/MapPane";
 import PreviewPane from "@/components/scene/PreviewPane";
+import { scheduleReverseGeocode } from "@/lib/geocode";
 import { shortcutFor, type TargetLike } from "@/lib/keyboard";
 import { SHARE_PARAM } from "@/lib/share";
 import { bakeBlockReason } from "@/lib/warnings";
@@ -135,6 +136,31 @@ export function EditorShell() {
     url.searchParams.delete(SHARE_PARAM);
     window.history.replaceState(null, "", url.toString());
   }, []);
+
+  /** Prefill the Author field from localStorage, once, after mount. */
+  useEffect(() => {
+    useEditorStore.getState().initAuthor();
+  }, []);
+
+  /**
+   * `{city}` for a location that is not a preset: a debounced Nominatim
+   * reverse geocode, kept running here rather than inside a collapsible group
+   * so it fires even while the Location group is folded shut (DECISIONS
+   * [V3-P1]).
+   *
+   * A preset already knows its own city name client-side (`lib/presets.ts`)
+   * and needs no network round trip at all -- `preset_id !== null` skips this
+   * entirely, so clicking a preset chip never touches Nominatim.
+   */
+  const lat = useEditorStore((state) => state.location.lat);
+  const lon = useEditorStore((state) => state.location.lon);
+  const presetId = useEditorStore((state) => state.location.preset_id);
+  useEffect(() => {
+    if (presetId !== null) return undefined;
+    return scheduleReverseGeocode(lat, lon, (result, resultLat, resultLon) => {
+      useEditorStore.getState().applyGeocodeResult(resultLat, resultLon, result);
+    });
+  }, [lat, lon, presetId]);
 
   return (
     <>

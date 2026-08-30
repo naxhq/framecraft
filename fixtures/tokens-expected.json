@@ -8,7 +8,12 @@
     "scale",
     "radius",
     "date",
-    "buildings"
+    "buildings",
+    "country",
+    "state",
+    "neighbourhood",
+    "author",
+    "hero"
   ],
   "cases": [
     {
@@ -543,6 +548,164 @@
         "buildings": 994
       },
       "expected": "{ city }"
+    },
+    {
+      "text": "{country}",
+      "ctx": {
+        "city": "Chicago",
+        "lat": 41.8827,
+        "lon": -87.6233,
+        "scale_mm_per_m": 0.09333333333333334,
+        "radius_m": 900.0,
+        "date": "2026-08-29",
+        "buildings": 994,
+        "country": "United States",
+        "state": "Illinois",
+        "neighbourhood": "The Loop",
+        "author": "Vahid Alizadeh",
+        "hero_count": 3
+      },
+      "expected": "United States"
+    },
+    {
+      "text": "{state}",
+      "ctx": {
+        "city": "Chicago",
+        "lat": 41.8827,
+        "lon": -87.6233,
+        "scale_mm_per_m": 0.09333333333333334,
+        "radius_m": 900.0,
+        "date": "2026-08-29",
+        "buildings": 994,
+        "country": "United States",
+        "state": "Illinois",
+        "neighbourhood": "The Loop",
+        "author": "Vahid Alizadeh",
+        "hero_count": 3
+      },
+      "expected": "Illinois"
+    },
+    {
+      "text": "{neighbourhood}",
+      "ctx": {
+        "city": "Chicago",
+        "lat": 41.8827,
+        "lon": -87.6233,
+        "scale_mm_per_m": 0.09333333333333334,
+        "radius_m": 900.0,
+        "date": "2026-08-29",
+        "buildings": 994,
+        "country": "United States",
+        "state": "Illinois",
+        "neighbourhood": "The Loop",
+        "author": "Vahid Alizadeh",
+        "hero_count": 3
+      },
+      "expected": "The Loop"
+    },
+    {
+      "text": "{author}",
+      "ctx": {
+        "city": "Chicago",
+        "lat": 41.8827,
+        "lon": -87.6233,
+        "scale_mm_per_m": 0.09333333333333334,
+        "radius_m": 900.0,
+        "date": "2026-08-29",
+        "buildings": 994,
+        "country": "United States",
+        "state": "Illinois",
+        "neighbourhood": "The Loop",
+        "author": "Vahid Alizadeh",
+        "hero_count": 3
+      },
+      "expected": "Vahid Alizadeh"
+    },
+    {
+      "text": "{hero}",
+      "ctx": {
+        "city": "Chicago",
+        "lat": 41.8827,
+        "lon": -87.6233,
+        "scale_mm_per_m": 0.09333333333333334,
+        "radius_m": 900.0,
+        "date": "2026-08-29",
+        "buildings": 994,
+        "country": "United States",
+        "state": "Illinois",
+        "neighbourhood": "The Loop",
+        "author": "Vahid Alizadeh",
+        "hero_count": 3
+      },
+      "expected": "3"
+    },
+    {
+      "text": "{hero}",
+      "ctx": {
+        "city": "Chicago",
+        "lat": 41.8827,
+        "lon": -87.6233,
+        "scale_mm_per_m": 0.09333333333333334,
+        "radius_m": 900.0,
+        "date": "2026-08-29",
+        "buildings": 994,
+        "hero_count": 1
+      },
+      "expected": "1"
+    },
+    {
+      "text": "{country} {state} {neighbourhood} {author} {hero}",
+      "ctx": {
+        "city": "Chicago",
+        "lat": 41.8827,
+        "lon": -87.6233,
+        "scale_mm_per_m": 0.09333333333333334,
+        "radius_m": 900.0,
+        "date": "2026-08-29",
+        "buildings": 994,
+        "country": "United States",
+        "state": "Illinois",
+        "neighbourhood": "The Loop",
+        "author": "Vahid Alizadeh",
+        "hero_count": 3
+      },
+      "expected": "United States Illinois The Loop Vahid Alizadeh 3"
+    },
+    {
+      "text": "[{country}][{state}][{neighbourhood}][{author}][{hero}]",
+      "ctx": {
+        "city": "Chicago",
+        "lat": 41.8827,
+        "lon": -87.6233,
+        "scale_mm_per_m": 0.09333333333333334,
+        "radius_m": 900.0,
+        "date": "2026-08-29",
+        "buildings": 994,
+        "country": "",
+        "state": "",
+        "neighbourhood": "",
+        "author": "",
+        "hero_count": 0
+      },
+      "expected": "[][][][][]"
+    },
+    {
+      "text": "{city}, {neighbourhood}, {state}, {country} - by {author} ({hero} heroes)",
+      "ctx": {
+        "city": "Chicago",
+        "lat": 41.8827,
+        "lon": -87.6233,
+        "scale_mm_per_m": 0.09333333333333334,
+        "radius_m": 900.0,
+        "date": "2026-08-29",
+        "buildings": 994,
+        "country": "United States",
+        "state": "Illinois",
+        "neighbourhood": "The Loop",
+        "author": "Vahid Alizadeh",
+        "hero_count": 3
+      },
+      "expected": "Chicago, The Loop, Illinois, United States - by Vahid Alizadeh (3 heroes)"
     }
   ]
 }

@@ -105,6 +105,8 @@ type FieldSpec =
   | { kind: "literal"; value: number };
 
 const EDGES = ["top", "bottom", "left", "right"] as const;
+/** `Engraving.edge` alone also allows "underside" ([V3-P1]); ScaleBar's does not. */
+const ENGRAVING_EDGES = [...EDGES, "underside"] as const;
 const HEX_COLOUR = /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/;
 
 /**
@@ -148,10 +150,10 @@ const bounded = (range: { min: number; max: number }): FieldSpec => ({
 const ENGRAVING_SPEC: FieldSpec = {
   kind: "object",
   fields: {
-    edge: { kind: "enum", values: EDGES },
+    edge: { kind: "enum", values: ENGRAVING_EDGES },
     align: { kind: "enum", values: ["start", "center", "end"] },
     text: { kind: "string", maxLength: PARAM_LIMITS.engravings.text.max_length },
-    mode: { kind: "enum", values: ["engrave", "emboss"] },
+    mode: { kind: "enum", values: ["engrave", "emboss", "inlay"] },
     size_mm: bounded(PARAM_RANGES.engravings.size_mm),
     depth_mm: bounded(PARAM_RANGES.engravings.depth_mm),
     font: { kind: "enum", values: ["sans", "serif", "mono"] },
@@ -166,6 +168,251 @@ const PART_COLOR_SPEC: FieldSpec = {
       { kind: "string", pattern: HEX_COLOUR } as FieldSpec,
     ]),
   ),
+};
+
+// ---------------------------------------------------------------------------
+// v3: place, regions, colour, printer profile, terrain and framing ([V3-P1])
+// ---------------------------------------------------------------------------
+
+const hexField: FieldSpec = { kind: "string", pattern: HEX_COLOUR };
+/** An unbounded number: the contract itself declares no min/max/maxLength for
+ *  these leaves (DECISIONS [V3-P1c]: TypeDefaults, Tint.seed, gradient slot
+ *  indices, CustomProfile.change_gcode), so none is invented here either. */
+const unboundedNumber: FieldSpec = { kind: "number" };
+const unboundedString: FieldSpec = { kind: "string" };
+
+const PLACE_SPEC: FieldSpec = {
+  kind: "object",
+  fields: {
+    country: { kind: "string", maxLength: PARAM_LIMITS.place.country.max_length },
+    state: { kind: "string", maxLength: PARAM_LIMITS.place.state.max_length },
+    neighbourhood: {
+      kind: "string",
+      maxLength: PARAM_LIMITS.place.neighbourhood.max_length,
+    },
+    author: { kind: "string", maxLength: PARAM_LIMITS.place.author.max_length },
+  },
+};
+
+const REGIONS_SPEC: FieldSpec = {
+  kind: "object",
+  fields: {
+    roads: {
+      kind: "object",
+      fields: {
+        depth_mm: bounded(PARAM_RANGES.regions.roads.depth_mm),
+        proud_mm: bounded(PARAM_RANGES.regions.roads.proud_mm),
+      },
+    },
+    water: {
+      kind: "object",
+      fields: {
+        depth_mm: bounded(PARAM_RANGES.regions.water.depth_mm),
+        proud_mm: bounded(PARAM_RANGES.regions.water.proud_mm),
+      },
+    },
+    parks: {
+      kind: "object",
+      fields: {
+        depth_mm: bounded(PARAM_RANGES.regions.parks.depth_mm),
+        proud_mm: bounded(PARAM_RANGES.regions.parks.proud_mm),
+      },
+    },
+    rail: {
+      kind: "object",
+      fields: {
+        depth_mm: bounded(PARAM_RANGES.regions.rail.depth_mm),
+        proud_mm: bounded(PARAM_RANGES.regions.rail.proud_mm),
+        width_m: bounded(PARAM_RANGES.regions.rail.width_m),
+      },
+    },
+    building_skirt_mm: bounded(PARAM_RANGES.regions.building_skirt_mm),
+  },
+};
+
+const REGION_SLOT_KEYS = Object.keys(
+  DEFAULT_PRINT_PARAMS.colour?.region_slots ?? {},
+) as Array<keyof typeof PARAM_RANGES.colour.region_slots>;
+
+const COLOUR_SPEC: FieldSpec = {
+  kind: "object",
+  fields: {
+    region_slots: {
+      kind: "object",
+      fields: Object.fromEntries(
+        REGION_SLOT_KEYS.map((key) => [key, bounded(PARAM_RANGES.colour.region_slots[key])]),
+      ),
+    },
+    region_colors: {
+      kind: "object",
+      fields: Object.fromEntries(
+        Object.keys(DEFAULT_PRINT_PARAMS.colour?.region_colors ?? {}).map((key) => [
+          key,
+          hexField,
+        ]),
+      ),
+    },
+    palette: { kind: "string", maxLength: PARAM_LIMITS.colour.palette.max_length },
+    tint: {
+      kind: "object",
+      fields: {
+        enabled: { kind: "boolean" },
+        hue_range_deg: bounded(PARAM_RANGES.colour.tint.hue_range_deg),
+        lightness_range: bounded(PARAM_RANGES.colour.tint.lightness_range),
+        seed: unboundedNumber,
+      },
+    },
+    gradient: {
+      kind: "object",
+      fields: {
+        enabled: { kind: "boolean" },
+        slots: {
+          kind: "array",
+          maxItems: PARAM_LIMITS.colour.gradient.slots.max_items,
+          item: unboundedNumber,
+        },
+      },
+    },
+    preview_theme: { kind: "enum", values: ["dark", "light"] },
+  },
+};
+
+const CUSTOM_PROFILE_SPEC: FieldSpec = {
+  kind: "object",
+  fields: {
+    plate_x_mm: bounded(PARAM_RANGES.custom_profile.plate_x_mm),
+    plate_y_mm: bounded(PARAM_RANGES.custom_profile.plate_y_mm),
+    max_height_mm: bounded(PARAM_RANGES.custom_profile.max_height_mm),
+    nozzle_mm: bounded(PARAM_RANGES.custom_profile.nozzle_mm),
+    slots: bounded(PARAM_RANGES.custom_profile.slots),
+    change_gcode: unboundedString,
+  },
+};
+
+const TERRAIN_SPEC: FieldSpec = {
+  kind: "object",
+  fields: {
+    enabled: { kind: "boolean" },
+    smoothing: bounded(PARAM_RANGES.terrain.smoothing),
+  },
+};
+
+const TYPE_DEFAULTS_SPEC: FieldSpec = {
+  kind: "object",
+  fields: Object.fromEntries(
+    Object.keys(DEFAULT_PRINT_PARAMS.heights?.type_defaults ?? {}).map((key) => [
+      key,
+      unboundedNumber,
+    ]),
+  ),
+};
+
+const HEIGHTS_SPEC: FieldSpec = {
+  kind: "object",
+  fields: {
+    floor_height_m: bounded(PARAM_RANGES.heights.floor_height_m),
+    unknown_default_m: bounded(PARAM_RANGES.heights.unknown_default_m),
+    type_defaults: TYPE_DEFAULTS_SPEC,
+  },
+};
+
+const BRIDGES_SPEC: FieldSpec = {
+  kind: "object",
+  fields: {
+    enabled: { kind: "boolean" },
+    clearance_mm: bounded(PARAM_RANGES.bridges.clearance_mm),
+    abutments: { kind: "boolean" },
+  },
+};
+
+const HEIGHT_EXAGGERATION_SPEC: FieldSpec = {
+  kind: "object",
+  fields: {
+    multiplier: bounded(PARAM_RANGES.height_exaggeration.multiplier),
+    curve: bounded(PARAM_RANGES.height_exaggeration.curve),
+  },
+};
+
+const HERO_AUTO_SPEC: FieldSpec = {
+  kind: "object",
+  fields: {
+    enabled: { kind: "boolean" },
+    count: bounded(PARAM_RANGES.hero_auto.count),
+  },
+};
+
+const TILING_SPEC: FieldSpec = {
+  kind: "object",
+  fields: {
+    enabled: { kind: "boolean" },
+    cols: bounded(PARAM_RANGES.tiling.cols),
+    rows: bounded(PARAM_RANGES.tiling.rows),
+    joint: { kind: "enum", values: ["dovetail", "pin"] },
+    tolerance_mm: bounded(PARAM_RANGES.tiling.tolerance_mm),
+    index_mark: { kind: "boolean" },
+  },
+};
+
+const FRAME_STYLE_SPEC: FieldSpec = {
+  kind: "object",
+  fields: {
+    profile: {
+      kind: "enum",
+      values: [
+        "plain",
+        "chamfer",
+        "stepped",
+        "bevel_in",
+        "bullnose",
+        "ogee",
+        "floating",
+      ],
+    },
+    corner: { kind: "enum", values: ["square", "mitred", "rounded"] },
+    corner_radius_mm: bounded(PARAM_RANGES.frame_style.corner_radius_mm),
+    lip_depth_mm: bounded(PARAM_RANGES.frame_style.lip_depth_mm),
+    shadow_gap: {
+      kind: "object",
+      fields: {
+        enabled: { kind: "boolean" },
+        width_mm: bounded(PARAM_RANGES.frame_style.shadow_gap.width_mm),
+        depth_mm: bounded(PARAM_RANGES.frame_style.shadow_gap.depth_mm),
+      },
+    },
+    matting: {
+      kind: "object",
+      fields: {
+        enabled: { kind: "boolean" },
+        width_mm: bounded(PARAM_RANGES.frame_style.matting.width_mm),
+        proud_mm: bounded(PARAM_RANGES.frame_style.matting.proud_mm),
+      },
+    },
+    separate: {
+      kind: "object",
+      fields: {
+        enabled: { kind: "boolean" },
+        mount: { kind: "enum", values: ["snap", "magnet"] },
+        tolerance_mm: bounded(PARAM_RANGES.frame_style.separate.tolerance_mm),
+      },
+    },
+    texture: {
+      kind: "object",
+      fields: {
+        pattern: { kind: "enum", values: ["none", "brush", "knurl", "hatch", "dots"] },
+        scale_mm: bounded(PARAM_RANGES.frame_style.texture.scale_mm),
+        depth_mm: bounded(PARAM_RANGES.frame_style.texture.depth_mm),
+      },
+    },
+  },
+};
+
+const HANGER_MAGNET_SPEC: FieldSpec = {
+  kind: "object",
+  fields: {
+    diameter_mm: bounded(PARAM_RANGES.hanger_magnet.diameter_mm),
+    thickness_mm: bounded(PARAM_RANGES.hanger_magnet.thickness_mm),
+    count: bounded(PARAM_RANGES.hanger_magnet.count),
+  },
 };
 
 /**
@@ -216,7 +463,7 @@ export const PRINT_PARAM_SPEC: Record<string, FieldSpec> = {
       length_m: bounded(PARAM_RANGES.scale_bar.length_m),
     },
   },
-  hanger: { kind: "enum", values: ["none", "keyhole", "magnets"] },
+  hanger: { kind: "enum", values: ["none", "keyhole", "magnets", "cleat", "easel"] },
   underside_mark: {
     kind: "object",
     fields: {
@@ -233,6 +480,44 @@ export const PRINT_PARAM_SPEC: Record<string, FieldSpec> = {
     item: { kind: "string", maxLength: 64 },
   },
   hero_mode: { kind: "enum", values: ["true_height", "own_color", "both"] },
+  place: PLACE_SPEC,
+  regions: REGIONS_SPEC,
+  colour: COLOUR_SPEC,
+  printer_profile: {
+    kind: "enum",
+    values: [
+      "custom",
+      "bambu-h2s",
+      "bambu-p1s",
+      "bambu-x1c",
+      "bambu-a1",
+      "bambu-a1-mini",
+      "prusa-mk4",
+      "prusa-mini",
+      "ender-3",
+    ],
+  },
+  custom_profile: CUSTOM_PROFILE_SPEC,
+  export_target: {
+    kind: "enum",
+    values: [
+      "bambu-3mf",
+      "generic-3mf",
+      "stl",
+      "stl-parts-zip",
+      "obj",
+      "step",
+      "color-change-3mf",
+    ],
+  },
+  terrain: TERRAIN_SPEC,
+  heights: HEIGHTS_SPEC,
+  bridges: BRIDGES_SPEC,
+  height_exaggeration: HEIGHT_EXAGGERATION_SPEC,
+  hero_auto: HERO_AUTO_SPEC,
+  tiling: TILING_SPEC,
+  frame_style: FRAME_STYLE_SPEC,
+  hanger_magnet: HANGER_MAGNET_SPEC,
 };
 
 const SCENE_REQUEST_SPEC: Record<string, FieldSpec> = {

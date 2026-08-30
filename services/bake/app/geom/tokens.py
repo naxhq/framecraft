@@ -1,4 +1,5 @@
-"""The eight text tokens FrameCraft expands in engravings and the underside mark.
+"""The thirteen text tokens FrameCraft expands in engravings and the underside
+mark.
 
 This module is one half of a MIRRORED PAIR: ``apps/web/lib/tokens.ts`` is the
 same table with the same snake_case names, so the string the editor previews on
@@ -9,8 +10,19 @@ uses per [P4]).
 
 Rules:
 
-* ``{city}`` is the user's own typed label.  FrameCraft never reverse-geocodes,
-  so an unset label expands to the empty string rather than to a guess.
+* This module is a pure FORMATTER.  It never decides what ``{city}`` (or
+  ``{country}``, ``{state}``, ``{neighbourhood}``, ``{author}``) actually says -
+  the caller resolves that and hands the resolved string in on
+  :class:`TokenContext`.  In production that caller is the TS side: every
+  engraving reaching ``POST /bake`` is already fully resolved client-side
+  (DECISIONS [V3-P1]), so ``services/bake/app/bake.py`` never populates these
+  five fields today and they default to empty - this module still carries them,
+  with the same formatting rules as the TS mirror, purely so the shared
+  ``expand_tokens`` behaviour (and the ``tokens-expected.json`` fixture) stays
+  provably identical between the two languages.
+* ``{hero}`` is the COUNT of selected hero buildings, not a building's real
+  name: ``SceneGraph.Building`` (the frozen contract) carries no ``name``
+  field, so there is nothing honest to print in its place.
 * An unknown ``{token}`` is left exactly as written - it is far likelier to be
   a deliberate brace in someone's text than a typo we should silently eat.
 * Every number is formatted by hand (:func:`fixed`, :func:`group_thousands`,
@@ -42,6 +54,11 @@ __all__ = [
     "format_radius",
     "format_date",
     "format_buildings",
+    "format_country",
+    "format_state",
+    "format_neighbourhood",
+    "format_author",
+    "format_hero",
     "fixed",
     "group_thousands",
     "round_half_up",
@@ -57,6 +74,11 @@ TOKENS: Tuple[str, ...] = (
     "radius",
     "date",
     "buildings",
+    "country",
+    "state",
+    "neighbourhood",
+    "author",
+    "hero",
 )
 
 #: Decimal places for a latitude or longitude: ~11 m at the equator, which is
@@ -82,6 +104,13 @@ class TokenContext:
     date: str
     buildings: int
     city: str = ""
+    country: str = ""
+    state: str = ""
+    neighbourhood: str = ""
+    author: str = ""
+    #: How many hero buildings are selected.  ``{hero}`` formats this count,
+    #: never a name - see the module docstring.
+    hero_count: int = 0
 
     @staticmethod
     def from_mapping(data: Mapping[str, object]) -> "TokenContext":
@@ -94,6 +123,11 @@ class TokenContext:
             date=str(data.get("date", "")),
             buildings=int(data["buildings"]),  # type: ignore[arg-type]
             city=str(data.get("city", "")),
+            country=str(data.get("country", "")),
+            state=str(data.get("state", "")),
+            neighbourhood=str(data.get("neighbourhood", "")),
+            author=str(data.get("author", "")),
+            hero_count=int(data.get("hero_count", 0)),  # type: ignore[arg-type]
         )
 
 
@@ -201,6 +235,35 @@ def format_buildings(ctx: TokenContext) -> str:
     return group_thousands(int(ctx.buildings))
 
 
+def format_country(ctx: TokenContext) -> str:
+    """The resolved country name, verbatim; empty when nothing resolved one."""
+    return ctx.country or ""
+
+
+def format_state(ctx: TokenContext) -> str:
+    """The resolved state or province, verbatim; empty when nothing resolved one."""
+    return ctx.state or ""
+
+
+def format_neighbourhood(ctx: TokenContext) -> str:
+    """The resolved neighbourhood, verbatim; empty when nothing resolved one."""
+    return ctx.neighbourhood or ""
+
+
+def format_author(ctx: TokenContext) -> str:
+    """The author's own typed name, verbatim; empty when they typed nothing."""
+    return ctx.author or ""
+
+
+def format_hero(ctx: TokenContext) -> str:
+    """``3`` - how many hero buildings are selected, or ``""`` when none are.
+
+    Not a building's name: see the module docstring for why.
+    """
+    count = int(ctx.hero_count)
+    return group_thousands(count) if count > 0 else ""
+
+
 #: token name -> formatter.  A formatter returning None means "cannot be
 #: expanded"; the token is then left in the text exactly as written.
 FORMATTERS: Dict[str, Callable[[TokenContext], Optional[str]]] = {
@@ -212,6 +275,11 @@ FORMATTERS: Dict[str, Callable[[TokenContext], Optional[str]]] = {
     "radius": format_radius,
     "date": format_date,
     "buildings": format_buildings,
+    "country": format_country,
+    "state": format_state,
+    "neighbourhood": format_neighbourhood,
+    "author": format_author,
+    "hero": format_hero,
 }
 
 

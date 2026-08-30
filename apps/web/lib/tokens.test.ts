@@ -35,7 +35,7 @@ function loadFixture<T>(relative: string): T {
 const fixture = loadFixture<TokensFixture>("tokens-expected.json");
 
 describe("tokens-expected.json parity", () => {
-  it("names the same eight tokens as the Python table", () => {
+  it("names the same thirteen tokens as the Python table", () => {
     expect(fixture.tokens).toEqual([...TK.TOKENS]);
   });
 
@@ -67,6 +67,10 @@ describe("formatters", () => {
 
   it("has a formatter for every token and no others", () => {
     expect(Object.keys(TK.FORMATTERS).sort()).toEqual([...TK.TOKENS].sort());
+  });
+
+  it("names exactly thirteen tokens", () => {
+    expect(TK.TOKENS.length).toBe(13);
   });
 
   it("groups thousands without a locale", () => {
@@ -131,5 +135,103 @@ describe("formatters", () => {
     ).toBe(
       "Chicago 41.8827° N, 87.6233° W 1:10,714 900 m 994 2026-08-29 41.8827 -87.6233",
     );
+  });
+
+  // --- v3-P1: place, author and hero --------------------------------------
+
+  const withPlace: TokenContext = {
+    ...chicago,
+    country: "United States",
+    state: "Illinois",
+    neighbourhood: "The Loop",
+    author: "Vahid Alizadeh",
+    hero_count: 3,
+  };
+
+  it("formats country, state, neighbourhood and author verbatim", () => {
+    expect(TK.format_country(withPlace)).toBe("United States");
+    expect(TK.format_state(withPlace)).toBe("Illinois");
+    expect(TK.format_neighbourhood(withPlace)).toBe("The Loop");
+    expect(TK.format_author(withPlace)).toBe("Vahid Alizadeh");
+  });
+
+  it("never guesses country, state, neighbourhood or author either", () => {
+    const bare = { ...chicago };
+    expect(TK.format_country(bare)).toBe("");
+    expect(TK.format_state(bare)).toBe("");
+    expect(TK.format_neighbourhood(bare)).toBe("");
+    expect(TK.format_author(bare)).toBe("");
+    expect(
+      TK.expand_tokens("[{country}][{state}][{neighbourhood}][{author}]", bare),
+    ).toBe("[][][][]");
+  });
+
+  it("formats hero as a count, empty when none are selected", () => {
+    expect(TK.format_hero(chicago)).toBe("");
+    expect(TK.format_hero({ ...chicago, hero_count: 0 })).toBe("");
+    expect(TK.format_hero({ ...chicago, hero_count: 1 })).toBe("1");
+    expect(TK.format_hero(withPlace)).toBe("3");
+  });
+
+  it("expands the five new tokens in one mixed string", () => {
+    expect(
+      TK.expand_tokens(
+        "{city}, {neighbourhood}, {state}, {country} - by {author} ({hero} heroes)",
+        withPlace,
+      ),
+    ).toBe("Chicago, The Loop, Illinois, United States - by Vahid Alizadeh (3 heroes)");
+  });
+});
+
+describe("resolve_text", () => {
+  const chicago: TokenContext = {
+    city: "Chicago",
+    lat: 41.8827,
+    lon: -87.6233,
+    scale_mm_per_m: 168 / 1800,
+    radius_m: 900,
+    date: "2026-08-29",
+    buildings: 994,
+  };
+
+  it("matches expand_tokens exactly", () => {
+    const text = "{city} {scale} {date}";
+    expect(TK.resolve_text(text, chicago).text).toBe(TK.expand_tokens(text, chicago));
+  });
+
+  it("names every known token found, in order, with whether it was empty", () => {
+    const unset: TokenContext = { ...chicago, city: "" };
+    const result = TK.resolve_text("{city} {lat} {country}", unset);
+    expect(result.tokens).toEqual([
+      { token: "city", empty: true },
+      { token: "lat", empty: false },
+      { token: "country", empty: true },
+    ]);
+  });
+
+  it("treats an unmeasured {scale} as empty too, not merely unresolved", () => {
+    const unmeasured: TokenContext = { ...chicago, scale_mm_per_m: 0 };
+    const result = TK.resolve_text("{scale}", unmeasured);
+    expect(result.text).toBe("{scale}");
+    expect(result.tokens).toEqual([{ token: "scale", empty: true }]);
+  });
+
+  it("does not track an unknown brace as a token at all", () => {
+    const result = TK.resolve_text("{nope} {city}", chicago);
+    expect(result.tokens).toEqual([{ token: "city", empty: false }]);
+  });
+
+  it("says a line with every token resolved has no empty entries", () => {
+    const result = TK.resolve_text("{city} {radius}", chicago);
+    expect(result.tokens.every((t) => !t.empty)).toBe(true);
+  });
+
+  it("finds the same token twice as two entries", () => {
+    const unset: TokenContext = { ...chicago, city: "" };
+    const result = TK.resolve_text("{city}, {city}", unset);
+    expect(result.tokens).toEqual([
+      { token: "city", empty: true },
+      { token: "city", empty: true },
+    ]);
   });
 });

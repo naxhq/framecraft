@@ -216,6 +216,11 @@ describe("previewDeps", () => {
   /** The lettering block: it moves the text layer, and ONLY the text layer. */
   const V2_TEXT_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintParams]]> = [
     ["city_label", "Chicago"],
+    // {country}/{state}/{neighbourhood}/{author} all read `place` ([V3-P1]).
+    [
+      "place",
+      { country: "United States", state: "Illinois", neighbourhood: "The Loop", author: "V" },
+    ],
     ["engravings", [{ edge: "bottom", text: "{city}" }]],
     ["north_arrow", { enabled: true, corner: "sw", size_mm: 6 }],
     [
@@ -238,11 +243,58 @@ describe("previewDeps", () => {
     }
   });
 
-  it("rebuilds only the predicted height when a hero is picked", () => {
+  it("rebuilds the predicted height and the text layer when a hero is picked", () => {
     // A hero is drawn at its hero height, so the 60 mm guard and the HUD have
-    // to follow it -- but no hull, no earcut and no glyph is touched. (The
-    // instance matrices do move; `InstancedBuildings.test.ts` owns that key.)
-    expect(rebuiltBy("hero_building_ids", ["w1"])).toEqual(["height"]);
+    // to follow it -- but no hull, no earcut, no advisor pass and no glyph
+    // asset fetch is touched. (The instance matrices do move;
+    // `InstancedBuildings.test.ts` owns that key.) `text` rebuilds too, since
+    // [V3-P1]'s `{hero}` token counts `hero_building_ids.length`.
+    expect(rebuiltBy("hero_building_ids", ["w1"])).toEqual(["height", "text"]);
+  });
+
+  /**
+   * schema_version 3's engine block ([V3-P1], landed concurrently with this
+   * phase by `v3-01-contracts`; ruling from the team lead recorded verbatim
+   * in DECISIONS.md).
+   *
+   * None of these fourteen groups is read by the CURRENT (pre-engine)
+   * preview: `docs/IMPLEMENTATION_PLAN.md`'s browser engine (phase 2 on) is
+   * what will actually drape terrain, cut region recesses, split tiles, style
+   * the frame profile and place a magnet hanger's pockets. Ten of them --
+   * `regions`, `colour`, `terrain`, `heights`, `bridges`,
+   * `height_exaggeration`, `hero_auto`, `tiling`, `frame_style`,
+   * `hanger_magnet` -- are the ones that WILL move real geometry once that
+   * engine reads them; `printer_profile`, `custom_profile` and
+   * `export_target` govern export only and never will. Both buckets rebuild
+   * NOTHING today, which is what this test asserts -- a real behaviour
+   * change, not a checklist -- so a read added later without a matching dep
+   * is caught here instead of silently over- or under-invalidating.
+   *
+   * `place` is deliberately NOT in this list: unlike the other thirteen, it
+   * already IS live today, in `V2_TEXT_MOVES` above -- `{country}`,
+   * `{state}`, `{neighbourhood}` and `{author}` are real engraving tokens
+   * this phase wired up, not a future engine's job.
+   */
+  const V3_ENGINE_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintParams]]> = [
+    ["regions", { roads: { depth_mm: 1.0 }, building_skirt_mm: 0.6 }],
+    ["colour", { palette: "noir", preview_theme: "light" }],
+    ["printer_profile", "bambu-x1c"],
+    ["custom_profile", { plate_x_mm: 256, plate_y_mm: 256 }],
+    ["export_target", "stl"],
+    ["terrain", { enabled: true, smoothing: 3 }],
+    ["heights", { floor_height_m: 3.5 }],
+    ["bridges", { enabled: false }],
+    ["height_exaggeration", { multiplier: 1.5 }],
+    ["hero_auto", { enabled: true, count: 5 }],
+    ["tiling", { enabled: true, cols: 2, rows: 2 }],
+    ["frame_style", { profile: "chamfer", corner: "mitred" }],
+    ["hanger_magnet", { diameter_mm: 8, thickness_mm: 3, count: 4 }],
+  ];
+
+  it("rebuilds nothing for the v3 engine block: the engine that will read it has not landed yet", () => {
+    for (const [key, value] of V3_ENGINE_MOVES) {
+      expect(rebuiltBy(key, value as never), key).toEqual([]);
+    }
   });
 
   it("covers every key of the frozen PrintParams contract", () => {
@@ -261,6 +313,7 @@ describe("previewDeps", () => {
       "hero_building_ids",
       ...V2_PAINT_MOVES.map(([key]) => key),
       ...V2_TEXT_MOVES.map(([key]) => key),
+      ...V3_ENGINE_MOVES.map(([key]) => key),
     ]);
     expect([...covered].sort()).toEqual(Object.keys(DEFAULT_PRINT_PARAMS).sort());
   });

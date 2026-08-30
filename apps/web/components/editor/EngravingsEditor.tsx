@@ -2,7 +2,7 @@
 
 import { PARAM_LIMITS, PARAM_RANGES } from "@/lib/contracts";
 import type { Engraving } from "@/lib/contracts";
-import { TOKENS, expand_tokens, type TokenContext } from "@/lib/tokens";
+import { TOKENS, resolve_text, type TokenContext } from "@/lib/tokens";
 import type { TextFit } from "@/lib/transform";
 import { Note, SelectField, Slider, TextField } from "./Controls";
 
@@ -72,9 +72,17 @@ export function newEngraving(existing: readonly Engraving[]): Engraving {
  * height that caused it, as well as in the adjustments drawer -- the drawer is
  * a summary of everything, and this is the answer to the control the user has
  * their hand on.
+ *
+ * `reasonOverride` replaces the shared math's generic refusal ("the top
+ * engraving is empty") with the SPECIFIC diagnosis this panel can make that
+ * `transform.fit_text` cannot: which exact `{token}` had no value, or that the
+ * frame itself is off (DECISIONS [V3-P1]). `fit.refused` still decides
+ * whether the line reads "Not cut" at all; only the wording changes.
  */
-function fitVerdict(fit: TextFit): { text: string; refused: boolean } {
-  if (fit.refused) return { text: `Not cut — ${fit.reason}`, refused: true };
+function fitVerdict(fit: TextFit, reasonOverride?: string | null): { text: string; refused: boolean } {
+  if (fit.refused) {
+    return { text: `Not cut — ${reasonOverride ?? fit.reason}`, refused: true };
+  }
   if (fit.size_mm < fit.requested_mm) {
     return {
       text: `Cuts at ${fit.size_mm.toFixed(2)} mm, reduced to fit the frame.`,
@@ -119,15 +127,28 @@ export function EngravingsEditor({
         </p>
       ) : null}
 
+      {disabled ? (
+        <Note tone="warn" testId="engravings-frame-off">
+          Turn on Frame to engrave the edges.
+        </Note>
+      ) : null}
+
       {engravings.map((engraving, index) => {
         const id = `engraving_${index}`;
-        const expanded = expand_tokens(engraving.text, context);
+        const resolved = resolve_text(engraving.text, context);
+        const emptyToken = resolved.tokens.find((t) => t.empty)?.token ?? null;
         const fit = fits?.[index];
-        const verdict = fit ? fitVerdict(fit) : null;
+        const reasonOverride = disabled
+          ? "Turn on Frame to engrave the edges."
+          : resolved.text.trim() === "" && emptyToken !== null
+            ? `Line ${index + 1}: the {${emptyToken}} token has no value.`
+            : null;
+        const verdict = fit ? fitVerdict(fit, reasonOverride) : null;
         return (
           <div
             key={id}
             data-testid="engraving-row"
+            aria-disabled={disabled ? "true" : undefined}
             className="space-y-3 rounded-plate border border-line bg-plate-sunken p-3"
           >
             <div className="flex items-center justify-between gap-2">
@@ -161,11 +182,13 @@ export function EngravingsEditor({
               className="rounded-milled border border-line bg-plate-raised px-2 py-1 text-2xs text-ink-muted"
             >
               Cuts as:{" "}
-              {expanded ? (
-                <span className="text-ink">{expanded}</span>
+              {resolved.text ? (
+                <span className="text-ink">{resolved.text}</span>
               ) : (
                 <span className="text-ink-faint">
-                  nothing yet — the tokens in this line have no value
+                  {emptyToken !== null
+                    ? `nothing yet — the {${emptyToken}} token has no value`
+                    : "nothing yet — the tokens in this line have no value"}
                 </span>
               )}
             </p>

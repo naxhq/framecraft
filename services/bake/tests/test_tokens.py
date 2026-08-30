@@ -59,6 +59,18 @@ SYDNEY = {
 }
 # A scene that has not been measured yet: {scale} has no honest value.
 UNMEASURED = {**CHICAGO, "scale_mm_per_m": 0.0}
+# The v3-P1 place/author/hero tokens, fully resolved.
+WITH_PLACE = {
+    **CHICAGO,
+    "country": "United States",
+    "state": "Illinois",
+    "neighbourhood": "The Loop",
+    "author": "Vahid Alizadeh",
+    "hero_count": 3,
+}
+# Nothing resolved for any of them: every one must read as empty, not a guess.
+NO_PLACE = {**CHICAGO, "country": "", "state": "", "neighbourhood": "", "author": "", "hero_count": 0}
+ONE_HERO = {**CHICAGO, "hero_count": 1}
 # Exact binary ties, to pin round_half_up against Python's banker's rounding
 # and against Math.round: 0.5 m of radius, and a latitude that rounds to zero
 # from below (which must not print "-0.0000").
@@ -134,6 +146,20 @@ CASES: List[Dict[str, Any]] = [
     {"text": "}{", "ctx": CHICAGO},
     {"text": "{notatoken}", "ctx": CHICAGO},
     {"text": "{ city }", "ctx": CHICAGO},
+    # --- v3-P1: place, author and hero ---------------------------------------
+    {"text": "{country}", "ctx": WITH_PLACE},
+    {"text": "{state}", "ctx": WITH_PLACE},
+    {"text": "{neighbourhood}", "ctx": WITH_PLACE},
+    {"text": "{author}", "ctx": WITH_PLACE},
+    {"text": "{hero}", "ctx": WITH_PLACE},
+    {"text": "{hero}", "ctx": ONE_HERO},
+    {"text": "{country} {state} {neighbourhood} {author} {hero}", "ctx": WITH_PLACE},
+    # nothing resolved: every one of the five reads empty, never a guess
+    {"text": "[{country}][{state}][{neighbourhood}][{author}][{hero}]", "ctx": NO_PLACE},
+    {
+        "text": "{city}, {neighbourhood}, {state}, {country} - by {author} ({hero} heroes)",
+        "ctx": WITH_PLACE,
+    },
 ]
 
 
@@ -191,8 +217,8 @@ def test_the_fixture_covers_every_token() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_table_has_exactly_eight_tokens_and_a_formatter_for_each() -> None:
-    assert len(TK.TOKENS) == 8
+def test_the_table_has_exactly_thirteen_tokens_and_a_formatter_for_each() -> None:
+    assert len(TK.TOKENS) == 13
     assert sorted(TK.FORMATTERS) == sorted(TK.TOKENS)
 
 
@@ -252,8 +278,25 @@ def test_an_unmeasured_scale_leaves_the_token_standing() -> None:
 
 
 def test_the_city_token_is_never_guessed_from_the_coordinates() -> None:
-    """No reverse geocoding anywhere: an empty label expands to an empty
-    string even though lat/lon plainly identify the place."""
+    """This module never invents a value: an unset ``city`` (the caller's job
+    to resolve, not this formatter's) expands to an empty string even though
+    lat/lon plainly identify the place."""
     ctx = TK.TokenContext.from_mapping(UNSET_CITY)
     assert TK.format_city(ctx) == ""
     assert TK.expand_tokens("{city}{coords}", ctx) == "41.8827° N, 87.6233° W"
+
+
+def test_hero_formats_a_count_not_a_name() -> None:
+    """``SceneGraph.Building`` carries no ``name`` field (frozen contract), so
+    ``{hero}`` is the count of selected heroes, empty when none are picked."""
+    assert TK.format_hero(TK.TokenContext.from_mapping(CHICAGO)) == ""
+    assert TK.format_hero(TK.TokenContext.from_mapping(ONE_HERO)) == "1"
+    assert TK.format_hero(TK.TokenContext.from_mapping(WITH_PLACE)) == "3"
+
+
+def test_place_and_author_tokens_default_to_empty_never_a_guess() -> None:
+    ctx = TK.TokenContext.from_mapping(NO_PLACE)
+    assert TK.format_country(ctx) == ""
+    assert TK.format_state(ctx) == ""
+    assert TK.format_neighbourhood(ctx) == ""
+    assert TK.format_author(ctx) == ""

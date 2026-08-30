@@ -13,11 +13,13 @@ import { describe, expect, it } from "vitest";
 
 import { DEFAULT_PRINT_PARAMS } from "./contracts";
 import type { Building, PrintParams, SceneGraph } from "./contracts";
+import type { TokenContext } from "./tokens";
 import * as T from "./transform";
 import {
   ESTIMATED_HEIGHT_RATIO,
   MIN_BUILDINGS_TO_BAKE,
   bakeBlockReason,
+  letteringWarnings,
   predictedTopMm,
   sceneWarnings,
   warningDeps,
@@ -64,6 +66,23 @@ const MOVES: Record<string, unknown> = {
   underside_mark: { enabled: true, template: "{coords}" },
   hero_building_ids: ["w1"],
   hero_mode: "both",
+  // schema_version 3 additions (docs/IMPLEMENTATION_PLAN.md's "Contracts v3"):
+  // none of them move `predicted_top_mm` or `underside_min_base_mm` today, but
+  // they still need a moved value here or the walk below is vacuous for them.
+  place: { country: "US", state: "IL", neighbourhood: "Loop", author: "Vahid" },
+  regions: { roads: { depth_mm: 1.0 }, building_skirt_mm: 0.6 },
+  colour: { palette: "noir", preview_theme: "light" },
+  printer_profile: "bambu-x1c",
+  custom_profile: { plate_x_mm: 256, plate_y_mm: 256 },
+  export_target: "stl",
+  terrain: { enabled: true, smoothing: 3 },
+  heights: { floor_height_m: 3.5 },
+  bridges: { enabled: false },
+  height_exaggeration: { multiplier: 1.5 },
+  hero_auto: { enabled: true, count: 5 },
+  tiling: { enabled: true, cols: 2, rows: 2 },
+  frame_style: { profile: "chamfer", corner: "mitred" },
+  hanger_magnet: { diameter_mm: 8, thickness_mm: 3, count: 4 },
 };
 
 const building = (height_m: number): Building => ({
@@ -393,5 +412,92 @@ describe("a hero counts at its hero height", () => {
         (value, i) => !Object.is(value, warningDeps(graph, twice)[i]),
       ),
     ).toBe(false);
+  });
+});
+
+// ==========================================================================
+// Lettering warnings ([V3-P1])
+// ==========================================================================
+
+describe("letteringWarnings", () => {
+  const ctx: TokenContext = {
+    lat: 41.8827,
+    lon: -87.6233,
+    scale_mm_per_m: 168 / 1800,
+    radius_m: 900,
+    date: "2026-08-29",
+    buildings: 994,
+    city: "Chicago",
+  };
+  const noCity: TokenContext = { ...ctx, city: "" };
+
+  it("is empty when there is nothing configured to letter", () => {
+    expect(letteringWarnings(p(), ctx)).toEqual([]);
+  });
+
+  it("warns once per empty line, naming the line and the token, at warn level", () => {
+    const params = p({
+      frame: true,
+      engravings: [
+        { edge: "top", text: "hello" },
+        { edge: "bottom", text: "{city}" },
+      ],
+    });
+    const warnings = letteringWarnings(params, noCity);
+    expect(warnings).toEqual([
+      {
+        id: "engraving-1-empty",
+        level: "warn",
+        message: "Line 2: the {city} token has no value.",
+      },
+    ]);
+  });
+
+  it("does not warn about a line that resolves", () => {
+    const params = p({ frame: true, engravings: [{ edge: "top", text: "{city}" }] });
+    expect(letteringWarnings(params, ctx)).toEqual([]);
+  });
+
+  it("carries exactly one info-level entry when the frame is off, never one per line", () => {
+    const params = p({
+      frame: false,
+      engravings: [
+        { edge: "top", text: "{city}" },
+        { edge: "bottom", text: "{city}" },
+        { edge: "left", text: "{city}" },
+      ],
+    });
+    const warnings = letteringWarnings(params, ctx);
+    expect(warnings).toEqual([
+      {
+        id: "frame-off-lettering",
+        level: "info",
+        message:
+          "Frame is off, so the frame edge lettering will not be cut. " +
+          "Turn on Frame to engrave the edges.",
+      },
+    ]);
+  });
+
+  it("warns about an empty underside mark, and the mark stays gated by its own toggle regardless of the frame", () => {
+    const params = p({
+      frame: false,
+      underside_mark: { enabled: true, template: "{city}" },
+    });
+    const warnings = letteringWarnings(params, noCity);
+    expect(warnings).toEqual([
+      {
+        id: "underside-mark-empty",
+        level: "warn",
+        message: "Underside mark: the {city} token has no value.",
+      },
+    ]);
+  });
+
+  it("never rises to block level: an empty line is omitted from the bake, not a refusal", () => {
+    const params = p({ frame: true, engravings: [{ edge: "top", text: "{city}" }] });
+    for (const warning of letteringWarnings(params, noCity)) {
+      expect(warning.level).not.toBe("block");
+    }
   });
 });

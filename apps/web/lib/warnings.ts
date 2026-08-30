@@ -24,6 +24,8 @@
 
 import type { PrintParams, SceneGraph } from "./contracts";
 import { heroHeightKey } from "./heroes";
+import { resolvedOutputLines } from "./resolvedOutput";
+import type { TokenContext } from "./tokens";
 import * as T from "./transform";
 
 /** 01/A2. `coverage: "empty"` is the server's own verdict on the same rule. */
@@ -222,6 +224,52 @@ export function sceneWarnings(
       message:
         "Building heights are largely estimated from OSM tags " +
         `(only ${Math.round(ratio * 100)}% carry a real height).`,
+    });
+  }
+
+  return warnings;
+}
+
+/**
+ * Lettering-specific warnings: an empty line, an empty underside mark, or the
+ * frame being off with lettering configured for it.
+ *
+ * Separate from `sceneWarnings` on purpose: those read only `(graph, params)`,
+ * while these need a `TokenContext` (the resolved place, the scene's scale and
+ * building count, today's date) that only a caller with a live scene and a
+ * resolved place can build. Every caller that shows the Issues badge merges
+ * the two lists (`components/scene/CityPreview.tsx`); `bakeBlockReason` does
+ * not, because nothing here is ever `block` level -- an empty line is omitted
+ * from the bake (`lib/bake.ts`), never a reason to refuse it.
+ *
+ * One info-level entry when the frame is off and lettering is configured for
+ * it (never one per line: turning Frame back on fixes every line at once), and
+ * one warn-level entry per line (or the underside mark) that resolves empty,
+ * naming the exact `{token}` responsible.
+ */
+export function letteringWarnings(
+  params: PrintParams,
+  ctx: TokenContext,
+): SceneWarning[] {
+  const lines = resolvedOutputLines(params, ctx);
+  const warnings: SceneWarning[] = [];
+
+  if (lines.some((line) => line.cause === "frame-off")) {
+    warnings.push({
+      id: "frame-off-lettering",
+      level: "info",
+      message:
+        "Frame is off, so the frame edge lettering will not be cut. " +
+        "Turn on Frame to engrave the edges.",
+    });
+  }
+
+  for (const line of lines) {
+    if (line.cause !== "empty") continue;
+    warnings.push({
+      id: `${line.id}-empty`,
+      level: "warn",
+      message: line.reason ?? `${line.surface} is empty.`,
     });
   }
 

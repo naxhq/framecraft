@@ -33,19 +33,32 @@ import {
   initialBakeState,
   markBakeStale,
   reduceBake,
+  resolveParamsForBake,
   shouldPoll,
   type BakeState,
 } from "@/lib/bake";
 import { DEFAULT_PRINT_PARAMS, defaultPrintParams } from "@/lib/contracts";
 import type { PrintParams, SceneGraph, SceneRequest } from "@/lib/contracts";
+import type { GeocodeResult } from "@/lib/geocode";
 import { RADIUS_MAX_M, RADIUS_MIN_M, snapRadius } from "@/lib/geo";
 import { toggleHeroId } from "@/lib/heroes";
+import { presetCityName } from "@/lib/presets";
+import { textTokenContext } from "@/lib/previewText";
 import { decodeShare, readShareParam } from "@/lib/share";
 import { bakeBlockReason } from "@/lib/warnings";
 
 export type Theme = "light" | "dark";
 
 export const THEME_STORAGE_KEY = "framecraft-theme";
+
+/**
+ * Where the last known author name is remembered ACROSS sessions and across a
+ * `resetParams()`, so a fresh page (or a reset) does not lose it. The LIVE
+ * value that actually reaches the bake and the preview is always
+ * `params.place.author` (the frozen v3 wire field); this is only ever read to
+ * PREFILL that field, once, on the store's own init.
+ */
+export const AUTHOR_STORAGE_KEY = "framecraft.author.v1";
 
 /** Everything that, when changed, invalidates the SceneGraph. */
 export interface LocationState {
@@ -55,6 +68,32 @@ export interface LocationState {
   rotation_deg: number;
   preset_id: string | null;
 }
+
+/**
+ * Where the current Place name field's PREFILL comes from, and whether the
+ * user has since typed their own text over it.
+ *
+ * Deliberately separate from `PrintParams.place` (the wire field carrying
+ * country/state/neighbourhood/author): this is about `params.city_label`
+ * specifically, and it exists only so a resolution that lands AFTER the user
+ * already typed something never overwrites them ("user edits always win"),
+ * while a "reset to detected" affordance still has something to reset TO.
+ */
+export interface PlaceDetectState {
+  status: "idle" | "resolving" | "ready" | "error";
+  source: "preset" | "geocode" | "none";
+  /** The city name a preset or a geocode last resolved, or null. */
+  detectedCity: string | null;
+  /** True once the user has typed into the Place name field themselves. */
+  overridden: boolean;
+}
+
+export const IDLE_PLACE_DETECT: PlaceDetectState = {
+  status: "idle",
+  source: "none",
+  detectedCity: null,
+  overridden: false,
+};
 
 export type SceneStatus = "idle" | "loading" | "ready" | "error";
 
@@ -86,7 +125,8 @@ export type NestedParamKey =
   | "part_colors"
   | "north_arrow"
   | "scale_bar"
-  | "underside_mark";
+  | "underside_mark"
+  | "place";
 
 export interface EditorState {
   location: LocationState;
@@ -94,6 +134,8 @@ export interface EditorState {
   scene: SceneState;
   bake: BakeState;
   presets: PresetsState;
+  /** Where the Place name field's prefill comes from ([V3-P1]). */
+  placeDetect: PlaceDetectState;
   theme: Theme;
   /**
    * True once the user has clicked a preset chip in THIS session. `location`
@@ -135,6 +177,24 @@ export interface EditorState {
     patch: Partial<NonNullable<PrintParams[K]>>,
   ) => void;
   resetParams: () => void;
+
+  // --- place resolution ([V3-P1]: preset > geocode > user override) --------
+  /**
+   * A reverse geocode landed (or failed: `result === null`) for `(lat, lon)`.
+   * A result for a pin that has since moved elsewhere is ignored. Fills
+   * `city_label` from `result.city` UNLESS the user has since overridden it;
+   * always updates `place.country/state/neighbourhood` (there is no override
+   * UI for those three, so a fresh detection always wins for them).
+   */
+  applyGeocodeResult: (lat: number, lon: number, result: GeocodeResult | null) => void;
+  /** The user typed into the Place name field: their text wins from now on. */
+  setPlaceName: (value: string) => void;
+  /** The "reset to detected" affordance: back to the preset/geocode value. */
+  resetPlaceNameToDetected: () => void;
+  /** The Author field, persisted into `params.place.author`. */
+  setAuthor: (value: string) => void;
+  /** Prefill the Author field from localStorage once, after mount. */
+  initAuthor: () => void;
 
   // --- hero buildings (a click in the preview; still just a param write) ---
   toggleHero: (id: string) => void;
@@ -231,6 +291,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   scene: { ...IDLE_SCENE },
   bake: { ...initialBakeState },
   presets: { status: "idle", items: [], message: null },
+  placeDetect: { ...IDLE_PLACE_DETECT },
   theme: "light",
   presetChosen: false,
   heroCapHit: false,
@@ -238,12 +299,26 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   shareNotice: null,
 
   setPin: (lat, lon) =>
-    set((state) => ({
-      location: { ...state.location, lat, lon, preset_id: null },
-      scene: { ...state.scene, stale: true },
-      bake: markBakeStale(state.bake),
-      presetChosen: false,
-    })),
+    set((state) => {
+      // A previously auto-filled label describes the OLD pin and would be
+      // wrong for the new one; a user's own typed text survives the move
+      // (DECISIONS [V3-P1] - "user edits always win").
+      const clearLabel =
+        !state.placeDetect.overridden && (state.params.city_label ?? "") !== "";
+      return {
+        location: { ...state.location, lat, lon, preset_id: null },
+        scene: { ...state.scene, stale: true },
+        bake: markBakeStale(state.bake),
+        presetChosen: false,
+        placeDetect: {
+          status: "resolving",
+          source: "none",
+          detectedCity: null,
+          overridden: state.placeDetect.overridden,
+        },
+        params: clearLabel ? { ...state.params, city_label: "" } : state.params,
+      };
+    }),
 
   setRadius: (radiusM) =>
     set((state) => ({
@@ -262,18 +337,33 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   },
 
   applyPreset: (preset) =>
-    set((state) => ({
-      location: {
-        lat: preset.lat,
-        lon: preset.lon,
-        radius_m: Math.min(RADIUS_MAX_M, Math.max(RADIUS_MIN_M, preset.radius_m)),
-        rotation_deg: preset.rotation_deg,
-        preset_id: preset.preset_id ?? null,
-      },
-      scene: { ...state.scene, stale: true },
-      bake: markBakeStale(state.bake),
-      presetChosen: true,
-    })),
+    set((state) => {
+      // A preset resolves its city name from `lib/presets.ts` alone -- no
+      // Nominatim round trip needed, since the place it names is already
+      // known (DECISIONS [V3-P1]).
+      const cityName = presetCityName(preset.preset_id);
+      const overridden = state.placeDetect.overridden;
+      return {
+        location: {
+          lat: preset.lat,
+          lon: preset.lon,
+          radius_m: Math.min(RADIUS_MAX_M, Math.max(RADIUS_MIN_M, preset.radius_m)),
+          rotation_deg: preset.rotation_deg,
+          preset_id: preset.preset_id ?? null,
+        },
+        scene: { ...state.scene, stale: true },
+        bake: markBakeStale(state.bake),
+        presetChosen: true,
+        placeDetect: {
+          status: cityName !== null ? "ready" : "idle",
+          source: cityName !== null ? "preset" : "none",
+          detectedCity: cityName,
+          overridden,
+        },
+        // Never overwrites a user's own typed Place name.
+        params: overridden ? state.params : { ...state.params, city_label: cityName ?? "" },
+      };
+    }),
 
   // A slider move is a pure state write. No fetch, and the SCENE is unaffected
   // by every one of these parameters -- but a finished BAKE is not: the file on
@@ -295,10 +385,85 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     set((state) => ({
       // A fresh deep copy, so a reset never hands the editor a nested object
       // shared with the frozen constant or with the state it just replaced.
+      // Deliberately does NOT touch `placeDetect`: a reset clears the typed
+      // text back to "" and leaves it there (it does not re-detect), the same
+      // way it clears every other field back to the contract default without
+      // re-running whatever produced the value that was there before.
       params: defaultPrintParams(),
       bake: markBakeStale(state.bake),
       heroCapHit: false,
     })),
+
+  applyGeocodeResult: (lat, lon, result) =>
+    set((state) => {
+      // A result for a pin that has since moved on to somewhere else: the
+      // debounce/queue in `lib/geocode.ts` cannot cancel a request already in
+      // flight, so the guard lives here instead.
+      if (state.location.lat !== lat || state.location.lon !== lon) return state;
+      const city = result?.city ?? null;
+      const place = state.params.place ?? DEFAULT_PRINT_PARAMS.place;
+      return {
+        placeDetect: {
+          status: result !== null ? "ready" : "error",
+          source: result !== null ? "geocode" : "none",
+          detectedCity: city,
+          overridden: state.placeDetect.overridden,
+        },
+        params: {
+          ...state.params,
+          place: {
+            ...place,
+            country: result?.country ?? "",
+            state: result?.state ?? "",
+            neighbourhood: result?.neighbourhood ?? "",
+          },
+          // Never overwrites a user's own typed Place name.
+          city_label: state.placeDetect.overridden ? state.params.city_label : (city ?? ""),
+        },
+        bake: markBakeStale(state.bake),
+      };
+    }),
+
+  setPlaceName: (value) =>
+    set((state) => ({
+      placeDetect: { ...state.placeDetect, overridden: true },
+      params: { ...state.params, city_label: value },
+      bake: markBakeStale(state.bake),
+    })),
+
+  resetPlaceNameToDetected: () =>
+    set((state) => ({
+      placeDetect: { ...state.placeDetect, overridden: false },
+      params: { ...state.params, city_label: state.placeDetect.detectedCity ?? "" },
+      bake: markBakeStale(state.bake),
+    })),
+
+  setAuthor: (value) => {
+    get().setNested("place", { author: value });
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(AUTHOR_STORAGE_KEY, value);
+      } catch {
+        // private mode / storage disabled: the in-memory value still works
+        // for this session, same fallback `setTheme` already uses.
+      }
+    }
+  },
+
+  initAuthor: () => {
+    if (typeof window === "undefined") return;
+    let stored: string | null = null;
+    try {
+      stored = window.localStorage.getItem(AUTHOR_STORAGE_KEY);
+    } catch {
+      stored = null;
+    }
+    if (!stored) return;
+    // Never clobber a real value already on the params (e.g. a shared link
+    // applied before this runs).
+    if ((get().params.place?.author ?? "") !== "") return;
+    get().setNested("place", { author: stored });
+  },
 
   /**
    * Add or remove a hero, capped at the contract's `maxItems`.
@@ -349,6 +514,17 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       presetChosen: false,
       heroCapHit: false,
       shareNotice: null,
+      // A non-empty label the link itself carried is deliberate data (typed
+      // or already resolved by whoever made the link) and must survive a
+      // later geocode landing for these coordinates; an empty one is free for
+      // a preset lookup or a geocode to fill in exactly as if this were a
+      // fresh pin.
+      placeDetect: {
+        status: "idle",
+        source: "none",
+        detectedCity: null,
+        overridden: (params.city_label ?? "") !== "",
+      },
     })),
 
   loadShared: (search) => {
@@ -448,8 +624,17 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     const request = scene.request ?? locationToRequest(get().location);
     get().stopBakePolling();
     set({ bake: { ...initialBakeState, phase: "queued" } });
+    // Token expansion happens once, client-side (DECISIONS [V3-P1]): every
+    // engraving line and the underside template are fully resolved against
+    // THIS scene before the request goes out, so the bake never has to guess
+    // what an empty engraving meant and the {country}/{state}/{neighbourhood}
+    // /{author}/{hero} tokens -- which the frozen contract gives the server no
+    // way to resolve on its own -- carry real text.
+    const today = new Date().toISOString().slice(0, 10);
+    const ctx = textTokenContext(scene.graph, params, today);
+    const resolvedParams = resolveParamsForBake(params, ctx);
     try {
-      const { job_id } = await startBake(request, params);
+      const { job_id } = await startBake(request, resolvedParams);
       set({ bake: bakeStarted(job_id) });
       schedulePoll(get);
     } catch (error) {

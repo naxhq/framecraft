@@ -14,7 +14,10 @@ import { Note, Slider, TextField } from "../Controls";
  *
  * The radius and rotation sliders are the only two controls in the whole panel
  * that can reach the network, and they only do so on release, through
- * `Controls.createCommitGate` (DECISIONS [P4-fix]).
+ * `Controls.createCommitGate` (DECISIONS [P4-fix]). The Place name field's own
+ * network call -- a debounced Nominatim reverse geocode -- is driven from
+ * `EditorShell` on every pin move, never from a keystroke here (DECISIONS
+ * [V3-P1]).
  */
 export function LocationGroup() {
   const { lat, lon, radius_m, rotation_deg } = useEditorStore(
@@ -26,10 +29,23 @@ export function LocationGroup() {
     })),
   );
   const cityLabel = useEditorStore((state) => state.params.city_label ?? "");
-  const setParam = useEditorStore((state) => state.setParam);
+  const author = useEditorStore((state) => state.params.place?.author ?? "");
+  const placeDetect = useEditorStore((state) => state.placeDetect);
+  const setPlaceName = useEditorStore((state) => state.setPlaceName);
+  const resetPlaceNameToDetected = useEditorStore((state) => state.resetPlaceNameToDetected);
+  const setAuthor = useEditorStore((state) => state.setAuthor);
   const setRadius = useEditorStore((state) => state.setRadius);
   const setRotation = useEditorStore((state) => state.setRotation);
   const generate = useEditorStore((state) => state.generate);
+
+  const canResetToDetected =
+    placeDetect.detectedCity !== null && placeDetect.detectedCity !== cityLabel;
+  const placeStatusHint =
+    placeDetect.status === "resolving"
+      ? "Looking up the place name..."
+      : placeDetect.status === "error"
+        ? "Could not look up a place name for this pin. Type one yourself, or use the coordinates."
+        : "This is the {city} token. Type your own text and it wins from here on — a preset or a dragged pin no longer overwrites it.";
 
   return (
     <>
@@ -38,15 +54,42 @@ export function LocationGroup() {
         Click the map or drag the pin to move it.
       </Note>
 
+      <div className="space-y-1.5">
+        <TextField
+          id="city_label"
+          label="Place name"
+          value={cityLabel}
+          maxLength={PARAM_LIMITS.city_label.max_length}
+          placeholder={
+            placeDetect.status === "resolving"
+              ? "Detecting..."
+              : format_coords({ lat, lon, scale_mm_per_m: 0, radius_m, date: "", buildings: 0 })
+          }
+          meta={`${cityLabel.length}/${PARAM_LIMITS.city_label.max_length}`}
+          onChange={(value) => setPlaceName(value)}
+          hint={placeStatusHint}
+        />
+        {canResetToDetected ? (
+          <button
+            type="button"
+            data-testid="reset-place-name"
+            onClick={resetPlaceNameToDetected}
+            className="rounded-milled px-1.5 py-0.5 text-2xs text-ink-muted transition-colors hover:bg-plate-raised hover:text-ink"
+          >
+            Reset to detected ({placeDetect.detectedCity})
+          </button>
+        ) : null}
+      </div>
+
       <TextField
-        id="city_label"
-        label="City label"
-        value={cityLabel}
-        maxLength={PARAM_LIMITS.city_label.max_length}
-        placeholder="Chicago"
-        meta={`${cityLabel.length}/${PARAM_LIMITS.city_label.max_length}`}
-        onChange={(value) => setParam("city_label", value)}
-        hint="This is the {city} token. Type it here and any engraving or underside mark that uses {city} picks it up — FrameCraft never guesses a place name from the coordinates."
+        id="author"
+        label="Author"
+        value={author}
+        maxLength={PARAM_LIMITS.place.author.max_length}
+        placeholder="Your name"
+        meta={`${author.length}/${PARAM_LIMITS.place.author.max_length}`}
+        onChange={(value) => setAuthor(value)}
+        hint="This is the {author} token, for a credit line in an engraving or the underside mark."
       />
 
       <Slider
