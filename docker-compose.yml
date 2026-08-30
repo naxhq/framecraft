@@ -1,0 +1,25 @@
+services:
+  bake:
+    build:
+      context: .
+      dockerfile: services/bake/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./fixtures:/app/fixtures
+    environment:
+      PYTHONUNBUFFERED: "1"
+
+  web:
+    build:
+      context: apps/web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_BAKE_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_BAKE_API_URL: http://localhost:8000
+    depends_on:
+      - bake

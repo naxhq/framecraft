@@ -1,0 +1,10 @@
+# Build context for services/bake/Dockerfile (context: . in docker-compose.yml).
+# Keeps host virtualenvs, node_modules, git history and bake outputs out of the
+# uploaded context.
+apps/web/node_modules
+apps/web/.next
+services/bake/.venv
+.git
+artifacts
+.run
+**/__pycache__

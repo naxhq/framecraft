@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://framecraft.app/schema/bake_result.json",
+  "title": "BakeResult",
+  "description": "Response body for GET /bake/{job_id}. files and stats are null while status is queued or running.",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "BakeFiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "3mf": { "type": "string", "description": "Path under /files/, e.g. \"/files/ab12.3mf\"." },
+        "stl": { "type": "string", "description": "Path under /files/, e.g. \"/files/ab12.stl\"." }
+      },
+      "required": ["3mf", "stl"]
+    },
+    "BakeStats": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "triangles": { "type": "integer", "minimum": 0 },
+        "volume_mm3": { "type": "number", "minimum": 0 },
+        "bbox_mm": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "[x, y, z] extents in millimeters."
+        },
+        "est_grams": { "type": "number", "minimum": 0 },
+        "is_manifold": { "type": "boolean" },
+        "min_wall_mm": { "type": "number", "minimum": 0 }
+      },
+      "required": ["triangles", "volume_mm3", "bbox_mm", "est_grams", "is_manifold", "min_wall_mm"]
+    }
+  },
+  "properties": {
+    "job_id": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["queued", "running", "done", "failed"]
+    },
+    "files": {
+      "anyOf": [{ "$ref": "#/$defs/BakeFiles" }, { "type": "null" }],
+      "default": null
+    },
+    "stats": {
+      "anyOf": [{ "$ref": "#/$defs/BakeStats" }, { "type": "null" }],
+      "default": null
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "progress": {
+      "anyOf": [{ "type": "number", "minimum": 0, "maximum": 1 }, { "type": "null" }],
+      "default": null,
+      "description": "ADDITIVE field approved by the orchestrator; see DECISIONS.md."
+    },
+    "error": {
+      "anyOf": [{ "type": "string" }, { "type": "null" }],
+      "default": null,
+      "description": "ADDITIVE field approved by the orchestrator; names the failing validator. See DECISIONS.md."
+    }
+  },
+  "required": ["job_id", "status", "warnings"]
+}

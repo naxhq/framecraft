@@ -1,0 +1,11 @@
+# Build context for apps/web/Dockerfile (context: apps/web in docker-compose.yml).
+# Keeps host-native node_modules (@next/swc-win32-*, lightningcss-win32-*,
+# @tailwindcss/oxide-win32-*) and host build output from overlaying the Linux
+# image's own `npm ci` result via `COPY . .`.
+node_modules
+.next
+out
+test-results
+playwright-report
+.env*
+*.log

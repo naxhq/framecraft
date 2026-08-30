@@ -1,0 +1,43 @@
+# Node / web
+node_modules/
+apps/web/.next/
+apps/web/out/
+apps/web/.turbo/
+apps/web/next-env.d.ts
+
+# Python
+.venv/
+services/bake/.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Playwright / test artifacts
+playwright-report/
+test-results/
+apps/web/playwright-report/
+apps/web/test-results/
+# Playwright MCP session output (console logs, page snapshots), not repo content
+.playwright-mcp/
+
+# Runtime / process state
+.run/
+*.log
+artifacts/logs/
+
+# Bake outputs (keep the directory, ignore its contents)
+artifacts/*
+!artifacts/.gitkeep
+!artifacts/logs
+artifacts/logs/*
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db

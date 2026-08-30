@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://framecraft.app/schema/print_params.json",
+  "title": "PrintParams",
+  "description": "Editor parameters shared verbatim by the live preview and the bake pipeline. Ranges from 01_PRODUCT_SPEC.md's editor parameter table (percent ranges expressed as fractions), defaults from 02_TECH_SPEC.md's example.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "plate_mm": {
+      "type": "number",
+      "minimum": 100,
+      "maximum": 256,
+      "default": 180,
+      "description": "Plate size, mm."
+    },
+    "base_thickness_mm": {
+      "type": "number",
+      "minimum": 2,
+      "maximum": 8,
+      "default": 3.0,
+      "description": "Solid slab thickness under everything, mm."
+    },
+    "nozzle_mm": {
+      "type": "number",
+      "minimum": 0.1,
+      "maximum": 1.2,
+      "default": 0.4,
+      "description": "Nozzle diameter, mm. Drives the minimum-feature thresholds in 04."
+    },
+    "small_scale": {
+      "type": "number",
+      "minimum": 0.5,
+      "maximum": 1.5,
+      "default": 1.0,
+      "description": "Height multiplier for buildings under 40 m (is_tall == false)."
+    },
+    "large_scale": {
+      "type": "number",
+      "minimum": 0.5,
+      "maximum": 2.0,
+      "default": 1.0,
+      "description": "Height multiplier for buildings 40 m and over (is_tall == true)."
+    },
+    "terrain_exaggeration": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 3.0,
+      "default": 1.0,
+      "description": "Ignored while terrain is disabled (out of scope for the MVP)."
+    },
+    "road_mode": {
+      "type": "string",
+      "enum": ["engrave", "emboss", "off"],
+      "default": "engrave"
+    },
+    "road_scale": {
+      "type": "number",
+      "minimum": 0.5,
+      "maximum": 2.0,
+      "default": 1.0,
+      "description": "Width multiplier applied before the minimum-feature clamp in 04."
+    },
+    "trees": { "type": "boolean", "default": true },
+    "water": { "type": "boolean", "default": true },
+    "frame": { "type": "boolean", "default": true }
+  },
+  "required": [
+    "plate_mm",
+    "base_thickness_mm",
+    "nozzle_mm",
+    "small_scale",
+    "large_scale",
+    "terrain_exaggeration",
+    "road_mode",
+    "road_scale",
+    "trees",
+    "water",
+    "frame"
+  ]
+}

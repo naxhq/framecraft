@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://framecraft.app/schema/scene_graph.json",
+  "title": "SceneGraph",
+  "description": "The intermediate representation produced once per location. Coordinates are meters in a local ENU frame, x east, y north, origin (0,0) at the requested center. Never lat/lon past this boundary.",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "Point": {
+      "type": "array",
+      "description": "[x, y] in meters, local ENU.",
+      "items": { "type": "number" },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "Ring": {
+      "type": "array",
+      "description": "Closed polygon ring as a list of [x, y] points. Exterior rings CCW, hole rings CW.",
+      "items": { "$ref": "#/$defs/Point" },
+      "minItems": 3
+    },
+    "Building": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "description": "Source OSM id, e.g. \"w123\"." },
+        "ring": { "$ref": "#/$defs/Ring" },
+        "holes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Ring" },
+          "default": []
+        },
+        "height_m": { "type": "number", "minimum": 0 },
+        "height_source": {
+          "type": "string",
+          "enum": ["tag", "levels", "default"]
+        },
+        "min_height_m": { "type": "number", "minimum": 0, "default": 0.0 },
+        "is_tall": {
+          "type": "boolean",
+          "description": "height_m >= 40, computed once here."
+        }
+      },
+      "required": ["id", "ring", "holes", "height_m", "height_source", "min_height_m", "is_tall"]
+    },
+    "Road": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "path": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Point" },
+          "minItems": 2
+        },
+        "width_m": { "type": "number", "exclusiveMinimum": 0 },
+        "class": {
+          "type": "string",
+          "enum": ["motorway", "primary", "secondary", "residential", "service", "path"]
+        }
+      },
+      "required": ["id", "path", "width_m", "class"]
+    },
+    "AreaFeature": {
+      "type": "object",
+      "description": "A water or green polygon.",
+      "additionalProperties": false,
+      "properties": {
+        "ring": { "$ref": "#/$defs/Ring" },
+        "holes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Ring" },
+          "default": []
+        }
+      },
+      "required": ["ring", "holes"]
+    },
+    "Tree": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "radius_m": { "type": "number", "exclusiveMinimum": 0 }
+      },
+      "required": ["x", "y", "radius_m"]
+    },
+    "Bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_x": { "type": "number" },
+        "min_y": { "type": "number" },
+        "max_x": { "type": "number" },
+        "max_y": { "type": "number" }
+      },
+      "required": ["min_x", "min_y", "max_x", "max_y"]
+    },
+    "Center": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lat": { "type": "number", "minimum": -90, "maximum": 90 },
+        "lon": { "type": "number", "minimum": -180, "maximum": 180 }
+      },
+      "required": ["lat", "lon"]
+    },
+    "Stats": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "building_count": { "type": "integer", "minimum": 0 },
+        "coverage": {
+          "type": "string",
+          "enum": ["good", "sparse", "empty"]
+        },
+        "height_tag_ratio": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "required": ["building_count", "coverage", "height_tag_ratio"]
+    }
+  },
+  "properties": {
+    "bounds": { "$ref": "#/$defs/Bounds" },
+    "center": { "$ref": "#/$defs/Center" },
+    "buildings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Building" }
+    },
+    "roads": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Road" }
+    },
+    "water": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/AreaFeature" }
+    },
+    "green": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/AreaFeature" }
+    },
+    "trees": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Tree" }
+    },
+    "stats": { "$ref": "#/$defs/Stats" }
+  },
+  "required": ["bounds", "center", "buildings", "roads", "water", "green", "trees", "stats"]
+}

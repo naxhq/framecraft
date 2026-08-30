@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://framecraft.app/schema/scene_request.json",
+  "title": "SceneRequest",
+  "description": "Input to POST /scene: a map location, crop radius, rotation, and optional preset selector.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "lat": {
+      "type": "number",
+      "minimum": -90,
+      "maximum": 90,
+      "description": "Center latitude, WGS84 degrees."
+    },
+    "lon": {
+      "type": "number",
+      "minimum": -180,
+      "maximum": 180,
+      "description": "Center longitude, WGS84 degrees."
+    },
+    "radius_m": {
+      "type": "number",
+      "minimum": 250,
+      "maximum": 3000,
+      "description": "Half-width of the square crop, in meters, per the 01 radius handle range."
+    },
+    "rotation_deg": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 360,
+      "description": "Rotation applied to the crop about the origin before squaring, degrees."
+    },
+    "preset_id": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Optional id selecting a cached preset fixture instead of a live Overpass fetch."
+    }
+  },
+  "required": ["lat", "lon", "radius_m", "rotation_deg"]
+}

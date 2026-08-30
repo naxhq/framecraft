@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+/*
+ * Tailwind v4 defaults `dark:` to prefers-color-scheme. FrameCraft needs an
+ * explicit, persisted toggle (light / dark, system as the first-run default),
+ * so the variant is redefined to follow a `.dark` class on <html>, which the
+ * pre-paint script in app/layout.tsx sets before the first frame.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+/* MapLibre's stylesheet is imported by components/map/LocationPicker.tsx.
+   These are the only overrides: keep the attribution readable on both themes
+   and make the radius handle feel draggable. */
+.maplibregl-ctrl-attrib {
+  font-size: 11px;
+}
+
+.framecraft-radius-handle {
+  cursor: ew-resize;
+}
+
+.framecraft-pin {
+  cursor: grab;
+}
+
+input[type="range"] {
+  accent-color: #0ea5e9;
+}
+
+input[type="range"]:disabled {
+  opacity: 0.5;
+}
