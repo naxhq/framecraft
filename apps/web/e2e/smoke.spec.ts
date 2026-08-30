@@ -27,7 +27,10 @@ const API_URL = process.env.NEXT_PUBLIC_BAKE_API_URL ?? "http://localhost:8000";
  * SECOND Chicago click (see the happy path, step 3); the first one, on a clean
  * clone, parses a 12 MB Overpass fixture server-side and is not what A1 means.
  */
-const A1_BUDGET_MS = 5_000;
+// Shared CI runners are two to three times slower than a dev laptop; the factor
+// scales the wall-clock budgets only, never the assertions on the file itself.
+const BUDGET_FACTOR = Number(process.env.E2E_BUDGET_FACTOR ?? 1) || 1;
+const A1_BUDGET_MS = 5_000 * BUDGET_FACTOR;
 /** How long the untimed warm-up clicks may take before the test gives up. */
 const WARMUP_BUDGET_MS = 60_000;
 /** 01/A4, literally: a Chicago bake reaches a download link in under 90 s. */

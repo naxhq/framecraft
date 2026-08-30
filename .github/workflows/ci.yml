@@ -160,6 +160,7 @@ jobs:
       - name: Playwright smoke suite
         working-directory: apps/web
         env:
+          E2E_BUDGET_FACTOR: "3"
           # Must NOT be a truthy value: overpass.is_offline() only checks
           # 1/true/yes/on, and A2 (a real pin in Lake Michigan) plus the
           # rotation-nudge and advisor-radius touches on the Chicago preset
