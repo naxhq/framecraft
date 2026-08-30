@@ -12,6 +12,7 @@ which is exactly how ``POST /scene`` builds it (fixtures for the presets).
 """
 from __future__ import annotations
 
+import datetime as _datetime
 import secrets
 import shutil
 import time
@@ -26,8 +27,9 @@ import trimesh
 from app import export
 from app.contracts import BakeFiles, BakeResult, BakeStats, PrintParams, SceneGraph, SceneRequest
 from app.export import mf3, stl
-from app.geom import assemble, thicken, transform as T
+from app.geom import assemble, lettering, thicken, tokens, transform as T
 from app.validate import checks as validators
+from app.validate import container
 
 __all__ = [
     "REPO_ROOT",
@@ -77,6 +79,39 @@ class ModelTooTallError(BakeError):
     """The parameters ask for a model over 04's 60 mm Z ceiling."""
 
 
+class UndersideTooThinError(BakeError):
+    """The hanger or the underside mark would break through the base plate."""
+
+
+def token_context(
+    scene: SceneGraph,
+    params: PrintParams,
+    date: str | None = None,
+) -> tokens.TokenContext:
+    """The context every ``{token}`` in an engraving expands against.
+
+    Everything comes from the SCENE and the params: the centre and the radius
+    are the ones the scene was actually built with, which is what a legend on
+    the finished object has to describe.  (It used to take the ``SceneRequest``
+    too and never read it - v2-03 audit, finding 13.)
+
+    ``date`` defaults to TODAY'S UTC date in ISO form, which is what a frame
+    legend means by "the date"; it is an argument so a test - and a reproducible
+    re-bake from a sidecar - can pin it instead of depending on the day the
+    command runs.
+    """
+    radius_m = T.radius_m_from_bounds(scene.bounds)
+    return tokens.TokenContext(
+        lat=float(scene.center.lat),
+        lon=float(scene.center.lon),
+        scale_mm_per_m=T.scale_mm_per_m(params, radius_m),
+        radius_m=radius_m,
+        date=date or _datetime.datetime.now(_datetime.timezone.utc).date().isoformat(),
+        buildings=int(scene.stats.building_count),
+        city=str(getattr(params, "city_label", "") or ""),
+    )
+
+
 def predicted_top_mm(scene: SceneGraph, params: PrintParams) -> float:
     """Highest Z the finished model can reach, in mm, without building it.
 
@@ -90,6 +125,39 @@ def predicted_top_mm(scene: SceneGraph, params: PrintParams) -> float:
     makes a solid taller.
     """
     return T.predicted_top_mm(scene, params, T.radius_m_from_bounds(scene.bounds))
+
+
+def _wants_lettering(params: PrintParams) -> bool:
+    """True when this parameter set asks for any text or ornament at all.
+
+    A v1 parameter set asks for none, so the whole lettering path - including
+    loading a font - is skipped and the model is bit-identical to v1's.
+    """
+    if getattr(params, "engravings", None):
+        return True
+    if bool(getattr(getattr(params, "north_arrow", None), "enabled", False)):
+        return True
+    if bool(getattr(getattr(params, "scale_bar", None), "enabled", False)):
+        return True
+    if bool(getattr(getattr(params, "underside_mark", None), "enabled", False)):
+        return True
+    return str(getattr(params, "hanger", None) or "none") != "none"
+
+
+def _detail_advice(scene: SceneGraph, params: PrintParams) -> str | None:
+    """The detail advisor's sentence, but only when the band is ``poor``.
+
+    04's Stage 1 does the right thing with a crop that is too wide for the plate
+    - it widens and merges - and the model still prints; what it cannot do is
+    tell the user that the city they are looking at has lost its small
+    buildings.  That is this line's job, and it is the same sentence, from the
+    same shared function, that the editor's HUD shows.
+    """
+    radius_m = T.radius_m_from_bounds(scene.bounds)
+    report = T.detail_report(scene, params, radius_m)
+    if report.band != "poor":
+        return None
+    return T.detail_recommendation(scene, params, radius_m)
 
 
 @dataclass
@@ -161,6 +229,7 @@ def run_pipeline(
     file_url_prefix: str = "/files",
     debug_root: Path | str = DEBUG_DIR,
     height_guard: bool = True,
+    date: str | None = None,
 ) -> BakeOutput:
     """Run 04 end to end and write the artifacts.  Never raises for a *bad*
     model - a failing validator comes back as ``status='failed'`` with the
@@ -198,6 +267,21 @@ def run_pipeline(
                 f"choose a smaller plate"
             )
 
+    # The underside pockets are refused on arithmetic alone, before anything is
+    # built: a keyhole 2 mm deep in a 3 mm plate that also carries a 0.6 mm road
+    # engraving leaves 0.4 mm of picture over the screw, and printing a hole
+    # through the plate is not something to warn about and ship.
+    letters = None
+    if _wants_lettering(print_params):
+        ctx = token_context(scene, print_params, date=date)
+        try:
+            letters = lettering.build(
+                print_params, ctx, rotation_deg=float(scene_request.rotation_deg)
+            )
+        except lettering.BaseTooThinError as exc:
+            raise UndersideTooThinError(str(exc)) from exc
+        warnings.extend(letters.warnings)
+
     tick("scene")
 
     # ---- Stage 1 --------------------------------------------------------
@@ -207,17 +291,39 @@ def run_pipeline(
     warnings.extend(repaired.warnings)
     tick("repair")
 
+    # The detail advisor's one-liner, when this radius and plate are losing the
+    # city (04 stage 1 is doing its job; the user should still be told).
+    advice = _detail_advice(scene, print_params)
+    if advice:
+        warnings.append(advice)
+
     # ---- Stage 2 --------------------------------------------------------
     t0 = time.perf_counter()
-    assembly = assemble.assemble(repaired, print_params, progress=lambda s, _v: tick(s))
+    assembly = assemble.assemble(
+        repaired, print_params, progress=lambda s, _v: tick(s), lettering=letters
+    )
     timings["assemble"] = time.perf_counter() - t0
 
     # ---- to trimesh -----------------------------------------------------
     t0 = time.perf_counter()
     mesh = manifold_to_trimesh(assembly.solid)
+    #: What the colour parts partition, before any decimation: the parts are cut
+    #: from these exact solids, so this is what ``parts_union`` compares against.
+    assembled = mesh
     mesh, decimation = validators.enforce_triangle_budget(mesh)
     if decimation:
         warnings.append(decimation)
+        if assembly.color_parts:
+            warnings.append(
+                "the .3mf parts are NOT decimated: decimating them independently "
+                "would break the partition, so only the .stl is reduced"
+            )
+    part_meshes = [(p.name, manifold_to_trimesh(p.solid)) for p in assembly.color_parts]
+    parts_union_mesh = (
+        manifold_to_trimesh(assembly.parts_union)
+        if assembly.parts_union is not None
+        else None
+    )
     timings["convert"] = time.perf_counter() - t0
 
     # ---- Stage 3 --------------------------------------------------------
@@ -229,8 +335,35 @@ def run_pipeline(
         title=f"FrameCraft {stem}",
         scene_request=request_json,
         print_params=params_json,
+        # Glyph outlines in the model are third-party work under the OFL, and
+        # the package has to say so.  Only when text was actually cut: a plate
+        # with no lettering carries no letterforms (v2-03 audit, finding 5).
+        extra_license=(
+            export.FONT_LICENSE_LINE
+            if letters is not None and letters.measures
+            else None
+        ),
     )
-    mf3_path = mf3.write_3mf(out_dir / f"{stem}.3mf", mesh.vertices, mesh.faces, metadata)
+    if assembly.color_parts:
+        # One 3MF object per colour, assembled into a single build item.  The
+        # STL is the single welded body in both modes (it has no notion of
+        # parts), so it is always written from the assembled solid.
+        by_name = dict(part_meshes)
+        mf3_path = mf3.write_3mf_parts(
+            out_dir / f"{stem}.3mf",
+            [
+                mf3.PartMesh(
+                    part.name,
+                    part.color,
+                    by_name[part.name].vertices,
+                    by_name[part.name].faces,
+                )
+                for part in assembly.color_parts
+            ],
+            metadata,
+        )
+    else:
+        mf3_path = mf3.write_3mf(out_dir / f"{stem}.3mf", mesh.vertices, mesh.faces, metadata)
     stl_path = stl.write_stl(out_dir / f"{stem}.stl", mesh)
     timings["export"] = time.perf_counter() - t0
     tick("export")
@@ -238,6 +371,37 @@ def run_pipeline(
     # ---- Stage 4 --------------------------------------------------------
     t0 = time.perf_counter()
     report = validators.validate(mesh, print_params, manifold=assembly.solid)
+    # 04 stage 3 is as much a part of the gate as stage 4 is, and the job that
+    # WROTE the package is the only one that can refuse to ship it: `POST /bake`
+    # marks a download done on `report.passed` alone, so a container row that
+    # only ever ran under `make validate` was a row the product path never saw
+    # (v2-02 audit, finding 5).  The rows are the same functions the CLI calls,
+    # on the file that was just written.
+    if assembly.color_parts:
+        container_rows, components = container.parts_checks(mf3_path, part_meshes)
+        report.checks.extend(
+            validators.validate_parts(
+                part_meshes,
+                union=parts_union_mesh,
+                reference=assembled,
+                # The component count comes from the FILE, not from the assembly:
+                # that is what makes `bodies` a statement about what shipped.
+                components=components,
+                # The solids themselves, not their meshes: the symmetric
+                # difference is a boolean, and the bake still holds both.
+                union_solid=assembly.parts_union,
+                reference_solid=assembly.solid,
+            )
+        )
+        report.checks.append(
+            container.color_mode_check("parts", str(print_params.color_mode))
+        )
+        report.checks.extend(container_rows)
+    else:
+        # One connected solid: the parts path has its own `bodies` row and the
+        # single path had none inside the bake at all.
+        report.checks.append(validators.single_body_check(mesh, assembly.solid))
+        report.checks.extend(container.structure_checks(mf3_path, mesh))
     timings["validate"] = time.perf_counter() - t0
     tick("validate")
 

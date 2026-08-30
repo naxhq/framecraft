@@ -49,7 +49,8 @@ from app.geom import transform as T
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
-ARTIFACTS = REPO_ROOT / "artifacts"
+#: Nothing here writes to ``artifacts/`` any more: every bake this suite judges
+#: is one it made itself, under ``tmp_path`` (v2-07 audit, finding 1).
 
 #: Small radius: the whole point is a fast, deterministic solid, not a city.
 SYNTH_RADIUS_M = 250.0
@@ -262,7 +263,14 @@ def test_cli_fails_when_a_triangle_is_deleted(baked, tmp_path, capsys):
     assert "ALL CHECKS PASS" not in out
     assert verdicts(out)["watertight"] == "FAIL"
     assert verdicts(out)["manifold"] == "FAIL"
-    assert "watertight" in out.splitlines()[-1]
+    # The summary line names the failing checks (the per-row "why" lines that
+    # follow it are printed for every failure and are asserted below).
+    summary = [line for line in out.splitlines() if line.startswith("FAILED:")]
+    assert summary and "watertight" in summary[0]
+    assert any(
+        line.strip().startswith("watertight:") and "is_watertight=False" in line
+        for line in out.splitlines()
+    ), out
 
 
 def test_cli_fails_when_the_model_is_scaled_past_the_plate(baked, tmp_path, capsys):
@@ -500,15 +508,81 @@ def test_cli_exit_code_is_zero_for_a_good_file_and_one_for_a_bad_one(baked, tmp_
     assert "ALL CHECKS PASS" not in failed.stdout
 
 
-@pytest.mark.skipif(
-    not (ARTIFACTS / "chicago.3mf").is_file(),
-    reason="artifacts/chicago.3mf is not baked (run: make bake-fixture)",
-)
-def test_cli_passes_on_the_chicago_fixture_bake(capsys):
-    """G3's own command, kept green: `make validate artifacts/chicago.3mf`."""
-    code, out = run_cli(capsys, "validate", str(ARTIFACTS / "chicago.3mf"))
+@pytest.fixture(scope="session")
+def chicago_fixture_bake(tmp_path_factory) -> Path:
+    """A FRESH Chicago bake at the contract defaults, in this session's tmp dir.
+
+    Two things this must not be, and both have been tried:
+
+    * a ``skipif`` on ``artifacts/chicago.3mf`` existing - that deleted G3's
+      assertion from the suite on a clean clone, the machine where it is worth
+      the most, and the gate accepts no skipped test (V2-P7);
+    * a bake ``if not target.is_file()`` into ``artifacts/`` - that asserted
+      about whatever bake happened to be lying there.  ``make bake-fixture
+      PLATE=256`` used to write the same ``chicago.3mf`` stem at a NON-default
+      plate, its sidecar said ``plate 256``, and the validator dutifully judged
+      it against 256 and passed: "the default Chicago bake validates" measured
+      about a file this tree did not make (v2-07 audit, finding 1).  Any
+      surviving good artifact masked a pipeline regression.
+
+    So: bake unconditionally, at ``PrintParams()`` defaults, into
+    ``tmp_path_factory`` and never into ``artifacts/``.  The call is what ``make
+    bake-fixture`` with no variables runs, offline from the committed Chicago
+    Overpass fixture.  Session-scoped because it costs a real bake.
+    """
+    target = tmp_path_factory.mktemp("chicago-fixture-bake") / "chicago.3mf"
+    code = cli.main(["bake", "--preset", "chicago-loop", "--out", str(target)])
+    assert code == 0, "make bake-fixture (chicago-loop) failed"
+    assert target.is_file()
+    return target
+
+
+def test_cli_passes_on_the_chicago_fixture_bake(chicago_fixture_bake, capsys):
+    """G3's own command, kept green, on the bake this session just made."""
+    code, out = run_cli(capsys, "validate", str(chicago_fixture_bake))
     assert code == 0, out
     assert "ALL CHECKS PASS" in out
+    # The sidecar beside it is the one this bake wrote, so the table is judged
+    # against the DEFAULT plate - the thing the old fixture could not promise.
+    assert f"plate {PrintParams().plate_mm:g} mm" in out
+
+
+def test_cli_fails_lettering_when_the_sidecar_asks_for_text_the_mesh_lacks(
+    baked, tmp_path, capsys
+):
+    """v2-07 audit finding 2, through the shipped command.
+
+    A mesh baked with NO text at all, judged against a sidecar that requests an
+    engraving and the north arrow.  Every stroke measurement is 0.000 mm, no
+    stroke is too thin because there is no stroke, and the row used to PASS on
+    exactly that - which is what ``make gate-v2``'s ``lettering +PASS`` grep was
+    accepting.  It must FAIL, and it must say how many pieces went missing.
+    """
+    target = tmp_path / "notext.3mf"
+    shutil.copyfile(baked, target)
+    payload = json.loads(baked.with_suffix(".json").read_text(encoding="utf-8"))
+    payload["print_params"]["engravings"] = [
+        {"edge": "top", "text": "CHICAGO", "size_mm": 6.0}
+    ]
+    payload["print_params"]["north_arrow"] = {
+        "enabled": True,
+        "corner": "ne",
+        "size_mm": 4.0,
+    }
+    target.with_suffix(".json").write_text(json.dumps(payload), encoding="utf-8")
+
+    code, out = run_cli(capsys, "validate", str(target))
+    assert code == 1, out
+    assert verdicts(out)["lettering"] == "FAIL"
+    assert "measured 0 strokes" in out
+    assert "the north arrow" in out and "engraving 1 (top)" in out
+    assert "ALL CHECKS PASS" not in out
+
+    # Non-vacuity: the untouched sidecar asks for no text, so there is no
+    # `lettering` row at all and the same mesh passes.
+    clean = _subprocess_validate(baked)
+    assert clean.returncode == 0, clean.stdout + clean.stderr
+    assert "lettering" not in verdicts(clean.stdout)
 
 
 # --------------------------------------------------------------------------
@@ -683,3 +757,417 @@ def test_cli_subprocess_prints_no_traceback_for_a_broken_sidecar(baked, tmp_path
     assert "ValidationError" not in combined
     assert "sidecar params invalid" in done.stdout
     assert "FAILED: sidecar_params" in done.stdout
+
+
+# --------------------------------------------------------------------------
+# color_mode="parts": the multi-material package (PrintParams v2)
+# --------------------------------------------------------------------------
+
+#: The rows a parts file adds on top of STAGE4_CHECKS.  ``bodies`` is redefined
+#: for this shape (one mesh object per part, no debris shell, and the assembled
+#: union is still one connected solid) rather than dropped.
+PARTS_CHECKS = (
+    "bodies",
+    "part_meshes",
+    "3mf_color_mode",
+    "3mf_parts",
+    "3mf_unit",
+    "3mf_objects",
+    "3mf_build_items",
+    "3mf_components",
+    "3mf_materials",
+    "3mf_attribution",
+    "3mf_counts",
+)
+
+
+def _parts_scene() -> SceneGraph:
+    """The single-colour scene plus a pond and a park, so the parts file has an
+    inlay (water), an additive layer (green) and an engraved road."""
+    from app.contracts import AreaFeature, Road, Tree
+
+    base = _scene()
+    return SceneGraph(
+        bounds=base.bounds,
+        center=base.center,
+        buildings=base.buildings,
+        roads=[Road(id="r1", path=[(-200.0, -30.0), (200.0, -30.0)], width_m=12.0, **{"class": "primary"})],
+        water=[AreaFeature(ring=_square(120.0, -120.0, 90.0), holes=[])],
+        green=[AreaFeature(ring=_square(-150.0, 120.0, 70.0), holes=[])],
+        trees=[Tree(x=0.0, y=170.0, radius_m=12.0)],
+        stats=base.stats,
+    )
+
+
+@pytest.fixture(scope="module")
+def baked_parts(tmp_path_factory) -> Path:
+    """A real parts bake: seven coloured objects in one 3MF, plus its sidecar."""
+    out_dir = tmp_path_factory.mktemp("validate-cli-parts")
+    request = SceneRequest(
+        lat=41.8827, lon=-87.6233, radius_m=SYNTH_RADIUS_M, rotation_deg=0.0, preset_id=None
+    )
+    output = bake_pipeline.run_pipeline(
+        _parts_scene(),
+        request,
+        PrintParams(color_mode="parts"),
+        job_id="qagateparts",
+        out_dir=out_dir,
+        stem="qagateparts",
+    )
+    assert output.result.status == "done", output.result.error
+    return out_dir / "qagateparts.3mf"
+
+
+def rewrite_sidecar(path: Path, **updates) -> None:
+    """Patch the ``print_params`` block of a bake sidecar in place."""
+    sidecar = path.with_suffix(".json")
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    payload["print_params"].update(updates)
+    sidecar.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def copy_bake(source: Path, target_dir: Path, stem: str) -> Path:
+    """Copy a bake's .3mf and its sidecar so a corruption is local to one test."""
+    target = target_dir / f"{stem}.3mf"
+    shutil.copy(source, target)
+    shutil.copy(source.with_suffix(".json"), target.with_suffix(".json"))
+    return target
+
+
+def test_cli_passes_on_a_parts_3mf(baked_parts, capsys):
+    code, out = run_cli(capsys, "validate", str(baked_parts))
+    assert code == 0, out
+    assert "ALL CHECKS PASS" in out
+    assert all(verdict == "PASS" for verdict in verdicts(out).values()), out
+    # the header names the parts, so a human sees what was judged
+    assert "parts          7:" in out
+    assert "base, frame, buildings, roads, water, green, trees" in out
+
+
+def test_cli_parts_table_lists_every_stage4_check_and_the_new_rows(baked_parts, capsys):
+    _code, out = run_cli(capsys, "validate", str(baked_parts))
+    table = rows(out)
+    for name in STAGE4_CHECKS + PARTS_CHECKS:
+        assert name in table, f"{name} missing from the parts table:\n{out}"
+        verdict, value_and_threshold, _ = table[name]
+        assert verdict in ("PASS", "FAIL")
+        assert value_and_threshold, f"{name} printed no value/threshold"
+    # ... and the union, not the concatenation, is what was judged
+    assert "manifold3d union of the parts" in out
+
+
+def test_cli_parts_rows_are_not_vacuous(baked_parts, capsys):
+    """The new rows must report the real shape of this file, not constants."""
+    _code, out = run_cli(capsys, "validate", str(baked_parts))
+    table = rows(out)
+    assert "7 parts" in table["bodies"][1]
+    assert "7 entries" in table["3mf_materials"][1]
+    assert "7 components" in table["3mf_components"][1]
+    assert "7 mesh + 1 assembly" in table["3mf_objects"][1]
+    assert "#2F7FC1FF" in table["3mf_materials"][1]  # the water filament
+
+
+def test_cli_fails_when_the_sidecar_disagrees_with_the_file(baked_parts, tmp_path, capsys):
+    copy = copy_bake(baked_parts, tmp_path, "disagree")
+    rewrite_sidecar(copy, color_mode="single")
+    code, out = run_cli(capsys, "validate", str(copy))
+    assert code == 1
+    assert verdicts(out)["3mf_color_mode"] == "FAIL"
+    assert "one of the two is stale" in out
+
+
+def test_cli_fails_a_single_file_whose_sidecar_claims_parts(baked, tmp_path, capsys):
+    copy = copy_bake(baked, tmp_path, "claims-parts")
+    rewrite_sidecar(copy, color_mode="parts")
+    code, out = run_cli(capsys, "validate", str(copy))
+    assert code == 1
+    assert verdicts(out)["3mf_color_mode"] == "FAIL"
+
+
+def test_cli_parts_mode_is_derived_from_the_file_even_without_a_sidecar(
+    baked_parts, tmp_path, capsys
+):
+    target = tmp_path / "nosidecar.3mf"
+    shutil.copy(baked_parts, target)
+    code, out = run_cli(capsys, "validate", str(target), "--plate-mm", "180")
+    assert "parts          7:" in out
+    assert verdicts(out)["3mf_color_mode"] == "PASS"
+    assert "file parts" in rows(out)["3mf_color_mode"][1]
+    assert code == 0, out
+
+
+def test_cli_fails_a_parts_file_whose_displaycolor_is_not_rgba8(
+    baked_parts, tmp_path, capsys
+):
+    copy = copy_bake(baked_parts, tmp_path, "badcolor")
+    rewrite_model_xml(
+        copy, copy, lambda xml: xml.replace('displaycolor="#2F7FC1FF"', 'displaycolor="#2F7FC1"')
+    )
+    code, out = run_cli(capsys, "validate", str(copy))
+    assert code == 1
+    assert verdicts(out)["3mf_materials"] == "FAIL"
+    assert "#RRGGBBAA" in out
+
+
+def test_cli_fails_a_parts_file_with_a_pindex_out_of_range(baked_parts, tmp_path, capsys):
+    copy = copy_bake(baked_parts, tmp_path, "badindex")
+    rewrite_model_xml(copy, copy, lambda xml: xml.replace('pindex="0"', 'pindex="99"'))
+    code, out = run_cli(capsys, "validate", str(copy))
+    assert code == 1
+    assert verdicts(out)["3mf_materials"] == "FAIL"
+    assert "out of range" in out
+
+
+def test_cli_fails_a_parts_file_with_a_missing_material_entry(
+    baked_parts, tmp_path, capsys
+):
+    copy = copy_bake(baked_parts, tmp_path, "onefewer")
+    rewrite_model_xml(
+        copy, copy, lambda xml: xml.replace('<base name="trees" displaycolor="#5A9E4BFF"/>', "")
+    )
+    code, out = run_cli(capsys, "validate", str(copy))
+    assert code == 1
+    assert verdicts(out)["3mf_materials"] == "FAIL"
+    assert "material entries for 7 parts" in out
+
+
+def test_cli_fails_a_parts_file_with_a_dangling_component(baked_parts, tmp_path, capsys):
+    copy = copy_bake(baked_parts, tmp_path, "dangling")
+    rewrite_model_xml(
+        copy, copy, lambda xml: xml.replace('<component objectid="2"/>', '<component objectid="404"/>')
+    )
+    code, out = run_cli(capsys, "validate", str(copy))
+    assert code == 1
+    assert verdicts(out)["3mf_components"] == "FAIL"
+    assert "unknown object" in out
+
+
+def test_cli_fails_a_parts_file_with_two_build_items(baked_parts, tmp_path, capsys):
+    copy = copy_bake(baked_parts, tmp_path, "twobuilds")
+    rewrite_model_xml(
+        copy,
+        copy,
+        lambda xml: xml.replace("</build>", '<item objectid="2"/></build>'),
+    )
+    code, out = run_cli(capsys, "validate", str(copy))
+    assert code == 1
+    assert verdicts(out)["3mf_build_items"] == "FAIL"
+
+
+def test_cli_fails_a_parts_file_with_a_floating_part(baked_parts, tmp_path, capsys):
+    """04's single-body rule, in its parts form: the assembled union must still
+    be one connected solid, so a part hovering above the plate is a failure."""
+    import numpy as np
+
+    copy = copy_bake(baked_parts, tmp_path, "floating")
+    root, _ns = None, None
+    with zipfile.ZipFile(copy) as zin:
+        parts = {name: zin.read(name) for name in zin.namelist()}
+    model = parts[mf3.MODEL_PART].decode("utf-8")
+    cube = trimesh.creation.box(extents=(5.0, 5.0, 5.0))
+    cube.apply_translation([0.0, 0.0, 40.0])
+    extra_id = 99
+    mesh_xml = (
+        f'<object id="{extra_id}" name="floater" type="model" pid="1" pindex="0"><mesh>'
+        + "<vertices>"
+        + "".join(
+            '<vertex x="%.12f" y="%.12f" z="%.12f"/>' % tuple(v) for v in cube.vertices
+        )
+        + "</vertices><triangles>"
+        + "".join('<triangle v1="%d" v2="%d" v3="%d"/>' % tuple(f) for f in cube.faces)
+        + "</triangles></mesh></object>"
+    )
+    model = model.replace("</resources>", mesh_xml + "</resources>")
+    model = model.replace(
+        "</components>", f'<component objectid="{extra_id}"/></components>'
+    )
+    # ... with its own material entry, so ONLY the bodies row can fail.
+    model = model.replace(
+        "</basematerials>", '<base name="floater" displaycolor="#FF00FFFF"/></basematerials>'
+    )
+    parts[mf3.MODEL_PART] = model.encode("utf-8")
+    with zipfile.ZipFile(copy, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+        for name, payload in parts.items():
+            zout.writestr(name, payload)
+
+    code, out = run_cli(capsys, "validate", str(copy))
+    assert code == 1
+    assert verdicts(out)["bodies"] == "FAIL"
+    assert "disconnected bodies" in out
+    del np, root
+
+
+def test_cli_exit_code_for_a_parts_file_through_a_real_subprocess(baked_parts):
+    result = subprocess.run(
+        [sys.executable, "-m", "app.cli", "validate", str(baked_parts)],
+        cwd=SERVICE_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ALL CHECKS PASS" in result.stdout
+    assert "Traceback" not in result.stderr
+
+
+# --------------------------------------------------------------------------
+# v2-02 audit regressions: the component graph a slicer actually builds
+# --------------------------------------------------------------------------
+
+
+def test_cli_fails_a_parts_file_that_names_one_part_twice_and_another_never(
+    baked_parts, tmp_path, capsys
+):
+    """The audit's finding 2: a count is not a check.
+
+    ``<component objectid="2"/><component objectid="2"/>`` with one mesh object
+    unreferenced is a file a slicer builds with two of one part and none of the
+    other, and it used to pass every row - the component count still matched the
+    part count.
+    """
+    copy = copy_bake(baked_parts, tmp_path, "duplicate-component")
+    rewrite_model_xml(
+        copy,
+        copy,
+        lambda xml: xml.replace(
+            '<component objectid="3"/>', '<component objectid="2"/>', 1
+        ),
+    )
+    code, out = run_cli(capsys, "validate", str(copy))
+    assert code == 1
+    assert verdicts(out)["3mf_components"] == "FAIL"
+    assert "referenced more than once" in out
+    assert "no component references" in out
+    # ... and the mesh-side row fails too, because the count it compares against
+    # is now the number of DISTINCT parts the assembly really builds.
+    assert verdicts(out)["bodies"] == "FAIL"
+
+
+def test_cli_judges_a_displaced_part_where_the_build_item_puts_it(
+    baked_parts, tmp_path, capsys
+):
+    """The audit's finding 3, geometric half.
+
+    trimesh keeps a component transform in ``scene.graph`` and leaves
+    ``scene.geometry`` local, so a part translated 25 mm sideways used to be
+    unioned in its own coordinates and read as one solid on the bed.  The parts
+    are now PLACED first, so the rows that judge the assembled object see the
+    object the slicer would build: two bodies, a bigger footprint than the plate,
+    and a union that is not the single-mode solid.
+    """
+    copy = copy_bake(baked_parts, tmp_path, "displaced-part")
+    rewrite_model_xml(
+        copy,
+        copy,
+        lambda xml: xml.replace(
+            '<component objectid="4"/>',
+            '<component objectid="4" transform="1 0 0 0 1 0 0 0 1 200 0 0"/>',
+            1,
+        ),
+    )
+    code, out = run_cli(capsys, "validate", str(copy))
+    assert code == 1
+    table = verdicts(out)
+    assert table["bodies"] == "FAIL", out
+    assert table["bounding_box"] == "FAIL", out
+    # ... and the header still names the parts in the file's own order
+    assert "base, frame, buildings, roads, water, green, trees" in out
+
+
+def test_cli_fails_a_parts_file_whose_component_carries_a_transform(
+    baked_parts, tmp_path, capsys
+):
+    """The audit's finding 3: a displaced part validated as one solid.
+
+    3MF lets a ``<component>`` carry a transform; FrameCraft's writer never
+    emits one, and this validator judges the parts in their own coordinates, so
+    a part translated 25 mm sideways used to read as a single body sitting on
+    the bed.  A file that carries one is refused rather than mis-measured.
+    """
+    copy = copy_bake(baked_parts, tmp_path, "component-transform")
+    rewrite_model_xml(
+        copy,
+        copy,
+        lambda xml: xml.replace(
+            '<component objectid="4"/>',
+            '<component objectid="4" transform="1 0 0 0 1 0 0 0 1 25 0 0"/>',
+            1,
+        ),
+    )
+    code, out = run_cli(capsys, "validate", str(copy))
+    assert code == 1
+    assert verdicts(out)["3mf_components"] == "FAIL"
+    assert "transform" in out and "25" in out
+    # the row names the construct; the geometry rows above judge the placement
+
+
+def test_cli_fails_a_parts_file_whose_build_item_carries_a_transform(
+    baked_parts, tmp_path, capsys
+):
+    """Same reasoning one level up: a build-item transform moves the whole
+    object off the bed, and ``sits_at_zero`` is measured on the geometry as
+    authored."""
+    copy = copy_bake(baked_parts, tmp_path, "item-transform")
+    rewrite_model_xml(
+        copy,
+        copy,
+        lambda xml: xml.replace(
+            "<item objectid=", '<item transform="1 0 0 0 1 0 0 0 1 0 0 12" objectid=', 1
+        ),
+    )
+    code, out = run_cli(capsys, "validate", str(copy))
+    assert code == 1
+    assert verdicts(out)["3mf_components"] == "FAIL"
+    assert "build item carries transform" in out
+
+
+def test_cli_accepts_an_explicit_identity_transform(baked_parts, tmp_path, capsys):
+    """An identity matrix is not a displacement, and refusing one would fail a
+    file that is exactly what FrameCraft writes."""
+    copy = copy_bake(baked_parts, tmp_path, "identity-transform")
+    rewrite_model_xml(
+        copy,
+        copy,
+        lambda xml: xml.replace(
+            '<component objectid="4"/>',
+            '<component objectid="4" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>',
+            1,
+        ),
+    )
+    code, out = run_cli(capsys, "validate", str(copy))
+    assert code == 0, out
+    assert verdicts(out)["3mf_components"] == "PASS"
+
+
+def test_container_transform_parsing_is_shared_and_strict():
+    """The helper both rows use, pinned on its own."""
+    from app.validate import container
+
+    assert container.parse_transform(None) is None
+    assert container.is_identity(None) is True
+    assert container.is_identity(container.parse_transform("1 0 0 0 1 0 0 0 1 0 0 0"))
+    assert not container.is_identity(container.parse_transform("1 0 0 0 1 0 0 0 1 25 0 0"))
+    assert not container.is_identity(container.parse_transform("2 0 0 0 1 0 0 0 1 0 0 0"))
+    # a malformed or short matrix is NOT quietly treated as the identity
+    assert not container.is_identity(container.parse_transform("1 0 0"))
+    assert not container.is_identity(container.parse_transform("a b c d e f g h i j k l"))
+
+
+def test_cli_and_bake_run_the_same_container_functions():
+    """Finding 5's remedy: one implementation, two callers.
+
+    ``app/cli.py`` keeps its private names for readability, but they delegate to
+    ``app/validate/container.py``, which is what the bake calls on the file it
+    has just written.
+    """
+    from app import bake as bake_module
+    from app import cli as cli_module
+    from app.validate import container
+
+    assert cli_module._threemf_parts_checks.__module__ == "app.cli"
+    assert container.parts_checks is not None
+    assert getattr(bake_module, "container") is container
+    # the CLI's aliases really are thin: same rows, same order, on one file
+    import inspect
+
+    source = inspect.getsource(cli_module._threemf_parts_checks)
+    assert "container.parts_checks(path, parts)" in source

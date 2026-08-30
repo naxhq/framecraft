@@ -17,8 +17,10 @@ import {
   initialBakeState,
   reduceBake,
 } from "@/lib/bake";
-import { DEFAULT_PRINT_PARAMS } from "@/lib/contracts";
+import { DEFAULT_PRINT_PARAMS, defaultPrintParams } from "@/lib/contracts";
 import type { BakeResult, PrintParams, SceneGraph, SceneRequest } from "@/lib/contracts";
+import { HERO_CAP } from "@/lib/heroes";
+import { encodeShare } from "@/lib/share";
 import {
   activePresetId,
   INITIAL_LOCATION,
@@ -50,8 +52,15 @@ const fixtureScene = (): SceneGraph => ({
   stats: { building_count: 40, coverage: "good", height_tag_ratio: 0.5 },
 });
 
-/** Every PrintParams key with a value that differs from the default. */
+/**
+ * Every PrintParams key with a value that differs from the default.
+ *
+ * `schema_version` is the one exception: its enum has a single member, so the
+ * only legal value IS the default. It is listed anyway to keep the coverage
+ * assertion below exhaustive.
+ */
 const PARAM_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintParams]]> = [
+  ["schema_version", 2],
   ["plate_mm", 256],
   ["base_thickness_mm", 8],
   ["nozzle_mm", 0.6],
@@ -63,6 +72,31 @@ const PARAM_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintParams]]> = 
   ["trees", false],
   ["water", false],
   ["frame", false],
+  // schema_version 2 additions. None of them may reach the network either.
+  ["city_label", "Chicago"],
+  ["color_mode", "parts"],
+  [
+    "part_colors",
+    {
+      base: "#111111",
+      frame: "#222222",
+      buildings: "#333333",
+      roads: "#444444",
+      water: "#555555",
+      green: "#666666",
+      trees: "#777777",
+    },
+  ],
+  ["engravings", [{ edge: "bottom", text: "{city}" }]],
+  ["north_arrow", { enabled: true, corner: "sw", size_mm: 6 }],
+  [
+    "scale_bar",
+    { enabled: true, edge: "top", length_mode: "fixed", length_m: 1000 },
+  ],
+  ["hanger", "keyhole"],
+  ["underside_mark", { enabled: true, template: "{coords}" }],
+  ["hero_building_ids", ["w1"]],
+  ["hero_mode", "both"],
 ];
 
 let fetchSpy: ReturnType<typeof vi.fn>;
@@ -70,7 +104,10 @@ let fetchSpy: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   useEditorStore.setState({
     location: { ...INITIAL_LOCATION },
-    params: { ...DEFAULT_PRINT_PARAMS },
+    // A fresh deep copy: DEFAULT_PRINT_PARAMS is deep-frozen, so a shallow
+    // spread would put frozen nested objects into live state and the first
+    // `setNested` would throw.
+    params: defaultPrintParams(),
     scene: { status: "idle", graph: null, message: null, request: null, stale: false },
     bake: { ...initialBakeState },
     presets: { status: "idle", items: [], message: null },
@@ -128,6 +165,26 @@ describe("print params", () => {
   it("resets to the contract defaults", () => {
     useEditorStore.getState().setParam("plate_mm", 256);
     useEditorStore.getState().resetParams();
+    expect(useEditorStore.getState().params).toEqual(DEFAULT_PRINT_PARAMS);
+  });
+
+  it("starts on the 0.4 mm nozzle and never picks one up from elsewhere", () => {
+    // A session that silently starts at 0.2 mm halves every minimum-feature
+    // threshold and is invisible in the HUD, which only ever shows the derived
+    // metres (DECISIONS [V2-P1]). The nozzle has exactly one source: the
+    // frozen contract default, carried into the store and nothing else.
+    expect(DEFAULT_PRINT_PARAMS.nozzle_mm).toBe(0.4);
+    expect(useEditorStore.getState().params.nozzle_mm).toBe(0.4);
+    expect(useEditorStore.getState().params).toEqual(DEFAULT_PRINT_PARAMS);
+    // Choosing a preset moves the pin, never the printer settings.
+    useEditorStore.getState().applyPreset({
+      lat: 40.7128,
+      lon: -74.006,
+      radius_m: 1980,
+      rotation_deg: 0,
+      preset_id: "nyc-midtown",
+    });
+    expect(useEditorStore.getState().params.nozzle_mm).toBe(0.4);
     expect(useEditorStore.getState().params).toEqual(DEFAULT_PRINT_PARAMS);
   });
 });
@@ -476,5 +533,304 @@ describe("bake gating", () => {
     expect(body.scene_request).toEqual(locationToRequest(INITIAL_LOCATION));
     expect(body.print_params).toEqual(DEFAULT_PRINT_PARAMS);
     expect(useEditorStore.getState().bake.jobId).toBe("job-1");
+  });
+});
+
+// ==========================================================================
+// Hero buildings and nested parameter writes ([V2-P4])
+// ==========================================================================
+
+describe("hero buildings", () => {
+  it("toggles an id on and off, through setParam and never the network", async () => {
+    const store = useEditorStore.getState();
+    store.toggleHero("w7");
+    expect(useEditorStore.getState().params.hero_building_ids).toEqual(["w7"]);
+    store.toggleHero("w9");
+    expect(useEditorStore.getState().params.hero_building_ids).toEqual(["w7", "w9"]);
+    store.toggleHero("w7");
+    expect(useEditorStore.getState().params.hero_building_ids).toEqual(["w9"]);
+    await Promise.resolve();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses the thirteenth and raises the cap flag", () => {
+    const store = useEditorStore.getState();
+    for (let i = 0; i < HERO_CAP; i += 1) store.toggleHero(`w${i}`);
+    expect(useEditorStore.getState().params.hero_building_ids).toHaveLength(HERO_CAP);
+    expect(useEditorStore.getState().heroCapHit).toBe(false);
+
+    store.toggleHero("one-more");
+    expect(useEditorStore.getState().heroCapHit).toBe(true);
+    expect(useEditorStore.getState().params.hero_building_ids).toHaveLength(HERO_CAP);
+    expect(useEditorStore.getState().params.hero_building_ids).not.toContain("one-more");
+
+    // Making room clears the flag again.
+    store.toggleHero("w0");
+    expect(useEditorStore.getState().heroCapHit).toBe(false);
+  });
+
+  it("clears the whole list, and a reset clears the flag with it", () => {
+    const store = useEditorStore.getState();
+    for (let i = 0; i <= HERO_CAP; i += 1) store.toggleHero(`w${i}`);
+    expect(useEditorStore.getState().heroCapHit).toBe(true);
+
+    store.resetParams();
+    expect(useEditorStore.getState().params.hero_building_ids).toEqual([]);
+    expect(useEditorStore.getState().heroCapHit).toBe(false);
+
+    store.toggleHero("w1");
+    store.clearHeroes();
+    expect(useEditorStore.getState().params.hero_building_ids).toEqual([]);
+  });
+
+  it("retires a finished bake, because a hero changes the geometry", () => {
+    useEditorStore.setState({
+      bake: { ...initialBakeState, phase: "done", jobId: "job-1", stale: false },
+    });
+    useEditorStore.getState().toggleHero("w3");
+    expect(useEditorStore.getState().bake.stale).toBe(true);
+  });
+});
+
+describe("setNested", () => {
+  it("patches one field and leaves the rest of the object alone", () => {
+    useEditorStore.getState().setNested("north_arrow", { enabled: true });
+    const arrow = useEditorStore.getState().params.north_arrow;
+    expect(arrow?.enabled).toBe(true);
+    expect(arrow?.corner).toBe(DEFAULT_PRINT_PARAMS.north_arrow?.corner);
+    expect(arrow?.size_mm).toBe(DEFAULT_PRINT_PARAMS.north_arrow?.size_mm);
+  });
+
+  it("writes a NEW object every time, so a memo can see the change", () => {
+    const before = useEditorStore.getState().params.scale_bar;
+    useEditorStore.getState().setNested("scale_bar", { enabled: true });
+    const after = useEditorStore.getState().params.scale_bar;
+    expect(after).not.toBe(before);
+    // ...and the contract default was not mutated in place.
+    expect(DEFAULT_PRINT_PARAMS.scale_bar?.enabled).toBe(false);
+  });
+
+  it("never makes a server call", async () => {
+    const store = useEditorStore.getState();
+    store.setNested("underside_mark", { enabled: true, template: "{coords}" });
+    store.setNested("part_colors", { water: "#123456" });
+    await Promise.resolve();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(useEditorStore.getState().params.part_colors?.water).toBe("#123456");
+    // The other six slots are untouched.
+    expect(useEditorStore.getState().params.part_colors?.base).toBe(
+      DEFAULT_PRINT_PARAMS.part_colors?.base,
+    );
+  });
+});
+
+// ==========================================================================
+// The frozen defaults may never be aliased into live state ([V2-P4])
+// ==========================================================================
+
+describe("the params object the store hands out", () => {
+  /** Every PrintParams value that is an object or an array. */
+  const nestedKeys = (): Array<keyof PrintParams> =>
+    (Object.keys(DEFAULT_PRINT_PARAMS) as Array<keyof PrintParams>).filter(
+      (key) => typeof DEFAULT_PRINT_PARAMS[key] === "object",
+    );
+
+  it("has nested objects to worry about in the first place", () => {
+    // Guards the guard: if the contract ever loses its nested fields, the
+    // assertions below would pass for the wrong reason.
+    expect(nestedKeys().sort()).toEqual(
+      [
+        "part_colors",
+        "engravings",
+        "north_arrow",
+        "scale_bar",
+        "underside_mark",
+        "hero_building_ids",
+      ].sort(),
+    );
+  });
+
+  it("shares no nested reference with the frozen constant, initially", () => {
+    const params = useEditorStore.getState().params;
+    for (const key of nestedKeys()) {
+      expect(params[key], key).toEqual(DEFAULT_PRINT_PARAMS[key]);
+      expect(params[key], `${key} is aliased to the frozen default`).not.toBe(
+        DEFAULT_PRINT_PARAMS[key],
+      );
+    }
+  });
+
+  it("shares no nested reference with the frozen constant after a reset", () => {
+    const store = useEditorStore.getState();
+    store.setNested("north_arrow", { enabled: true });
+    store.toggleHero("w1");
+    const before = useEditorStore.getState().params;
+
+    store.resetParams();
+    const after = useEditorStore.getState().params;
+
+    expect(after).toEqual(DEFAULT_PRINT_PARAMS);
+    for (const key of nestedKeys()) {
+      expect(after[key], `${key} is aliased to the frozen default`).not.toBe(
+        DEFAULT_PRINT_PARAMS[key],
+      );
+      // ...nor to the object it just replaced.
+      expect(after[key], `${key} survived the reset by reference`).not.toBe(
+        before[key],
+      );
+    }
+  });
+
+  it("survives a nested write after a reset, i.e. nothing frozen leaked in", () => {
+    // The real failure this prevents: with a shallow spread, `params.part_colors`
+    // IS the frozen object, and the first write throws in strict mode.
+    useEditorStore.getState().resetParams();
+    expect(() =>
+      useEditorStore.getState().setNested("part_colors", { water: "#010203" }),
+    ).not.toThrow();
+    expect(useEditorStore.getState().params.part_colors?.water).toBe("#010203");
+    // The constant itself is untouched.
+    expect(DEFAULT_PRINT_PARAMS.part_colors?.water).toBe("#2F7FC1");
+  });
+
+  it("keeps the frozen constant frozen, so a stray write cannot corrupt it", () => {
+    expect(Object.isFrozen(DEFAULT_PRINT_PARAMS)).toBe(true);
+    for (const key of nestedKeys()) {
+      expect(Object.isFrozen(DEFAULT_PRINT_PARAMS[key]), key).toBe(true);
+    }
+    // ...and the factory's copies are not frozen, or the editor could not work.
+    expect(Object.isFrozen(defaultPrintParams())).toBe(false);
+  });
+});
+
+// ==========================================================================
+// Shared configuration ([V2-P6])
+// ==========================================================================
+
+describe("a shared link", () => {
+  const shared = (
+    request: Partial<SceneRequest> = {},
+    params: Partial<PrintParams> = {},
+  ): string =>
+    encodeShare(
+      { lat: 51.5, lon: -0.12, radius_m: 1200, rotation_deg: 30, preset_id: null, ...request },
+      { ...defaultPrintParams(), ...params },
+    );
+
+  beforeEach(() => {
+    useEditorStore.setState({ shareNotice: null });
+  });
+
+  it("restores the location and every parameter it names", () => {
+    const outcome = useEditorStore
+      .getState()
+      .loadShared(
+        `?s=${shared({}, { city_label: "London", plate_mm: 220, hanger: "keyhole" })}`,
+      );
+    expect(outcome).toBe("applied");
+
+    const state = useEditorStore.getState();
+    expect(state.location.lat).toBe(51.5);
+    expect(state.location.lon).toBe(-0.12);
+    expect(state.location.radius_m).toBe(1200);
+    expect(state.location.rotation_deg).toBe(30);
+    expect(state.params.city_label).toBe("London");
+    expect(state.params.plate_mm).toBe(220);
+    expect(state.params.hanger).toBe("keyhole");
+    // Everything the link did not name is back at the contract default.
+    expect(state.params.nozzle_mm).toBe(DEFAULT_PRINT_PARAMS.nozzle_mm);
+    expect(state.shareNotice).toBeNull();
+  });
+
+  it("marks the scene stale and does NOT fetch", () => {
+    // Opening a link in a background tab is not consent to a live Overpass
+    // query. Generate is the user's move, exactly as it is after a moved pin.
+    useEditorStore.getState().loadShared(`?s=${shared()}`);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const state = useEditorStore.getState();
+    expect(state.scene.stale).toBe(true);
+    expect(state.scene.graph).toBeNull();
+    expect(state.scene.status).toBe("idle");
+  });
+
+  it("retires a finished bake, like every other parameter change", () => {
+    useEditorStore.setState({
+      bake: reduceBake(bakeStarted("job-1"), {
+        job_id: "job-1",
+        status: "done",
+        files: { "3mf": "http://x/a.3mf", stl: "http://x/a.stl" },
+        stats: null,
+        warnings: [],
+      }),
+    });
+    useEditorStore.getState().loadShared(`?s=${shared()}`);
+    expect(useEditorStore.getState().bake.stale).toBe(true);
+    expect(bakeDownloadLinks(useEditorStore.getState().bake)).toEqual([]);
+  });
+
+  it("does not light a preset chip for a scene nobody has fetched", () => {
+    useEditorStore.getState().loadShared(`?s=${shared({ preset_id: "chicago-loop" })}`);
+    const state = useEditorStore.getState();
+    expect(state.location.preset_id).toBe("chicago-loop");
+    expect(state.presetChosen).toBe(false);
+    expect(activePresetId(state)).toBeNull();
+  });
+
+  it("leaves the editor on its defaults when the link is damaged, and says so", () => {
+    const before = useEditorStore.getState().params;
+    const handled = useEditorStore.getState().loadShared("?s=v9.abcd.0000");
+    // `refused`, not merely "handled": it is what tells `EditorShell` to take
+    // the bad payload back out of the address bar, so a reload does not bring
+    // the same refusal back forever on a bookmarked URL.
+    expect(handled).toBe("refused");
+    const state = useEditorStore.getState();
+    expect(state.params).toEqual(before);
+    expect(state.location).toEqual(INITIAL_LOCATION);
+    expect(state.scene.stale).toBe(false);
+    expect(state.shareNotice).toContain("different version");
+    // ...and it can be dismissed once read.
+    state.setShareNotice(null);
+    expect(useEditorStore.getState().shareNotice).toBeNull();
+  });
+
+  it("does nothing at all when there is no payload in the URL", () => {
+    expect(useEditorStore.getState().loadShared("")).toBe("none");
+    expect(useEditorStore.getState().loadShared("?other=1")).toBe("none");
+    expect(useEditorStore.getState().scene.stale).toBe(false);
+    expect(useEditorStore.getState().shareNotice).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("clamps a radius the contract could not accept", () => {
+    // The payload is validated before it gets here, but `applyShared` is also
+    // a public action: it snaps to the same 10 m grid `setRadius` does.
+    useEditorStore.getState().applyShared(
+      { lat: 0, lon: 0, radius_m: 1234, rotation_deg: 400, preset_id: null },
+      defaultPrintParams(),
+    );
+    const state = useEditorStore.getState();
+    expect(state.location.radius_m).toBe(1230);
+    expect(state.location.rotation_deg).toBe(360);
+  });
+
+  it("round-trips whatever the editor currently holds", () => {
+    const store = useEditorStore.getState();
+    store.setParam("city_label", "Bergen");
+    store.setParam("color_mode", "parts");
+    store.setNested("part_colors", { water: "#123456" });
+    store.setParam("engravings", [{ edge: "top", text: "{city}", size_mm: 6 }]);
+    store.toggleHero("w7");
+    store.setRadius(1500);
+
+    const current = useEditorStore.getState();
+    const payload = encodeShare(locationToRequest(current.location), current.params);
+    useEditorStore.getState().resetParams();
+    useEditorStore.getState().loadShared(`?s=${payload}`);
+
+    const restored = useEditorStore.getState();
+    expect(restored.params).toEqual(current.params);
+    expect(locationToRequest(restored.location)).toEqual(
+      locationToRequest(current.location),
+    );
   });
 });

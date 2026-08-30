@@ -66,6 +66,24 @@ def numeric_constraints(prop: dict) -> list[str]:
     ]
 
 
+def string_constraints(prop: dict) -> list[str]:
+    """Field(...) kwargs for the length/pattern bounds on a string fragment."""
+    args = []
+    if "minLength" in prop:
+        args.append(f"min_length={prop['minLength']}")
+    if "maxLength" in prop:
+        args.append(f"max_length={prop['maxLength']}")
+    if "pattern" in prop:
+        # json.dumps escapes exactly what a Python double-quoted literal needs.
+        args.append(f"pattern={json.dumps(prop['pattern'])}")
+    return args
+
+
+def scalar_constraints(prop: dict) -> list[str]:
+    """Every Field(...) bound that applies to a scalar fragment."""
+    return numeric_constraints(prop) + string_constraints(prop)
+
+
 def length_constraints(prop: dict) -> list[str]:
     """Field(...) kwargs for the item-count bounds on an array schema fragment."""
     args = []
@@ -141,7 +159,7 @@ class Emitter:
             rest = [x for x in t if x != "null"]
             assert len(rest) == 1
             inner = PY_SCALAR[rest[0]] if rest[0] in PY_SCALAR else "object"
-            inner = annotate(inner, numeric_constraints(prop))
+            inner = annotate(inner, scalar_constraints(prop))
             return f"Optional[{inner}]" if null else inner
 
         if "enum" in prop:
@@ -162,27 +180,59 @@ class Emitter:
             return annotate(f"List[{item_type}]", length_constraints(prop))
 
         if t in PY_SCALAR:
-            return annotate(PY_SCALAR[t], numeric_constraints(prop))
+            return annotate(PY_SCALAR[t], scalar_constraints(prop))
 
         raise ValueError(f"unhandled schema fragment: {prop}")
 
-    def py_default(self, prop: dict) -> str | None:
-        """Return a Python literal source string for a JSON Schema `default`,
-        or None if the schema has no default."""
-        if "default" not in prop:
-            return None
-        value = prop["default"]
+    def py_literal(self, value) -> str:
+        """A Python source literal for a scalar JSON value."""
         if value is None:
             return "None"
-        if value == []:
-            return "Field(default_factory=list)"
         if isinstance(value, bool):
             return "True" if value else "False"
         if isinstance(value, (int, float, str)):
             return json.dumps(value)
-        raise ValueError(f"unhandled default value: {value!r}")
+        raise ValueError(f"unhandled literal value: {value!r}")
 
-    def emit_class(self, name: str, obj_schema: dict) -> None:
+    def py_default(self, prop: dict, py_type: str) -> tuple[str, str] | None:
+        """Return ``(kind, source)`` for a JSON Schema ``default``, or None when
+        the schema has no default.
+
+        ``kind`` is ``"value"`` for an immutable literal that can sit straight
+        after the ``=``, or ``"factory"`` for a callable expression that must go
+        through ``Field(default_factory=...)`` because the value is mutable (a
+        list, or a nested model instance).  Both shapes are alias-safe, so an
+        aliased field with a mutable default cannot silently lose it.
+        """
+        if "default" not in prop:
+            return None
+        value = prop["default"]
+        if isinstance(value, list):
+            if value:
+                raise ValueError(f"only an empty list default is supported, got {value!r}")
+            return ("factory", "list")
+        if isinstance(value, dict):
+            # Nested object default: construct the generated model, keyword by
+            # keyword, in the referenced $defs' own property order so the output
+            # is stable no matter how the JSON was keyed.
+            target = self.defs.get(py_type, {})
+            order = list(target.get("properties", {}))
+            keys = [k for k in order if k in value] + [k for k in value if k not in order]
+            missing = [k for k in target.get("required", []) if k not in value]
+            if missing:
+                # The nested model is required-complete (see emit_class), so an
+                # object default that omits a required key would generate a
+                # default_factory that raises on first construction.  Fail here,
+                # at generation time, where the schema author can see it.
+                raise ValueError(
+                    f"default for {py_type} omits required key(s) {missing}; "
+                    "an object default must name every required property"
+                )
+            kwargs = ", ".join(f"{k}={self.py_literal(value[k])}" for k in keys)
+            return ("factory", f"lambda: {py_type}({kwargs})")
+        return ("value", self.py_literal(value))
+
+    def emit_class(self, name: str, obj_schema: dict, *, root: bool = False) -> None:
         required = set(obj_schema.get("required", []))
         props: dict = obj_schema.get("properties", {})
         lines = [f"class {name}(BaseModel):"]
@@ -194,28 +244,41 @@ class Emitter:
             lines.append("    pass")
         for prop_name, prop_schema in props.items():
             py_t = self.py_type(prop_schema)
-            default_src = self.py_default(prop_schema)
+            default = self.py_default(prop_schema, py_t)
             field_name = FIELD_ALIASES.get(prop_name, prop_name)
             needs_alias = field_name != prop_name
 
-            if default_src is None and prop_name not in required:
+            if prop_name in required and not root:
+                # jsonschema treats a property listed in `required` as required
+                # whatever `default` it also carries, and so must the model.
+                # Without this a partial PartColors - `{"base": "#fff"}` - would
+                # be silently back-filled with six defaults here while the schema
+                # and the generated TS type both reject it, and POST /bake would
+                # answer a half palette with a wrong-coloured print instead of a
+                # 422.  The nested object's own defaults still reach the caller
+                # through the OUTER optional property's default_factory, which
+                # py_default emits with every key spelled out.
+                default = None
+
+            if default is None and prop_name not in required:
                 # Not required, no explicit default in schema: make it
                 # optional so partial construction never breaks.
                 py_t = f"Optional[{py_t}]" if not py_t.startswith("Optional[") else py_t
-                default_src = "None"
+                default = ("value", "None")
 
             if needs_alias:
                 field_args = []
-                if default_src is not None:
-                    if default_src.startswith("Field("):
-                        # default_factory=list case combined with alias
-                        field_args.append("default_factory=list")
-                    else:
-                        field_args.append(f"default={default_src}")
+                if default is not None:
+                    kind, source = default
+                    field_args.append(
+                        f"default_factory={source}" if kind == "factory" else f"default={source}"
+                    )
                 field_args.append(f'alias="{prop_name}"')
                 lines.append(f"    {field_name}: {py_t} = Field({', '.join(field_args)})")
-            elif default_src is not None:
-                lines.append(f"    {field_name}: {py_t} = {default_src}")
+            elif default is not None:
+                kind, source = default
+                rhs = f"Field(default_factory={source})" if kind == "factory" else source
+                lines.append(f"    {field_name}: {py_t} = {rhs}")
             else:
                 lines.append(f"    {field_name}: {py_t}")
         self.class_blocks.append("\n".join(lines) + "\n")
@@ -225,7 +288,15 @@ class Emitter:
         # Emit $defs referenced anywhere in properties first (resolve_def
         # appends to class_blocks as a side effect, in first-use order,
         # which is already dependency-correct for this contract set).
-        self.emit_class(title, self.schema)
+        #
+        # root=True: a ROOT model is an API envelope, and this generator keeps
+        # the schema default on its required properties on purpose, so
+        # `PrintParams()` is the documented "no parameters supplied" object and
+        # a v1 payload that omits a key still loads (DECISIONS [V2-P2-fix]).
+        # Nested $defs objects are VALUES, where a missing key is a wrong value
+        # rather than an under-specified request, so they get the strict
+        # required-means-required treatment in emit_class.
+        self.emit_class(title, self.schema, root=True)
         return title
 
 

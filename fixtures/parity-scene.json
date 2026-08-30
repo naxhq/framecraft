@@ -1146,6 +1146,526 @@
       "height_source": "default",
       "min_height_m": 0.0,
       "is_tall": true
+    },
+    {
+      "id": "w3000",
+      "ring": [
+        [
+          -605.5,
+          693.0
+        ],
+        [
+          -594.5,
+          693.0
+        ],
+        [
+          -594.5,
+          707.0
+        ],
+        [
+          -605.5,
+          707.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 9.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3001",
+      "ring": [
+        [
+          -305.5,
+          693.0
+        ],
+        [
+          -294.5,
+          693.0
+        ],
+        [
+          -294.5,
+          707.0
+        ],
+        [
+          -305.5,
+          707.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 9.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3002",
+      "ring": [
+        [
+          -5.5,
+          693.0
+        ],
+        [
+          5.5,
+          693.0
+        ],
+        [
+          5.5,
+          707.0
+        ],
+        [
+          -5.5,
+          707.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 9.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3003",
+      "ring": [
+        [
+          294.5,
+          693.0
+        ],
+        [
+          305.5,
+          693.0
+        ],
+        [
+          305.5,
+          707.0
+        ],
+        [
+          294.5,
+          707.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 9.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3004",
+      "ring": [
+        [
+          594.5,
+          693.0
+        ],
+        [
+          605.5,
+          693.0
+        ],
+        [
+          605.5,
+          707.0
+        ],
+        [
+          594.5,
+          707.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 9.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3100",
+      "ring": [
+        [
+          -605.5,
+          733.0
+        ],
+        [
+          -594.5,
+          733.0
+        ],
+        [
+          -594.5,
+          747.0
+        ],
+        [
+          -605.5,
+          747.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 10.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3101",
+      "ring": [
+        [
+          -305.5,
+          733.0
+        ],
+        [
+          -294.5,
+          733.0
+        ],
+        [
+          -294.5,
+          747.0
+        ],
+        [
+          -305.5,
+          747.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 10.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3102",
+      "ring": [
+        [
+          -5.5,
+          733.0
+        ],
+        [
+          5.5,
+          733.0
+        ],
+        [
+          5.5,
+          747.0
+        ],
+        [
+          -5.5,
+          747.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 10.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3103",
+      "ring": [
+        [
+          294.5,
+          733.0
+        ],
+        [
+          305.5,
+          733.0
+        ],
+        [
+          305.5,
+          747.0
+        ],
+        [
+          294.5,
+          747.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 10.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3104",
+      "ring": [
+        [
+          594.5,
+          733.0
+        ],
+        [
+          605.5,
+          733.0
+        ],
+        [
+          605.5,
+          747.0
+        ],
+        [
+          594.5,
+          747.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 10.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3200",
+      "ring": [
+        [
+          -605.5,
+          773.0
+        ],
+        [
+          -594.5,
+          773.0
+        ],
+        [
+          -594.5,
+          787.0
+        ],
+        [
+          -605.5,
+          787.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 11.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3201",
+      "ring": [
+        [
+          -305.5,
+          773.0
+        ],
+        [
+          -294.5,
+          773.0
+        ],
+        [
+          -294.5,
+          787.0
+        ],
+        [
+          -305.5,
+          787.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 11.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3202",
+      "ring": [
+        [
+          -5.5,
+          773.0
+        ],
+        [
+          5.5,
+          773.0
+        ],
+        [
+          5.5,
+          787.0
+        ],
+        [
+          -5.5,
+          787.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 11.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3203",
+      "ring": [
+        [
+          294.5,
+          773.0
+        ],
+        [
+          305.5,
+          773.0
+        ],
+        [
+          305.5,
+          787.0
+        ],
+        [
+          294.5,
+          787.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 11.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3204",
+      "ring": [
+        [
+          594.5,
+          773.0
+        ],
+        [
+          605.5,
+          773.0
+        ],
+        [
+          605.5,
+          787.0
+        ],
+        [
+          594.5,
+          787.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 11.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3300",
+      "ring": [
+        [
+          -605.5,
+          813.0
+        ],
+        [
+          -594.5,
+          813.0
+        ],
+        [
+          -594.5,
+          827.0
+        ],
+        [
+          -605.5,
+          827.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 12.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3301",
+      "ring": [
+        [
+          -305.5,
+          813.0
+        ],
+        [
+          -294.5,
+          813.0
+        ],
+        [
+          -294.5,
+          827.0
+        ],
+        [
+          -305.5,
+          827.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 12.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3302",
+      "ring": [
+        [
+          -5.5,
+          813.0
+        ],
+        [
+          5.5,
+          813.0
+        ],
+        [
+          5.5,
+          827.0
+        ],
+        [
+          -5.5,
+          827.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 12.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3303",
+      "ring": [
+        [
+          294.5,
+          813.0
+        ],
+        [
+          305.5,
+          813.0
+        ],
+        [
+          305.5,
+          827.0
+        ],
+        [
+          294.5,
+          827.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 12.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
+    },
+    {
+      "id": "w3304",
+      "ring": [
+        [
+          594.5,
+          813.0
+        ],
+        [
+          605.5,
+          813.0
+        ],
+        [
+          605.5,
+          827.0
+        ],
+        [
+          594.5,
+          827.0
+        ]
+      ],
+      "holes": [],
+      "height_m": 12.0,
+      "height_source": "default",
+      "min_height_m": 0.0,
+      "is_tall": false
     }
   ],
   "roads": [
@@ -1523,8 +2043,8 @@
     }
   ],
   "stats": {
-    "building_count": 43,
+    "building_count": 63,
     "coverage": "sparse",
-    "height_tag_ratio": 0.325581
+    "height_tag_ratio": 0.222222
   }
 }

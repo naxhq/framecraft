@@ -78,7 +78,46 @@ export interface SceneGraph {
 
 // ---- from print_params.json -----------------------
 
+export interface PartColors {
+  base: string;
+  frame: string;
+  buildings: string;
+  roads: string;
+  water: string;
+  green: string;
+  trees: string;
+}
+
+export interface Engraving {
+  edge: "top" | "bottom" | "left" | "right";
+  align?: "start" | "center" | "end";
+  text: string;
+  mode?: "engrave" | "emboss";
+  size_mm?: number;
+  depth_mm?: number;
+  font?: "sans" | "serif" | "mono";
+}
+
+export interface NorthArrow {
+  enabled?: boolean;
+  corner?: "ne" | "nw" | "se" | "sw";
+  size_mm?: number;
+}
+
+export interface ScaleBar {
+  enabled?: boolean;
+  edge?: "top" | "bottom" | "left" | "right";
+  length_mode?: "auto" | "fixed";
+  length_m?: number;
+}
+
+export interface UndersideMark {
+  enabled?: boolean;
+  template?: string;
+}
+
 export interface PrintParams {
+  schema_version?: 2;
   plate_mm: number;
   base_thickness_mm: number;
   nozzle_mm: number;
@@ -90,6 +129,16 @@ export interface PrintParams {
   trees: boolean;
   water: boolean;
   frame: boolean;
+  city_label?: string;
+  color_mode?: "single" | "parts";
+  part_colors?: PartColors;
+  engravings?: Engraving[];
+  north_arrow?: NorthArrow;
+  scale_bar?: ScaleBar;
+  hanger?: "none" | "keyhole" | "magnets";
+  underside_mark?: UndersideMark;
+  hero_building_ids?: string[];
+  hero_mode?: "true_height" | "own_color" | "both";
 }
 
 // ---- from bake_result.json ------------------------
@@ -120,7 +169,26 @@ export interface BakeResult {
 
 // ---- derived constants --------------------
 
-export const DEFAULT_PRINT_PARAMS: PrintParams = {
+/**
+ * Freeze `value` and everything reachable from it, then return it.
+ *
+ * Makes DEFAULT_PRINT_PARAMS immutable all the way down, so a caller that takes
+ * a shallow copy and then writes to a nested object gets a TypeError (ES modules
+ * are strict mode) instead of silently corrupting the shared default. Call
+ * `defaultPrintParams()` for a copy that may be edited.
+ */
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object") {
+    for (const inner of Object.values(value as Record<string, unknown>)) {
+      deepFreeze(inner);
+    }
+    Object.freeze(value);
+  }
+  return value;
+}
+
+export const DEFAULT_PRINT_PARAMS: PrintParams = deepFreeze<PrintParams>({
+  schema_version: 2,
   plate_mm: 180,
   base_thickness_mm: 3.0,
   nozzle_mm: 0.4,
@@ -132,7 +200,49 @@ export const DEFAULT_PRINT_PARAMS: PrintParams = {
   trees: true,
   water: true,
   frame: true,
-};
+  city_label: "",
+  color_mode: "single",
+  part_colors: {
+    base: "#D8D3C6",
+    frame: "#3A3A3A",
+    buildings: "#D8D3C6",
+    roads: "#3A3A3A",
+    water: "#2F7FC1",
+    green: "#5A9E4B",
+    trees: "#5A9E4B",
+  },
+  engravings: [],
+  north_arrow: {
+    enabled: false,
+    corner: "ne",
+    size_mm: 4.0,
+  },
+  scale_bar: {
+    enabled: false,
+    edge: "bottom",
+    length_mode: "auto",
+    length_m: 500,
+  },
+  hanger: "none",
+  underside_mark: {
+    enabled: false,
+    template: "{city} {scale} {date}",
+  },
+  hero_building_ids: [],
+  hero_mode: "true_height",
+});
+
+/**
+ * A fresh, fully mutable deep copy of DEFAULT_PRINT_PARAMS.
+ *
+ * Use this - never `{ ...DEFAULT_PRINT_PARAMS }` - wherever the copy will be
+ * edited, so no two pieces of state share a nested object with each other or
+ * with the frozen constant. Mirrors `PrintParams()` in Python, whose nested
+ * defaults are per-instance for the same reason.
+ */
+export function defaultPrintParams(): PrintParams {
+  return structuredClone(DEFAULT_PRINT_PARAMS);
+}
 
 export const PARAM_RANGES = {
   plate_mm: { min: 100, max: 256, default: 180 },
@@ -142,4 +252,32 @@ export const PARAM_RANGES = {
   large_scale: { min: 0.5, max: 2.0, default: 1.0 },
   terrain_exaggeration: { min: 0.0, max: 3.0, default: 1.0 },
   road_scale: { min: 0.5, max: 2.0, default: 1.0 },
+  engravings: {
+    size_mm: { min: 1.5, max: 8.0, default: 4.0 },
+    depth_mm: { min: 0.2, max: 1.5, default: 0.4 },
+  },
+  north_arrow: {
+    size_mm: { min: 2.0, max: 6.0, default: 4.0 },
+  },
+  scale_bar: {
+    length_m: { min: 10, max: 5000, default: 500 },
+  },
+} as const;
+
+/**
+ * Every item-count and string-length cap the contract declares, so a UI
+ * enforcing one never re-types the number at its call site (the drift
+ * PARAM_RANGES exists to prevent, for the bounds PARAM_RANGES has no room
+ * for: it carries only fragments with both a minimum and a maximum).
+ */
+export const PARAM_LIMITS = {
+  city_label: { max_length: 64 },
+  engravings: {
+    max_items: 8,
+    text: { max_length: 64 },
+  },
+  underside_mark: {
+    template: { max_length: 64 },
+  },
+  hero_building_ids: { max_items: 12 },
 } as const;

@@ -21,6 +21,7 @@ import {
   snapRadius,
 } from "@/lib/geo";
 import { useEditorStore } from "@/store/editor";
+import { readMapPalette } from "./palette";
 
 /**
  * The 2D location picker.
@@ -79,6 +80,9 @@ export function LocationPicker() {
     const container = containerRef.current;
     if (!container || mapRef.current) return;
 
+    // Overlay ink from the design tokens; see components/map/palette.ts.
+    const ink = readMapPalette();
+
     const map = new MapLibreMap({
       container,
       attributionControl: false,
@@ -111,8 +115,10 @@ export function LocationPicker() {
     const pinElement = document.createElement("div");
     pinElement.className = "framecraft-pin";
     pinElement.setAttribute("data-testid", "map-pin");
-    pinElement.style.cssText =
-      "width:18px;height:18px;border-radius:50%;background:#0284c7;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)";
+    pinElement.style.cssText = "width:18px;height:18px;border-radius:50%";
+    pinElement.style.background = ink.pin;
+    pinElement.style.border = `3px solid ${ink.pinRing}`;
+    pinElement.style.boxShadow = ink.markerShadow;
     const pin = new Marker({ element: pinElement, draggable: true });
     pinRef.current = pin;
 
@@ -120,8 +126,10 @@ export function LocationPicker() {
     handleElement.className = "framecraft-radius-handle";
     handleElement.setAttribute("data-testid", "map-radius-handle");
     handleElement.title = "Drag to change the radius";
-    handleElement.style.cssText =
-      "width:14px;height:14px;border-radius:3px;background:#fff;border:2px solid #0284c7;box-shadow:0 1px 3px rgba(0,0,0,.4)";
+    handleElement.style.cssText = "width:14px;height:14px;border-radius:3px";
+    handleElement.style.background = ink.pinRing;
+    handleElement.style.border = `2px solid ${ink.pin}`;
+    handleElement.style.boxShadow = ink.markerShadow;
     const handle = new Marker({ element: handleElement, draggable: true });
     handleRef.current = handle;
 
@@ -135,13 +143,13 @@ export function LocationPicker() {
         id: `${CIRCLE_SOURCE}-fill`,
         type: "fill",
         source: CIRCLE_SOURCE,
-        paint: { "fill-color": "#0ea5e9", "fill-opacity": 0.12 },
+        paint: { "fill-color": ink.radiusFill, "fill-opacity": 0.12 },
       });
       map.addLayer({
         id: `${CIRCLE_SOURCE}-line`,
         type: "line",
         source: CIRCLE_SOURCE,
-        paint: { "line-color": "#0284c7", "line-width": 1.5 },
+        paint: { "line-color": ink.radiusLine, "line-width": 1.5 },
       });
 
       map.addSource(CROP_SOURCE, {
@@ -159,7 +167,7 @@ export function LocationPicker() {
         type: "line",
         source: CROP_SOURCE,
         paint: {
-          "line-color": "#f59e0b",
+          "line-color": ink.crop,
           "line-width": 2,
           "line-dasharray": [2, 1.5],
         },
@@ -240,8 +248,12 @@ export function LocationPicker() {
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" data-testid="map" />
-      <p className="pointer-events-none absolute left-2 top-2 rounded bg-white/85 px-2 py-1 text-[11px] text-neutral-700 shadow dark:bg-neutral-900/85 dark:text-neutral-200">
-        Click to move the pin · drag the square handle to set the radius
+      <p
+        data-testid="map-hint"
+        className="pointer-events-none absolute left-2 top-2 max-w-[92%] rounded-milled border border-line bg-plate/95 px-2 py-1 text-2xs leading-snug text-ink-muted shadow-raised"
+      >
+        Click to move the pin · drag the square handle to set the radius. The
+        dashed square is what gets printed.
       </p>
     </div>
   );

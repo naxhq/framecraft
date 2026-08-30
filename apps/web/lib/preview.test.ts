@@ -19,6 +19,7 @@ import {
   buildTrees,
   buildingInstanceMatrices,
   convexHull,
+  dilatedNotice,
   mergeNoticeMetres,
   minAreaRect,
   treeFloorNoticeMetres,
@@ -369,5 +370,87 @@ describe("buildPreview", () => {
     }
     const perUpdate = (performance.now() - started) / 5;
     expect(perUpdate).toBeLessThan(33);
+  });
+});
+
+describe("dilatedNotice, the HUD's minimum-wall line", () => {
+  interface ParityCase {
+    name: string;
+    params: PrintParams;
+    scale_mm_per_m: number;
+    thresholds_mm: { min_wall: number; min_gap: number; min_detail: number };
+  }
+  const parity = JSON.parse(
+    readFileSync(
+      new URL("../../../fixtures/parity-expected.json", import.meta.url),
+      "utf-8",
+    ),
+  ) as { cases: ParityCase[] };
+
+  it("prints min_wall_mm / scale for every parity parameter set", () => {
+    // The fixture grows as the shared math does (a fourth, hero-bearing case
+    // arrived with [V2-P3]), so this pins a floor and then asserts that EVERY
+    // case in the file was walked -- which is stricter than the fixed count it
+    // replaces, because a new case can no longer be added without being checked.
+    expect(parity.cases.length).toBeGreaterThanOrEqual(3);
+    let checked = 0;
+    for (const parityCase of parity.cases) {
+      checked += 1;
+      const params = parityCase.params;
+      const scale = T.scale_mm_per_m(params, T.radius_m_from_bounds(scene.bounds));
+      const thresholds = T.thresholds_ground_m(params, scale);
+      const metres = T.min_wall_mm(params) / scale;
+      expect(metres).toBeCloseTo((2 * params.nozzle_mm) / scale, 9);
+      expect(dilatedNotice(7, params, scale)).toBe(
+        `7 widened to the ${metres.toFixed(1)} m minimum wall`,
+      );
+      // ... and never the one-nozzle detail floor, which is exactly half of it
+      // and reads just as plausibly in the HUD.
+      expect(dilatedNotice(7, params, scale)).not.toBe(
+        `7 widened to the ${thresholds.min_detail.toFixed(1)} m minimum wall`,
+      );
+    }
+    expect(checked).toBe(parity.cases.length);
+  });
+
+  it("reads 18.9 m at a 0.4 mm nozzle and 9.4 m at 0.2 mm on the 1:23,571 bake", () => {
+    // The reported bake: 180 mm plate, frame on, radius 1980 m.
+    const params = p({ plate_mm: 180, frame: true, nozzle_mm: 0.4 });
+    const scale = T.scale_mm_per_m(params, 1980);
+    expect(Math.round(1000 / scale)).toBe(23571);
+
+    expect(dilatedNotice(3353, params, scale)).toBe(
+      "3353 widened to the 18.9 m minimum wall",
+    );
+    // The trap: min_detail at a 0.4 mm nozzle is ALSO 9.4 m at this scale, so
+    // the HUD string alone cannot distinguish a halved nozzle from a dropped
+    // factor of two. Both readings are pinned (DECISIONS [V2-P1]).
+    const thresholds = T.thresholds_ground_m(params, scale);
+    expect(thresholds.min_detail.toFixed(1)).toBe("9.4");
+
+    const halved = p({ plate_mm: 180, frame: true, nozzle_mm: 0.2 });
+    expect(dilatedNotice(3353, halved, T.scale_mm_per_m(halved, 1980))).toBe(
+      "3353 widened to the 9.4 m minimum wall",
+    );
+    expect(T.min_wall_mm(halved)).toBeCloseTo(0.4, 12); // the "Min wall 0.40 mm"
+  });
+
+  it("reads 8.6 m on the Chicago default, 4.3 m at half the nozzle", () => {
+    // The shipped default the preset lands on: 180 mm plate, frame on, 900 m
+    // radius -> usable 168 mm over 1800 m = 0.09333 mm/m (1:10,714). A second
+    // scale keeps the notice from being pinned at one ratio only.
+    const params = p({ plate_mm: 180, frame: true, nozzle_mm: 0.4 });
+    const scale = T.scale_mm_per_m(params, 900);
+    expect(dilatedNotice(370, params, scale)).toBe(
+      "370 widened to the 8.6 m minimum wall",
+    );
+
+    const halved = p({ plate_mm: 180, frame: true, nozzle_mm: 0.2 });
+    expect(dilatedNotice(208, halved, T.scale_mm_per_m(halved, 900))).toBe(
+      "208 widened to the 4.3 m minimum wall",
+    );
+    // The one-nozzle look-alike at the default nozzle is the same 4.3 m, so a
+    // HUD reading `min_detail` would print the halved-nozzle string here too.
+    expect(T.thresholds_ground_m(params, scale).min_detail.toFixed(1)).toBe("4.3");
   });
 });

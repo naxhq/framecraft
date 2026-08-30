@@ -211,10 +211,16 @@ class HeightSpec:
     the two fields the height math reads.  ``is_tall`` is *inherited* from the
     contributing footprint that supplied the percentile height - never
     recomputed, per 02 ("computed once here, not recomputed in two places").
+
+    ``is_hero`` says this solid prints at the HERO multiplier
+    (``max(1.0, its class's)``, :func:`app.geom.transform.hero_height_scale`).
+    It is False for every v1 solid, so the extruded height of a scene with no
+    hero picked is bit-identical to v1's.
     """
 
     height_m: float
     is_tall: bool
+    is_hero: bool = False
 
 
 @dataclass(frozen=True)
@@ -224,11 +230,16 @@ class BuildingSolid:
     ``stands_on`` is ``None`` for a merged block (it rises from the base plate)
     and carries the block's height for a preserved tall footprint stacked on top
     of that block.
+
+    ``hero_id`` is the SceneGraph building id when this solid IS a hero the user
+    picked; parts-mode export gives every such solid its own 3MF object and its
+    own colour.  ``None`` for everything else.
     """
 
     polygon: Polygon
     height: HeightSpec
     stands_on: HeightSpec | None = None
+    hero_id: str | None = None
 
 
 @dataclass
@@ -240,6 +251,13 @@ class BuildingLayer:
     dropped_thin: int = 0
     merged_components: int = 0
     stacked: int = 0
+    #: Hero ids the user picked that no building in this scene carries.
+    hero_unknown: list[str] = field(default_factory=list)
+    #: Hero ids whose block is taller than they are, so they cannot be shown as
+    #: a solid of their own (they are merged into the block like any footprint).
+    hero_buried: list[str] = field(default_factory=list)
+    #: Hero ids that had a footprint but survived Stage 1 with no solid at all.
+    hero_dropped: list[str] = field(default_factory=list)
 
     @property
     def blocks(self) -> list[BuildingSolid]:
@@ -248,6 +266,18 @@ class BuildingLayer:
     @property
     def stacks(self) -> list[BuildingSolid]:
         return [s for s in self.solids if s.stands_on is not None]
+
+    @property
+    def heroes(self) -> list[BuildingSolid]:
+        return [s for s in self.solids if s.hero_id is not None]
+
+    def hero_ids(self) -> list[str]:
+        """Hero ids that really produced a solid, in first-appearance order."""
+        out: list[str] = []
+        for solid in self.solids:
+            if solid.hero_id is not None and solid.hero_id not in out:
+                out.append(solid.hero_id)
+        return out
 
 
 @dataclass
@@ -887,16 +917,36 @@ def repair_buildings(
 ) -> BuildingLayer:
     """04 stage 1, buildings, steps 1-5 followed by the inset crop.
 
-    ``params`` and ``scale`` are only used by :func:`repair_slice_profiles`,
-    which needs the *printed* height of each solid to know which solids share a
-    horizontal slice.
+    ``params`` and ``scale`` are used by :func:`repair_slice_profiles`, which
+    needs the *printed* height of each solid to know which solids share a
+    horizontal slice, and by the hero-building rule below (a hero's printed top
+    depends on the hero multiplier, so "does this hero rise above its block?" is
+    a question about print millimetres, not ground metres).
+
+    HERO BUILDINGS (PrintParams v2).  A hero is exempt from step 5's block
+    merging, exactly the way 04 already preserves a footprint over 1.5x the
+    block height: its height never enters the block's area-weighted percentile,
+    and it is kept as its own solid stacked on that block.  It is NOT exempt from
+    anything else - steps 1-3, the appendage passes, the crop and every Stage 4
+    check apply to a hero footprint unchanged.
     """
     layer = BuildingLayer()
     if not buildings:
         return layer
 
+    picked: tuple[str, ...] = T.hero_ids(params) if params is not None else ()
+    hero_set = frozenset(picked)
+    if hero_set:
+        known = {str(getattr(b, "id", "")) for b in buildings}
+        layer.hero_unknown = [h for h in picked if h not in known]
+        hero_set = hero_set - set(layer.hero_unknown)
+    hero_true_height = bool(params is not None and T.hero_true_height(params))
+
     footprints: list[Polygon] = []
     heights: list[HeightSpec] = []
+    #: SceneGraph id of the building each footprint came from, parallel to
+    #: ``footprints``; only the hero rule reads it.
+    sources: list[str] = []
     widened = 0
     dropped_small = 0
 
@@ -910,7 +960,13 @@ def repair_buildings(
         _area, _perimeter, _width, dilation = T.building_footprint_metrics(
             b.ring, b.holes, thresholds
         )
-        spec = HeightSpec(height_m=float(b.height_m), is_tall=bool(b.is_tall))
+        ident = str(getattr(b, "id", ""))
+        is_hero = ident in hero_set
+        spec = HeightSpec(
+            height_m=float(b.height_m),
+            is_tall=bool(b.is_tall),
+            is_hero=is_hero and hero_true_height,
+        )
         if dilation > 0.0:
             widened += 1
             grown = shapely.buffer(parts, dilation, join_style="mitre", quad_segs=CLOSE_QUAD_SEGS)
@@ -929,6 +985,7 @@ def repair_buildings(
                 widened += 1  # 04's formula said no, the probe said yes
             footprints.append(thick)
             heights.append(spec)
+            sources.append(ident)
 
     layer.widened = widened
     layer.dropped_small = dropped_small
@@ -982,6 +1039,7 @@ def repair_buildings(
     solids: list[BuildingSolid] = []
     merged_components = 0
     stacked = 0
+    buried: list[str] = []
     for comp_idx, component in enumerate(components):
         members = per_component.get(comp_idx)
         if not members:
@@ -991,18 +1049,55 @@ def repair_buildings(
             continue
         if len(members) > 1:
             merged_components += 1
-        values = [heights[i].height_m for i in members]
-        weights = [footprints[i].area for i in members]
+        # A hero is exempt from the merge: its height never raises the block it
+        # stands on, so it can always rise out of it.  When EVERY contributor is
+        # a hero there is no non-hero height to take a percentile of, so the
+        # block falls back to all of them (and, if they are all the same hero,
+        # the block simply IS that hero - see ``block_hero`` below).
+        pool = [i for i in members if sources[i] not in hero_set] or members
+        values = [heights[i].height_m for i in pool]
+        weights = [footprints[i].area for i in pool]
         block_h, winner = _weighted_percentile(values, weights, BLOCK_HEIGHT_PERCENTILE)
-        block = HeightSpec(height_m=block_h, is_tall=heights[members[winner]].is_tall)
-        solids.append(BuildingSolid(component, block))
+        block_hero: str | None = None
+        block_is_hero = False
+        if hero_set and pool is members:
+            owners = {sources[i] for i in members}
+            if len(owners) == 1 and next(iter(owners)) in hero_set:
+                block_hero = next(iter(owners))
+                block_is_hero = hero_true_height
+        block = HeightSpec(
+            height_m=block_h,
+            is_tall=heights[pool[winner]].is_tall,
+            is_hero=block_is_hero,
+        )
+        solids.append(BuildingSolid(component, block, hero_id=block_hero))
+        # Only the hero branch needs a printed height, and only a hero-bearing
+        # scene has params; a v1 call may pass params=None.
+        block_top = _height_top_mm(block, params, scale) if hero_set else 0.0
         for i in members:
+            hero_id = sources[i] if sources[i] in hero_set else None
+            if hero_id is not None and hero_id != block_hero:
+                # 04's 1.5x rule does not apply to a hero: any hero that stands
+                # taller than its block keeps its own solid, so its colour and
+                # its true height are both visible.  One that does not is buried
+                # in the block, which is reported rather than faked.
+                if _height_top_mm(heights[i], params, scale) > block_top:
+                    stacked += 1
+                    solids.append(
+                        BuildingSolid(
+                            footprints[i], heights[i], stands_on=block, hero_id=hero_id
+                        )
+                    )
+                elif hero_id not in buried:
+                    buried.append(hero_id)
+                continue
             if heights[i].height_m > STACK_HEIGHT_FACTOR * block_h and block_h > 0.0:
                 stacked += 1
                 solids.append(BuildingSolid(footprints[i], heights[i], stands_on=block))
 
     layer.merged_components = merged_components
     layer.stacked = stacked
+    layer.hero_buried = buried
 
     # Final clip, against the crop square already inset by 0.05 mm.  Blocks go
     # first: a stacked tower is then clipped to the blocks that actually
@@ -1020,7 +1115,7 @@ def repair_buildings(
         dropped_small_after += small
         dropped_thin += thin
         for piece in kept:
-            clipped.append(BuildingSolid(piece, solid.height, None))
+            clipped.append(BuildingSolid(piece, solid.height, None, solid.hero_id))
 
     block_union = shapely.union_all([s.polygon for s in clipped]) if clipped else None
     for solid in solids:
@@ -1033,9 +1128,19 @@ def repair_buildings(
         dropped_small_after += small
         dropped_thin += thin
         for piece in kept:
-            clipped.append(BuildingSolid(piece, solid.height, solid.stands_on))
+            clipped.append(
+                BuildingSolid(piece, solid.height, solid.stands_on, solid.hero_id)
+            )
 
     layer.solids = clipped
+    if hero_set:
+        # A hero is never exempt from the minimum-feature repair or the crop, so
+        # it can lose every piece like any other footprint.  Say so rather than
+        # letting a picked building silently vanish from the part list.
+        survived = {s.hero_id for s in clipped if s.hero_id is not None}
+        layer.hero_dropped = [
+            h for h in picked if h in hero_set and h not in survived and h not in buried
+        ]
     layer.dropped_small += dropped_small_after
     layer.dropped_thin = dropped_thin
     layer.union = block_union
@@ -1044,9 +1149,14 @@ def repair_buildings(
     return layer
 
 
+def _height_top_mm(spec: HeightSpec, params: T.ParamsLike, scale: float) -> float:
+    """Printed Z of a height carrier's roof, in mm, hero multiplier included."""
+    return T.building_top_mm_for(spec, params, scale, spec.is_hero)
+
+
 def _solid_top_mm(solid: BuildingSolid, params: T.ParamsLike, scale: float) -> float:
     """Printed Z of this solid's roof, in mm, straight from ``transform``."""
-    return T.building_top_mm(solid.height, params, scale)
+    return _height_top_mm(solid.height, params, scale)
 
 
 def repair_slice_profiles(
@@ -1133,7 +1243,19 @@ def repair_slice_profiles(
                     break
                 accumulated = shapely.union_all([accumulated, *pieces])
                 for piece in pieces:
-                    patches.append(BuildingSolid(piece, solid.height, solid.stands_on))
+                    # The patch keeps the hero id of the solid it patches, not
+                    # just its HEIGHT.  It is extruded to that solid's printed
+                    # top either way (``solid.height`` carries ``is_hero``), so
+                    # withholding the id printed a strip of BUILDING-coloured
+                    # material running the full height of a HERO (v2-02 audit,
+                    # finding 8).  DECISIONS [V2-P3] withheld it because a
+                    # fraction of a mm^3 as a second body of a hero part is what
+                    # `finalize`'s debris sweep could drop, silently breaking the
+                    # partition - which the exact `parts_union` symmetric
+                    # difference now catches loudly instead.
+                    patches.append(
+                        BuildingSolid(piece, solid.height, solid.stands_on, solid.hero_id)
+                    )
 
     if not patches:
         return 0
@@ -1542,6 +1664,22 @@ def repair_scene(scene, params: T.ParamsLike) -> RepairedScene:
         warnings.append(f"block heights merged for {buildings.merged_components} components")
     if buildings.stacked:
         warnings.append(f"{buildings.stacked} tall buildings preserved above their block")
+    if buildings.hero_unknown:
+        warnings.append(
+            f"{len(buildings.hero_unknown)} hero building ids are not in this scene "
+            f"and were ignored: {', '.join(buildings.hero_unknown)}"
+        )
+    if buildings.hero_dropped:
+        warnings.append(
+            f"{len(buildings.hero_dropped)} hero buildings were dropped by the minimum "
+            f"feature repair: {', '.join(buildings.hero_dropped)}"
+        )
+    if buildings.hero_buried:
+        warnings.append(
+            f"{len(buildings.hero_buried)} hero buildings are shorter than the block "
+            f"they merged into and cannot be shown separately: "
+            f"{', '.join(buildings.hero_buried)}"
+        )
     if trees_dropped:
         warnings.append(f"{trees_dropped} trees dropped")
         floor_mm = tree_min_radius_mm(params)

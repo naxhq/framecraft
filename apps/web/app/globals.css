@@ -1,20 +1,385 @@
 @import "tailwindcss";
 
 /*
- * Tailwind v4 defaults `dark:` to prefers-color-scheme. FrameCraft needs an
- * explicit, persisted toggle (light / dark, system as the first-run default),
- * so the variant is redefined to follow a `.dark` class on <html>, which the
- * pre-paint script in app/layout.tsx sets before the first frame.
+ * ===========================================================================
+ * FrameCraft design tokens
+ * ===========================================================================
+ *
+ * THIS FILE IS THE ONLY PLACE IN THE APP THAT MAY CONTAIN A RAW COLOUR VALUE.
+ * `lib/design-tokens.test.ts` scans `components/**` and `app/**.tsx` for
+ * `#rrggbb` literals and fails on any hit, with this file as the sole
+ * allowlist entry. Components use the Tailwind utilities generated from the
+ * `@theme inline` block below (`bg-plate`, `text-ink-muted`, `border-line`,
+ * `shadow-raised`, `rounded-milled`, `text-eyebrow`, ...).
+ *
+ * The palette is not invented: it is the product's own default filament set
+ * (DECISIONS [V2-P2]) -- base/buildings warm grey #D8D3C6, roads/frame
+ * charcoal #3A3A3A, water #2F7FC1, planting #5A9E4B -- pulled up into the
+ * interface, so the editor is made of the same materials as the object it
+ * designs. Light is "bench, daylight" (putty paper, charcoal ink, a harbour
+ * blue for selection); dark is the same bench at night.
+ *
+ * Every `dark:` rule follows the `.dark` CLASS on <html>, which the pre-paint
+ * script in app/layout.tsx sets before the first frame -- never
+ * prefers-color-scheme, because the theme is an explicit, persisted choice.
  */
+
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* --------------------------------------------------------------------------
+ * Light: bench, daylight
+ * ------------------------------------------------------------------------ */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
+
+  /* surfaces, coolest (furthest back) to warmest (nearest) */
+  --fc-bench: #dcd6c8;
+  --fc-plate: #efebe1;
+  --fc-plate-raised: #f8f5ee;
+  --fc-plate-sunken: #e5e0d4;
+
+  /*
+   * Rules vs control boundaries. These are two different jobs and WCAG treats
+   * them differently, which is why they are two token families:
+   *
+   *  - `line` / `line-strong` are DECORATION: panel dividers, card edges, the
+   *    hairlines between HUD cells. SC 1.4.11 does not apply to them and they
+   *    are deliberately quiet.
+   *  - `control-border` / `control-border-strong` are the visual boundary of a
+   *    user-interface component (input, select, segmented control, toggle
+   *    track, secondary button, colour well). SC 1.4.11 (AA) requires 3:1
+   *    against the adjacent surface, and `lib/contrast.test.ts` computes that
+   *    for every boundary/surface pair in both themes. Using `line` on a
+   *    control is the defect that test exists to catch (measured 1.46:1 on the
+   *    segmented control before this split).
+   */
+  --fc-line: #cbc4b3;
+  --fc-line-strong: #9e9787;
+  --fc-control-border: #7a7365;
+  --fc-control-border-strong: #5f5949;
+
+  /* Type, as a contrast ramp rather than as three greys that felt right:
+     against the panel these are 13.7:1, 7.9:1 and 5.3:1, so the faintest one
+     still clears WCAG AA on the darkest surface it is ever used on (the
+     sunken wells). `e2e/a11y.spec.ts` holds this to it with axe. */
+  --fc-ink: #23211c;
+  --fc-ink-muted: #4a4638;
+  --fc-ink-faint: #5f5949;
+
+  /* selection, links, focus */
+  --fc-accent: #1f5e93;
+  --fc-accent-hover: #17496f;
+  --fc-accent-ink: #f8fbfd;
+  --fc-accent-soft: #d6e4f0;
+
+  /* the primary action reads as stamped metal, not as a web CTA */
+  --fc-primary: #2e2b24;
+  --fc-primary-hover: #443f33;
+  --fc-primary-ink: #f6f2e8;
+
+  --fc-positive: #386e2e;
+  --fc-positive-soft: #e0ebd8;
+  --fc-warn: #8a5a12;
+  --fc-warn-soft: #f5e9d2;
+  --fc-danger: #a32b21;
+  --fc-danger-soft: #f6ded9;
+
+  --fc-focus: #1f5e93;
+
+  /*
+   * The 3D preview reads these through `components/scene/palette.ts`, so the
+   * canvas is themed from the same token set as the chrome around it.
+   */
+  --fc-preview-bg: #e5e0d4;
+  --fc-preview-base: #d8d3c6;
+  --fc-preview-frame: #6b6558;
+  --fc-preview-building: #ede8db;
+  --fc-preview-road: #8c8579;
+  --fc-preview-water: #2f7fc1;
+  --fc-preview-green: #5a9e4b;
+  --fc-preview-tree: #47803b;
+  --fc-preview-grid: #c6bfae;
+  /* [V2-P3] fixes #E3A72F as the own_color hero filament; the highlight
+     matches it so the picked buildings look the way they will print. */
+  --fc-preview-hero: #e3a72f;
+  /* A hero picked while `hero_mode` does NOT grant it its own colour. It is
+     still selected and still drawn taller, but painting it the filament orange
+     would promise a colour the bake is not going to print. Slate, so it reads
+     as "marked" rather than as a material. */
+  --fc-preview-hero-pick: #7d8794;
+  /* Where the keyboard building cursor is. Distinct from the hero colour, so
+     "selected" and "about to be selected" are never confused. */
+  --fc-preview-cursor: #1f5e93;
+  /* Frame lettering and ornaments, drawn as flat fills on the lip's top face
+     (the browser never runs a boolean, so nothing is actually cut): engraved
+     reads as a groove, embossed as material standing proud of the lip. */
+  --fc-preview-text-engraved: #3f3a32;
+  --fc-preview-text-embossed: #a8a08a;
+  /* The underside: the mark and the hanger pockets, seen when orbiting below. */
+  --fc-preview-pocket: #7c7668;
+  /* The hemisphere light: sky above, bounce off the ground below. */
+  --fc-preview-sky: #ffffff;
+  --fc-preview-bounce: #445566;
+
+  /*
+   * Map overlays (`components/map/palette.ts`). Defined once, outside the
+   * light/dark split: the OSM raster tiles underneath are the same imagery in
+   * either theme, so these have exactly one job, which is to stay legible on
+   * that imagery. The crop square is deliberately a different hue from the
+   * radius circle -- one is what you asked for, the other is what will print.
+   */
+  --fc-map-pin: #0f5c8c;
+  --fc-map-pin-ring: #f8f5ee;
+  --fc-map-radius-fill: #2f7fc1;
+  --fc-map-radius-line: #1f5e93;
+  --fc-map-crop: #c2661a;
+  /* The drop shadow under the two draggable markers, as a whole value: it is
+     the only place a colour would otherwise be typed into LocationPicker. */
+  --fc-map-marker-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+
+  --fc-shadow-flush: inset 0 1px 0 rgb(255 255 255 / 0.5);
+  --fc-shadow-raised: 0 1px 1px rgb(35 33 28 / 0.08), 0 2px 6px -2px rgb(35 33 28 / 0.14);
+  --fc-shadow-lifted: 0 12px 32px -10px rgb(35 33 28 / 0.34), 0 2px 6px -2px rgb(35 33 28 / 0.16);
 }
 
+/* --------------------------------------------------------------------------
+ * Dark: bench, night
+ * ------------------------------------------------------------------------ */
+.dark {
+  color-scheme: dark;
+
+  --fc-bench: #131210;
+  --fc-plate: #1c1a17;
+  --fc-plate-raised: #24221d;
+  --fc-plate-sunken: #0e0d0b;
+
+  --fc-line: #34302a;
+  --fc-line-strong: #524c42;
+  --fc-control-border: #857e6f;
+  --fc-control-border-strong: #a49c8a;
+
+  --fc-ink: #ece6d9;
+  --fc-ink-muted: #b3ab99;
+  /* Lighter than its light-theme twin looks: on the raised surfaces (inputs,
+     readouts) a darker faint drops under 4.5:1. */
+  --fc-ink-faint: #9a9280;
+
+  --fc-accent: #6fb2e8;
+  --fc-accent-hover: #8cc5f0;
+  --fc-accent-ink: #0b1a26;
+  --fc-accent-soft: #143349;
+
+  --fc-primary: #e7e1d2;
+  --fc-primary-hover: #fffbf0;
+  --fc-primary-ink: #1a1815;
+
+  --fc-positive: #7dbb68;
+  --fc-positive-soft: #1b2a16;
+  --fc-warn: #d9a441;
+  --fc-warn-soft: #2e2513;
+  --fc-danger: #e8776a;
+  --fc-danger-soft: #3a1a16;
+
+  --fc-focus: #8cc5f0;
+
+  --fc-preview-bg: #0e0d0b;
+  --fc-preview-base: #3a3730;
+  --fc-preview-frame: #565146;
+  --fc-preview-building: #c9c2b0;
+  --fc-preview-road: #6e685c;
+  --fc-preview-water: #2f7fc1;
+  --fc-preview-green: #4a7f3e;
+  --fc-preview-tree: #6fa35f;
+  --fc-preview-grid: #2a2721;
+  --fc-preview-hero: #e3a72f;
+  --fc-preview-hero-pick: #93a0b0;
+  --fc-preview-cursor: #8cc5f0;
+  --fc-preview-text-engraved: #26231e;
+  --fc-preview-text-embossed: #9a9280;
+  --fc-preview-pocket: #211f1a;
+  --fc-preview-sky: #dfe6ee;
+  --fc-preview-bounce: #232a33;
+
+  --fc-shadow-flush: inset 0 1px 0 rgb(255 255 255 / 0.04);
+  --fc-shadow-raised: 0 1px 1px rgb(0 0 0 / 0.5), 0 2px 6px -2px rgb(0 0 0 / 0.6);
+  --fc-shadow-lifted: 0 12px 32px -10px rgb(0 0 0 / 0.75), 0 2px 6px -2px rgb(0 0 0 / 0.5);
+}
+
+/* --------------------------------------------------------------------------
+ * Tailwind theme
+ *
+ * `inline` is what makes the class-driven themes work: the generated utilities
+ * emit `var(--fc-*)` rather than the resolved value, so adding `.dark` to
+ * <html> re-points every utility at once.
+ * ------------------------------------------------------------------------ */
+@theme inline {
+  --color-bench: var(--fc-bench);
+  --color-plate: var(--fc-plate);
+  --color-plate-raised: var(--fc-plate-raised);
+  --color-plate-sunken: var(--fc-plate-sunken);
+  --color-line: var(--fc-line);
+  --color-line-strong: var(--fc-line-strong);
+  --color-control: var(--fc-control-border);
+  --color-control-strong: var(--fc-control-border-strong);
+  --color-ink: var(--fc-ink);
+  --color-ink-muted: var(--fc-ink-muted);
+  --color-ink-faint: var(--fc-ink-faint);
+  --color-accent: var(--fc-accent);
+  --color-accent-hover: var(--fc-accent-hover);
+  --color-accent-ink: var(--fc-accent-ink);
+  --color-accent-soft: var(--fc-accent-soft);
+  --color-primary: var(--fc-primary);
+  --color-primary-hover: var(--fc-primary-hover);
+  --color-primary-ink: var(--fc-primary-ink);
+  --color-positive: var(--fc-positive);
+  --color-positive-soft: var(--fc-positive-soft);
+  --color-warn: var(--fc-warn);
+  --color-warn-soft: var(--fc-warn-soft);
+  --color-danger: var(--fc-danger);
+  --color-danger-soft: var(--fc-danger-soft);
+  --color-focus: var(--fc-focus);
+
+  /* Two self-hosted OFL families (apps/web/licences/): a wide grotesque that
+     sets like stamped plate lettering, and a face drawn for engineering UI. */
+  --font-display: "Archivo Variable", "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --font-ui: "IBM Plex Sans Variable", "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+
+  /* Type scale. The editor is dense, so `base` is 14px and the display sizes
+     are reserved for the wordmark and the empty state. */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.125rem;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.375rem;
+  --text-md: 1rem;
+  --text-md--line-height: 1.5rem;
+  --text-lg: 1.25rem;
+  --text-lg--line-height: 1.6rem;
+  --text-xl: 1.75rem;
+  --text-xl--line-height: 2rem;
+  --text-2xl: 2.5rem;
+  --text-2xl--line-height: 2.6rem;
+
+  /* Milled edges, not pills: 2-5px reads as a machined chamfer. */
+  --radius-milled: 3px;
+  --radius-plate: 5px;
+  --radius-panel: 8px;
+
+  --shadow-flush: var(--fc-shadow-flush);
+  --shadow-raised: var(--fc-shadow-raised);
+  --shadow-lifted: var(--fc-shadow-lifted);
+
+  /* Column widths, so the three-up layout is stated once. */
+  --spacing-rail: 23rem;
+  --spacing-atlas: 25rem;
+}
+
+/* --------------------------------------------------------------------------
+ * Base
+ * ------------------------------------------------------------------------ */
 html,
 body {
   height: 100%;
+}
+
+body {
+  font-family: var(--font-ui);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* One rule, everywhere: nothing in this editor is reachable without a ring. */
+:focus-visible {
+  outline: 2px solid var(--fc-focus);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--fc-accent-soft);
+  color: var(--fc-ink);
+}
+
+/* The drafting-sheet fill behind the empty viewport: a hairline grid at the
+   same 32 px pitch the preview's own ground grid uses. */
+.fc-drafting-sheet {
+  background-color: var(--fc-plate-sunken);
+  background-image:
+    linear-gradient(
+      to right,
+      color-mix(in srgb, var(--fc-line-strong) 26%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--fc-line-strong) 26%, transparent) 1px,
+      transparent 1px
+    );
+  background-size: 32px 32px;
+}
+
+/* An etched rule: one hairline that reads as a scored line in the plate. */
+.fc-scored {
+  border-top: 1px solid var(--fc-line);
+  box-shadow: 0 -1px 0 color-mix(in srgb, var(--fc-plate-raised) 70%, transparent);
+}
+
+/* The bake bar when the server has not reported a percentage yet. */
+@keyframes fc-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
+/* The loading skeleton in the viewport. */
+@keyframes fc-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+input[type="range"] {
+  accent-color: var(--fc-accent);
+  height: 1.25rem;
+  cursor: pointer;
+}
+
+input[type="range"]:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Native colour wells are chrome-coloured by default; box them like a swatch
+   chip so the seven part colours read as a palette. */
+input[type="color"] {
+  padding: 0;
+  border: 1px solid var(--fc-control-border);
+  border-radius: var(--radius-milled);
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+input[type="color"]::-webkit-color-swatch {
+  border: none;
+  border-radius: 1px;
+}
+
+input[type="color"]:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* MapLibre's stylesheet is imported by components/map/LocationPicker.tsx.
@@ -32,10 +397,27 @@ body {
   cursor: grab;
 }
 
-input[type="range"] {
-  accent-color: #0ea5e9;
+/*
+ * MapLibre ships `outline: none` on its own controls, and they are in the tab
+ * order of the page we deliver -- three stops (zoom in, zoom out, the
+ * attribution disclosure) with no visible focus indicator, which is a WCAG
+ * 2.4.7 failure on the page as shipped even though the CSS is third-party.
+ * The global `:focus-visible` rule cannot win against it, so it is restated
+ * here with the specificity MapLibre's own selectors have.
+ */
+.maplibregl-ctrl button:focus-visible,
+.maplibregl-ctrl summary:focus-visible,
+.maplibregl-ctrl-attrib summary:focus-visible {
+  outline: 2px solid var(--fc-focus);
+  outline-offset: 2px;
 }
 
-input[type="range"]:disabled {
-  opacity: 0.5;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

@@ -44,6 +44,70 @@ only the cast needs the extra hop.
 
 ---
 
+## F2 — `e2e/ui.spec.ts` asserted a premise `[V2-P5-fix]` had already deleted
+
+- **Found by**: V2-P7 qa-gate, on the first authoritative `make gate` of the
+  phase (2026-08-30).
+- **Owner**: qa-gate (the file is a Playwright spec, which this phase owns).
+  **No application code is at fault** — the app is behaving exactly as
+  `[V2-P5-fix]` specified.
+- **Severity**: gate-breaking. In `test.describe.configure({ mode: "serial" })`
+  a failure takes the rest of the file with it, so this one assertion cost 13
+  of the 25 acceptance tests (1 failed, 12 not run, reported as skipped).
+
+Failing command and output:
+
+```
+$ make gate
+...
+  ✘  13 [chromium] › e2e\ui.spec.ts:259:5 › an engraving appears on the frame, and a refused one does not (18.7s)
+
+    Error: expect(locator).toContainText(expected) failed
+    Locator: getByTestId('engraving_0-fit')
+    Expected substring: "Not cut"
+    Received string:    "Cuts at 4.00 mm."
+      at D:\VahidVibeProject\CityDesign3D\apps\web\e2e\ui.spec.ts:282:25
+
+  1 failed
+  12 did not run
+  12 passed (3.0m)
+gate: the Playwright suite FAILED
+gate: 12 Playwright test(s) SKIPPED - the gate does not accept a skipped acceptance test
+GATE FAIL
+```
+
+Diagnosis: the test got its refusal *for free* from the contract default. It
+added an engraving row, took whatever cap height the contract seeded it with,
+and asserted the panel said "Not cut". `[V2-P5-fix]` then raised
+`engravings[].size_mm` from 3.0 mm to 4.0 mm **precisely so that a freshly
+seeded engraving is printable** ("at 3.0 mm the DEFAULT face refuses six of the
+eight" real strings). Measured against the shared math on this tree:
+
+```
+$ cd services/bake && uv run python -c "...lettering_layout for '{city}'='Chicago'..."
+  2.0 refused=True    3.0 refused=True    3.25 refused=False
+  4.0 refused=False   6.0 refused=False (fitted down to 5.16 mm)
+```
+
+So "Chicago" at the new 4.0 mm default cuts, and the test's whole premise was
+gone. It had quietly turned into "the default is refused", which is the
+opposite of what the contract now promises.
+
+- **Status**: FIXED by V2-P7 qa-gate. The spec no longer infers the refused
+  size: it now (1) **pins the new default** — `engraving_0_size_mm-value` reads
+  `4.0 mm` and the verdict reads `Cuts at`, with rings drawn — then (2) sets
+  3 mm explicitly, the old default, and requires `Not cut` **and the rings to
+  go back to 0**, then (3) raises to 6 mm and requires exactly 8 rings again.
+  That is strictly more coverage than before: the preview is now proved to take
+  the letters *off* the plate when the verdict flips, not merely never to have
+  put them on. Verify: `cd apps/web && npx playwright test --grep "an engraving
+  appears on the frame"` -> 1 passed.
+- **Note for whoever reads the V2-P6 handoff**: its "25 e2e, 0 skipped" was
+  recorded against the pre-`[V2-P5-fix]` contract default. Nothing regressed
+  between then and now; the two facts were just never re-checked together.
+
+---
+
 ## Not defects (checked, and they hold)
 
 Recorded here so the next phase does not re-investigate them:

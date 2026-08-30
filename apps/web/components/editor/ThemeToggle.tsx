@@ -22,9 +22,9 @@ export function ThemeToggle() {
     <button
       type="button"
       onClick={toggleTheme}
-      aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+      aria-label={`Switch to the ${theme === "dark" ? "light" : "dark"} theme`}
       data-testid="theme-toggle"
-      className="rounded-md border border-neutral-300 px-2 py-1 text-xs hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
+      className="rounded-milled border border-control px-2 py-1 text-2xs text-ink-muted transition-colors hover:border-ink-faint hover:text-ink"
     >
       {theme === "dark" ? "Light" : "Dark"}
     </button>

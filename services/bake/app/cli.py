@@ -418,218 +418,207 @@ def _index_stl_triangle_soup(mesh: "trimesh.Trimesh") -> tuple["trimesh.Trimesh"
 
 
 def _single_body_check(mesh: "trimesh.Trimesh") -> "Check":
-    """01/A6: the file must open in a slicer as ONE object, not one plus debris.
+    """01/A6's one-connected-solid rule.  Lives in ``app/validate/checks.py`` so
+    the BAKE runs it too (v2-03 audit, finding 2); this name is kept because the
+    ``validate`` command reads better with it."""
+    from app.validate.checks import single_body_check
 
-    04 stage 4's ``watertight`` row deliberately tolerates several bodies - its
-    Euler test is ``even and <= 2 * body_count`` - because it judges an
-    arbitrary mesh.  A finished FrameCraft plate is not arbitrary: it is one
-    connected solid sitting on the bed, and a floating island (a stray cube at
-    z = 30, a shell the boolean left behind) is exactly the failure a slicer
-    surfaces to the user.  ``3mf_objects`` and ``3mf_build_items`` count XML
-    elements, so a second body written into the *same* ``<object>`` slips past
-    both of them; this row counts shells.  It runs for ``.stl`` as well, which
-    has no container rows at all.
-    """
-    from app.validate.checks import Check, body_count
+    return single_body_check(mesh)
 
-    bodies = body_count(mesh)
-    return Check(
-        name="bodies",
-        passed=bodies == 1,
-        value=bodies,
-        threshold=1,
-        message=(
-            "one connected solid, so a slicer shows a single object"
-            if bodies == 1
-            else f"{bodies} disconnected bodies; a slicer would show {bodies} objects "
-            "(a floating island or leftover boolean debris)"
-        ),
-    )
+
+# ---------------------------------------------------------------------------
+# 3MF container rows.  They live in `app/validate/container.py` so the BAKE can
+# run the same rows on the file it just wrote (v2-02 audit, finding 5); these
+# names stay because the `validate` command reads better with them.
+# ---------------------------------------------------------------------------
+
+
+def _threemf_document(path: Path) -> tuple[list["Check"], Any]:
+    from app.validate import container
+
+    return container.document(path)
+
+
+def _threemf_is_parts(path: Path) -> bool:
+    from app.validate import container
+
+    return container.is_parts(path)
+
+
+def _threemf_parts_checks(
+    path: Path, parts: "Sequence[tuple[str, trimesh.Trimesh]]"
+) -> tuple[list["Check"], int | None]:
+    from app.validate import container
+
+    return container.parts_checks(path, parts)
+
+
+def _is_rgba8(value: str | None) -> bool:
+    from app.validate import container
+
+    return container.is_rgba8(value)
 
 
 def _threemf_structure_checks(path: Path, mesh: "trimesh.Trimesh") -> list["Check"]:
-    """Container checks for a ``.3mf``, on top of 04 stage 4's mesh validators.
+    from app.validate import container
 
-    04 stage 3 specifies the package a bake must write and A6 needs a slicer to
-    open it as ONE object sitting on the bed, so ``make validate`` judges the
-    file as well as the mesh: the three OPC parts exist, the model is declared
-    in millimetres, there is exactly one ``<object>`` and exactly one build
-    ``<item>`` (two would make a slicer show two bodies), the ``Description``
-    metadata carries the OSM attribution the licence requires, and the vertex /
-    triangle counts the XML declares are exactly what the loader handed back
-    (an object no build item references, or a loader that silently welded, both
-    show up here).
+    return container.structure_checks(path, mesh)
+
+
+def _color_mode_check(structure: str, declared: str | None) -> "Check":
+    from app.validate import container
+
+    return container.color_mode_check(structure, declared)
+
+
+def _placed_parts(scene) -> "list[tuple[str, trimesh.Trimesh]]":
+    """The parts of a 3MF scene, each PLACED where the build item puts it.
+
+    3MF lets a ``<component>`` (and the ``<build><item>``) carry a transform, and
+    trimesh reads them: the composed matrix lands in ``scene.graph`` while
+    ``scene.geometry[name]`` stays in LOCAL coordinates.  Taking the geometries
+    alone therefore judges a model nobody builds - a part translated 25 mm
+    sideways used to read as one solid sitting on the bed (v2-02 audit, finding
+    3).  Every row below is computed on the placed geometry instead.
+
+    Iteration is over ``scene.geometry`` and not over the graph: the graph comes
+    back in its own order, and the ``validate`` header prints the part names in
+    the order the file declares them.  A mesh object no component references has
+    no graph node and is kept unplaced - it still belongs in the count that
+    ``3mf_counts`` checks, and ``3mf_components`` is what fails it.
     """
-    import xml.etree.ElementTree as ET
-    import zipfile
+    import numpy as np
+    import trimesh
 
-    from app.export import mf3
-    from app.validate.checks import Check
+    out: list[tuple[str, trimesh.Trimesh]] = []
+    for name, geom in scene.geometry.items():
+        if not isinstance(geom, trimesh.Trimesh):
+            continue
+        matrix = None
+        try:
+            matrix = scene.graph.get(frame_to=name)[0]
+        except Exception:  # pragma: no cover - an unreferenced mesh object
+            matrix = None
+        if matrix is None or np.allclose(np.asarray(matrix, dtype=float), np.eye(4)):
+            out.append((name, geom))
+            continue
+        placed = geom.copy()
+        placed.apply_transform(np.asarray(matrix, dtype=float))
+        out.append((name, placed))
+    return out
 
-    required = (mf3.CONTENT_TYPES_PART, mf3.RELS_PART, mf3.MODEL_PART)
-    threshold_parts = ", ".join(required)
-    try:
-        with zipfile.ZipFile(path) as zf:
-            names = zf.namelist()
-            payload = zf.read(mf3.MODEL_PART) if mf3.MODEL_PART in names else b""
-    except (zipfile.BadZipFile, OSError, KeyError) as exc:
-        return [
-            Check(
-                name="3mf_parts",
+
+def _parts_union_mesh(parts: "Sequence[tuple[str, trimesh.Trimesh]]"):
+    """The manifold union of the loaded parts, or None if one is not a solid.
+
+    manifold3d, never a trimesh boolean and never a concatenation: the parts
+    deliberately interpenetrate by 0.2 mm, so their CONCATENATION is a
+    self-intersecting soup while their UNION is the object that prints.
+
+    The union is put through ``assemble.finalize`` - the same sliver sweep
+    Stage 2 runs on the assembled solid - because THIS boolean is performed
+    here, by this command, and re-triangulating two interpenetrating parts
+    leaves a nanometre-wide triangle at the seam (one, on the Chicago fixture)
+    that exists in no shipped artifact.  Nothing in the FILE is repaired: every
+    part is judged exactly as it was loaded, by ``part_meshes``, with
+    ``process=False``.
+    """
+    from manifold3d import Manifold, OpType
+
+    from app.geom import assemble
+    from app.validate.checks import manifold_from_mesh
+
+    solids = []
+    for _name, mesh in parts:
+        solid = manifold_from_mesh(mesh)
+        if solid is None:
+            return None
+        solids.append(solid)
+    if not solids:
+        return None
+    union = assemble.finalize(Manifold.batch_boolean(solids, OpType.Add))
+    return _manifold_to_trimesh(union)
+
+
+def _manifold_to_trimesh(solid):
+    import numpy as np
+    import trimesh
+
+    mesh = solid.to_mesh64()
+    return trimesh.Trimesh(
+        vertices=np.asarray(mesh.vert_properties, dtype=np.float64)[:, :3],
+        faces=np.asarray(mesh.tri_verts).astype(np.int64),
+        process=False,
+        validate=False,
+    )
+
+
+def _validate_parts_file(path: Path, args: argparse.Namespace) -> int:
+    """``validate`` for a multi-material 3MF: judge the union AND every part."""
+    import trimesh
+
+    from app.validate import checks as validators
+
+    params, param_source, sidecar_error = _params_from_sidecar(
+        path, args.plate_mm, args.nozzle_mm
+    )
+    declared = getattr(params, "color_mode", None) if param_source.startswith("sidecar") else None
+
+    scene = trimesh.load(path, process=False)
+    parts: list[tuple[str, trimesh.Trimesh]] = []
+    if isinstance(scene, trimesh.Scene):
+        parts = _placed_parts(scene)
+    elif isinstance(scene, trimesh.Trimesh):  # pragma: no cover - a 1-part file
+        parts = [("part", scene)]
+
+    print(f"file           {path}")
+    print(
+        f"parameters     {param_source}"
+        f"  (plate {params.plate_mm:g} mm, nozzle {params.nozzle_mm:g} mm)"
+    )
+    print(f"parts          {len(parts)}: {', '.join(name for name, _m in parts) or '-'}")
+    if sidecar_error is not None:
+        print(f"sidecar        sidecar params invalid: {sidecar_error}")
+
+    union = _parts_union_mesh(parts) if parts else None
+    if union is None:
+        print("union          FAILED (a part is not a closed solid)")
+    else:
+        print(
+            f"union          {len(union.faces):,} triangles (manifold3d union of the "
+            "parts, swept for boolean slivers; the parts themselves are judged as-is)"
+        )
+    print()
+
+    if union is not None:
+        # 04 stage 4 judges what PRINTS, and what prints is the union of the
+        # parts - not their concatenation, which is self-intersecting by design.
+        report = validators.validate(union, params)
+    else:
+        report = validators.ValidationReport(checks=[])
+    if sidecar_error is not None:
+        report.checks.insert(
+            0,
+            validators.Check(
+                name="sidecar_params",
                 passed=False,
-                value=f"unreadable: {type(exc).__name__}",
-                threshold=threshold_parts,
-                message=f"{path.name} is not a readable OPC (zip) package: {exc}",
-            )
-        ]
-
-    missing = [part for part in required if part not in names]
-    checks = [
-        Check(
-            name="3mf_parts",
-            passed=not missing,
-            value=f"{len(names)} parts" + (f", missing {', '.join(missing)}" if missing else ""),
-            threshold=threshold_parts,
-            message=(
-                f"missing required 3MF part(s): {', '.join(missing)}"
-                if missing
-                else "[Content_Types].xml, _rels/.rels and 3D/3dmodel.model are all present"
+                value=_ellipsis(f"sidecar params invalid: {sidecar_error}", 64),
+                threshold="PrintParams the contract accepts",
+                message=(
+                    f"sidecar params invalid: {sidecar_error}; "
+                    f"the mesh below was judged against {param_source} "
+                    f"(plate {params.plate_mm:g} mm, nozzle {params.nozzle_mm:g} mm)"
+                ),
             ),
         )
-    ]
-    if not payload:
-        return checks
-
-    # Same hardening as mf3.read_metadata: a 3MF has no legitimate use for a DTD.
-    if b"<!DOCTYPE" in payload[:4096] or b"<!ENTITY" in payload[:4096]:
-        checks.append(
-            Check(
-                name="3mf_model_xml",
-                passed=False,
-                value="declares a DTD",
-                threshold="no DTD",
-                message="the model part declares a DTD; refusing to parse it",
-            )
-        )
-        return checks
-
-    try:
-        root = ET.fromstring(payload)
-    except ET.ParseError as exc:
-        checks.append(
-            Check(
-                name="3mf_model_xml",
-                passed=False,
-                value=f"unparseable: {exc}",
-                threshold="well-formed XML",
-                message=f"3D/3dmodel.model is not well-formed XML: {exc}",
-            )
-        )
-        return checks
-
-    ns = f"{{{mf3.CORE_NAMESPACE}}}"
-    unit = root.get("unit")
-    checks.append(
-        Check(
-            name="3mf_unit",
-            passed=unit == "millimeter",
-            value=unit or "-",
-            threshold="millimeter",
-            message=(
-                "the model is declared in millimetres"
-                if unit == "millimeter"
-                else f'unit is {unit!r}; a FrameCraft plate is authored in millimetres'
-            ),
-        )
+    structure_rows, components = _threemf_parts_checks(path, parts)
+    report.checks.extend(
+        validators.validate_parts(parts, union=union, components=components)
     )
-
-    objects = root.findall(f".//{ns}object")
-    checks.append(
-        Check(
-            name="3mf_objects",
-            passed=len(objects) == 1,
-            value=len(objects),
-            threshold=1,
-            message=(
-                "exactly one <object>, so a slicer shows one body"
-                if len(objects) == 1
-                else f"{len(objects)} <object> elements; A6 needs exactly one"
-            ),
-        )
-    )
-
-    build = root.find(f"{ns}build")
-    items = [] if build is None else build.findall(f"{ns}item")
-    checks.append(
-        Check(
-            name="3mf_build_items",
-            passed=len(items) == 1,
-            value=len(items),
-            threshold=1,
-            message=(
-                "exactly one <build><item>, placed once on the bed"
-                if len(items) == 1
-                else f"{len(items)} build items; A6 needs exactly one"
-            ),
-        )
-    )
-
-    description = ""
-    for node in root.findall(f"{ns}metadata"):
-        if node.get("name") == "Description":
-            description = node.text or ""
-    has_attribution = mf3.ATTRIBUTION in description
-    checks.append(
-        Check(
-            name="3mf_attribution",
-            passed=has_attribution,
-            # Deliberately not the text itself: a Windows console codepage that
-            # cannot encode "(c)" would turn printing the row into a crash.
-            value=(
-                f"present ({len(description)} chars)"
-                if has_attribution
-                else f"absent ({len(description)} chars of Description)"
-            ),
-            threshold="OSM attribution in Description",
-            message=(
-                "the OSM attribution travels with the file"
-                if has_attribution
-                else "Description metadata does not carry '© OpenStreetMap contributors'"
-            ),
-        )
-    )
-
-    xml_vertices = len(root.findall(f".//{ns}vertex"))
-    xml_triangles = len(root.findall(f".//{ns}triangle"))
-    mesh_counts = (
-        f"mesh {len(mesh.vertices):,} v / {len(mesh.faces):,} t"
-        if mesh is not None
-        else "a loadable mesh"
-    )
-    counts_ok = mesh is not None and (
-        xml_vertices == len(mesh.vertices) and xml_triangles == len(mesh.faces)
-    )
-    checks.append(
-        Check(
-            name="3mf_counts",
-            passed=counts_ok,
-            value=f"xml {xml_vertices:,} v / {xml_triangles:,} t",
-            threshold=mesh_counts,
-            message=(
-                "every vertex and triangle the file declares is in the loaded mesh"
-                if counts_ok
-                else (
-                    f"the XML declares {xml_vertices} vertices / {xml_triangles} triangles "
-                    + (
-                        f"but the loader produced {len(mesh.vertices)} / {len(mesh.faces)}"
-                        if mesh is not None
-                        else "but the file did not load as a triangle mesh at all"
-                    )
-                )
-            ),
-        )
-    )
-    return checks
+    report.checks.append(_color_mode_check("parts", declared))
+    report.checks.extend(structure_rows)
+    print(report.to_table())
+    return 0 if report.passed and union is not None else 1
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
@@ -654,6 +643,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
         return 2
 
     is_3mf = path.suffix.lower() == ".3mf"
+    if is_3mf and _threemf_is_parts(path):
+        # A multi-material package is a different shape of file: N mesh objects
+        # assembled into one, which `force="mesh"` would flatten into a
+        # self-intersecting soup.  Judged by its own path below.
+        return _validate_parts_file(path, args)
 
     # process=False: trimesh's default load pass welds vertices within 1e-8 and
     # would "repair" the very topology this command exists to judge.  What is
@@ -720,6 +714,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
     report.checks.append(_single_body_check(mesh))
     if is_3mf:
         # 04 stage 4 judges the mesh; these judge the package around it.
+        declared = (
+            getattr(params, "color_mode", None)
+            if param_source.startswith("sidecar")
+            else None
+        )
+        report.checks.append(_color_mode_check("single", declared))
         report.checks.extend(_threemf_structure_checks(path, mesh))
     print(report.to_table())
     return 0 if report.passed else 1

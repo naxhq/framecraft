@@ -28,8 +28,15 @@ const p = (overrides: Partial<PrintParams> = {}): PrintParams => ({
   ...overrides,
 });
 
-/** A different-from-default value for every non-boolean PrintParams key. */
-const MOVES: Record<string, number | string> = {
+/**
+ * A different-from-default value for every non-boolean PrintParams key.
+ *
+ * The v2 keys are here so the walk below is not vacuous: without them the loop
+ * would set each new key to `undefined`, and "undefined does not move the
+ * predicted height" is a much weaker claim than "a real city label, palette,
+ * engraving, ornament or hero selection does not move it".
+ */
+const MOVES: Record<string, unknown> = {
   plate_mm: 256,
   base_thickness_mm: 8,
   nozzle_mm: 0.8,
@@ -38,6 +45,25 @@ const MOVES: Record<string, number | string> = {
   terrain_exaggeration: 3.0,
   road_mode: "emboss",
   road_scale: 2.0,
+  schema_version: 2,
+  city_label: "Chicago",
+  color_mode: "parts",
+  part_colors: {
+    base: "#111111",
+    frame: "#222222",
+    buildings: "#333333",
+    roads: "#444444",
+    water: "#555555",
+    green: "#666666",
+    trees: "#777777",
+  },
+  engravings: [{ edge: "bottom", text: "{city}", size_mm: 8, depth_mm: 1.5 }],
+  north_arrow: { enabled: true, corner: "sw", size_mm: 6 },
+  scale_bar: { enabled: true, edge: "top", length_mode: "fixed", length_m: 1000 },
+  hanger: "keyhole",
+  underside_mark: { enabled: true, template: "{coords}" },
+  hero_building_ids: ["w1"],
+  hero_mode: "both",
 };
 
 const building = (height_m: number): Building => ({
@@ -148,6 +174,88 @@ describe("the 60 mm ceiling", () => {
   });
 });
 
+// ==========================================================================
+// The hanger floor ([V2-P5], wired to the UI by [V2-P7-fix])
+// ==========================================================================
+
+describe("a base too thin for the underside blocks Bake", () => {
+  const graph = graphOf(40, 40);
+
+  it("names the keyhole minimum from the shared math, not from a literal", () => {
+    // `transform.underside_min_base_mm` is what `lettering.build` refuses on,
+    // and 3.6 is where it lands at the DEFAULTS: a 2 mm keyhole pocket, the
+    // 1 mm of plate that has to stay over it, and the 0.6 mm the engraved roads
+    // take off the same plate from above. `hanger_min_base_mm` alone says 3.0,
+    // which is the wrong number to show a user (v2-07 audit, finding 4).
+    const params = p({ hanger: "keyhole" });
+    const needed = T.underside_min_base_mm(params);
+    expect(needed).toBeCloseTo(3.6, 9);
+    expect(params.base_thickness_mm).toBe(3.0);
+
+    const reason = bakeBlockReason(graph, params);
+    expect(reason).toContain(
+      "Keyhole hanger needs a base of at least 3.6 mm (now 3.0 mm) — " +
+        "raise the base thickness or choose no hanger.",
+    );
+    expect(reason).toContain("engraved roads already take 0.6 mm");
+    const warning = sceneWarnings(graph, params).find(
+      (w) => w.id === "base-too-thin-for-underside",
+    );
+    expect(warning?.level).toBe("block");
+  });
+
+  it("clears the moment the base reaches the minimum, and not before", () => {
+    // The bake refuses on `base < needed`, so the editor must allow exactly
+    // `base >= needed` - one hundredth under and it is still blocked.
+    const needed = T.underside_min_base_mm(p({ hanger: "keyhole" }));
+    expect(bakeBlockReason(graph, p({ hanger: "keyhole", base_thickness_mm: needed - 0.01 })))
+      .toContain("Keyhole hanger");
+    expect(
+      bakeBlockReason(graph, p({ hanger: "keyhole", base_thickness_mm: needed })),
+    ).toBeNull();
+    expect(bakeBlockReason(graph, p({ hanger: "keyhole", base_thickness_mm: 4 }))).toBeNull();
+  });
+
+  it("moves with road_mode and water, because they cut the same plate", () => {
+    // Both recesses come off the top of the base, so both change how much is
+    // left under the pocket: 3.6 -> 3.5 -> 3.0. This is why `warningDeps` has
+    // to name them.
+    const roadsOff = p({ hanger: "keyhole", road_mode: "off", base_thickness_mm: 3.0 });
+    expect(T.underside_min_base_mm(roadsOff)).toBeCloseTo(3.5, 9);
+    expect(bakeBlockReason(graph, roadsOff)).toContain("at least 3.5 mm");
+    expect(bakeBlockReason(graph, roadsOff)).toContain("water already take 0.5 mm");
+
+    const dry = { ...roadsOff, water: false };
+    expect(T.underside_min_base_mm(dry)).toBeCloseTo(3.0, 9);
+    expect(bakeBlockReason(graph, dry)).toBeNull();
+  });
+
+  it("covers magnets and the underside mark too", () => {
+    expect(bakeBlockReason(graph, p({ hanger: "magnets" }))).toContain(
+      "Magnet hanger needs a base of at least 4.7 mm (now 3.0 mm)",
+    );
+    const marked = p({
+      base_thickness_mm: 1.5,
+      underside_mark: { enabled: true, template: "{city}" },
+    });
+    // 0.3 mm mark + 1.0 mm roof + the recess, and the recess is itself a
+    // function of the base (`road_z_mm` is `-min(0.6, base/3)`): at 1.5 mm the
+    // engraved roads take 0.5 mm, not 0.6, so the floor is 1.8 and not 1.9.
+    expect(T.underside_min_base_mm(marked)).toBeCloseTo(1.8, 9);
+    expect(bakeBlockReason(graph, marked)).toContain(
+      "Underside mark needs a base of at least 1.8 mm (now 1.5 mm) — " +
+        "raise the base thickness or turn the underside mark off.",
+    );
+  });
+
+  it("does not fire when nothing is cut into the underside", () => {
+    expect(sceneWarnings(graph, p()).map((w) => w.id)).not.toContain(
+      "base-too-thin-for-underside",
+    );
+    expect(bakeBlockReason(graph, p())).toBeNull();
+  });
+});
+
 describe("coverage and estimated heights still gate the bake", () => {
   it("blocks a scene under 20 buildings before it mentions the height", () => {
     const sparse = graphOf(5, 400);
@@ -172,6 +280,14 @@ describe("coverage and estimated heights still gate the bake", () => {
 describe("warningDeps", () => {
   const graph = graphOf(40, 200);
 
+  it("has a moved value for every non-boolean parameter", () => {
+    // Guards the walk below against going vacuous when the contract grows.
+    for (const key of Object.keys(DEFAULT_PRINT_PARAMS) as Array<keyof PrintParams>) {
+      if (typeof DEFAULT_PRINT_PARAMS[key] === "boolean") continue;
+      expect(MOVES[key], `${key} has no moved value in MOVES`).toBeDefined();
+    }
+  });
+
   it("names every parameter the prediction actually reads, and no other", () => {
     const before = warningDeps(graph, p());
     for (const key of Object.keys(DEFAULT_PRINT_PARAMS) as Array<keyof PrintParams>) {
@@ -192,11 +308,90 @@ describe("warningDeps", () => {
     }
   });
 
+  it("names every parameter the hanger floor reads, and no other", () => {
+    // The same walk, against the OTHER block warning. `underside_min_base_mm`
+    // reads base_thickness_mm, hanger, underside_mark.enabled, road_mode and
+    // water; a memo keyed only on the height inputs would leave a stale "needs
+    // 3.6 mm" on screen after the user turned the roads off.
+    const withHanger = { ...DEFAULT_PRINT_PARAMS, hanger: "keyhole" } as PrintParams;
+    const before = warningDeps(graph, withHanger);
+    let moved = 0;
+    for (const key of Object.keys(DEFAULT_PRINT_PARAMS) as Array<keyof PrintParams>) {
+      const next: PrintParams = { ...withHanger };
+      (next as unknown as Record<string, unknown>)[key] =
+        typeof DEFAULT_PRINT_PARAMS[key] === "boolean"
+          ? !DEFAULT_PRINT_PARAMS[key]
+          : MOVES[key];
+      const listed = before.some((value, i) => !Object.is(value, warningDeps(graph, next)[i]));
+      const moves =
+        T.underside_min_base_mm(next) !== T.underside_min_base_mm(withHanger);
+      if (moves) {
+        moved += 1;
+        expect(listed, `${key} moves the hanger floor but is not a dep`).toBe(true);
+      }
+    }
+    // Not vacuous: road_mode, water and underside_mark really do move it.
+    expect(moved).toBeGreaterThan(0);
+  });
+
   it("never puts the params object itself in the key", () => {
     const params = p();
     for (const value of warningDeps(graph, params)) {
       expect(value).not.toBe(params);
       if (value !== graph) expect(typeof value).not.toBe("object");
     }
+  });
+});
+
+// ==========================================================================
+// Hero buildings ([V2-P6])
+// ==========================================================================
+
+describe("a hero counts at its hero height", () => {
+  const graph = graphOf(40, 200);
+  /** Both multipliers halved, so `max(1.0, 0.5)` is a real difference. */
+  const halved = { small_scale: 0.5, large_scale: 0.5 };
+
+  it("raises the predicted top when the mode grants true height", () => {
+    // `transform.predicted_top_mm` counts a hero at `building_top_mm_for(...,
+    // is_hero=true)` because that is the height the bake prints and the preview
+    // now draws. The 60 mm guard and the HUD have to see the same number.
+    const plain = predictedTopMm(graph, p(halved)) as number;
+    const hero = predictedTopMm(
+      graph,
+      p({ ...halved, hero_building_ids: ["w200"] }),
+    ) as number;
+    expect(hero).toBeGreaterThan(plain);
+    expect(hero).toBeCloseTo(plain * 2 - 3, 6);
+  });
+
+  it("does not raise it in own_color, where the hero keeps everyone's height", () => {
+    const plain = predictedTopMm(graph, p(halved));
+    expect(
+      predictedTopMm(
+        graph,
+        p({ ...halved, hero_building_ids: ["w200"], hero_mode: "own_color" }),
+      ),
+    ).toBe(plain);
+  });
+
+  it("is named by warningDeps, as a string and not as the id array", () => {
+    // Every entry has to be a primitive or the graph: `previewDeps.height` IS
+    // this list, and `CityPreview.test.ts` asserts that rule.
+    const before = warningDeps(graph, p(halved));
+    const after = warningDeps(graph, p({ ...halved, hero_building_ids: ["w200"] }));
+    expect(before.some((value, i) => !Object.is(value, after[i]))).toBe(true);
+    for (const value of after) {
+      if (value === graph) continue;
+      expect(typeof value).not.toBe("object");
+    }
+    // A rebuilt-but-identical id array must not invalidate the memo.
+    const once = p({ ...halved, hero_building_ids: ["w200"] });
+    const twice = p({ ...halved, hero_building_ids: ["w200"] });
+    expect(
+      warningDeps(graph, once).some(
+        (value, i) => !Object.is(value, warningDeps(graph, twice)[i]),
+      ),
+    ).toBe(false);
   });
 });

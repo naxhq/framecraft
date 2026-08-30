@@ -2,10 +2,176 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://framecraft.app/schema/print_params.json",
   "title": "PrintParams",
-  "description": "Editor parameters shared verbatim by the live preview and the bake pipeline. Ranges from 01_PRODUCT_SPEC.md's editor parameter table (percent ranges expressed as fractions), defaults from 02_TECH_SPEC.md's example.",
+  "description": "Editor parameters shared verbatim by the live preview and the bake pipeline. Ranges from 01_PRODUCT_SPEC.md's editor parameter table (percent ranges expressed as fractions), defaults from 02_TECH_SPEC.md's example. schema_version 2 adds the v2 personalisation block (labelling, ornaments, colours, hero buildings); every v2 field is optional and defaults to the behaviour v1 had, so a v1 payload - which carries none of them - loads unchanged.",
   "type": "object",
   "additionalProperties": false,
+  "$defs": {
+    "PartColors": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One filament colour per printed part, used when color_mode is \"parts\". Four distinct colours by default (base+buildings, roads+frame, water, green+trees) so a four-slot AMS prints the default scene with no re-assignment. #RRGGBB or #RRGGBBAA.",
+      "properties": {
+        "base": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$",
+          "default": "#D8D3C6",
+          "description": "Base slab."
+        },
+        "frame": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$",
+          "default": "#3A3A3A",
+          "description": "Frame border."
+        },
+        "buildings": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$",
+          "default": "#D8D3C6",
+          "description": "Building solids."
+        },
+        "roads": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$",
+          "default": "#3A3A3A",
+          "description": "Road ribbons."
+        },
+        "water": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$",
+          "default": "#2F7FC1",
+          "description": "Water areas."
+        },
+        "green": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$",
+          "default": "#5A9E4B",
+          "description": "Green areas."
+        },
+        "trees": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$",
+          "default": "#5A9E4B",
+          "description": "Tree cones."
+        }
+      },
+      "required": ["base", "frame", "buildings", "roads", "water", "green", "trees"]
+    },
+    "Engraving": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One line of lettering on one edge of the frame. `text` runs through the shared token table (services/bake/app/geom/tokens.py, apps/web/lib/tokens.ts) before it is cut.",
+      "properties": {
+        "edge": {
+          "type": "string",
+          "enum": ["top", "bottom", "left", "right"],
+          "description": "Which frame edge carries the line."
+        },
+        "align": {
+          "type": "string",
+          "enum": ["start", "center", "end"],
+          "default": "center",
+          "description": "Placement along that edge."
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Literal text, with {city}/{coords}/{scale}/... tokens expanded."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["engrave", "emboss"],
+          "default": "engrave"
+        },
+        "size_mm": {
+          "type": "number",
+          "minimum": 1.5,
+          "maximum": 8.0,
+          "default": 4.0,
+          "description": "Cap height, mm. The default is measured, not chosen: at 3.0 mm the default face refuses six of the eight strings a user actually types (v2-03 audit, finding 4); 4.0 mm cuts all of them in all three faces."
+        },
+        "depth_mm": {
+          "type": "number",
+          "minimum": 0.2,
+          "maximum": 1.5,
+          "default": 0.4,
+          "description": "Cut depth (engrave) or raise height (emboss), mm."
+        },
+        "font": {
+          "type": "string",
+          "enum": ["sans", "serif", "mono"],
+          "default": "sans"
+        }
+      },
+      "required": ["edge", "text"]
+    },
+    "NorthArrow": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Small north indicator in one corner of the frame.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "corner": {
+          "type": "string",
+          "enum": ["ne", "nw", "se", "sw"],
+          "default": "ne"
+        },
+        "size_mm": {
+          "type": "number",
+          "minimum": 2.0,
+          "maximum": 6.0,
+          "default": 4.0,
+          "description": "Arrow length, mm."
+        }
+      }
+    },
+    "ScaleBar": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Graphic scale bar on one frame edge.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "edge": {
+          "type": "string",
+          "enum": ["top", "bottom", "left", "right"],
+          "default": "bottom"
+        },
+        "length_mode": {
+          "type": "string",
+          "enum": ["auto", "fixed"],
+          "default": "auto",
+          "description": "auto picks a round ground distance that fits the edge; fixed uses length_m."
+        },
+        "length_m": {
+          "type": "number",
+          "minimum": 10,
+          "maximum": 5000,
+          "default": 500,
+          "description": "Ground distance the bar spans when length_mode is \"fixed\", metres."
+        }
+      }
+    },
+    "UndersideMark": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Recessed provenance mark on the underside of the base.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "template": {
+          "type": "string",
+          "maxLength": 64,
+          "default": "{city} {scale} {date}",
+          "description": "Token template expanded by the shared token table."
+        }
+      }
+    }
+  },
   "properties": {
+    "schema_version": {
+      "type": "integer",
+      "enum": [2],
+      "default": 2,
+      "description": "Contract revision this payload was written against. Absent means v1, which is exactly this object with every v2 field at its default."
+    },
     "plate_mm": {
       "type": "number",
       "minimum": 100,
@@ -62,7 +228,74 @@
     },
     "trees": { "type": "boolean", "default": true },
     "water": { "type": "boolean", "default": true },
-    "frame": { "type": "boolean", "default": true }
+    "frame": { "type": "boolean", "default": true },
+    "city_label": {
+      "type": "string",
+      "maxLength": 64,
+      "default": "",
+      "description": "City name typed by the user; the only source of the {city} token. FrameCraft never reverse-geocodes."
+    },
+    "color_mode": {
+      "type": "string",
+      "enum": ["single", "parts"],
+      "default": "single",
+      "description": "single writes one solid (v1 behaviour); parts writes one 3MF object per part, coloured from part_colors."
+    },
+    "part_colors": {
+      "$ref": "#/$defs/PartColors",
+      "default": {
+        "base": "#D8D3C6",
+        "frame": "#3A3A3A",
+        "buildings": "#D8D3C6",
+        "roads": "#3A3A3A",
+        "water": "#2F7FC1",
+        "green": "#5A9E4B",
+        "trees": "#5A9E4B"
+      }
+    },
+    "engravings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Engraving" },
+      "maxItems": 8,
+      "default": [],
+      "description": "Lines of lettering on the frame, at most eight."
+    },
+    "north_arrow": {
+      "$ref": "#/$defs/NorthArrow",
+      "default": { "enabled": false, "corner": "ne", "size_mm": 4.0 }
+    },
+    "scale_bar": {
+      "$ref": "#/$defs/ScaleBar",
+      "default": {
+        "enabled": false,
+        "edge": "bottom",
+        "length_mode": "auto",
+        "length_m": 500
+      }
+    },
+    "hanger": {
+      "type": "string",
+      "enum": ["none", "keyhole", "magnets"],
+      "default": "none",
+      "description": "Wall-mount feature cut into the back of the base."
+    },
+    "underside_mark": {
+      "$ref": "#/$defs/UndersideMark",
+      "default": { "enabled": false, "template": "{city} {scale} {date}" }
+    },
+    "hero_building_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 12,
+      "default": [],
+      "description": "SceneGraph building ids the user singled out, at most twelve."
+    },
+    "hero_mode": {
+      "type": "string",
+      "enum": ["true_height", "own_color", "both"],
+      "default": "true_height",
+      "description": "How a hero building differs: kept at true height, given its own colour, or both."
+    }
   },
   "required": [
     "plate_mm",

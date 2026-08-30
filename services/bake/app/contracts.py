@@ -45,10 +45,10 @@ class Building(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
     id: str
     ring: Ring
-    holes: List[Ring] = Field(default_factory=list)
+    holes: List[Ring]
     height_m: Annotated[float, Field(ge=0)]
     height_source: Literal["tag", "levels", "default"]
-    min_height_m: Annotated[float, Field(ge=0)] = 0.0
+    min_height_m: Annotated[float, Field(ge=0)]
     is_tall: bool
 
 
@@ -63,7 +63,7 @@ class Road(BaseModel):
 class AreaFeature(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
     ring: Ring
-    holes: List[Ring] = Field(default_factory=list)
+    holes: List[Ring]
 
 
 class Tree(BaseModel):
@@ -93,8 +93,52 @@ class SceneGraph(BaseModel):
 
 
 # ---- from print_params.json -----------------------
+class PartColors(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
+    base: Annotated[str, Field(pattern="^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$")]
+    frame: Annotated[str, Field(pattern="^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$")]
+    buildings: Annotated[str, Field(pattern="^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$")]
+    roads: Annotated[str, Field(pattern="^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$")]
+    water: Annotated[str, Field(pattern="^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$")]
+    green: Annotated[str, Field(pattern="^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$")]
+    trees: Annotated[str, Field(pattern="^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$")]
+
+
+class Engraving(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
+    edge: Literal["top", "bottom", "left", "right"]
+    align: Literal["start", "center", "end"] = "center"
+    text: Annotated[str, Field(max_length=64)]
+    mode: Literal["engrave", "emboss"] = "engrave"
+    size_mm: Annotated[float, Field(ge=1.5, le=8.0)] = 4.0
+    depth_mm: Annotated[float, Field(ge=0.2, le=1.5)] = 0.4
+    font: Literal["sans", "serif", "mono"] = "sans"
+
+
+class NorthArrow(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
+    enabled: bool = False
+    corner: Literal["ne", "nw", "se", "sw"] = "ne"
+    size_mm: Annotated[float, Field(ge=2.0, le=6.0)] = 4.0
+
+
+class ScaleBar(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
+    enabled: bool = False
+    edge: Literal["top", "bottom", "left", "right"] = "bottom"
+    length_mode: Literal["auto", "fixed"] = "auto"
+    length_m: Annotated[float, Field(ge=10, le=5000)] = 500
+
+
+class UndersideMark(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
+    enabled: bool = False
+    template: Annotated[str, Field(max_length=64)] = "{city} {scale} {date}"
+
+
 class PrintParams(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
+    schema_version: Literal[2] = 2
     plate_mm: Annotated[float, Field(ge=100, le=256)] = 180
     base_thickness_mm: Annotated[float, Field(ge=2, le=8)] = 3.0
     nozzle_mm: Annotated[float, Field(ge=0.1, le=1.2)] = 0.4
@@ -106,6 +150,16 @@ class PrintParams(BaseModel):
     trees: bool = True
     water: bool = True
     frame: bool = True
+    city_label: Annotated[str, Field(max_length=64)] = ""
+    color_mode: Literal["single", "parts"] = "single"
+    part_colors: PartColors = Field(default_factory=lambda: PartColors(base="#D8D3C6", frame="#3A3A3A", buildings="#D8D3C6", roads="#3A3A3A", water="#2F7FC1", green="#5A9E4B", trees="#5A9E4B"))
+    engravings: Annotated[List[Engraving], Field(max_length=8)] = Field(default_factory=list)
+    north_arrow: NorthArrow = Field(default_factory=lambda: NorthArrow(enabled=False, corner="ne", size_mm=4.0))
+    scale_bar: ScaleBar = Field(default_factory=lambda: ScaleBar(enabled=False, edge="bottom", length_mode="auto", length_m=500))
+    hanger: Literal["none", "keyhole", "magnets"] = "none"
+    underside_mark: UndersideMark = Field(default_factory=lambda: UndersideMark(enabled=False, template="{city} {scale} {date}"))
+    hero_building_ids: Annotated[List[str], Field(max_length=12)] = Field(default_factory=list)
+    hero_mode: Literal["true_height", "own_color", "both"] = "true_height"
 
 
 # ---- from bake_result.json ------------------------

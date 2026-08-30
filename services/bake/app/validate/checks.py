@@ -61,14 +61,27 @@ __all__ = [
     "Check",
     "ValidationReport",
     "validate",
+    "validate_parts",
+    "single_body_check",
     "enforce_triangle_budget",
     "section_polygons",
     "wall_persist_mm",
     "recess_probe_zs",
+    "validate_lettering",
+    "validate_base_floor",
+    "lettering_probe_zs",
+    "lettering_expected_pieces",
+    "validator_token_context",
+    "frame_band_polygon",
     "body_count",
     "TRIANGLE_BUDGET",
     "DECIMATION_TARGET",
     "MAX_HEIGHT_MM",
+    "MIN_PART_BODY_VOLUME_MM3",
+    "PART_UNION_VOLUME_TOLERANCE",
+    "PART_UNION_BBOX_TOLERANCE_MM",
+    "PART_UNION_SYMDIFF_MM3",
+    "symmetric_difference_mm3",
 ]
 
 #: 04 stage 4: triangle budget and the decimation target when it is exceeded.
@@ -107,6 +120,31 @@ WALL_PERSIST_RATIO = 0.7
 SI_FACE_SAMPLE = 6000
 SI_PAIR_BUDGET = 400_000
 SI_SEED = 20260830
+
+#: Parts mode.  A shell smaller than this (mm^3) is boolean debris, not a
+#: printable piece of a colour part; the same number ``assemble.prune_debris``
+#: uses on the assembled solid.
+MIN_PART_BODY_VOLUME_MM3 = 0.01
+#: The union of the parts must reproduce the single-mode solid's volume to this
+#: relative tolerance and its bounding box to this many millimetres.
+PART_UNION_VOLUME_TOLERANCE = 1e-6
+PART_UNION_BBOX_TOLERANCE_MM = 1e-6
+#: ... and, which is the check that actually has teeth, the two must be the SAME
+#: SET: ``vol(parts - single) + vol(single - parts)`` under this many mm^3.
+#:
+#: Volume and bounding box alone cannot see a partition error - equal and
+#: opposite differences cancel exactly, and the relative volume budget above is
+#: 0.168 mm^3 on a Chicago plate, seventeen times the 0.0095 mm^3 of building
+#: wall the parts used to carry that the single solid did not.  The symmetric
+#: difference is two booleans and is exact.
+#:
+#: The bound is ONE CELL of the pipeline's own snap grid, cubed
+#: (``thicken.PRINT_GRID_MM ** 3`` = 1e-6 mm^3): Stage 1 puts every polygon on
+#: that grid, so nothing the two modes can legitimately disagree about is bigger
+#: than a cell, and the only difference that survives is the sub-nanometre
+#: retriangulation noise of performing the union here rather than there.
+#: Measured on Chicago at plate 180 and 256 with the partition fixed: 0.0.
+PART_UNION_SYMDIFF_MM3 = thicken.PRINT_GRID_MM**3
 
 
 # --------------------------------------------------------------------------
@@ -185,6 +223,13 @@ class ValidationReport:
         verdict = "ALL CHECKS PASS" if self.passed else f"FAILED: {', '.join(self.failed)}"
         rows.append("")
         rows.append(verdict)
+        # The value/threshold columns say WHICH row failed; only the message says
+        # why (which part, which colour, how far out).  Printing it for the
+        # failing rows costs nothing when everything passes and is the whole
+        # diagnosis when something does not.
+        for c in self.checks:
+            if not c.passed:
+                rows.append(f"  {c.name}: {c.message}")
         return "\n".join(rows)
 
 
@@ -242,14 +287,27 @@ def _cross_section_polygons(section: Any) -> list[Polygon]:
 
 
 def manifold_from_mesh(mesh: trimesh.Trimesh) -> Any | None:
-    """Re-import a trimesh into ``manifold3d``, or None if it is not a solid."""
+    """Re-import a trimesh into ``manifold3d``, or None if it is not a solid.
+
+    ``np.array(..., order="C")`` and not ``np.ascontiguousarray``: trimesh hands
+    out a READ-ONLY ``TrackedArray`` for ``vertices``, ``ascontiguousarray``
+    passes a read-only array straight through when no conversion is needed, and
+    manifold3d's nanobind binding refuses one - so this function used to return
+    None for every mesh it was given, including a plain cube.  Nothing crashed,
+    because every caller has a fallback: ``_part_bodies`` fell back to trimesh's
+    connected components (and to the WHOLE part's volume as its "smallest
+    shell", which made the debris half of the ``bodies`` row vacuous) and
+    ``make_slicer`` fell back to ``trimesh.section``, the path DECISIONS [P3]
+    documents as the inferior one.  ``np.array`` always copies, so the array it
+    hands over is writable.
+    """
     from manifold3d import Error, Manifold, Mesh64
 
     try:
         solid = Manifold(
             Mesh64(
-                np.ascontiguousarray(mesh.vertices, dtype=np.float64),
-                np.ascontiguousarray(mesh.faces, dtype=np.uint64),
+                np.array(mesh.vertices, dtype=np.float64, order="C"),
+                np.array(mesh.faces, dtype=np.uint64, order="C"),
             )
         )
     except Exception:
@@ -508,13 +566,27 @@ def _min_wall_probe(
     slices: int = MIN_WALL_SLICES,
     manifold: Any = None,
     extra_zs: Sequence[float] = (),
-) -> tuple[float, int, int]:
-    """(narrowest wall, failing regions, regions measured), all in print mm."""
+    skip_bands: Sequence[tuple[float, float]] = (),
+) -> tuple[float, int, int, int]:
+    """(narrowest wall, failing regions, regions measured, slices skipped).
+
+    ``skip_bands`` are Z ranges this probe must not judge, and today there is
+    exactly one caller for it: the band occupied by the UNDERSIDE pockets (the
+    maker's mark, the keyhole, the magnet pockets).  The "is this a wall?" test
+    below looks one printed layer UPWARD, which correctly excludes a roof - a
+    region with nothing above it - but a pocket cut into the bottom face is the
+    mirror image: the plate above it is solid, so the ridge between two letters
+    of the mark persists upward perfectly and gets measured as a free-standing
+    wall, which it is not.  Those bands are judged by the purpose-built
+    ``base_floor`` validator instead, which asks the question that actually
+    matters there (is there a millimetre of plate over the pocket?).  With no
+    underside feature the list is empty and nothing about the probe changes.
+    """
     z_lo = float(mesh.bounds[0][2])
     z_hi = float(mesh.bounds[1][2])
     persist = wall_persist_mm(min_wall_mm)
     if z_hi - z_lo <= 2.0 * persist:
-        return math.inf, 0, 0
+        return math.inf, 0, 0, 0
 
     slicer = make_slicer(mesh, manifold)
     rng = np.random.default_rng(MIN_WALL_SEED)
@@ -535,7 +607,11 @@ def _min_wall_probe(
     smallest = math.inf
     failing = 0
     measured = 0
+    skipped = 0
     for z in zs.tolist():
+        if any(lo <= z <= hi for lo, hi in skip_bands):
+            skipped += 1
+            continue
         regions = slicer(z)
         if not regions:
             continue
@@ -552,7 +628,662 @@ def _min_wall_probe(
             smallest = min(smallest, width)
             if width < fail_at:
                 failing += 1
-    return smallest, failing, measured
+    return smallest, failing, measured, skipped
+
+
+# --------------------------------------------------------------------------
+# Parts mode (PrintParams v2, color_mode="parts")
+# --------------------------------------------------------------------------
+
+
+def _part_bodies(mesh: trimesh.Trimesh) -> tuple[int, float]:
+    """(shells, smallest shell volume mm^3) of one colour part.
+
+    ``manifold3d`` decomposes exactly and gives a signed volume per shell; a
+    mesh it refuses to import is judged by trimesh's connected components with
+    no per-shell volume (the ``part_meshes`` row fails it anyway).
+    """
+    solid = manifold_from_mesh(mesh)
+    if solid is not None:
+        try:
+            pieces = solid.decompose()
+        except Exception:  # pragma: no cover - manifold3d always decomposes
+            pieces = []
+        if pieces:
+            return len(pieces), min(float(p.volume()) for p in pieces)
+    return body_count(mesh), float(mesh.volume)
+
+
+def single_body_check(mesh: trimesh.Trimesh, manifold: Any = None) -> Check:
+    """01/A6: the model must open in a slicer as ONE object, not one plus debris.
+
+    04 stage 4's ``watertight`` row deliberately tolerates several bodies - its
+    Euler test is ``even and <= 2 * body_count`` - because it judges an arbitrary
+    mesh.  A finished FrameCraft plate is not arbitrary: it is one connected
+    solid sitting on the bed, and a floating island is exactly the failure a
+    slicer surfaces to the user.  This row was for a long time only in
+    ``app/cli.py``, i.e. only under ``make validate``, so the bake could and did
+    mark a job ``done`` on a model with three bodies - a frameless plate with two
+    embossed letters hovering over it (v2-03 audit, finding 2).
+    """
+    bodies = body_count(mesh, manifold)
+    return Check(
+        name="bodies",
+        passed=bodies == 1,
+        value=bodies,
+        threshold=1,
+        message=(
+            "one connected solid, so a slicer shows a single object"
+            if bodies == 1
+            else f"{bodies} disconnected bodies; a slicer would show {bodies} objects "
+            "(a floating island or leftover boolean debris)"
+        ),
+    )
+
+
+def validate_parts(
+    parts: Sequence[tuple[str, trimesh.Trimesh]],
+    *,
+    union: trimesh.Trimesh | None = None,
+    reference: trimesh.Trimesh | None = None,
+    components: int | None = None,
+    union_solid: Any = None,
+    reference_solid: Any = None,
+) -> list[Check]:
+    """The extra Stage 4 rows a ``color_mode="parts"`` model has to pass.
+
+    Purely ADDITIVE: single mode produces none of these rows and every rule it
+    already had still applies, to the whole solid, unchanged.
+
+    * ``bodies`` - every part is a non-empty solid with no debris shell, and the
+      file declares exactly one mesh object per part (``components``).  04's
+      single-body rule is a rule about what a SLICER shows, and in parts mode
+      the slicer shows one object made of these parts; the assembled union is
+      still required to be one connected shell, which is where that rule lives
+      now.  A *part* cannot be required to be one shell: a city's buildings
+      layer is hundreds of separate blocks by construction, and 04 stage 1's
+      whole job is to decide which of them merge.
+    * ``part_meshes`` - each part on its own is manifold, watertight, has
+      positive volume and no degenerate face.
+    * ``parts_union`` - the manifold union of the parts IS the single-mode
+      solid: same volume to ``PART_UNION_VOLUME_TOLERANCE`` relative and the
+      same bounding box.  This is what makes it legitimate to run the rest of
+      the gate on one of the two.
+    """
+    checks: list[Check] = []
+    names = [name for name, _mesh in parts]
+
+    shells = 0
+    empty: list[str] = []
+    debris: list[str] = []
+    for name, mesh in parts:
+        count, smallest = _part_bodies(mesh)
+        shells += count
+        if count == 0 or len(mesh.faces) == 0:
+            empty.append(name)
+        elif smallest < MIN_PART_BODY_VOLUME_MM3:
+            debris.append(f"{name} ({smallest:.4g} mm^3)")
+    union_bodies = None if union is None else body_count(union)
+    bodies_ok = (
+        bool(parts)
+        and not empty
+        and not debris
+        and (components is None or components == len(parts))
+        and (union_bodies is None or union_bodies == 1)
+    )
+    detail = []
+    if empty:
+        detail.append(f"empty part(s): {', '.join(empty)}")
+    if debris:
+        detail.append(f"debris shell(s): {', '.join(debris)}")
+    if components is not None and components != len(parts):
+        detail.append(f"{components} components for {len(parts)} parts")
+    if union_bodies is not None and union_bodies != 1:
+        detail.append(f"the assembled union is {union_bodies} disconnected bodies")
+    checks.append(
+        Check(
+            name="bodies",
+            passed=bodies_ok,
+            value=f"{len(parts)} parts, {shells} shells"
+            + ("" if union_bodies is None else f", union {union_bodies}"),
+            threshold="one mesh object per part, no debris, union is one solid",
+            message=(
+                "every part is a solid piece of one connected object"
+                if bodies_ok
+                else "; ".join(detail) or "no parts"
+            ),
+        )
+    )
+
+    bad: list[str] = []
+    total_triangles = 0
+    for name, mesh in parts:
+        total_triangles += int(len(mesh.faces))
+        reasons = []
+        if not bool(mesh.is_watertight):
+            reasons.append("not watertight")
+        if not bool(mesh.is_winding_consistent):
+            reasons.append("inconsistent winding")
+        volume = float(mesh.volume)
+        if not (volume > 0.0 and volume == abs(volume)):
+            reasons.append(f"volume {volume:.6g}")
+        degenerate = int((mesh.area_faces < DEGENERATE_FACE_AREA).sum())
+        if degenerate:
+            reasons.append(f"{degenerate} degenerate faces")
+        if reasons:
+            bad.append(f"{name}: {', '.join(reasons)}")
+    # 04 stage 4's triangle budget, on the geometry that actually ships in parts
+    # mode.  `enforce_triangle_budget` decimates the SINGLE-mode solid (which
+    # becomes the .stl) and deliberately leaves the parts alone so the partition
+    # survives, so the budget has to be re-asserted here or a model that
+    # decimated would ship a .3mf over the budget with `triangle_budget PASS`.
+    if total_triangles >= TRIANGLE_BUDGET:
+        bad.append(
+            f"the parts hold {total_triangles:,} triangles, over 04's "
+            f"{TRIANGLE_BUDGET:,} budget (the .stl is decimated; the parts are not)"
+        )
+    checks.append(
+        Check(
+            name="part_meshes",
+            passed=not bad and bool(parts),
+            value=f"{len(parts)} parts, {total_triangles:,} triangles"
+            + (f" ({', '.join(names)})" if len(names) <= 8 else ""),
+            threshold="each manifold, watertight, positive volume, no degenerate face",
+            message=(
+                "every part is a valid solid on its own"
+                if not bad and parts
+                else "; ".join(bad) or "no parts to judge"
+            ),
+        )
+    )
+
+    if union is not None and reference is not None:
+        vu = float(union.volume)
+        vr = float(reference.volume)
+        volume_ok = abs(vu - vr) <= PART_UNION_VOLUME_TOLERANCE * max(abs(vr), 1.0)
+        bbox_delta = float(
+            np.max(np.abs(np.asarray(union.bounds) - np.asarray(reference.bounds)))
+        )
+        bbox_ok = bbox_delta <= PART_UNION_BBOX_TOLERANCE_MM
+        extra, missing, symdiff_ok = symmetric_difference_mm3(
+            union, reference, union_solid=union_solid, reference_solid=reference_solid
+        )
+        detail: list[str] = []
+        if not volume_ok:
+            detail.append(f"volume differs by {abs(vu - vr):.6g} mm^3")
+        if not bbox_ok:
+            detail.append(f"bounding box differs by {bbox_delta:.3g} mm")
+        if not symdiff_ok:
+            detail.append(
+                f"the parts hold {extra:.6g} mm^3 the single solid does not and are "
+                f"missing {missing:.6g} mm^3 of it"
+            )
+        passed = bool(volume_ok and bbox_ok and symdiff_ok)
+        checks.append(
+            Check(
+                name="parts_union",
+                passed=passed,
+                value=f"{vu:,.4f} mm^3 vs {vr:,.4f} mm^3, symmetric difference "
+                f"{extra + missing:.3g} mm^3, bbox delta {bbox_delta:.2e} mm",
+                threshold=(
+                    f"same set to {PART_UNION_SYMDIFF_MM3:g} mm^3, volume within "
+                    f"{PART_UNION_VOLUME_TOLERANCE:g} relative, bbox within "
+                    f"{PART_UNION_BBOX_TOLERANCE_MM:g} mm"
+                ),
+                message=(
+                    "the union of the parts IS the single-colour solid, set for set"
+                    if passed
+                    else "the parts do not partition the model: " + "; ".join(detail)
+                ),
+            )
+        )
+    return checks
+
+
+def symmetric_difference_mm3(
+    union: trimesh.Trimesh,
+    reference: trimesh.Trimesh,
+    union_solid: Any = None,
+    reference_solid: Any = None,
+) -> tuple[float, float, bool]:
+    """``(vol(union - reference), vol(reference - union), within tolerance)``.
+
+    The only test that can actually see a partition error.  Volume and bounding
+    box cancel equal-and-opposite differences exactly; this asks whether the two
+    solids are the same SET, which is what "the parts partition the model" means.
+
+    Returns ``(inf, inf, False)`` if either solid cannot be handed to manifold3d,
+    because an unanswerable question is not a pass.
+    """
+    from manifold3d import Manifold, OpType
+
+    # The Manifolds themselves when the caller still holds them (the bake does):
+    # re-importing a mesh is a round trip through float64 triangles that a
+    # nanometre-wide seam sliver can fail outright, and an unanswerable question
+    # is not a pass.
+    a = union_solid if union_solid is not None else manifold_from_mesh(union)
+    b = reference_solid if reference_solid is not None else manifold_from_mesh(reference)
+    if a is None or b is None:
+        return math.inf, math.inf, False
+    extra = float(Manifold.batch_boolean([a, b], OpType.Subtract).volume())
+    missing = float(Manifold.batch_boolean([b, a], OpType.Subtract).volume())
+    return extra, missing, (extra + missing) <= PART_UNION_SYMDIFF_MM3
+
+
+# --------------------------------------------------------------------------
+# Frame lettering and the underside (PrintParams v2)
+# --------------------------------------------------------------------------
+
+#: How far inside a pocket's outline the ``base_floor`` probe measures, in mm.
+#: The pocket's own wall is a vertical face and a slice through it lands on the
+#: outline itself; stepping in by a twentieth of a millimetre asks about the
+#: material, not about the boundary.
+POCKET_PROBE_INSET_MM = 0.05
+#: Fractions of the required roof at which every pocket is probed.  Three
+#: slices, so the roof has to be solid THROUGHOUT the millimetre above the
+#: pocket - one slice just above the pocket would say nothing about a recess
+#: cutting down into that millimetre from the top.
+POCKET_PROBE_FRACTIONS = (0.1, 0.5, 0.9)
+#: Uncovered area, in mm^2, that still counts as covered.  A slice of a
+#: cylinder is a polygon, not a circle, so a few square micrometres of chord
+#: sagitta is not a breach.
+POCKET_COVER_TOLERANCE_MM2 = 1e-3
+
+
+def frame_band_polygon(params: T.ParamsLike) -> Polygon | Any:
+    """The frame lip's own footprint, in model millimetres.
+
+    The model is centred on X and Y and sits at z = 0 (04 stage 2.7), so plate
+    coordinates and model coordinates are the same thing.
+    """
+    frame = T.frame_geometry_mm(params)
+    outer = shapely.box(
+        -frame.outer_half_mm, -frame.outer_half_mm, frame.outer_half_mm, frame.outer_half_mm
+    )
+    inner = shapely.box(
+        -frame.inner_half_mm, -frame.inner_half_mm, frame.inner_half_mm, frame.inner_half_mm
+    )
+    return outer.difference(inner)
+
+
+def lettering_probe_zs(params: T.ParamsLike) -> list[tuple[float, str]]:
+    """``(z, mode)`` for every band that carries text or an ornament, print mm.
+
+    An engraved band is probed at half its depth below the lip's top face and an
+    embossed one at half its height above it, i.e. in the middle of the material
+    that makes the letter - which is where the strokes are widest and the ridges
+    between them narrowest.
+    """
+    if not bool(params.frame):
+        return []
+    lip_top = T.base_top_mm(params) + T.FRAME_LIP_MM
+    out: set[tuple[float, str]] = set()
+    for engraving in getattr(params, "engravings", None) or ():
+        depth = float(getattr(engraving, "depth_mm", None) or 0.4)
+        if depth <= 0.0:
+            continue
+        if str(getattr(engraving, "mode", "engrave")) == "emboss":
+            out.add((lip_top + depth / 2.0, "emboss"))
+        else:
+            out.add((lip_top - depth / 2.0, "engrave"))
+    ornament = False
+    if bool(getattr(getattr(params, "north_arrow", None), "enabled", False)):
+        ornament = True
+    if bool(getattr(getattr(params, "scale_bar", None), "enabled", False)):
+        ornament = True
+    if ornament:
+        out.add((lip_top - T.ENGRAVE_MAX_MM / 2.0, "engrave"))
+    return sorted(out)
+
+
+def underside_probe_zs(params: T.ParamsLike) -> list[tuple[float, str]]:
+    """``(z, "underside")`` for the mark cut into the bottom of the plate.
+
+    The mark is text, and its strokes and ridges are exactly as printable-or-not
+    as the ones on the lip; they were measured by NO Stage 4 row (``min_wall``
+    skips the pocket band and hands it to ``base_floor``, which only asks
+    whether the plate above each pocket is still solid - v2-03 audit, finding
+    10).  Probed at half the mark's depth, where the strokes are widest and the
+    ridges between them narrowest, exactly as on the lip.
+    """
+    mark = getattr(params, "underside_mark", None)
+    if not bool(getattr(mark, "enabled", False)):
+        return []
+    depth = T.UNDERSIDE_MARK_DEPTH_MM
+    if depth <= 0.0:
+        return []
+    return [(depth / 2.0, "underside")]
+
+
+#: The context the validator expands ``{token}``s against when it asks the
+#: shared layout WHICH pieces of text will be cut.  A ``.3mf`` carries its
+#: parameters (the sidecar) but not the scene they were baked from, so the
+#: lat/lon, the scale, the radius and the building count are not recoverable
+#: here - only ``{city}``, which is a PrintParams field, is exact.
+#:
+#: Every value below is therefore chosen to make the expansion at least as LONG
+#: as any real one, and a longer string is harder to fit, never easier
+#: (``fit_text`` shrinks until it fits or refuses).  So "this context says the
+#: piece is not refused" implies the real one is not refused either, and the
+#: expected-piece count below can only ever UNDER-count.  Under-counting costs
+#: coverage; over-counting would fail a bake that was right to cut nothing.
+#:
+#: * ``-89.9999 / -179.9999``  the longest ``{coords}``/``{lat}``/``{lon}``
+#: * ``0.02`` mm per ground metre  ``{scale}`` = ``1:50,000``, longer than any
+#:   scale a 100-256 mm plate over a 200-2 000 m radius can produce, and the
+#:   auto scale bar it implies is the WIDEST the window allows (2 000 m -> 40 mm),
+#:   so an engraving sharing that edge is judged against the least room
+#: * ``99999`` m and ``999999`` buildings  the longest ``{radius}``/``{buildings}``
+#: * the date is always 10 characters, so any ISO date is exact
+VALIDATOR_CTX_LAT = -89.9999
+VALIDATOR_CTX_LON = -179.9999
+VALIDATOR_CTX_SCALE_MM_PER_M = 0.02
+VALIDATOR_CTX_RADIUS_M = 99999.0
+VALIDATOR_CTX_BUILDINGS = 999999
+VALIDATOR_CTX_DATE = "2026-08-30"
+
+
+def validator_token_context(params: T.ParamsLike) -> Any:
+    """The worst-case :class:`app.geom.tokens.TokenContext` described above."""
+    from app.geom import tokens
+
+    return tokens.TokenContext(
+        lat=VALIDATOR_CTX_LAT,
+        lon=VALIDATOR_CTX_LON,
+        scale_mm_per_m=VALIDATOR_CTX_SCALE_MM_PER_M,
+        radius_m=VALIDATOR_CTX_RADIUS_M,
+        date=VALIDATOR_CTX_DATE,
+        buildings=VALIDATOR_CTX_BUILDINGS,
+        city=str(getattr(params, "city_label", "") or ""),
+    )
+
+
+def lettering_expected_pieces(params: T.ParamsLike) -> list[tuple[float, str, str]]:
+    """``(z, mode, label)`` for every piece of text the LAYOUT says will be cut.
+
+    :func:`lettering_probe_zs` answers "what did the parameters ASK for", which
+    is why a row exists at all.  This answers "what did the shared layout AGREE
+    to", which is what the geometry then has to show: a piece the layout did not
+    refuse and that leaves no stroke at its own band is text that vanished
+    silently, and ``0.000 mm stroke  PASS`` is the wrong verdict for it (v2-07
+    audit, finding 2).
+
+    A refusal is the layout's own (``TextFit.refused``, an empty fit after the
+    unsupported characters are dropped, the frame being off) - the same test
+    ``lettering.build`` makes before it cuts, so the two cannot disagree about
+    what should be there.  The z values are computed with the same expressions
+    as :func:`lettering_probe_zs` and :func:`underside_probe_zs`, so they land
+    on exactly the same bands.
+    """
+    layout = T.lettering_layout(params, validator_token_context(params))
+    out: list[tuple[float, str, str]] = []
+    lip_top = T.base_top_mm(params) + T.FRAME_LIP_MM
+    if bool(params.frame):
+        sources = T.engraving_list(params)
+        for placed in layout.engravings:
+            fit = placed.fit
+            if fit is None or fit.refused or not fit.text:
+                continue
+            source = sources[placed.index] if placed.index < len(sources) else None
+            depth = float(getattr(source, "depth_mm", None) or 0.4)
+            if depth <= 0.0:
+                continue
+            label = f"engraving {placed.index + 1} ({placed.edge})"
+            if str(placed.mode) == "emboss":
+                out.append((lip_top + depth / 2.0, "emboss", label))
+            else:
+                out.append((lip_top - depth / 2.0, "engrave", label))
+        ornament_z = lip_top - T.ENGRAVE_MAX_MM / 2.0
+        if layout.north_arrow.enabled:
+            out.append((ornament_z, "engrave", "the north arrow"))
+        if layout.scale_bar.enabled:
+            out.append((ornament_z, "engrave", "the scale bar"))
+    mark = layout.underside_mark
+    if mark.enabled and mark.fit is not None and not mark.fit.refused and mark.fit.text:
+        depth = float(mark.depth_mm or T.UNDERSIDE_MARK_DEPTH_MM)
+        if depth > 0.0:
+            out.append((depth / 2.0, "underside", "the underside mark"))
+    return out
+
+
+def validate_lettering(
+    mesh: trimesh.Trimesh, params: T.ParamsLike, manifold: Any = None
+) -> list[Check]:
+    """The ``lettering`` row: every stroke and every complement ridge measured.
+
+    The band is sliced in the middle of the material that forms the letters and
+    the slice is clipped to the frame lip's own footprint (the city stops
+    0.05 mm short of it, so nothing else can get into the measurement).  Then:
+
+    * a **stroke** is a groove for engraved text (the lip minus the slice) and a
+      standing island for embossed text.  It fails under ``0.9 * min_wall``,
+      which is 04 stage 4's own rule and the number Stage 1 widened every glyph
+      to;
+    * a **complement ridge** is what is left of the lip between two strokes.  It
+      fails under ``0.9 * min_detail`` - ONE nozzle - and is reported whenever it
+      is under a wall.  The floor is a nozzle rather than a wall because the gap
+      between two letters of a 5 mm face is about half a millimetre at every
+      size a 6 mm lip can hold: a wall-high floor would not print better text,
+      it would merge every pair of letters into an unreadable smear (the same
+      reasoning, and the same measure, as ``thicken.merge_recess_ridges``, which
+      is what actually swallows a sub-nozzle ridge before it is ever printed).
+
+    Both measurements use ``thicken.narrowest_width``, the inscribed-circle
+    measure Stage 1 repaired with and the ``min_wall`` validator reports with.
+
+    The row also fails when a piece the layout AGREED to cut left no stroke at
+    its own band at all (:func:`lettering_expected_pieces`).  Measuring only the
+    narrowest stroke made "nothing was cut" indistinguishable from "everything
+    was cut perfectly": both report ``0.000 mm stroke`` and no ``bad`` entry, so
+    a regression that requested every ornament and produced none passed this row
+    and the gate that greps it (v2-07 audit, finding 2).  A parameter set that
+    asked for nothing, or whose every piece the layout refused, still passes with
+    zero - refusing text is a documented outcome, losing it is not.
+    """
+    bands = lettering_probe_zs(params) + underside_probe_zs(params)
+    if not bands:
+        return []
+    from app.geom import lettering
+
+    expected: dict[tuple[float, str], list[str]] = {}
+    for z, mode, label in lettering_expected_pieces(params):
+        expected.setdefault((z, mode), []).append(label)
+    pieces = sum(len(labels) for labels in expected.values())
+    strokes_at: dict[tuple[float, str], int] = {}
+
+    min_wall = T.min_wall_mm(params)
+    min_detail = T.min_detail_mm(params)
+    # 04 stage 1's own area floor, which is what the lettering repair measured
+    # with: the two have to speak one language or the gate would fail a corner
+    # lens the repair was right to ignore (see lettering.text_area_floor).
+    area_floor = lettering.text_area_floor(params)
+    # An engraved stroke is a VOID and an embossed one is MATERIAL, so they get
+    # different floors: one nozzle for the void (below it the groove does not
+    # appear at all) and 04's two-perimeter wall for the material.  Same for the
+    # complement: the lip between two grooves is material but it is a SURFACE
+    # ridge on a solid roof, not a free-standing wall - see
+    # thicken.merge_recess_ridges, which swallows anything under a nozzle.
+    engrave_fail = MIN_WALL_FAIL_FACTOR * T.text_stroke_target_mm(params, "engrave")
+    emboss_fail = MIN_WALL_FAIL_FACTOR * T.text_stroke_target_mm(params, "emboss")
+    ridge_fail = MIN_WALL_FAIL_FACTOR * min_detail
+    band = frame_band_polygon(params)
+    slicer = make_slicer(mesh, manifold)
+
+    narrowest_stroke = math.inf
+    narrowest_ridge = math.inf
+    strokes = 0
+    ridges = 0
+    bad: list[str] = []
+    for z, mode in bands:
+        regions = slicer(z)
+        if not regions:
+            continue
+        if mode == "underside":
+            # The underside slice is the whole plate, not the lip band, and the
+            # plate's own outline is chamfered - so the region to measure inside
+            # is the slice with its holes FILLED.  Anything else would read the
+            # chamfer's setback as a groove around the whole perimeter.
+            solid = shapely.union_all([r for r in regions])
+            area = shapely.union_all(
+                [Polygon(piece.exterior) for piece in thicken.explode(solid)]
+            )
+        else:
+            area = band
+            solid = shapely.union_all([r for r in regions]).intersection(band)
+        if solid.is_empty:
+            continue
+        if mode == "emboss":
+            # Embossed strokes are MATERIAL standing on the lip, so they get
+            # 04's minimum wall; the gaps between them are voids and get the
+            # same one-nozzle floor as any other void.
+            for piece in thicken.explode(solid):
+                if piece.area < area_floor:
+                    continue
+                strokes += 1
+                strokes_at[(z, mode)] = strokes_at.get((z, mode), 0) + 1
+                width = thicken.narrowest_width(piece, min_wall, area_floor)
+                narrowest_stroke = min(narrowest_stroke, width)
+                if width < emboss_fail:
+                    bad.append(f"embossed stroke {width:.3f} mm at z={z:.2f}")
+            for gap in thicken.explode(band.difference(solid)):
+                if gap.area < area_floor:
+                    continue
+                ridges += 1
+                width = thicken.narrowest_width(gap, min_detail, area_floor)
+                narrowest_ridge = min(narrowest_ridge, width)
+                if width < ridge_fail:
+                    bad.append(f"embossed gap {width:.3f} mm at z={z:.2f}")
+            continue
+        for groove in thicken.explode(area.difference(solid)):
+            if groove.area < area_floor:
+                continue
+            strokes += 1
+            strokes_at[(z, mode)] = strokes_at.get((z, mode), 0) + 1
+            width = thicken.narrowest_width(groove, min_detail, area_floor)
+            narrowest_stroke = min(narrowest_stroke, width)
+            if width < engrave_fail:
+                where = "underside stroke" if mode == "underside" else "engraved stroke"
+                bad.append(f"{where} {width:.3f} mm at z={z:.2f}")
+        for piece in thicken.explode(solid):
+            if piece.area < area_floor:
+                continue
+            ridges += 1
+            width = thicken.narrowest_width(piece, min_detail, area_floor)
+            narrowest_ridge = min(narrowest_ridge, width)
+            if width < ridge_fail:
+                where = "underside ridge" if mode == "underside" else "lip ridge"
+                bad.append(f"{where} {width:.3f} mm at z={z:.2f}")
+
+    # Every piece the layout accepted has to show up as material at its own
+    # band.  Reported last so a thin stroke - which names a measurement - still
+    # heads the message when both are wrong.
+    for (z, mode), labels in sorted(expected.items()):
+        if strokes_at.get((z, mode), 0) > 0:
+            continue
+        bad.append(
+            f"requested {len(labels)} pieces ({', '.join(labels)}), measured 0 "
+            f"strokes at the {mode} band z={z:.2f} mm"
+        )
+
+    stroke_value = 0.0 if not math.isfinite(narrowest_stroke) else narrowest_stroke
+    ridge_value = 0.0 if not math.isfinite(narrowest_ridge) else narrowest_ridge
+    passed = not bad
+    thin_ridge = math.isfinite(narrowest_ridge) and narrowest_ridge < min_wall
+    message = (
+        f"narrowest stroke {stroke_value:.3f} mm over {strokes}, narrowest lip ridge "
+        f"{ridge_value:.3f} mm over {ridges}, on {len(bands)} text band(s) carrying "
+        f"{pieces} piece(s) the layout accepted"
+        if passed
+        else "; ".join(bad[:4]) + (f"; +{len(bad) - 4} more" if len(bad) > 4 else "")
+    )
+    if passed and thin_ridge:
+        message += (
+            f" (a ridge under one wall, {ridge_value:.3f} mm: the letters print but "
+            f"they crowd)"
+        )
+    return [
+        Check(
+            name="lettering",
+            passed=passed,
+            value=(
+                f"{strokes} strokes of {pieces} piece(s); {stroke_value:.3f} mm "
+                f"stroke / {ridge_value:.3f} mm ridge"
+            ),
+            threshold=(
+                f"engraved stroke >= {engrave_fail:.3f} mm, embossed stroke >= "
+                f"{emboss_fail:.3f} mm, ridge >= {ridge_fail:.3f} mm"
+            ),
+            message=message,
+        )
+    ]
+
+
+def validate_base_floor(
+    mesh: trimesh.Trimesh, params: T.ParamsLike, manifold: Any = None
+) -> list[Check]:
+    """The ``base_floor`` row: nothing cut from below breaches the plate.
+
+    Every underside pocket - the mark, the keyhole, the magnet pockets - has to
+    leave ``HANGER_MIN_ROOF_MM`` of solid plate above it.  That is checked twice
+    over: once as arithmetic against the shared
+    :func:`app.geom.transform.underside_min_base_mm` (which is also what the bake
+    refuses on, before it builds anything), and once on the finished MESH, by
+    slicing at three heights inside that millimetre and asserting the pocket's
+    own footprint lies inside the solid at each of them.  The mesh half is what
+    catches a lake or an engraved road cutting DOWN into the same millimetre from
+    the top, which no arithmetic on the base thickness alone can see.
+    """
+    from app.geom import lettering
+
+    pockets = lettering.underside_pocket_polygons(params)
+    if not pockets:
+        return []
+    roof = T.HANGER_MIN_ROOF_MM
+    base_needed = T.underside_min_base_mm(params)
+    base = float(params.base_thickness_mm)
+    bad: list[str] = []
+    if base + 1e-9 < base_needed:
+        bad.append(
+            f"the base is {base:g} mm and these pockets need {base_needed:g} mm"
+        )
+
+    slicer = make_slicer(mesh, manifold)
+    probed = 0
+    worst = 0.0
+    cache: dict[float, Any] = {}
+    for kind, footprints, depth in pockets:
+        for fraction in POCKET_PROBE_FRACTIONS:
+            z = depth + fraction * roof
+            if z not in cache:
+                regions = slicer(z)
+                cache[z] = shapely.union_all(regions) if regions else None
+            solid = cache[z]
+            for footprint in footprints:
+                probe = footprint.buffer(-POCKET_PROBE_INSET_MM)
+                if probe.is_empty:
+                    continue
+                probed += 1
+                missing = probe.area if solid is None else probe.difference(solid).area
+                worst = max(worst, missing)
+                if missing > POCKET_COVER_TOLERANCE_MM2:
+                    bad.append(
+                        f"{missing:.3f} mm^2 of the {kind} pocket has no plate over it "
+                        f"at z={z:.2f} mm"
+                    )
+    passed = not bad
+    return [
+        Check(
+            name="base_floor",
+            passed=passed,
+            value=f"{len(pockets)} pocket kind(s), {probed} probes, worst gap {worst:.4g} mm^2",
+            threshold=f">= {roof:g} mm of plate above every pocket",
+            message=(
+                f"every underside pocket keeps {roof:g} mm of plate over it"
+                if passed
+                else "; ".join(bad[:4]) + (f"; +{len(bad) - 4} more" if len(bad) > 4 else "")
+            ),
+        )
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -627,7 +1358,10 @@ def validate(
     checks: list[Check] = []
 
     plate_mm = float(params.plate_mm)
-    min_wall_mm = T.MIN_WALL_NOZZLES * float(params.nozzle_mm)
+    # 04's ``2 * nozzle``, from the shared transform math rather than spelled
+    # out here, so the gate can never measure against a different wall than the
+    # one Stage 1 repaired to or the preview HUD advertised (DECISIONS [V2-P1]).
+    min_wall_mm = T.min_wall_mm(params)
 
     watertight = bool(mesh.is_watertight)
     winding = bool(mesh.is_winding_consistent)
@@ -755,10 +1489,17 @@ def validate(
 
     # ---- min wall -------------------------------------------------------
     recess_zs = recess_probe_zs(params, min_wall_mm)
-    smallest, failing, measured = _min_wall_probe(
-        mesh, min_wall_mm, slices=slices, manifold=manifold, extra_zs=recess_zs
+    underside = T.underside_band_mm(params)
+    skip_bands = [underside] if underside is not None else []
+    smallest, failing, measured, skipped = _min_wall_probe(
+        mesh,
+        min_wall_mm,
+        slices=slices,
+        manifold=manifold,
+        extra_zs=recess_zs,
+        skip_bands=skip_bands,
     )
-    slice_count = slices + len(recess_zs)
+    slice_count = slices + len(recess_zs) - skipped
     fail_at = min_wall_mm * MIN_WALL_FAIL_FACTOR
     reported = 0.0 if not math.isfinite(smallest) else smallest
     # One measure decides both numbers: `failing` counts the regions whose
@@ -774,6 +1515,12 @@ def validate(
             message=(
                 f"narrowest wall {reported:.3f} mm over {measured} regions on "
                 f"{slice_count} slices"
+                + (
+                    f" ({skipped} slice(s) in the underside pocket band are judged "
+                    f"by base_floor and lettering instead)"
+                    if skipped
+                    else ""
+                )
                 if wall_ok
                 else f"{failing} of {measured} sampled regions are under "
                 f"{fail_at:.3f} mm (narrowest {reported:.3f} mm)"
@@ -797,6 +1544,13 @@ def validate(
             ),
         )
     )
+
+    # ---- frame lettering and the underside (v2, additive) -----------------
+    # Both rows appear only when the parameters ask for the feature: a row for a
+    # model that carries no text at all would be a pass with nothing behind it,
+    # and every v1 report keeps exactly the rows it had.
+    checks.extend(validate_lettering(mesh, params, manifold=manifold))
+    checks.extend(validate_base_floor(mesh, params, manifold=manifold))
 
     # ---- degenerate faces ------------------------------------------------
     degenerate = int((mesh.area_faces < DEGENERATE_FACE_AREA).sum())

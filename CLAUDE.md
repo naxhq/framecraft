@@ -27,9 +27,11 @@ docker-compose.yml  Makefile  RUNBOOK.md
 
 ## Hard rules
 
-- `packages/contracts/` is FROZEN after phase 1. No field may be renamed or
-  removed without a line in `DECISIONS.md`. Regenerate, never hand-edit,
-  `apps/web/lib/contracts.ts`.
+- `packages/contracts/` is FROZEN at **schema version 2** (re-frozen 2026-08-30;
+  v1 fields unchanged, v2 fields optional with v1-identical defaults, pinned by
+  `tests/test_v1_compat.py` against `fixtures/v1-golden/`). No rename/removal
+  without a `DECISIONS.md` line. `make contracts` regenerates both outputs;
+  never hand-edit `contracts.ts` / `contracts.py`.
 - Boolean engine is `manifold3d`. The browser never runs booleans; the server
   never runs the preview. Preview and bake share one transform-math signature
   (Python + TS mirror, parity test within 0.01 mm).
@@ -49,7 +51,7 @@ docker-compose.yml  Makefile  RUNBOOK.md
 (pytest + vitest + next build + Playwright smoke) · `make bake-fixture`
 (Chicago preset -> `artifacts/chicago.3mf`) · `make validate FILE=...`
 (CLI validator table) · `make refresh-fixtures` (re-fetch Overpass fixtures)
-· `make down` · `make clean`.
+· `make gate-v2` (G5 + G6 + G8: parts, text, v1 golden) · `make down` · `make clean`.
 
 ## Ports
 

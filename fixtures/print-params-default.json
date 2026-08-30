@@ -1,0 +1,44 @@
+{
+  "schema_version": 2,
+  "plate_mm": 180.0,
+  "base_thickness_mm": 3.0,
+  "nozzle_mm": 0.4,
+  "small_scale": 1.0,
+  "large_scale": 1.0,
+  "terrain_exaggeration": 1.0,
+  "road_mode": "engrave",
+  "road_scale": 1.0,
+  "trees": true,
+  "water": true,
+  "frame": true,
+  "city_label": "",
+  "color_mode": "single",
+  "part_colors": {
+    "base": "#D8D3C6",
+    "frame": "#3A3A3A",
+    "buildings": "#D8D3C6",
+    "roads": "#3A3A3A",
+    "water": "#2F7FC1",
+    "green": "#5A9E4B",
+    "trees": "#5A9E4B"
+  },
+  "engravings": [],
+  "north_arrow": {
+    "enabled": false,
+    "corner": "ne",
+    "size_mm": 4.0
+  },
+  "scale_bar": {
+    "enabled": false,
+    "edge": "bottom",
+    "length_mode": "auto",
+    "length_m": 500.0
+  },
+  "hanger": "none",
+  "underside_mark": {
+    "enabled": false,
+    "template": "{city} {scale} {date}"
+  },
+  "hero_building_ids": [],
+  "hero_mode": "true_height"
+}

@@ -1,0 +1,58 @@
+{
+  "note": "Frozen v1 bake of the chicago-loop preset at the v1 PrintParams defaults. Generated from a clean git worktree of the generating commit, NOT from the working tree, so it is an independent reference. tests/test_v1_compat.py asserts the current tree still reproduces it byte for byte.",
+  "attribution": "© OpenStreetMap contributors",
+  "generating_commit": "da9ab83",
+  "generated_at": "2026-08-29",
+  "command": "uv run python -m app.cli bake --preset chicago-loop --out ../../artifacts/chicago.3mf",
+  "scene_request": {
+    "lat": 41.8827,
+    "lon": -87.6233,
+    "radius_m": 900.0,
+    "rotation_deg": 0.0,
+    "preset_id": "chicago-loop"
+  },
+  "print_params": {
+    "plate_mm": 180.0,
+    "base_thickness_mm": 3.0,
+    "nozzle_mm": 0.4,
+    "small_scale": 1.0,
+    "large_scale": 1.0,
+    "terrain_exaggeration": 1.0,
+    "road_mode": "engrave",
+    "road_scale": 1.0,
+    "trees": true,
+    "water": true,
+    "frame": true
+  },
+  "geometry_digest": {
+    "algorithm": "sha256",
+    "over": "the exact text of the <vertices>...</vertices> element followed by the <triangles>...</triangles> element of 3D/3dmodel.model, utf-8 encoded",
+    "sha256": "0e20725e9c738a1af7e91a62dd2808ae94f74027f2811b51c65790873ce08758"
+  },
+  "vertices": 34348,
+  "triangles": 68692,
+  "volume_mm3": 167624.12441295458,
+  "bbox_mm": [
+    180.0,
+    180.0,
+    34.733333333333334
+  ],
+  "min_wall_mm": 0.8015771163765992,
+  "est_grams": 72.7488699952223,
+  "is_manifold": true,
+  "warnings": [
+    "509 buildings widened to meet minimum feature size",
+    "11 buildings dropped below the minimum printable size",
+    "block heights merged for 126 components",
+    "19 tall buildings preserved above their block",
+    "5762 trees dropped",
+    "177 water/green areas dropped below the minimum feature size"
+  ],
+  "scene_stats": {
+    "building_count": 994,
+    "coverage": "good",
+    "height_tag_ratio": 0.110664
+  },
+  "model_xml_bytes": 5314084,
+  "threemf_bytes": 645101
+}

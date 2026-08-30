@@ -34,6 +34,48 @@ HEADER = """// GENERATED FROM packages/contracts/schema — DO NOT EDIT.
 
 TS_SCALAR = {"string": "string", "number": "number", "integer": "number", "boolean": "boolean"}
 
+# Emitted verbatim above DEFAULT_PRINT_PARAMS.  The constant is a module-level
+# singleton, so without this its nested objects (part_colors, engravings,
+# north_arrow, scale_bar, underside_mark, hero_building_ids) are shared
+# instances that a SHALLOW copy - `{ ...DEFAULT_PRINT_PARAMS }` - aliases rather
+# than copies; editing one in place would edit the default itself and every
+# later reset would "reset" to the corruption.  This is the guard the Python
+# half already has as `Field(default_factory=...)`.
+FREEZE_HELPER = """/**
+ * Freeze `value` and everything reachable from it, then return it.
+ *
+ * Makes DEFAULT_PRINT_PARAMS immutable all the way down, so a caller that takes
+ * a shallow copy and then writes to a nested object gets a TypeError (ES modules
+ * are strict mode) instead of silently corrupting the shared default. Call
+ * `defaultPrintParams()` for a copy that may be edited.
+ */
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object") {
+    for (const inner of Object.values(value as Record<string, unknown>)) {
+      deepFreeze(inner);
+    }
+    Object.freeze(value);
+  }
+  return value;
+}
+
+"""
+
+# Emitted verbatim below DEFAULT_PRINT_PARAMS.
+FACTORY = """/**
+ * A fresh, fully mutable deep copy of DEFAULT_PRINT_PARAMS.
+ *
+ * Use this - never `{ ...DEFAULT_PRINT_PARAMS }` - wherever the copy will be
+ * edited, so no two pieces of state share a nested object with each other or
+ * with the frozen constant. Mirrors `PrintParams()` in Python, whose nested
+ * defaults are per-instance for the same reason.
+ */
+export function defaultPrintParams(): PrintParams {
+  return structuredClone(DEFAULT_PRINT_PARAMS);
+}
+
+"""
+
 # TS interface property keys that are not valid bare identifiers and must be
 # quoted (e.g. `"3mf": string;`).
 NEEDS_QUOTING = {"3mf"}
@@ -131,19 +173,114 @@ class Emitter:
         return title
 
 
-def numeric_range_entries(print_params_schema: dict) -> list[tuple[str, dict]]:
-    out = []
+def ref_target(prop: dict) -> str | None:
+    """The $defs name a property points at, directly or through its items."""
+    ref = prop.get("$ref")
+    if ref is None and prop.get("type") == "array":
+        ref = prop.get("items", {}).get("$ref")
+    if ref is None:
+        return None
+    return ref.split("/")[-1]
+
+
+def bounded(props: dict) -> list[tuple[str, dict]]:
+    return [(n, p) for n, p in props.items() if "minimum" in p and "maximum" in p]
+
+
+def numeric_range_entries(
+    print_params_schema: dict,
+) -> list[tuple[str, dict | list[tuple[str, dict]]]]:
+    """PARAM_RANGES rows, in PrintParams property order.
+
+    A bounded scalar becomes a leaf ``(name, prop)``.  A property that points at
+    a ``$defs`` object (directly, or as an array's item type) becomes a GROUP
+    ``(name, [(sub_name, sub_prop), ...])`` of that object's own bounded
+    scalars, so a nested slider reads its range from
+    ``PARAM_RANGES.north_arrow.size_mm.max`` and the UI never re-types a bound.
+    Objects with no bounded scalar contribute nothing.
+    """
+    defs = print_params_schema.get("$defs", {})
+    out: list[tuple[str, dict | list[tuple[str, dict]]]] = []
     for name, prop in print_params_schema["properties"].items():
         if "minimum" in prop and "maximum" in prop:
             out.append((name, prop))
+            continue
+        target = ref_target(prop)
+        if target is not None:
+            group = bounded(defs.get(target, {}).get("properties", {}))
+            if group:
+                out.append((name, group))
     return out
 
 
-def ts_literal(value) -> str:
+# JSON Schema count keyword -> the PARAM_LIMITS key it becomes.  Order is fixed
+# so the generated output stays byte-identical across runs.
+COUNT_CONSTRAINTS = (
+    ("minItems", "min_items"),
+    ("maxItems", "max_items"),
+    ("minLength", "min_length"),
+    ("maxLength", "max_length"),
+)
+
+
+def count_limits(prop: dict) -> list[tuple[str, int]]:
+    """The item-count / string-length caps declared on one schema fragment."""
+    return [(key, prop[kw]) for kw, key in COUNT_CONSTRAINTS if kw in prop]
+
+
+def limit_entries(
+    print_params_schema: dict,
+) -> list[tuple[str, list[tuple[str, int]], list[tuple[str, list[tuple[str, int]]]]]]:
+    """PARAM_LIMITS rows, in PrintParams property order.
+
+    PARAM_RANGES only carries fragments with both ``minimum`` and ``maximum``,
+    so the array caps (``engravings`` 8, ``hero_building_ids`` 12) and the
+    string caps (``city_label``, ``Engraving.text``, ``UndersideMark.template``
+    at 64) reached TS as types and runtime validation but not as constants, and
+    a UI enforcing them would have to re-type the numbers.  Each property
+    contributes its own caps as leaves (``city_label.max_length``) plus, when it
+    points at a ``$defs`` object directly or as an array's item type, one nested
+    entry per capped member (``engravings.text.max_length``).
+    """
+    defs = print_params_schema.get("$defs", {})
+    out: list[tuple[str, list[tuple[str, int]], list[tuple[str, list[tuple[str, int]]]]]] = []
+    for name, prop in print_params_schema["properties"].items():
+        own = count_limits(prop)
+        nested: list[tuple[str, list[tuple[str, int]]]] = []
+        target = ref_target(prop)
+        if target is not None:
+            for sub_name, sub_prop in defs.get(target, {}).get("properties", {}).items():
+                sub = count_limits(sub_prop)
+                if sub:
+                    nested.append((sub_name, sub))
+        if own or nested:
+            out.append((name, own, nested))
+    return out
+
+
+def ts_literal(value, defs: dict | None = None, def_name: str | None = None, indent: int = 0) -> str:
+    """A TS source literal for a JSON value.
+
+    Object values are emitted one key per line (nested defaults are seven
+    colours wide) in the referenced ``$defs`` property order, so the output is
+    readable and stable regardless of how the schema's default was keyed.
+    """
     if value is True:
         return "true"
     if value is False:
         return "false"
+    if isinstance(value, list):
+        if not value:
+            return "[]"
+        return "[" + ", ".join(ts_literal(v, defs, None, indent) for v in value) + "]"
+    if isinstance(value, dict):
+        if not value:
+            return "{}"
+        order = list((defs or {}).get(def_name or "", {}).get("properties", {}))
+        keys = [k for k in order if k in value] + [k for k in value if k not in order]
+        pad = " " * (indent + 2)
+        body = "\n".join(f"{pad}{k}: {ts_literal(value[k], defs, None, indent + 2)}," for k in keys)
+        return "{\n" + body + "\n" + " " * indent + "}"
     return json.dumps(value)
 
 
@@ -164,24 +301,64 @@ def generate() -> str:
     assert print_params_schema is not None
 
     # DEFAULT_PRINT_PARAMS: every PrintParams field has a schema default.
+    defs = print_params_schema.get("$defs", {})
     out.append("// ---- derived constants " + "-" * 20 + "\n\n")
-    default_lines = ["export const DEFAULT_PRINT_PARAMS: PrintParams = {"]
+    out.append(FREEZE_HELPER)
+    default_lines = ["export const DEFAULT_PRINT_PARAMS: PrintParams = deepFreeze<PrintParams>({"]
     for name, prop in print_params_schema["properties"].items():
-        default_lines.append(f"  {name}: {ts_literal(prop['default'])},")
-    default_lines.append("};\n")
+        literal = ts_literal(prop["default"], defs, ref_target(prop), 2)
+        default_lines.append(f"  {name}: {literal},")
+    default_lines.append("});\n")
     out.append("\n".join(default_lines))
     out.append("\n")
+    out.append(FACTORY)
 
-    # PARAM_RANGES: every numeric PrintParams field with a min/max.
-    range_lines = ["export const PARAM_RANGES = {"]
-    for name, prop in numeric_range_entries(print_params_schema):
-        range_lines.append(
-            f"  {name}: {{ min: {ts_literal(prop['minimum'])}, "
+    # PARAM_RANGES: every numeric PrintParams field with a min/max, plus one
+    # nested group per $defs object that has bounded scalars of its own.
+    def range_literal(prop: dict) -> str:
+        return (
+            f"{{ min: {ts_literal(prop['minimum'])}, "
             f"max: {ts_literal(prop['maximum'])}, "
-            f"default: {ts_literal(prop['default'])} }},"
+            f"default: {ts_literal(prop['default'])} }}"
         )
+
+    range_lines = ["export const PARAM_RANGES = {"]
+    for name, entry in numeric_range_entries(print_params_schema):
+        if isinstance(entry, list):
+            range_lines.append(f"  {name}: {{")
+            for sub_name, sub_prop in entry:
+                range_lines.append(f"    {sub_name}: {range_literal(sub_prop)},")
+            range_lines.append("  },")
+        else:
+            range_lines.append(f"  {name}: {range_literal(entry)},")
     range_lines.append("} as const;\n")
     out.append("\n".join(range_lines))
+    out.append("\n")
+
+    # PARAM_LIMITS: the array and string caps PARAM_RANGES cannot carry.
+    limit_lines = [
+        "/**",
+        " * Every item-count and string-length cap the contract declares, so a UI",
+        " * enforcing one never re-types the number at its call site (the drift",
+        " * PARAM_RANGES exists to prevent, for the bounds PARAM_RANGES has no room",
+        " * for: it carries only fragments with both a minimum and a maximum).",
+        " */",
+        "export const PARAM_LIMITS = {",
+    ]
+    for name, own, nested in limit_entries(print_params_schema):
+        if not nested:
+            body = ", ".join(f"{key}: {value}" for key, value in own)
+            limit_lines.append(f"  {name}: {{ {body} }},")
+            continue
+        limit_lines.append(f"  {name}: {{")
+        for key, value in own:
+            limit_lines.append(f"    {key}: {value},")
+        for sub_name, sub in nested:
+            body = ", ".join(f"{key}: {value}" for key, value in sub)
+            limit_lines.append(f"    {sub_name}: {{ {body} }},")
+        limit_lines.append("  },")
+    limit_lines.append("} as const;\n")
+    out.append("\n".join(limit_lines))
     out.append("\n")
 
     return "".join(out).rstrip() + "\n"

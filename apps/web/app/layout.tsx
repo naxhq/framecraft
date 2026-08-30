@@ -1,5 +1,15 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+
+/*
+ * Both typefaces are SELF-HOSTED: these two imports pull the woff2 files out
+ * of node_modules and Next serves them from this origin under
+ * /_next/static/media. Nothing is fetched from fonts.googleapis.com or
+ * fonts.gstatic.com at runtime, which `e2e/ui.spec.ts` asserts. Licences:
+ * apps/web/licences/ (both SIL OFL 1.1).
+ */
+import "@fontsource-variable/archivo";
+import "@fontsource-variable/ibm-plex-sans";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -32,10 +42,17 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }} />
       </head>
-      <body className="flex min-h-screen flex-col bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
+      <body className="flex min-h-screen flex-col bg-bench text-ink">
         <main className="flex-1">{children}</main>
-        <footer className="border-t border-neutral-200 py-3 text-center text-sm text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
-          © OpenStreetMap contributors
+        {/*
+          The OSM attribution is a licence obligation, not decoration: it is in
+          the layout so it survives every route, and it is also written into the
+          3MF metadata and CREDITS.txt by the bake.
+        */}
+        <footer className="fc-scored flex items-center justify-center gap-2 bg-bench px-4 py-2 text-2xs text-ink-faint">
+          <span aria-hidden="true" className="h-px w-6 bg-line-strong" />
+          <span>Map data © OpenStreetMap contributors</span>
+          <span aria-hidden="true" className="h-px w-6 bg-line-strong" />
         </footer>
       </body>
     </html>

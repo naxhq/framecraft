@@ -1,0 +1,203 @@
+import { expect, test, type Page, type Request } from "@playwright/test";
+
+/**
+ * The shareable configuration, end to end and across two browser contexts.
+ *
+ * `lib/share.test.ts` proves the payload round-trips; this proves the PRODUCT
+ * does: that Copy link puts a real URL on the clipboard and in the address bar,
+ * that opening it in a browser that has never seen this editor restores every
+ * control -- including an engraving, a picked hero and a filament colour -- and
+ * that it stops there rather than firing a live Overpass query nobody asked
+ * for.
+ */
+
+const API_URL = process.env.NEXT_PUBLIC_BAKE_API_URL ?? "http://localhost:8000";
+const WARMUP_BUDGET_MS = 60_000;
+
+function watchApi(page: Page): Array<{ method: string; path: string }> {
+  const calls: Array<{ method: string; path: string }> = [];
+  page.on("request", (request: Request) => {
+    const url = request.url();
+    if (url.startsWith(API_URL)) {
+      calls.push({ method: request.method(), path: new URL(url).pathname });
+    }
+  });
+  return calls;
+}
+
+const scenePosts = (calls: Array<{ method: string; path: string }>): number =>
+  calls.filter((call) => call.method === "POST" && call.path === "/scene").length;
+
+function log(message: string): void {
+  console.log(`[share] ${message}`);
+}
+
+test.describe.configure({ mode: "serial" });
+
+test("a copied link restores the whole editor in a fresh browser", async ({
+  page,
+  context,
+  browser,
+}) => {
+  // The clipboard is the point of the button, so the happy path is exercised
+  // rather than assumed. The link is ALSO in the DOM, which is what a browser
+  // that denies this permission falls back to -- and what this test reads.
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+
+  const calls = watchApi(page);
+  await page.goto("/");
+
+  // ---- 1. a preset, then a spread of v2 settings ------------------------
+  await page.locator('[data-preset-id="chicago-loop"]').click();
+  await expect(page.getByTestId("preview-stats")).toBeVisible({
+    timeout: WARMUP_BUDGET_MS,
+  });
+
+  await page.locator("#city_label").fill("Bergen");
+  await page.locator("#plate_mm").fill("200");
+  await expect(page.getByTestId("plate_mm-value")).toHaveText("200 mm");
+
+  await page.getByTestId("group-frame-toggle").click();
+  await page.getByTestId("engraving-add").click();
+  await page.locator("#engraving_0_text").fill("{city}");
+  await page.locator("#engraving_0_size_mm").fill("6");
+  await page.locator("#engraving_0_edge").selectOption("bottom");
+  await expect(page.getByTestId("engraving_0-fit")).toContainText("Cuts at");
+  await page.locator("#hanger").selectOption("magnets");
+
+  await page.getByTestId("group-colour-toggle").click();
+  await page.locator("#color_mode").getByRole("radio", { name: "one per part" }).click();
+  await page.locator("#part_color_water").fill("#123456");
+  await expect(page.getByTestId("part_color_water-hex")).toHaveText("#123456");
+
+  // A hero, picked from the keyboard so the test does not depend on a raycast
+  // landing on a building.
+  await page.getByTestId("preview-canvas").focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("hero-item")).toHaveCount(1);
+  // The id only: the list also shows the building's height, and a browser that
+  // has not generated the scene yet has no heights to show. The ID is the thing
+  // the link actually carries.
+  const heroId = (
+    ((await page.getByTestId("hero-item").first().textContent()) ?? "").trim().split(/\s/)[0]
+  );
+  expect(heroId).toMatch(/^\w+/);
+
+  // ---- 2. copy the link -------------------------------------------------
+  const copy = page.getByTestId("copy-link-button");
+  await copy.click();
+  const link = (await copy.getAttribute("data-share-url")) ?? "";
+  expect(link, "the Copy link button carries no URL").toContain("s=v2.");
+  log(`link is ${link.length} characters`);
+  // The address bar became the link, without a navigation.
+  expect(page.url()).toContain("s=v2.");
+  // ...and it is in the DOM for a browser that refuses the clipboard.
+  await expect(page.getByTestId("share-link")).toHaveValue(link);
+  const clipboard = await page.evaluate(() => navigator.clipboard.readText());
+  expect(clipboard).toBe(link);
+
+  // ---- 3. open it in a browser that has never seen this editor ----------
+  const fresh = await browser.newContext();
+  const other = await fresh.newPage();
+  const otherCalls = watchApi(other);
+  try {
+    await other.goto(link);
+    await expect(other.getByTestId("editor")).toBeVisible();
+
+    await expect(other.locator("#city_label")).toHaveValue("Bergen");
+    await expect(other.getByTestId("plate_mm-value")).toHaveText("200 mm");
+    await expect(other.getByTestId("radius_m-value")).toHaveText("900 m");
+    await expect(other.getByTestId("group-buildings-toggle")).toContainText("1/12 heroes");
+    await expect(other.getByTestId("hero-item").first()).toContainText(heroId);
+
+    // A fresh context has fresh localStorage, so the two personalisation groups
+    // are collapsed again and have to be opened to read their controls.
+    await other.getByTestId("group-frame-toggle").click();
+    await expect(other.getByTestId("engraving-row")).toHaveCount(1);
+    await expect(other.locator("#engraving_0_text")).toHaveValue("{city}");
+    await expect(other.locator("#engraving_0_size_mm")).toHaveValue("6");
+    await expect(other.locator("#engraving_0_edge")).toHaveValue("bottom");
+    await expect(other.locator("#hanger")).toHaveValue("magnets");
+
+    await other.getByTestId("group-colour-toggle").click();
+    await expect(other.getByTestId("part_color_water-hex")).toHaveText("#123456");
+
+    // ---- 4. it stops there: stale, ready to Generate, no request --------
+    await expect(other.getByTestId("preview-empty")).toBeVisible();
+    await expect(other.getByTestId("generate-button")).toBeEnabled();
+    await expect(other.getByTestId("share-notice")).toHaveCount(0);
+    await other.waitForTimeout(1_000);
+    expect(
+      scenePosts(otherCalls),
+      "opening a shared link fetched a scene by itself",
+    ).toBe(0);
+
+    // ---- 5. Generate, and the lettering is really on the model ----------
+    await other.getByTestId("generate-button").click();
+    await expect(other.getByTestId("preview-stats")).toBeVisible({
+      timeout: WARMUP_BUDGET_MS,
+    });
+    expect(scenePosts(otherCalls)).toBe(1);
+
+    const viewport = other.locator("[data-preview-text-count]");
+    await expect
+      .poll(async () => Number(await viewport.getAttribute("data-preview-text-count")), {
+        timeout: 20_000,
+      })
+      .toBeGreaterThan(0);
+    log(
+      `restored preview draws ${await viewport.getAttribute("data-preview-text-count")} rings of lettering`,
+    );
+  } finally {
+    await fresh.close();
+  }
+
+  // Copying a link never touched the bake API either.
+  expect(scenePosts(calls)).toBe(1);
+});
+
+test("a link this build cannot read is refused, not half-applied", async ({ page }) => {
+  const calls = watchApi(page);
+  // A valid-looking payload from a future schema: the version is the first
+  // thing checked, so it is named rather than guessed at.
+  await page.goto("/?s=v9.abcdef.00000000");
+
+  const notice = page.getByTestId("share-notice");
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("different version");
+  log(`refusal: ${(await notice.textContent())?.trim()}`);
+
+  // The editor is on its defaults, whole -- not on some half-restored state.
+  await expect(page.getByTestId("plate_mm-value")).toHaveText("180 mm");
+  await expect(page.locator("#city_label")).toHaveValue("");
+  await expect(page.getByTestId("preview-empty")).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(scenePosts(calls)).toBe(0);
+
+  // The bad payload is taken back out of the address bar, so dismissing the
+  // banner and reloading does not bring the same refusal back forever on what
+  // is by then a bookmarked URL.
+  expect(page.url()).not.toContain("s=v9");
+  expect(new URL(page.url()).searchParams.get("s")).toBeNull();
+
+  // It is a message about something that already happened, so it can be put away.
+  await page.getByTestId("share-notice-dismiss").click();
+  await expect(page.getByTestId("share-notice")).toHaveCount(0);
+
+  // ...and it stays away across a reload, which it did not before.
+  await page.reload();
+  await expect(page.getByTestId("share-notice")).toHaveCount(0);
+  await expect(page.getByTestId("plate_mm-value")).toHaveText("180 mm");
+});
+
+test("a truncated link says the link is damaged rather than doing nothing", async ({
+  page,
+}) => {
+  // The digest is what turns "a chat client wrapped the URL" into a message.
+  await page.goto("/?s=v2.eyJyIjp7ImxhdCI6NDEuODgyN30.deadbeef");
+  const notice = page.getByTestId("share-notice");
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText(/edited or truncated|damaged/);
+  await expect(page.getByTestId("plate_mm-value")).toHaveText("180 mm");
+});

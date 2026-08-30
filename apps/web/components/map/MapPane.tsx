@@ -10,7 +10,7 @@ import dynamic from "next/dynamic";
 const LocationPicker = dynamic(() => import("./LocationPicker"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-full w-full items-center justify-center bg-neutral-100 text-xs text-neutral-500 dark:bg-neutral-900 dark:text-neutral-400">
+    <div className="fc-drafting-sheet flex h-full w-full items-center justify-center text-2xs text-ink-faint">
       Loading map...
     </div>
   ),

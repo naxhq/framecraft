@@ -1,0 +1,137 @@
+{
+  "attribution": "© OpenStreetMap contributors",
+  "license": "ODbL 1.0",
+  "generator": "FrameCraft bake",
+  "created_at": "2026-08-30T04:01:27+00:00",
+  "scene_request": {
+    "lat": 41.8827,
+    "lon": -87.6233,
+    "radius_m": 900.0,
+    "rotation_deg": 0.0,
+    "preset_id": "chicago-loop"
+  },
+  "print_params": {
+    "plate_mm": 180.0,
+    "base_thickness_mm": 3.0,
+    "nozzle_mm": 0.4,
+    "small_scale": 1.0,
+    "large_scale": 1.0,
+    "terrain_exaggeration": 1.0,
+    "road_mode": "engrave",
+    "road_scale": 1.0,
+    "trees": true,
+    "water": true,
+    "frame": true
+  },
+  "bake_result": {
+    "job_id": "chicago",
+    "status": "done",
+    "files": {
+      "3mf": "/files/chicago.3mf",
+      "stl": "/files/chicago.stl"
+    },
+    "stats": {
+      "triangles": 68692,
+      "volume_mm3": 167624.12441295458,
+      "bbox_mm": [
+        180.0,
+        180.0,
+        34.733333333333334
+      ],
+      "est_grams": 72.7488699952223,
+      "is_manifold": true,
+      "min_wall_mm": 0.8015771163765992
+    },
+    "warnings": [
+      "509 buildings widened to meet minimum feature size",
+      "11 buildings dropped below the minimum printable size",
+      "block heights merged for 126 components",
+      "19 tall buildings preserved above their block",
+      "5762 trees dropped",
+      "177 water/green areas dropped below the minimum feature size"
+    ],
+    "progress": 1.0,
+    "error": null
+  },
+  "scene_stats": {
+    "building_count": 994,
+    "coverage": "good",
+    "height_tag_ratio": 0.110664
+  },
+  "validation": {
+    "passed": true,
+    "failed": [],
+    "checks": [
+      {
+        "name": "manifold",
+        "passed": true,
+        "value": "NoError; watertight=True winding=True",
+        "threshold": "NoError + watertight + consistent winding",
+        "message": "manifold3d reports a clean solid and the exported triangles agree"
+      },
+      {
+        "name": "watertight",
+        "passed": true,
+        "value": "euler=2 bodies=1",
+        "threshold": "closed, even euler <= 2",
+        "message": "closed surface with an Euler characteristic consistent with the body count"
+      },
+      {
+        "name": "volume",
+        "passed": true,
+        "value": 167624.12441295458,
+        "threshold": "> 0 mm^3",
+        "message": "167,624.1 mm^3"
+      },
+      {
+        "name": "self_intersection",
+        "passed": true,
+        "value": "0 in 38 sampled pairs; 0 bad edges; 0 dupes",
+        "threshold": "0",
+        "message": "manifold3d guarantees an intersection-free result for valid inputs (stage 1 make_valid + oriented rings); edge topology and a sampled face-pair probe agree"
+      },
+      {
+        "name": "bounding_box",
+        "passed": true,
+        "value": "180.000 x 180.000 x 34.733 mm",
+        "threshold": "x,y <= 180.01 mm; z < 60 mm",
+        "message": "fits the selected plate"
+      },
+      {
+        "name": "sits_at_zero",
+        "passed": true,
+        "value": 0.0,
+        "threshold": "|min z| <= 0.001",
+        "message": "sits flat on the bed"
+      },
+      {
+        "name": "min_wall",
+        "passed": true,
+        "value": 0.8015771163765992,
+        "threshold": 0.7200000000000001,
+        "message": "narrowest wall 0.802 mm over 1204 regions on 14 slices"
+      },
+      {
+        "name": "triangle_budget",
+        "passed": true,
+        "value": 68692,
+        "threshold": 2000000,
+        "message": "68,692 triangles"
+      },
+      {
+        "name": "degenerate_faces",
+        "passed": true,
+        "value": 0,
+        "threshold": 0,
+        "message": "no zero-area triangles"
+      }
+    ]
+  },
+  "timings_s": {
+    "repair": 5.155,
+    "assemble": 0.479,
+    "convert": 0.003,
+    "export": 0.178,
+    "validate": 2.585
+  }
+}

@@ -9,6 +9,7 @@ produce a 3MF without them.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -20,6 +21,8 @@ __all__ = [
     "stl",
     "ATTRIBUTION",
     "CREDITS_TEXT",
+    "FONT_CREDITS",
+    "FONT_LICENSE_LINE",
     "CREDITS_FILENAME",
     "write_credits",
     "write_sidecar",
@@ -28,6 +31,61 @@ __all__ = [
 
 ATTRIBUTION = mf3.ATTRIBUTION
 CREDITS_FILENAME = "CREDITS.txt"
+
+
+@dataclass(frozen=True)
+class FontCredit:
+    """One bundled typeface, as it is named in CREDITS.txt and in the 3MF."""
+
+    key: str
+    name: str
+    version: str
+    copyright: str
+
+
+#: The three OFL faces `app/geom/lettering.py` cuts glyphs from.  Their outlines
+#: end up in the printed object and in the browser bundle, so they are credited
+#: here, in `CREDITS.txt` and in the 3MF `LicenseTerms`; the earlier text said
+#: "third-party sources: none", which stopped being true the moment lettering
+#: shipped (v2-03 audit, finding 5).  `tests/test_lettering.py` asserts this
+#: table against the generated metrics and the bundled OFL files, so a font
+#: swap cannot leave the credit stale.
+FONT_CREDITS: tuple[FontCredit, ...] = (
+    FontCredit(
+        key="sans",
+        name="Inter",
+        version="4.001",
+        copyright=(
+            "Copyright (c) 2016 The Inter Project Authors "
+            "(https://github.com/rsms/inter)"
+        ),
+    ),
+    FontCredit(
+        key="serif",
+        name="Source Serif 4",
+        version="4.005",
+        copyright=(
+            "Copyright 2014-2023 Adobe (http://www.adobe.com/), with Reserved "
+            "Font Name 'Source'"
+        ),
+    ),
+    FontCredit(
+        key="mono",
+        name="JetBrains Mono",
+        version="2.304",
+        copyright=(
+            "Copyright 2020 The JetBrains Mono Project Authors "
+            "(https://github.com/JetBrains/JetBrainsMono)"
+        ),
+    ),
+)
+
+#: One line for the 3MF `LicenseTerms`, which has no room for the full notice.
+FONT_LICENSE_LINE = (
+    "Lettering is cut from "
+    + ", ".join(f"{f.name} {f.version}" for f in FONT_CREDITS)
+    + ", each under the SIL Open Font License 1.1."
+)
 
 CREDITS_TEXT = (
     "© OpenStreetMap contributors, ODbL; produced work by FrameCraft\n"
@@ -38,8 +96,22 @@ CREDITS_TEXT = (
     "with the file and credit \"© OpenStreetMap contributors\" wherever the\n"
     "model or a photograph of it is published.\n"
     "\n"
-    "Elevation, imagery and any other third-party sources: none. FrameCraft\n"
-    "uses OpenStreetMap data only.\n"
+    "Elevation, imagery and any other third-party source of MAP DATA: none.\n"
+    "FrameCraft draws its geometry from OpenStreetMap only.\n"
+    "\n"
+    "Typefaces\n"
+    "---------\n"
+    "Border text, the scale-bar label and the underside mark are cut from the\n"
+    "outlines of three open-source typefaces, each licensed under the\n"
+    "SIL Open Font License 1.1 (https://openfontlicense.org). Letterforms in\n"
+    "the printed model are derived from them; the OFL permits that and does\n"
+    "not extend to the model itself. The full licence text ships beside each\n"
+    "font, in services/bake/app/fonts/<face>/OFL.txt and apps/web/licences/.\n"
+    "\n"
+    + "".join(
+        f"  {face.name} {face.version} ({face.key})\n      {face.copyright}\n"
+        for face in FONT_CREDITS
+    )
 )
 
 

@@ -17,10 +17,11 @@ would need its own XML namespace.
 """
 from __future__ import annotations
 
+import re
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, NamedTuple, Sequence
 from xml.sax.saxutils import escape, quoteattr
 
 import numpy as np
@@ -31,7 +32,12 @@ __all__ = [
     "CONTENT_TYPES_PART",
     "RELS_PART",
     "MODEL_PART",
+    "MATERIALS_ID",
+    "PartMesh",
+    "normalize_color",
     "write_3mf",
+    "parts_model_xml",
+    "write_3mf_parts",
     "read_metadata",
 ]
 
@@ -132,12 +138,18 @@ def build_metadata(
     print_params: Mapping[str, object],
     designer: str = "FrameCraft",
     created: datetime | None = None,
+    extra_license: str | None = None,
 ) -> dict[str, str]:
     """The reserved-name metadata block 04 stage 3 asks for.
 
     ``Description`` carries the attribution, the location (lat, lon, radius_m,
     rotation_deg, preset_id) and the full parameter set, in that order, as one
     human-readable line.
+
+    ``extra_license`` is appended to ``Description`` and ``LicenseTerms``: a
+    model with lettering in it carries third-party letterforms and has to say
+    so (v2-03 audit, finding 5).  The caller passes
+    :data:`app.export.FONT_LICENSE_LINE`; nothing is said when no text was cut.
     """
     when = created or datetime.now(timezone.utc)
     location = (
@@ -147,15 +159,18 @@ def build_metadata(
         f"preset_id={scene_request.get('preset_id')}"
     )
     params = " ".join(f"{k}={v}" for k, v in sorted(print_params.items()))
+    suffix = f" {extra_license}" if extra_license else ""
     return {
         "Title": title,
         "Designer": designer,
         "Description": (
             f"{ATTRIBUTION}, ODbL. Produced work by FrameCraft. "
-            f"Location: {location}. PrintParams: {params}."
+            f"Location: {location}. PrintParams: {params}.{suffix}"
         ),
         "Copyright": ATTRIBUTION,
-        "LicenseTerms": "OpenStreetMap data is licensed under the ODbL 1.0.",
+        "LicenseTerms": (
+            "OpenStreetMap data is licensed under the ODbL 1.0." + suffix
+        ),
         "Application": "FrameCraft",
         "CreationDate": when.date().isoformat(),
     }
@@ -182,6 +197,130 @@ def write_3mf(
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     document = model_xml(vertices, triangles, metadata)
+    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        zf.writestr(CONTENT_TYPES_PART, _CONTENT_TYPES_XML)
+        zf.writestr(RELS_PART, _RELS_XML)
+        zf.writestr(MODEL_PART, document)
+    return out
+
+
+# --------------------------------------------------------------------------
+# Multi-material ("parts") packages
+#
+# 3MF's own way of saying "one object, several coloured pieces":
+#
+#   <basematerials id="1">      one <base> per part, each with a displaycolor
+#   <object id="2" pid="1" pindex="0">   one mesh object per part, pointing at
+#   ...                                  its own entry in that resource
+#   <object id="N+2"><components>        one container object listing them all
+#   <build><item objectid="N+2"/>        placed on the bed exactly once
+#
+# A slicer reads that as ONE object made of N parts, each with its own material,
+# which is what makes a per-part filament assignment possible.  The mesh in each
+# object is the same geometry single mode writes, cut along colour boundaries.
+# --------------------------------------------------------------------------
+
+#: Resource id of the ``<basematerials>``.  3MF resource ids share one namespace
+#: across resource types, so the objects start at 2.
+MATERIALS_ID = 1
+
+#: ``<base>`` needs an sRGB colour as ``#RRGGBB`` or ``#RRGGBBAA``.  FrameCraft
+#: always writes the 8-digit form: an alpha-less colour is legal but reads
+#: differently in different slicers, and the contract lets the user send either.
+_COLOR_RE = re.compile(r"^#([0-9A-Fa-f]{6})([0-9A-Fa-f]{2})?$")
+
+
+def normalize_color(value: str) -> str:
+    """``#rgbrgb`` or ``#rgbrgba`` -> upper-case ``#RRGGBBAA``."""
+    match = _COLOR_RE.match(str(value).strip())
+    if match is None:
+        raise ValueError(f"not a 3MF display colour: {value!r}")
+    return ("#" + match.group(1) + (match.group(2) or "FF")).upper()
+
+
+class PartMesh(NamedTuple):
+    """One coloured piece of the model, in the order it is written."""
+
+    name: str
+    color: str
+    vertices: np.ndarray
+    triangles: np.ndarray
+
+
+def parts_model_xml(parts: Sequence[PartMesh], metadata: Mapping[str, str]) -> str:
+    """The ``3D/3dmodel.model`` document for a multi-material package."""
+    if not parts:
+        raise ValueError("a parts 3MF needs at least one part")
+
+    meta = "".join(
+        f"<metadata name={quoteattr(name)}>{escape(str(value))}</metadata>"
+        for name, value in metadata.items()
+        if value is not None
+    )
+    materials = "".join(
+        f"<base name={quoteattr(part.name)} "
+        f"displaycolor={quoteattr(normalize_color(part.color))}/>"
+        for part in parts
+    )
+    objects = []
+    for index, part in enumerate(parts):
+        vertices = np.asarray(part.vertices, dtype=np.float64)
+        triangles = np.asarray(part.triangles, dtype=np.int64)
+        objects.append(
+            f'<object id="{MATERIALS_ID + 1 + index}" name={quoteattr(part.name)} '
+            f'type="model" pid="{MATERIALS_ID}" pindex="{index}">'
+            "<mesh>"
+            f"<vertices>{_vertices_xml(vertices)}</vertices>"
+            f"<triangles>{_triangles_xml(triangles)}</triangles>"
+            "</mesh>"
+            "</object>"
+        )
+    assembly_id = MATERIALS_ID + 1 + len(parts)
+    components = "".join(
+        f'<component objectid="{MATERIALS_ID + 1 + index}"/>' for index in range(len(parts))
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<model unit="millimeter" xml:lang="en-US" xmlns="{CORE_NAMESPACE}">'
+        f"{meta}"
+        "<resources>"
+        f'<basematerials id="{MATERIALS_ID}">{materials}</basematerials>'
+        f"{''.join(objects)}"
+        f'<object id="{assembly_id}" name="FrameCraft" type="model">'
+        f"<components>{components}</components>"
+        "</object>"
+        "</resources>"
+        "<build>"
+        f'<item objectid="{assembly_id}"/>'
+        "</build>"
+        "</model>\n"
+    )
+
+
+def write_3mf_parts(
+    path: str | Path, parts: Sequence[PartMesh], metadata: Mapping[str, str]
+) -> Path:
+    """Write a multi-material 3MF package.  Returns the path written."""
+    unknown = [name for name in metadata if name not in RESERVED_METADATA]
+    if unknown:
+        raise ValueError(f"non-reserved 3MF metadata names need a namespace: {unknown}")
+    seen: set[str] = set()
+    for part in parts:
+        vertices = np.asarray(part.vertices, dtype=np.float64)
+        triangles = np.asarray(part.triangles, dtype=np.int64)
+        if vertices.ndim != 2 or vertices.shape[1] != 3:
+            raise ValueError(f"part {part.name!r}: vertices must be (N, 3)")
+        if triangles.ndim != 2 or triangles.shape[1] != 3:
+            raise ValueError(f"part {part.name!r}: triangles must be (M, 3)")
+        if len(triangles) == 0:
+            raise ValueError(f"part {part.name!r} has no triangles")
+        if part.name in seen:
+            raise ValueError(f"duplicate part name {part.name!r}")
+        seen.add(part.name)
+
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    document = parts_model_xml(parts, metadata)
     with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         zf.writestr(CONTENT_TYPES_PART, _CONTENT_TYPES_XML)
         zf.writestr(RELS_PART, _RELS_XML)

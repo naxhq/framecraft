@@ -2,14 +2,20 @@
 
 import { useMemo } from "react";
 
+import { blockingWarnings } from "@/lib/adjustments";
 import { sceneWarnings, warningDeps } from "@/lib/warnings";
 import { useEditorStore } from "@/store/editor";
 
 /**
- * Coverage, estimated-height and 60 mm-ceiling warnings (01/A2, 03 "Height
- * inference", 04 stage 4). The `block` level ones also disable Bake -- see
- * `lib/warnings.ts`, which owns the thresholds so the banner and the button can
- * never disagree.
+ * The things that must never be collapsed: a scene that failed to load, a
+ * location that has moved away from the model on screen, and the two warnings
+ * that disable Bake (01/A2 coverage, 04 stage 4's 60 mm ceiling).
+ *
+ * Everything else -- widened footprints, dropped patches, estimated heights,
+ * the bake's own remarks -- is informational and lives in the adjustments chip
+ * over the viewport. The split is `lib/adjustments.ts`; the thresholds are
+ * `lib/warnings.ts`, so the banner, the chip and the disabled button can never
+ * disagree.
  */
 export function WarningBanners() {
   const graph = useEditorStore((state) => state.scene.graph);
@@ -17,18 +23,55 @@ export function WarningBanners() {
   const message = useEditorStore((state) => state.scene.message);
   const stale = useEditorStore((state) => state.scene.stale);
   const params = useEditorStore((state) => state.params);
+  const shareNotice = useEditorStore((state) => state.shareNotice);
+  const setShareNotice = useEditorStore((state) => state.setShareNotice);
 
   // Cheap: one pass over the buildings for the 60 mm height guard, and the
   // scene is already in memory. Memoised on the primitives that move it so a
   // theme toggle or a bake poll does not recompute it.
-  const warnings = useMemo(
-    () => sceneWarnings(graph, params),
+  const blocking = useMemo(
+    () => blockingWarnings(sceneWarnings(graph, params)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     warningDeps(graph, params),
   );
 
+  const hasAny =
+    (status === "error" && message) ||
+    (stale && graph) ||
+    blocking.length > 0 ||
+    shareNotice !== null;
+  if (!hasAny) return <div data-testid="warnings" className="hidden" />;
+
   return (
-    <div className="space-y-2" data-testid="warnings">
+    <div data-testid="warnings" className="space-y-1.5 px-3 pt-3">
+      {/*
+        A shared link that could not be applied. Informational rather than an
+        error -- nothing is broken and the editor is on its defaults -- but it
+        has to be SAID, or a link that silently did nothing reads as a bug in
+        the product rather than as damage to the link. Dismissible, because it
+        is about a thing that already happened.
+      */}
+      {shareNotice !== null ? (
+        <div
+          role="status"
+          data-testid="share-notice"
+          className="flex items-start gap-2 rounded-milled border border-accent/40 bg-accent-soft px-3 py-2 text-2xs leading-snug text-ink"
+        >
+          <span className="min-w-0 flex-1">
+            {shareNotice.charAt(0).toUpperCase() + shareNotice.slice(1)}
+          </span>
+          <button
+            type="button"
+            data-testid="share-notice-dismiss"
+            aria-label="Dismiss the shared link message"
+            onClick={() => setShareNotice(null)}
+            className="shrink-0 rounded-[2px] px-1 text-ink-muted transition-colors hover:text-ink"
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
+
       {status === "error" && message ? (
         <Banner tone="error" testId="scene-error">
           Could not load the scene: {message}
@@ -37,16 +80,12 @@ export function WarningBanners() {
 
       {stale && graph ? (
         <Banner tone="info" testId="scene-stale">
-          The location changed. Click Generate to refresh the preview.
+          The location moved. Generate to rebuild the model for it.
         </Banner>
       ) : null}
 
-      {warnings.map((warning) => (
-        <Banner
-          key={warning.id}
-          tone={warning.level === "block" ? "error" : "warn"}
-          testId={`warning-${warning.id}`}
-        >
+      {blocking.map((warning) => (
+        <Banner key={warning.id} tone="error" testId={`warning-${warning.id}`}>
           {warning.message}
         </Banner>
       ))}
@@ -55,10 +94,8 @@ export function WarningBanners() {
 }
 
 const TONES = {
-  info: "border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-200",
-  warn: "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200",
-  error:
-    "border-red-300 bg-red-50 text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-200",
+  info: "border-accent/40 bg-accent-soft text-ink",
+  error: "border-danger/50 bg-danger-soft text-danger",
 } as const;
 
 function Banner({
@@ -74,7 +111,7 @@ function Banner({
     <p
       role="status"
       data-testid={testId}
-      className={`rounded-md border px-3 py-2 text-xs ${TONES[tone]}`}
+      className={`rounded-milled border px-3 py-2 text-2xs leading-snug ${TONES[tone]}`}
     >
       {children}
     </p>

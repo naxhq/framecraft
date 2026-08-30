@@ -30,6 +30,16 @@ to trimesh only at export. Honor the frozen contracts exactly. On validation
 failure return status failed with the failing check named and dump
 intermediate solids to artifacts/debug/<job_id>/.
 
+V2 RUN (2026-08-29): this is the FrameCraft v2 run. Phase notes go to
+docs/handoff/v2-NN-<phase>.md (the orchestrator's brief names NN). The four
+contracts are UNFROZEN for this run only (PrintParams schema_version 2) and are
+re-frozen at its end; regenerate with `make contracts`, never hand-edit the
+outputs. Every bake-side change must keep services/bake/tests/test_v1_compat.py
+green once it exists: a default-constructed v2 PrintParams bakes geometry
+byte-identical to the committed v1 golden. Preview and bake still share
+transform.py / transform.ts pinned by fixtures/parity-*.json. No test may be
+weakened, skipped or deleted to make a gate pass.
+
 OUTPUT PROTOCOL
 Write your full notes to docs/handoff/NN-<phase>.md.
 Return to the orchestrator at most 15 lines: what you built, what you decided,

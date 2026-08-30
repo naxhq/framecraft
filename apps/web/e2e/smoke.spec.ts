@@ -316,6 +316,16 @@ test("happy path: Chicago preset previews, sliders stay local, bake downloads a 
   await bakeButton.click();
   await expect(page.getByTestId("bake-status")).toBeVisible();
 
+  // The bar starts indeterminate (nothing has been reported yet) and must
+  // become determinate: `BakeResult.progress` is real, per-stage, and a bar
+  // that spins for 14 s while the server knows the number is a lie.
+  const progressBar = page.getByTestId("bake-progress");
+  await expect(progressBar).toBeVisible();
+  await expect
+    .poll(() => progressBar.getAttribute("data-determinate"), { timeout: A4_BUDGET_MS })
+    .toBe("true");
+  log(`bake progress bar reached ${await progressBar.getAttribute("data-progress")}%`);
+
   const downloads = page.getByTestId("download-links");
   await expect(downloads).toBeVisible({ timeout: A4_BUDGET_MS });
   const bakeMs = Date.now() - bakeStartedAt;
@@ -519,13 +529,20 @@ test("low coverage: a pin in open water warns and disables Bake", async ({
   const status = last.status;
   const detail = await last.body;
 
-  // Overpass unreachable is an infrastructure failure, not a product defect,
-  // so a 502/503 soft-skips (never an assertion failure). But `make up` passes
-  // the caller's environment through, and a bake API started with
-  // FRAMECRAFT_OFFLINE=1 - the variable this repo's own test convention
-  // exports - answers /scene with 503 too. That is not "Overpass is
-  // unreachable", it is "A2 was never exercised", so it must fail loudly
-  // instead of skipping. `make gate` additionally fails on ANY skipped test.
+  // This used to be a conditional test-level skip on `status === 502 || 503`:
+  // an unreachable Overpass was treated as an infrastructure excuse. It is not
+  // one the gate can accept. `make gate` already fails on any skipped test
+  // (results.json `stats.skipped`), so the skip only changed the WORDING of the
+  // failure -- and a conditional skip in the suite makes the gate's static
+  // no-skip guard impossible to state absolutely. The assertion below is
+  // therefore strictly stronger than what it replaces, and carries the two
+  // diagnoses the skip used to print.
+  //
+  // The second one matters: `make up` passes the caller's environment through,
+  // and a bake API started with FRAMECRAFT_OFFLINE=1 -- the variable this
+  // repo's own test convention exports -- answers /scene with the very same
+  // 503. That is not "Overpass is unreachable", it is "A2 was never
+  // exercised", and it must be impossible to mistake for one.
   if (status === 502 || status === 503) {
     expect(
       detail,
@@ -533,11 +550,12 @@ test("low coverage: a pin in open water warns and disables Bake", async ({
         "Overpass; start the stack without it (make gate does)",
     ).not.toContain("FRAMECRAFT_OFFLINE");
   }
-  test.skip(
-    status === 502 || status === 503,
-    `Overpass is unreachable from this host (POST /scene -> ${status}: ${detail.slice(0, 300)})`,
-  );
-  expect(status, "POST /scene did not answer 200").toBe(200);
+  expect(
+    status,
+    `POST /scene did not answer 200. If this is ${status}, Overpass is ` +
+      `unreachable from this host and 01/A2 cannot be exercised: ` +
+      `${detail.slice(0, 300)}`,
+  ).toBe(200);
 
   const warning = page.getByTestId("warning-coverage-empty");
   await expect(warning).toBeVisible({ timeout: 30_000 });

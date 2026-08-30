@@ -2,12 +2,15 @@
 
 import { BAKE_STALE_NOTE } from "@/lib/bake";
 import { useEditorStore } from "@/store/editor";
+import { Note } from "./Controls";
 
 /**
- * The printed-stats card from 01 step 5: triangle count, volume, bounding box,
+ * The printed-stats table from 01 step 5: triangle count, volume, bounding box,
  * estimated filament grams (labelled as an estimate, per 04), manifold flag and
  * the measured minimum wall. Everything here comes from `BakeResult.stats`;
- * nothing is recomputed client-side.
+ * nothing is recomputed client-side, and nothing predicted is allowed in --
+ * the predicted height lives in the viewport spec strip and above the Bake
+ * button, so a guess can never be mistaken for a measurement.
  *
  * When the bake has gone stale (a PrintParams value, the location or the scene
  * moved after it finished) the numbers are kept but labelled as describing the
@@ -21,10 +24,12 @@ export function StatsCard() {
     return (
       <div
         data-testid="stats-card"
-        className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
+        className="rounded-plate border border-danger/40 bg-danger-soft p-3 text-2xs text-danger"
       >
-        <p className="font-semibold">Bake failed</p>
-        <p className="mt-1 font-mono">{bake.error}</p>
+        <p className="font-display font-semibold uppercase tracking-[0.14em]">
+          Bake failed
+        </p>
+        <p className="mt-1 leading-snug">{bake.error}</p>
       </div>
     );
   }
@@ -44,36 +49,35 @@ export function StatsCard() {
   return (
     <div
       data-testid="stats-card"
-      className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800"
+      className="rounded-plate border border-line bg-plate-sunken p-3"
     >
-      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+      <h4 className="mb-2 font-display text-2xs font-semibold uppercase tracking-[0.14em] text-ink-faint">
         {bake.stale ? "Print stats (previous bake)" : "Print stats"}
-      </h3>
+      </h4>
       {bake.stale ? (
-        <p
-          data-testid="stats-stale-note"
-          className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300"
-        >
-          {BAKE_STALE_NOTE}
-        </p>
+        <div className="mb-2">
+          <Note tone="warn" testId="stats-stale-note">
+            {BAKE_STALE_NOTE}
+          </Note>
+        </div>
       ) : null}
-      <dl className="space-y-1 text-xs">
+      <dl className="space-y-1 text-2xs">
         {rows.map(([label, value]) => (
           <div key={label} className="flex justify-between gap-3">
-            <dt className="text-neutral-500 dark:text-neutral-400">{label}</dt>
+            <dt className="text-ink-faint">{label}</dt>
             <dd
-              className={`font-mono tabular-nums ${
+              className={
                 label === "Manifold" && !stats.is_manifold
-                  ? "text-red-600 dark:text-red-400"
-                  : ""
-              }`}
+                  ? "font-medium text-danger"
+                  : "text-ink"
+              }
             >
               {value}
             </dd>
           </div>
         ))}
       </dl>
-      <p className="mt-2 text-[10px] text-neutral-400">
+      <p className="mt-2 text-2xs text-ink-faint">
         Filament is an estimate: volume × 1.24 g/cm³ × 0.35 infill factor.
       </p>
     </div>

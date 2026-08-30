@@ -1,211 +1,159 @@
 "use client";
 
-import { useShallow } from "zustand/react/shallow";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 
-import { PARAM_RANGES } from "@/lib/contracts";
-import type { PrintParams } from "@/lib/contracts";
-import { RADIUS_MAX_M, RADIUS_MIN_M, RADIUS_STEP_M } from "@/lib/geo";
+import {
+  GROUPS,
+  defaultCollapsed,
+  loadCollapsed,
+  saveCollapsed,
+  type CollapsedGroups,
+  type GroupId,
+} from "@/lib/groups";
+import { HERO_CAP } from "@/lib/heroes";
 import { useEditorStore } from "@/store/editor";
-import { PanelSection, Segmented, Slider, Toggle } from "./Controls";
+import CollapsibleGroup from "./CollapsibleGroup";
+import OutputPanel from "./OutputPanel";
+import BuildingsGroup from "./groups/BuildingsGroup";
+import ColourGroup from "./groups/ColourGroup";
+import FrameTextGroup from "./groups/FrameTextGroup";
+import LocationGroup from "./groups/LocationGroup";
+import ScaleSizeGroup from "./groups/ScaleSizeGroup";
+import SurfaceGroup from "./groups/SurfaceGroup";
 
 /**
- * The right-hand parameter panel: every control in 01's editor table, bound to
- * the zustand store.
+ * The parameter panel: every control in 01's editor table plus schema_version
+ * 2's personalisation set, sorted into seven collapsible groups.
  *
- * Ranges come from `PARAM_RANGES` in the GENERATED contracts wherever the
- * contract has them, so a schema change moves the sliders automatically.
- * 01 states the height/road/terrain sliders as percentages while the frozen
- * `PrintParams` stores 0.5..2.0 floats, so those controls render `value * 100`
- * and write `percent / 100`.
+ * Two rules hold this together:
  *
- * Nothing in this file calls the API except the rotation slider, which is a
- * location-level change (the crop happens server-side) and therefore
- * re-generates when the pointer is released.
+ *  - **Ranges come from `PARAM_RANGES`** in the GENERATED contracts, never from
+ *    a number typed into a component, so a schema change moves the sliders.
+ *  - **Every write goes through `store.setParam`** (or `setNested`, which is
+ *    `setParam` with an immutable spread), so bake staleness and the
+ *    `previewDeps` memo keys keep working and nothing here can reach the
+ *    network. `store/editor.test.ts` drives every key of the frozen contract
+ *    through `setParam` with `fetch` spied on and fails if one ever does.
+ *
+ * Output is pinned to the bottom rather than scrolling away with the rest:
+ * Bake is the primary action once a scene exists, and a primary action that
+ * has to be scrolled to is not primary. Its collapse toggle folds the results
+ * (status, downloads, stats) and never the action row.
  */
-
-const ROAD_MODES = [
-  { value: "engrave" as const, label: "engrave" },
-  { value: "emboss" as const, label: "emboss" },
-  { value: "off" as const, label: "off" },
-];
-
-/** Percent sliders move in 5-point steps; 0.05 of the underlying float. */
-const PERCENT_STEP = 5;
+const BODIES: Record<Exclude<GroupId, "output">, () => ReactNode> = {
+  location: LocationGroup,
+  scale: ScaleSizeGroup,
+  buildings: BuildingsGroup,
+  surface: SurfaceGroup,
+  frame: FrameTextGroup,
+  colour: ColourGroup,
+};
 
 export function ParamPanel() {
-  const params = useEditorStore((state) => state.params);
-  const setParam = useEditorStore((state) => state.setParam);
   const resetParams = useEditorStore((state) => state.resetParams);
-  const { rotation_deg, radius_m } = useEditorStore(
-    useShallow((state) => ({
-      rotation_deg: state.location.rotation_deg,
-      radius_m: state.location.radius_m,
-    })),
+  const heroCount = useEditorStore(
+    (state) => (state.params.hero_building_ids ?? []).length,
   );
-  const setRotation = useEditorStore((state) => state.setRotation);
-  const setRadius = useEditorStore((state) => state.setRadius);
-  const generate = useEditorStore((state) => state.generate);
+  const engravingCount = useEditorStore(
+    (state) => (state.params.engravings ?? []).length,
+  );
+  const colorMode = useEditorStore((state) => state.params.color_mode ?? "single");
 
-  const percent = (key: keyof PrintParams): number =>
-    Math.round((params[key] as number) * 100);
+  // Server-rendered as the defaults, then reconciled with localStorage after
+  // mount. Reading storage during render would mismatch the HTML Next sent.
+  const [collapsed, setCollapsed] = useState<CollapsedGroups>(defaultCollapsed);
+  useEffect(() => {
+    setCollapsed(loadCollapsed());
+  }, []);
+
+  const toggle = useCallback((id: GroupId) => {
+    setCollapsed((previous) => {
+      const next = { ...previous, [id]: !previous[id] };
+      saveCollapsed(next);
+      return next;
+    });
+  }, []);
+
+  const badges: Partial<Record<GroupId, string | null>> = {
+    buildings: heroCount > 0 ? `${heroCount}/${HERO_CAP} heroes` : null,
+    frame:
+      engravingCount > 0
+        ? `${engravingCount} ${engravingCount === 1 ? "line" : "lines"}`
+        : null,
+    colour: colorMode === "parts" ? "7 parts" : null,
+  };
+
+  const outputGroup = GROUPS[GROUPS.length - 1];
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto">
-      <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
-        <h2 className="text-sm font-semibold">Parameters</h2>
+    <div className="flex h-full min-h-0 flex-col bg-plate">
+      <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-2.5">
+        <h2 className="font-display text-2xs font-semibold uppercase tracking-[0.16em] text-ink">
+          Model
+        </h2>
         <button
           type="button"
+          data-testid="reset-button"
           onClick={resetParams}
-          className="text-xs text-sky-600 hover:underline dark:text-sky-400"
+          className="rounded-milled px-1.5 py-0.5 text-2xs text-ink-muted transition-colors hover:bg-plate-raised hover:text-ink"
         >
-          Reset
+          Reset all
         </button>
       </div>
 
-      <PanelSection title="Plate">
-        <Slider
-          id="plate_mm"
-          label="Plate size"
-          min={PARAM_RANGES.plate_mm.min}
-          max={PARAM_RANGES.plate_mm.max}
-          step={1}
-          value={params.plate_mm}
-          display={`${params.plate_mm} mm`}
-          onChange={(value) => setParam("plate_mm", value)}
-          hint="Sets the scale from ground span to print."
-        />
-        <Slider
-          id="base_thickness_mm"
-          label="Base thickness"
-          min={PARAM_RANGES.base_thickness_mm.min}
-          max={PARAM_RANGES.base_thickness_mm.max}
-          step={0.1}
-          value={params.base_thickness_mm}
-          display={`${params.base_thickness_mm.toFixed(1)} mm`}
-          onChange={(value) => setParam("base_thickness_mm", value)}
-          hint="Solid slab under everything."
-        />
-        <Toggle
-          id="frame"
-          label="Frame"
-          checked={params.frame}
-          onChange={(value) => setParam("frame", value)}
-          hint="6 mm border lip, 2 mm proud of the base. Costs 12 mm of scale."
-        />
-      </PanelSection>
+      <div className="min-h-0 flex-1 overflow-y-auto" data-testid="param-groups">
+        {GROUPS.filter((group) => group.id !== "output").map((group) => {
+          const Body = BODIES[group.id as Exclude<GroupId, "output">];
+          return (
+            <CollapsibleGroup
+              key={group.id}
+              id={group.id}
+              title={group.title}
+              summary={group.summary}
+              collapsed={collapsed[group.id]}
+              onToggle={() => toggle(group.id)}
+              badge={badges[group.id] ?? null}
+            >
+              <Body />
+            </CollapsibleGroup>
+          );
+        })}
+      </div>
 
-      <PanelSection title="Buildings">
-        <Slider
-          id="small_scale"
-          label="Small building scale"
-          min={PARAM_RANGES.small_scale.min * 100}
-          max={PARAM_RANGES.small_scale.max * 100}
-          step={PERCENT_STEP}
-          value={percent("small_scale")}
-          display={`${percent("small_scale")} %`}
-          onChange={(value) => setParam("small_scale", value / 100)}
-          hint="Height multiplier for buildings under 40 m."
+      <section
+        data-testid="group-output"
+        data-collapsed={collapsed.output ? "true" : "false"}
+        className="fc-scored shrink-0 bg-plate px-4 pb-4 pt-2"
+      >
+        <h3>
+          <button
+            type="button"
+            data-testid="group-output-toggle"
+            aria-expanded={!collapsed.output}
+            // Names the RESULTS wrapper only. The action row (Generate / Bake)
+            // and the predicted height are always rendered by design
+            // (DECISIONS [V2-P4]), so pointing `aria-controls` at their
+            // container announced "collapsed" over a region still on screen.
+            aria-controls={collapsed.output ? undefined : "group-output-body"}
+            aria-label={`${outputGroup.title}, ${
+              collapsed.output ? "show results" : "hide results"
+            }`}
+            onClick={() => toggle("output")}
+            className="mb-2 flex w-full items-center justify-between gap-2 rounded-milled py-1 text-left transition-colors hover:text-ink"
+          >
+            <span className="font-display text-2xs font-semibold uppercase tracking-[0.14em] text-ink">
+              {outputGroup.title}
+            </span>
+            <span className="text-2xs text-ink-faint">
+              {collapsed.output ? "show results" : "hide results"}
+            </span>
+          </button>
+        </h3>
+        <OutputPanel
+          showResults={!collapsed.output}
+          resultsId="group-output-body"
         />
-        <Slider
-          id="large_scale"
-          label="Large building scale"
-          min={PARAM_RANGES.large_scale.min * 100}
-          max={PARAM_RANGES.large_scale.max * 100}
-          step={PERCENT_STEP}
-          value={percent("large_scale")}
-          display={`${percent("large_scale")} %`}
-          onChange={(value) => setParam("large_scale", value / 100)}
-          hint="Height multiplier for buildings 40 m and over."
-        />
-      </PanelSection>
-
-      <PanelSection title="Surface">
-        <Segmented
-          id="road_mode"
-          label="Road mode"
-          value={params.road_mode}
-          options={ROAD_MODES}
-          onChange={(value) => setParam("road_mode", value)}
-        />
-        <Slider
-          id="road_scale"
-          label="Road scale"
-          min={PARAM_RANGES.road_scale.min * 100}
-          max={PARAM_RANGES.road_scale.max * 100}
-          step={PERCENT_STEP}
-          value={percent("road_scale")}
-          display={`${percent("road_scale")} %`}
-          onChange={(value) => setParam("road_scale", value / 100)}
-          disabled={params.road_mode === "off"}
-          hint="Width multiplier, applied before the minimum-feature clamp."
-        />
-        <Toggle
-          id="water"
-          label="Water"
-          checked={params.water}
-          onChange={(value) => setParam("water", value)}
-          hint="Recessed 0.5 mm below the base top."
-        />
-        <Toggle
-          id="trees"
-          label="Trees"
-          checked={params.trees}
-          onChange={(value) => setParam("trees", value)}
-          hint="Instanced cones, height 3x the site radius, capped at 2000."
-        />
-        <Slider
-          id="terrain_exaggeration"
-          label="Terrain exaggeration"
-          min={PARAM_RANGES.terrain_exaggeration.min * 100}
-          max={PARAM_RANGES.terrain_exaggeration.max * 100}
-          step={PERCENT_STEP}
-          value={percent("terrain_exaggeration")}
-          display={`${percent("terrain_exaggeration")} %`}
-          onChange={(value) => setParam("terrain_exaggeration", value / 100)}
-          hint="Flat terrain in the MVP: the DEM fetcher is behind a feature flag, so this is carried through the pipeline but has no visible effect yet."
-        />
-      </PanelSection>
-
-      <PanelSection title="Printer">
-        <Slider
-          id="nozzle_mm"
-          label="Nozzle diameter"
-          min={PARAM_RANGES.nozzle_mm.min}
-          max={PARAM_RANGES.nozzle_mm.max}
-          step={0.05}
-          value={params.nozzle_mm}
-          display={`${params.nozzle_mm.toFixed(2)} mm`}
-          onChange={(value) => setParam("nozzle_mm", value)}
-          hint="Drives the minimum wall, gap and detail thresholds."
-        />
-      </PanelSection>
-
-      <PanelSection title="Location">
-        <Slider
-          id="radius_m"
-          label="Radius"
-          min={RADIUS_MIN_M}
-          max={RADIUS_MAX_M}
-          step={RADIUS_STEP_M}
-          value={radius_m}
-          display={`${radius_m} m`}
-          onChange={setRadius}
-          onCommit={() => void generate()}
-          hint="Half the ground span. Changing it refetches the scene."
-        />
-        <Slider
-          id="rotation_deg"
-          label="Rotation"
-          min={0}
-          max={360}
-          step={1}
-          value={rotation_deg}
-          display={`${rotation_deg}°`}
-          onChange={setRotation}
-          onCommit={() => void generate()}
-          hint="Rotates the crop before it is squared. Server-side, so it refetches the scene on release."
-        />
-      </PanelSection>
+      </section>
     </div>
   );
 }

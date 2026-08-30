@@ -288,6 +288,14 @@ export function buildBuildings(
  * Buildings are drawn from the base top, not from `building_bottom_mm`: the
  * bake's 0.2 mm overlap only exists to make its union unambiguous and would be
  * invisible inside the slab here.
+ *
+ * **Heroes are drawn at their hero height.** `building_top_mm_for(..., is_hero)`
+ * is the shared function the bake extrudes with, and the ids come from
+ * `transform.hero_height_ids`, which is empty unless `hero_mode` actually grants
+ * true height -- so `own_color` alone moves nothing. Until this call went
+ * through the hero-aware form, a picked hero was coloured but not raised, and
+ * that was the one place the preview knowingly disagreed with the bake
+ * (`docs/handoff/v2-04-ui.md` §11).
  */
 export function buildingInstanceMatrices(
   buildings: ReadonlyArray<PreviewBuilding>,
@@ -300,9 +308,17 @@ export function buildingInstanceMatrices(
       ? into
       : new Float32Array(buildings.length * 16);
   const base = T.base_top_mm(params);
+  // Hoisted: a scene holds thousands of buildings and this set holds at most
+  // twelve, so the membership test must not rebuild it per instance.
+  const heroes = T.hero_height_ids(params);
   for (let i = 0; i < buildings.length; i += 1) {
     const b = buildings[i];
-    const top = T.building_top_mm(b, params, scale);
+    const top = T.building_top_mm_for(
+      b,
+      params,
+      scale,
+      heroes.size > 0 && heroes.has(b.id),
+    );
     const height = top - base;
     const c = Math.cos(b.angle_rad);
     const s = Math.sin(b.angle_rad);
@@ -548,6 +564,33 @@ export function buildPreview(scene: SceneGraph, params: PrintParams): PreviewMod
  */
 export function mergeNoticeMetres(thresholds: T.Thresholds): number {
   return thresholds.min_gap;
+}
+
+/**
+ * The HUD clause for footprints Stage 1 widened, e.g.
+ * `"3353 widened to the 18.9 m minimum wall"`.
+ *
+ * The metres are `min_wall_ground = min_wall_mm(params) / scale`, i.e. TWO
+ * nozzles of print divided by the scale -- the same wall the bake repairs to
+ * and the Stage 4 gate measures. It lives here, next to its test, because the
+ * look-alike is silent: `min_detail` is one nozzle, exactly half of this, and
+ * at any scale it reads as a perfectly plausible "minimum wall" in the HUD
+ * (DECISIONS [V2-P1]).
+ *
+ * It takes `params` and the scale rather than a `Thresholds` record ON PURPOSE
+ * (DECISIONS [V2-P1-fix]): a caller holding a `Thresholds` can hand over the
+ * wrong field of it -- `min_detail` type-checks and reads plausibly -- so the
+ * threshold selection would sit in the untested component instead of here.
+ * With this signature the wall is derived from the shared helper and there is
+ * no wrong argument to pass.
+ */
+export function dilatedNotice(
+  count: number,
+  params: PrintParams,
+  scale: number,
+): string {
+  const metres = T.min_wall_mm(params) / scale;
+  return `${count} widened to the ${metres.toFixed(1)} m minimum wall`;
 }
 
 /**

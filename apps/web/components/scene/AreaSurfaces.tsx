@@ -1,7 +1,15 @@
 "use client";
 
 import { useEffect, useMemo } from "react";
-import { BufferAttribute, BufferGeometry, Path, Shape, ShapeUtils } from "three";
+import {
+  BufferAttribute,
+  BufferGeometry,
+  DoubleSide,
+  FrontSide,
+  Path,
+  Shape,
+  ShapeUtils,
+} from "three";
 
 import type { PreviewArea } from "@/lib/preview";
 
@@ -93,10 +101,21 @@ export function AreaSurfaces({
   areas,
   zMm,
   color,
+  /**
+   * Draw the fill from both sides. The frame lettering's underside half -- the
+   * mark and the hanger pockets -- sits under z = 0 and is only ever looked at
+   * from below, and every ring here is wound for a viewer above (and the
+   * underside mark's own mirror flips it again), so a front-facing-only
+   * material would leave the bottom of the plate blank when the model is
+   * orbited under. Two-sided also means the flipped normal three hands the
+   * shader for a back face lights it correctly.
+   */
+  doubleSide = false,
 }: {
   areas: PreviewArea[];
   zMm: number;
   color: string;
+  doubleSide?: boolean;
 }) {
   const geometry = useMemo(() => buildMergedGeometry(areas), [areas]);
 
@@ -109,6 +128,7 @@ export function AreaSurfaces({
       <meshStandardMaterial
         color={color}
         roughness={0.85}
+        side={doubleSide ? DoubleSide : FrontSide}
         polygonOffset
         polygonOffsetFactor={-1}
         polygonOffsetUnits={-1}

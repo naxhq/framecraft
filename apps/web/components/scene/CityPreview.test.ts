@@ -33,7 +33,14 @@ const GRAPH: SceneGraph = {
 
 type DepList = unknown[];
 
-/** All eight memo keys for one (graph, scale, params) render. */
+/** The rotation, date and glyph-asset version the component holds constant. */
+const ROTATION_DEG = 0;
+const DATE = "2026-08-30";
+const FACE_VERSION = 0;
+/** The scene's own ground radius, which `detailAdvice` is asked about. */
+const RADIUS_M = 900;
+
+/** All ten memo keys for one (graph, scale, params) render. */
 function allDeps(
   graph: SceneGraph | null,
   scale: number | null,
@@ -48,6 +55,8 @@ function allDeps(
     green: previewDeps.green(graph, scale, params),
     trees: previewDeps.trees(graph, params),
     height: previewDeps.height(graph, params),
+    text: previewDeps.text(graph, params, ROTATION_DEG, DATE, FACE_VERSION),
+    advisor: previewDeps.advisor(graph, params, RADIUS_M),
   };
 }
 
@@ -94,9 +103,13 @@ describe("previewDeps", () => {
    * (`transform.predicted_top_mm`) feeding the 60 mm guard and the HUD readout,
    * with no hulls, no earcut and no GPU upload. It is the one memo a height
    * slider is *supposed* to invalidate.
+   *
+   * `advisor` is the same shape of thing -- `transform.detail_report` over the
+   * scene, feeding the HUD chip -- and no height slider may reach it either,
+   * which is asserted rather than assumed just below.
    */
   const GEOMETRY = (names: string[]): string[] =>
-    names.filter((name) => name !== "height").sort();
+    names.filter((name) => name !== "height" && name !== "advisor").sort();
 
   it("rebuilds no geometry when a height slider moves", () => {
     expect(GEOMETRY(rebuiltBy("small_scale", 1.5))).toEqual([]);
@@ -114,18 +127,31 @@ describe("previewDeps", () => {
   it("still rebuilds the layers a parameter really changes", () => {
     // Not vacuous: the nozzle moves every threshold, so everything that reads
     // one has to come back -- including the trees, whose printed-radius floor
-    // is nozzle-aware (DECISIONS [P5-web]).
+    // is nozzle-aware (DECISIONS [P5-web]), the lettering, whose stroke target
+    // and lip margin are both nozzle-derived, and the advisor.
     expect(rebuiltBy("nozzle_mm", 0.6).sort()).toEqual(
-      ["green", "layout", "roads", "thresholds", "trees", "water"].sort(),
+      [
+        "advisor",
+        "green",
+        "layout",
+        "roads",
+        "text",
+        "thresholds",
+        "trees",
+        "water",
+      ].sort(),
     );
-    // The plate and the frame move the scale, hence every metric layer.
+    // The plate and the frame move the scale, hence every metric layer -- and
+    // the lettering, whose edge length and 6 mm band they set.
     expect(rebuiltBy("plate_mm", 256).sort()).toEqual(
       [
+        "advisor",
         "green",
         "height",
         "layout",
         "roads",
         "scale",
+        "text",
         "thresholds",
         "trees",
         "water",
@@ -133,21 +159,90 @@ describe("previewDeps", () => {
     );
     expect(rebuiltBy("frame", false).sort()).toEqual(
       [
+        "advisor",
         "green",
         "height",
         "layout",
         "roads",
         "scale",
+        "text",
         "thresholds",
         "trees",
         "water",
       ].sort(),
     );
+    // The advisor is NOT in these two. `transform.detail_report` never mentions
+    // roads and walks `scene.water` unconditionally, so listing either in
+    // `advisorDeps` re-ran a whole-scene walk plus two grid searches for a
+    // byte-identical answer -- and this suite pinned that waste as correct
+    // until the audit measured it (v2-06 finding 3).
     expect(rebuiltBy("road_scale", 2.0)).toEqual(["roads"]);
     expect(rebuiltBy("road_mode", "emboss")).toEqual(["roads"]);
-    expect(rebuiltBy("trees", false).sort()).toEqual(["height", "trees"]);
     // Green has no toggle on the frozen PrintParams (DECISIONS [P4]).
     expect(rebuiltBy("water", false)).toEqual(["water"]);
+    // The tree toggle really does reach the advisor: `detail_report` measures
+    // the trees it would drop.
+    expect(rebuiltBy("trees", false).sort()).toEqual(["advisor", "height", "trees"]);
+  });
+
+  /**
+   * schema_version 2's personalisation block.
+   *
+   * The colour half is still pure paint -- `paletteFor` reads it at render time
+   * and no layer is rebuilt -- so each of these must rebuild NOTHING. The
+   * lettering half is now real geometry and has its own list below; conflating
+   * the two would have let a text parameter quietly start rebuilding the water.
+   */
+  const V2_PAINT_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintParams]]> = [
+    ["schema_version", 2],
+    ["color_mode", "parts"],
+    [
+      "part_colors",
+      {
+        base: "#111111",
+        frame: "#222222",
+        buildings: "#333333",
+        roads: "#444444",
+        water: "#555555",
+        green: "#666666",
+        trees: "#777777",
+      },
+    ],
+    // No hero is picked in the default params, so the mode alone moves nothing:
+    // `heroHeightKey` is empty either way.
+    ["hero_mode", "both"],
+  ];
+
+  /** The lettering block: it moves the text layer, and ONLY the text layer. */
+  const V2_TEXT_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintParams]]> = [
+    ["city_label", "Chicago"],
+    ["engravings", [{ edge: "bottom", text: "{city}" }]],
+    ["north_arrow", { enabled: true, corner: "sw", size_mm: 6 }],
+    [
+      "scale_bar",
+      { enabled: true, edge: "top", length_mode: "fixed", length_m: 1000 },
+    ],
+    ["hanger", "keyhole"],
+    ["underside_mark", { enabled: true, template: "{coords}" }],
+  ];
+
+  it("rebuilds nothing when a v2 colour or hero-mode parameter moves", () => {
+    for (const [key, value] of V2_PAINT_MOVES) {
+      expect(rebuiltBy(key, value as never), key).toEqual([]);
+    }
+  });
+
+  it("rebuilds only the text layer when a lettering parameter moves", () => {
+    for (const [key, value] of V2_TEXT_MOVES) {
+      expect(rebuiltBy(key, value as never), key).toEqual(["text"]);
+    }
+  });
+
+  it("rebuilds only the predicted height when a hero is picked", () => {
+    // A hero is drawn at its hero height, so the 60 mm guard and the HUD have
+    // to follow it -- but no hull, no earcut and no glyph is touched. (The
+    // instance matrices do move; `InstancedBuildings.test.ts` owns that key.)
+    expect(rebuiltBy("hero_building_ids", ["w1"])).toEqual(["height"]);
   });
 
   it("covers every key of the frozen PrintParams contract", () => {
@@ -163,6 +258,9 @@ describe("previewDeps", () => {
       "trees",
       "water",
       "frame",
+      "hero_building_ids",
+      ...V2_PAINT_MOVES.map(([key]) => key),
+      ...V2_TEXT_MOVES.map(([key]) => key),
     ]);
     expect([...covered].sort()).toEqual(Object.keys(DEFAULT_PRINT_PARAMS).sort());
   });
@@ -173,7 +271,47 @@ describe("previewDeps", () => {
     const after = allDeps({ ...GRAPH }, 0.1, params);
     const rebuilt = Object.keys(before).filter((n) => changed(before[n], after[n]));
     expect(rebuilt.sort()).toEqual(
-      ["green", "height", "layout", "roads", "scale", "trees", "water"].sort(),
+      [
+        "advisor",
+        "green",
+        "height",
+        "layout",
+        "roads",
+        "scale",
+        "text",
+        "trees",
+        "water",
+      ].sort(),
     );
+  });
+
+  /**
+   * The text layer's own key, spelled out.
+   *
+   * It is a STRING, not the nested objects, so that the all-primitives rule
+   * above can hold; the risk a string key carries in exchange is that it stops
+   * noticing a change, which is what these two assert against.
+   */
+  it("keys the text layer on the layout parameters and nothing else", () => {
+    const params = { ...DEFAULT_PRINT_PARAMS };
+    // Same values, fresh objects: the key must NOT move, or every `setNested`
+    // write would re-triangulate the glyphs.
+    const rebuilt = { ...params, north_arrow: { ...params.north_arrow } };
+    expect(
+      changed(
+        previewDeps.text(GRAPH, params, ROTATION_DEG, DATE, FACE_VERSION),
+        previewDeps.text(GRAPH, rebuilt, ROTATION_DEG, DATE, FACE_VERSION),
+      ),
+    ).toBe(false);
+    // ...and the three arguments the component holds outside `params`.
+    for (const after of [
+      previewDeps.text(GRAPH, params, 90, DATE, FACE_VERSION),
+      previewDeps.text(GRAPH, params, ROTATION_DEG, "2026-09-01", FACE_VERSION),
+      previewDeps.text(GRAPH, params, ROTATION_DEG, DATE, 1),
+    ]) {
+      expect(
+        changed(previewDeps.text(GRAPH, params, ROTATION_DEG, DATE, FACE_VERSION), after),
+      ).toBe(true);
+    }
   });
 });

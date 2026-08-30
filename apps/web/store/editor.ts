@@ -36,9 +36,11 @@ import {
   shouldPoll,
   type BakeState,
 } from "@/lib/bake";
-import { DEFAULT_PRINT_PARAMS } from "@/lib/contracts";
+import { DEFAULT_PRINT_PARAMS, defaultPrintParams } from "@/lib/contracts";
 import type { PrintParams, SceneGraph, SceneRequest } from "@/lib/contracts";
 import { RADIUS_MAX_M, RADIUS_MIN_M, snapRadius } from "@/lib/geo";
+import { toggleHeroId } from "@/lib/heroes";
+import { decodeShare, readShareParam } from "@/lib/share";
 import { bakeBlockReason } from "@/lib/warnings";
 
 export type Theme = "light" | "dark";
@@ -75,6 +77,17 @@ export interface PresetsState {
   message: string | null;
 }
 
+/**
+ * The PrintParams fields that are objects rather than scalars. They must be
+ * written immutably (a mutated nested object would keep the same identity and
+ * a memo keyed on it would never notice), which is what `setNested` is for.
+ */
+export type NestedParamKey =
+  | "part_colors"
+  | "north_arrow"
+  | "scale_bar"
+  | "underside_mark";
+
 export interface EditorState {
   location: LocationState;
   params: PrintParams;
@@ -88,6 +101,25 @@ export interface EditorState {
    * load highlights a chip for a scene that was never fetched.
    */
   presetChosen: boolean;
+  /**
+   * True when the last hero click was refused because twelve are already
+   * picked (the contract's `hero_building_ids.maxItems`). UI-only, so it is
+   * NOT a PrintParams field and never reaches the wire.
+   */
+  heroCapHit: boolean;
+  /**
+   * Whether the adjustments drawer is open. It lives here, not in the chip,
+   * because the chip is rendered inside the client-only preview while the
+   * global Escape handler and the shortcut suppression both live in
+   * `EditorShell` -- Escape has to close a drawer whatever has focus.
+   */
+  adjustmentsOpen: boolean;
+  /**
+   * Why a shared link was not applied, or null. Informational: a rejected link
+   * leaves the editor on its defaults rather than half-restored, and saying
+   * nothing about it would look like the link simply did nothing.
+   */
+  shareNotice: string | null;
 
   // --- location (these four are the ONLY things that refetch /scene) ---
   setPin: (lat: number, lon: number) => void;
@@ -97,7 +129,29 @@ export interface EditorState {
 
   // --- print params (never touch the network) ---
   setParam: <K extends keyof PrintParams>(key: K, value: PrintParams[K]) => void;
+  /** Patch one field of a nested PrintParams object, immutably. */
+  setNested: <K extends NestedParamKey>(
+    key: K,
+    patch: Partial<NonNullable<PrintParams[K]>>,
+  ) => void;
   resetParams: () => void;
+
+  // --- hero buildings (a click in the preview; still just a param write) ---
+  toggleHero: (id: string) => void;
+  clearHeroes: () => void;
+
+  // --- shared configuration (a URL payload; still never a fetch) ---
+  applyShared: (request: SceneRequest, params: PrintParams) => void;
+  /**
+   * Read `?s=` out of a query string. `none` when there was no payload;
+   * `refused` is what tells the caller to take the bad payload back out of the
+   * address bar, so a reload does not resurrect the same refusal forever.
+   */
+  loadShared: (search: string) => "none" | "applied" | "refused";
+  setShareNotice: (message: string | null) => void;
+
+  // --- transient UI ---
+  setAdjustmentsOpen: (open: boolean) => void;
 
   // --- theme ---
   setTheme: (theme: Theme) => void;
@@ -169,12 +223,19 @@ let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
 export const useEditorStore = create<EditorState>()((set, get) => ({
   location: { ...INITIAL_LOCATION },
-  params: { ...DEFAULT_PRINT_PARAMS },
+  // `defaultPrintParams()`, never a shallow spread: DEFAULT_PRINT_PARAMS is
+  // deep-frozen, and a spread would alias its nested v2 objects (part_colors,
+  // engravings, north_arrow, scale_bar, underside_mark, hero_building_ids)
+  // into live state, where the first write would throw.
+  params: defaultPrintParams(),
   scene: { ...IDLE_SCENE },
   bake: { ...initialBakeState },
   presets: { status: "idle", items: [], message: null },
   theme: "light",
   presetChosen: false,
+  heroCapHit: false,
+  adjustmentsOpen: false,
+  shareNotice: null,
 
   setPin: (lat, lon) =>
     set((state) => ({
@@ -223,11 +284,90 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       bake: markBakeStale(state.bake),
     })),
 
+  // Every nested write goes through `setParam` too, so bake staleness and the
+  // `previewDeps` memo keys keep working exactly as they do for a slider.
+  setNested: (key, patch) => {
+    const current = get().params[key] ?? DEFAULT_PRINT_PARAMS[key];
+    get().setParam(key, { ...(current as object), ...patch } as never);
+  },
+
   resetParams: () =>
     set((state) => ({
-      params: { ...DEFAULT_PRINT_PARAMS },
+      // A fresh deep copy, so a reset never hands the editor a nested object
+      // shared with the frozen constant or with the state it just replaced.
+      params: defaultPrintParams(),
       bake: markBakeStale(state.bake),
+      heroCapHit: false,
     })),
+
+  /**
+   * Add or remove a hero, capped at the contract's `maxItems`.
+   *
+   * A refused click is not silent: `heroCapHit` turns the cap notice on in the
+   * Buildings group. Removing a hero clears it again, because the list is no
+   * longer full.
+   */
+  toggleHero: (id) => {
+    const result = toggleHeroId(get().params.hero_building_ids ?? [], id);
+    if (result.capHit) {
+      set({ heroCapHit: true });
+      return;
+    }
+    set({ heroCapHit: false });
+    get().setParam("hero_building_ids", result.ids);
+  },
+
+  clearHeroes: () => {
+    set({ heroCapHit: false });
+    get().setParam("hero_building_ids", []);
+  },
+
+  /**
+   * Restore a whole editor state from a shared link.
+   *
+   * Deliberately NOT a fetch. A link describes a model; generating it is a
+   * live Overpass query at whatever location it names, and auto-running one on
+   * page load would make opening a link in a background tab a server request
+   * nobody asked for. The scene is marked stale instead, which is exactly the
+   * state a moved pin leaves behind: Generate is enabled and says "Generate".
+   *
+   * `presetChosen` stays false even when the link names a preset: the chip may
+   * only light up once something real backs it (`activePresetId`).
+   */
+  applyShared: (request, params) =>
+    set((state) => ({
+      location: {
+        lat: request.lat,
+        lon: request.lon,
+        radius_m: snapRadius(request.radius_m),
+        rotation_deg: Math.min(360, Math.max(0, Math.round(request.rotation_deg))),
+        preset_id: request.preset_id ?? null,
+      },
+      params,
+      scene: { ...state.scene, stale: true },
+      bake: markBakeStale(state.bake),
+      presetChosen: false,
+      heroCapHit: false,
+      shareNotice: null,
+    })),
+
+  loadShared: (search) => {
+    const payload = readShareParam(search);
+    if (payload === null) return "none";
+    const decoded = decodeShare(payload);
+    if (!decoded.ok) {
+      // Rejected links leave the editor on its defaults, on purpose: a
+      // half-applied configuration is the one outcome the user cannot see.
+      set({ shareNotice: decoded.reason });
+      return "refused";
+    }
+    get().applyShared(decoded.request, decoded.params);
+    return "applied";
+  },
+
+  setShareNotice: (message) => set({ shareNotice: message }),
+
+  setAdjustmentsOpen: (open) => set({ adjustmentsOpen: open }),
 
   setTheme: (theme) => {
     if (typeof document !== "undefined") {

@@ -33,7 +33,7 @@ export function PresetRow() {
 
   if (presets.status === "loading" || presets.status === "idle") {
     return (
-      <p className="px-1 py-2 text-xs text-neutral-500 dark:text-neutral-400">
+      <p className="py-1 text-2xs text-ink-faint" data-testid="presets-loading">
         Loading presets...
       </p>
     );
@@ -41,14 +41,14 @@ export function PresetRow() {
 
   if (presets.status === "error") {
     return (
-      <div className="flex items-center gap-2 px-1 py-2 text-xs text-amber-700 dark:text-amber-400">
+      <div className="flex flex-wrap items-center gap-2 py-1 text-2xs text-warn">
         <span data-testid="presets-error">
           Presets unavailable: {presets.message}
         </span>
         <button
           type="button"
           onClick={() => void loadPresets()}
-          className="underline"
+          className="rounded-milled border border-control px-1.5 py-0.5 text-ink-muted transition-colors hover:text-ink"
         >
           Retry
         </button>
@@ -71,10 +71,11 @@ export function PresetRow() {
               applyPreset(preset);
               void generate();
             }}
-            className={`rounded-full border px-3 py-1 text-xs transition-colors disabled:opacity-60 ${
+            aria-pressed={active}
+            className={`rounded-milled border px-2.5 py-1 text-2xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
               active
-                ? "border-sky-500 bg-sky-500 text-white"
-                : "border-neutral-300 hover:border-sky-400 hover:text-sky-600 dark:border-neutral-700 dark:hover:text-sky-400"
+                ? "border-accent bg-accent text-accent-ink"
+                : "border-control bg-plate-raised text-ink-muted hover:border-ink-faint hover:text-ink"
             }`}
           >
             {presetLabel(preset.preset_id)}
