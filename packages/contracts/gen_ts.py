@@ -183,34 +183,50 @@ def ref_target(prop: dict) -> str | None:
     return ref.split("/")[-1]
 
 
-def bounded(props: dict) -> list[tuple[str, dict]]:
-    return [(n, p) for n, p in props.items() if "minimum" in p and "maximum" in p]
-
-
 def numeric_range_entries(
-    print_params_schema: dict,
-) -> list[tuple[str, dict | list[tuple[str, dict]]]]:
-    """PARAM_RANGES rows, in PrintParams property order.
+    props: dict,
+    defs: dict,
+    seen: frozenset[str] = frozenset(),
+) -> list[tuple[str, dict | list]]:
+    """PARAM_RANGES rows for one object's own properties, in schema order.
 
-    A bounded scalar becomes a leaf ``(name, prop)``.  A property that points at
-    a ``$defs`` object (directly, or as an array's item type) becomes a GROUP
-    ``(name, [(sub_name, sub_prop), ...])`` of that object's own bounded
-    scalars, so a nested slider reads its range from
-    ``PARAM_RANGES.north_arrow.size_mm.max`` and the UI never re-types a bound.
-    Objects with no bounded scalar contribute nothing.
+    A bounded scalar becomes a leaf ``(name, prop)``.  A property that points
+    at a ``$defs`` object (directly, or as an array's item type) recurses into
+    THAT object's own properties by the same rule, so a nested slider several
+    levels deep (``PARAM_RANGES.regions.rail.width_m``,
+    ``PARAM_RANGES.frame_style.shadow_gap.width_mm``) reads its range without
+    the UI ever re-typing a bound. A branch with no bounded scalar at any
+    depth contributes nothing. ``seen`` guards against a ``$defs`` cycle (none
+    exists in this contract set, but a recursive walk should not trust that).
     """
-    defs = print_params_schema.get("$defs", {})
-    out: list[tuple[str, dict | list[tuple[str, dict]]]] = []
-    for name, prop in print_params_schema["properties"].items():
+    out: list[tuple[str, dict | list]] = []
+    for name, prop in props.items():
         if "minimum" in prop and "maximum" in prop:
             out.append((name, prop))
             continue
         target = ref_target(prop)
-        if target is not None:
-            group = bounded(defs.get(target, {}).get("properties", {}))
-            if group:
-                out.append((name, group))
+        if target is None or target in seen:
+            continue
+        group = numeric_range_entries(
+            defs.get(target, {}).get("properties", {}), defs, seen | {target}
+        )
+        if group:
+            out.append((name, group))
     return out
+
+
+def render_range_lines(entries: list[tuple[str, dict | list]], indent: int) -> list[str]:
+    """Recursively render PARAM_RANGES rows at the given indent depth."""
+    pad = " " * indent
+    lines: list[str] = []
+    for name, entry in entries:
+        if isinstance(entry, list):
+            lines.append(f"{pad}{name}: {{")
+            lines.extend(render_range_lines(entry, indent + 2))
+            lines.append(f"{pad}}},")
+        else:
+            lines.append(f"{pad}{name}: {range_literal(entry)},")
+    return lines
 
 
 # JSON Schema count keyword -> the PARAM_LIMITS key it becomes.  Order is fixed
@@ -228,34 +244,55 @@ def count_limits(prop: dict) -> list[tuple[str, int]]:
     return [(key, prop[kw]) for kw, key in COUNT_CONSTRAINTS if kw in prop]
 
 
+# One PARAM_LIMITS tree node: (name, own item-count/length caps, child nodes).
+LimitNode = tuple[str, list[tuple[str, int]], list["LimitNode"]]
+
+
 def limit_entries(
-    print_params_schema: dict,
-) -> list[tuple[str, list[tuple[str, int]], list[tuple[str, list[tuple[str, int]]]]]]:
-    """PARAM_LIMITS rows, in PrintParams property order.
+    props: dict,
+    defs: dict,
+    seen: frozenset[str] = frozenset(),
+) -> list[LimitNode]:
+    """PARAM_LIMITS rows for one object's own properties, in schema order.
 
     PARAM_RANGES only carries fragments with both ``minimum`` and ``maximum``,
     so the array caps (``engravings`` 8, ``hero_building_ids`` 12) and the
     string caps (``city_label``, ``Engraving.text``, ``UndersideMark.template``
-    at 64) reached TS as types and runtime validation but not as constants, and
-    a UI enforcing them would have to re-type the numbers.  Each property
-    contributes its own caps as leaves (``city_label.max_length``) plus, when it
-    points at a ``$defs`` object directly or as an array's item type, one nested
-    entry per capped member (``engravings.text.max_length``).
+    at 64, ``Colour.palette`` at 32) reached TS as types and runtime validation
+    but not as constants, and a UI enforcing them would have to re-type the
+    numbers. Each property contributes its own caps as a leaf
+    (``city_label.max_length``) plus, when it points at a ``$defs`` object
+    directly or as an array's item type, one child node per capped member,
+    recursively - so a cap several levels deep (``colour.gradient.slots.max_items``)
+    still surfaces. ``seen`` guards a ``$defs`` cycle, as in ``numeric_range_entries``.
     """
-    defs = print_params_schema.get("$defs", {})
-    out: list[tuple[str, list[tuple[str, int]], list[tuple[str, list[tuple[str, int]]]]]] = []
-    for name, prop in print_params_schema["properties"].items():
+    out: list[LimitNode] = []
+    for name, prop in props.items():
         own = count_limits(prop)
-        nested: list[tuple[str, list[tuple[str, int]]]] = []
+        children: list[LimitNode] = []
         target = ref_target(prop)
-        if target is not None:
-            for sub_name, sub_prop in defs.get(target, {}).get("properties", {}).items():
-                sub = count_limits(sub_prop)
-                if sub:
-                    nested.append((sub_name, sub))
-        if own or nested:
-            out.append((name, own, nested))
+        if target is not None and target not in seen:
+            children = limit_entries(
+                defs.get(target, {}).get("properties", {}), defs, seen | {target}
+            )
+        if own or children:
+            out.append((name, own, children))
     return out
+
+
+def render_limit_node(name: str, own: list[tuple[str, int]], children: list[LimitNode], indent: int) -> list[str]:
+    """Recursively render one PARAM_LIMITS row at the given indent depth."""
+    pad = " " * indent
+    if not children:
+        body = ", ".join(f"{key}: {value}" for key, value in own)
+        return [f"{pad}{name}: {{ {body} }},"]
+    lines = [f"{pad}{name}: {{"]
+    for key, value in own:
+        lines.append(f"{pad}  {key}: {value},")
+    for child_name, child_own, child_children in children:
+        lines.extend(render_limit_node(child_name, child_own, child_children, indent + 2))
+    lines.append(f"{pad}}},")
+    return lines
 
 
 def ts_literal(value, defs: dict | None = None, def_name: str | None = None, indent: int = 0) -> str:
@@ -282,6 +319,14 @@ def ts_literal(value, defs: dict | None = None, def_name: str | None = None, ind
         body = "\n".join(f"{pad}{k}: {ts_literal(value[k], defs, None, indent + 2)}," for k in keys)
         return "{\n" + body + "\n" + " " * indent + "}"
     return json.dumps(value)
+
+
+def range_literal(prop: dict) -> str:
+    return (
+        f"{{ min: {ts_literal(prop['minimum'])}, "
+        f"max: {ts_literal(prop['maximum'])}, "
+        f"default: {ts_literal(prop['default'])} }}"
+    )
 
 
 def generate() -> str:
@@ -314,28 +359,18 @@ def generate() -> str:
     out.append(FACTORY)
 
     # PARAM_RANGES: every numeric PrintParams field with a min/max, plus one
-    # nested group per $defs object that has bounded scalars of its own.
-    def range_literal(prop: dict) -> str:
-        return (
-            f"{{ min: {ts_literal(prop['minimum'])}, "
-            f"max: {ts_literal(prop['maximum'])}, "
-            f"default: {ts_literal(prop['default'])} }}"
-        )
-
+    # nested group per $defs object that has bounded scalars of its own,
+    # recursively (see numeric_range_entries).
     range_lines = ["export const PARAM_RANGES = {"]
-    for name, entry in numeric_range_entries(print_params_schema):
-        if isinstance(entry, list):
-            range_lines.append(f"  {name}: {{")
-            for sub_name, sub_prop in entry:
-                range_lines.append(f"    {sub_name}: {range_literal(sub_prop)},")
-            range_lines.append("  },")
-        else:
-            range_lines.append(f"  {name}: {range_literal(entry)},")
+    range_lines.extend(
+        render_range_lines(numeric_range_entries(print_params_schema["properties"], defs), 2)
+    )
     range_lines.append("} as const;\n")
     out.append("\n".join(range_lines))
     out.append("\n")
 
-    # PARAM_LIMITS: the array and string caps PARAM_RANGES cannot carry.
+    # PARAM_LIMITS: the array and string caps PARAM_RANGES cannot carry,
+    # recursively (see limit_entries).
     limit_lines = [
         "/**",
         " * Every item-count and string-length cap the contract declares, so a UI",
@@ -345,18 +380,8 @@ def generate() -> str:
         " */",
         "export const PARAM_LIMITS = {",
     ]
-    for name, own, nested in limit_entries(print_params_schema):
-        if not nested:
-            body = ", ".join(f"{key}: {value}" for key, value in own)
-            limit_lines.append(f"  {name}: {{ {body} }},")
-            continue
-        limit_lines.append(f"  {name}: {{")
-        for key, value in own:
-            limit_lines.append(f"    {key}: {value},")
-        for sub_name, sub in nested:
-            body = ", ".join(f"{key}: {value}" for key, value in sub)
-            limit_lines.append(f"    {sub_name}: {{ {body} }},")
-        limit_lines.append("  },")
+    for name, own, children in limit_entries(print_params_schema["properties"], defs):
+        limit_lines.extend(render_limit_node(name, own, children, 2))
     limit_lines.append("} as const;\n")
     out.append("\n".join(limit_lines))
     out.append("\n")

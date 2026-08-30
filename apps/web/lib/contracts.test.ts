@@ -35,8 +35,8 @@ describe("DEFAULT_PRINT_PARAMS", () => {
     expect(DEFAULT_PRINT_PARAMS as unknown as Record<string, unknown>).toEqual(pythonDefaults);
   });
 
-  it("declares schema_version 2", () => {
-    expect(DEFAULT_PRINT_PARAMS.schema_version).toBe(2);
+  it("declares schema_version 3", () => {
+    expect(DEFAULT_PRINT_PARAMS.schema_version).toBe(3);
   });
 
   it("keeps every v1 field at its v1 default", () => {
@@ -80,6 +80,31 @@ describe("DEFAULT_PRINT_PARAMS", () => {
     expect(DEFAULT_PRINT_PARAMS.hero_building_ids).toEqual([]);
   });
 
+  it("starts every v3 engine feature switched off, so a default bake is still a v1 bake", () => {
+    // bridges.enabled defaults true - it is a structural fallback (drape onto
+    // abutments instead of the terrain) that only matters once terrain is on,
+    // not a personalisation toggle, so it is not part of this "off" claim.
+    expect(DEFAULT_PRINT_PARAMS.terrain?.enabled).toBe(false);
+    expect(DEFAULT_PRINT_PARAMS.hero_auto?.enabled).toBe(false);
+    expect(DEFAULT_PRINT_PARAMS.tiling?.enabled).toBe(false);
+    expect(DEFAULT_PRINT_PARAMS.colour?.tint?.enabled).toBe(false);
+    expect(DEFAULT_PRINT_PARAMS.colour?.gradient?.enabled).toBe(false);
+    expect(DEFAULT_PRINT_PARAMS.frame_style?.shadow_gap?.enabled).toBe(false);
+    expect(DEFAULT_PRINT_PARAMS.frame_style?.matting?.enabled).toBe(false);
+    expect(DEFAULT_PRINT_PARAMS.frame_style?.separate?.enabled).toBe(false);
+    expect(DEFAULT_PRINT_PARAMS.frame_style?.profile).toBe("plain");
+    expect(DEFAULT_PRINT_PARAMS.frame_style?.texture?.pattern).toBe("none");
+    expect(DEFAULT_PRINT_PARAMS.printer_profile).toBe("custom");
+    expect(DEFAULT_PRINT_PARAMS.export_target).toBe("bambu-3mf");
+    expect(DEFAULT_PRINT_PARAMS.colour?.palette).toBe("default");
+    expect(DEFAULT_PRINT_PARAMS.place).toEqual({
+      country: "",
+      state: "",
+      neighbourhood: "",
+      author: "",
+    });
+  });
+
   it("gives the default palette four distinct filaments", () => {
     // base+buildings, roads+frame, water, green+trees: a four-slot AMS prints
     // the default scene with no re-assignment (DECISIONS [V2-P2]).
@@ -97,9 +122,12 @@ describe("DEFAULT_PRINT_PARAMS", () => {
 });
 
 /**
- * The six keys whose default is an object or an array. A shallow copy of the
- * constant aliases all six, which is the hazard the freeze and the factory
- * exist to close; the last case here fails if a later contract adds a seventh.
+ * Every key whose default is an object or an array (six from schema_version 2,
+ * twelve more from schema_version 3: printer_profile and export_target are
+ * plain string enums and stay out of this list). A shallow copy of the
+ * constant aliases every one of these, which is the hazard the freeze and the
+ * factory exist to close; the "names every object-valued key" case below
+ * fails if a later contract adds one this list does not know about.
  */
 const NESTED_KEYS = [
   "part_colors",
@@ -108,6 +136,18 @@ const NESTED_KEYS = [
   "scale_bar",
   "underside_mark",
   "hero_building_ids",
+  "place",
+  "regions",
+  "colour",
+  "custom_profile",
+  "terrain",
+  "heights",
+  "bridges",
+  "height_exaggeration",
+  "hero_auto",
+  "tiling",
+  "frame_style",
+  "hanger_magnet",
 ] as const;
 
 function walk(value: unknown, path: string, out: string[]): void {
@@ -124,6 +164,35 @@ function objectPaths(value: unknown): string[] {
   return out;
 }
 
+/**
+ * Every path `objectPaths` finds inside DEFAULT_PRINT_PARAMS: the root, each
+ * of NESTED_KEYS, and - because `walk` descends recursively - every object or
+ * non-empty array nested a level deeper still: regions' four per-region
+ * blocks, colour's four sub-blocks plus its one non-empty array default
+ * (gradient.slots: [2, 3]), heights' one sub-block, and frame_style's four
+ * sub-blocks. Spelled out in full so the "is frozen" test below is a real
+ * pin, not an approximation, and fails the moment a later contract adds
+ * another level nobody taught this list about.
+ */
+const ALL_OBJECT_PATHS = [
+  "$",
+  ...NESTED_KEYS.map((key) => `$.${key}`),
+  "$.regions.roads",
+  "$.regions.water",
+  "$.regions.parks",
+  "$.regions.rail",
+  "$.colour.region_slots",
+  "$.colour.region_colors",
+  "$.colour.tint",
+  "$.colour.gradient",
+  "$.colour.gradient.slots",
+  "$.heights.type_defaults",
+  "$.frame_style.shadow_gap",
+  "$.frame_style.matting",
+  "$.frame_style.separate",
+  "$.frame_style.texture",
+] as const;
+
 describe("DEFAULT_PRINT_PARAMS is immutable", () => {
   it("names every object-valued key", () => {
     const found = Object.entries(DEFAULT_PRINT_PARAMS)
@@ -134,10 +203,7 @@ describe("DEFAULT_PRINT_PARAMS is immutable", () => {
 
   it("is frozen, and so is every object reachable from it", () => {
     const paths = objectPaths(DEFAULT_PRINT_PARAMS);
-    // Non-vacuity: the root plus all six nested values, by name.
-    expect(paths.sort()).toEqual(
-      ["$", ...NESTED_KEYS.map((key) => `$.${key}`)].sort(),
-    );
+    expect(paths.sort()).toEqual([...ALL_OBJECT_PATHS].sort());
     for (const path of paths) {
       const node = path
         .split(".")
@@ -224,6 +290,8 @@ describe("PARAM_LIMITS", () => {
       "engravings",
       "underside_mark",
       "hero_building_ids",
+      "place",
+      "colour",
     ]);
   });
 
@@ -237,6 +305,31 @@ describe("PARAM_LIMITS", () => {
     );
     expect(DEFAULT_PRINT_PARAMS.engravings!.length).toBeLessThanOrEqual(
       PARAM_LIMITS.engravings.max_items,
+    );
+  });
+
+  it("publishes the v3 caps, nested two levels deep where the schema is", () => {
+    // place.* (root -> Place -> four 64-char strings) and colour.palette
+    // (root -> Colour -> one 32-char string) are one level, like the v2 caps
+    // above; colour.gradient.slots is two levels (root -> Colour -> Gradient
+    // -> slots), the deepest cap in the contract.
+    expect(PARAM_LIMITS.place.country.max_length).toBe(64);
+    expect(PARAM_LIMITS.place.state.max_length).toBe(64);
+    expect(PARAM_LIMITS.place.neighbourhood.max_length).toBe(64);
+    expect(PARAM_LIMITS.place.author.max_length).toBe(64);
+    expect(PARAM_LIMITS.colour.palette.max_length).toBe(32);
+    expect(PARAM_LIMITS.colour.gradient.slots.max_items).toBe(16);
+  });
+
+  it("agrees with the v3 defaults it caps", () => {
+    expect(DEFAULT_PRINT_PARAMS.place!.author!.length).toBeLessThanOrEqual(
+      PARAM_LIMITS.place.author.max_length,
+    );
+    expect(DEFAULT_PRINT_PARAMS.colour!.palette!.length).toBeLessThanOrEqual(
+      PARAM_LIMITS.colour.palette.max_length,
+    );
+    expect(DEFAULT_PRINT_PARAMS.colour!.gradient!.slots!.length).toBeLessThanOrEqual(
+      PARAM_LIMITS.colour.gradient.slots.max_items,
     );
   });
 });
@@ -262,5 +355,42 @@ describe("PARAM_RANGES", () => {
       DEFAULT_PRINT_PARAMS.north_arrow?.size_mm,
     );
     expect(PARAM_RANGES.scale_bar.length_m.default).toBe(DEFAULT_PRINT_PARAMS.scale_bar?.length_m);
+  });
+
+  it("exposes the nested v3 ranges as groups, one level deep", () => {
+    expect(PARAM_RANGES.custom_profile.nozzle_mm).toEqual({ min: 0.2, max: 1.0, default: 0.4 });
+    // Exaggeration is deliberately NOT a field here: it reuses the existing
+    // top-level terrain_exaggeration (checked above, "keeps the v1 slider
+    // ranges" would need it too if it were duplicated).
+    expect(PARAM_RANGES.terrain.smoothing).toEqual({ min: 0, max: 5, default: 1 });
+    expect(PARAM_RANGES.heights.floor_height_m).toEqual({ min: 2, max: 5, default: 3.0 });
+    expect(PARAM_RANGES.bridges.clearance_mm).toEqual({ min: 0, max: 5, default: 1.0 });
+    expect(PARAM_RANGES.height_exaggeration.multiplier).toEqual({ min: 0.25, max: 4, default: 1.0 });
+    expect(PARAM_RANGES.hero_auto.count).toEqual({ min: 1, max: 12, default: 3 });
+    expect(PARAM_RANGES.tiling.tolerance_mm).toEqual({ min: 0, max: 1, default: 0.15 });
+    expect(PARAM_RANGES.hanger_magnet.diameter_mm).toEqual({ min: 3, max: 20, default: 6 });
+  });
+
+  it("exposes the nested v3 ranges as groups, two levels deep", () => {
+    // regions.rail (root -> Regions -> RailRegion) and colour.region_slots
+    // (root -> Colour -> RegionSlots) are the shallow direct-object-ref shape;
+    // frame_style.shadow_gap (root -> FrameStyle -> ShadowGap) is the same
+    // shape nested inside a group that ALSO has its own direct ranges
+    // (corner_radius_mm, lip_depth_mm), so both must be present together.
+    expect(PARAM_RANGES.regions.rail.width_m).toEqual({ min: 2, max: 20, default: 6.0 });
+    expect(PARAM_RANGES.regions.building_skirt_mm).toEqual({ min: 0, max: 1, default: 0.3 });
+    expect(PARAM_RANGES.colour.region_slots.buildings).toEqual({ min: 1, max: 16, default: 2 });
+    expect(PARAM_RANGES.colour.tint.hue_range_deg).toEqual({ min: 0, max: 60, default: 12 });
+    expect(PARAM_RANGES.frame_style.corner_radius_mm).toEqual({ min: 0, max: 20, default: 3 });
+    expect(PARAM_RANGES.frame_style.shadow_gap.width_mm).toEqual({ min: 0.4, max: 5, default: 1.0 });
+  });
+
+  it("agrees with the v3 defaults it publishes", () => {
+    expect(PARAM_RANGES.regions.rail.width_m.default).toBe(
+      DEFAULT_PRINT_PARAMS.regions?.rail?.width_m,
+    );
+    expect(PARAM_RANGES.frame_style.shadow_gap.width_mm.default).toBe(
+      DEFAULT_PRINT_PARAMS.frame_style?.shadow_gap?.width_mm,
+    );
   });
 });

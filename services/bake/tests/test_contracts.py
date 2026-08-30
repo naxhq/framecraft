@@ -222,6 +222,107 @@ PRINT_PARAMS_V2_EXAMPLE = {
     "hero_mode": "both",
 }
 
+# The fourteen top-level names schema_version 3 adds (docs/handoff/v3-01-contracts.md).
+# Spelled out here on purpose, same rationale as V2_PRINT_PARAM_FIELDS: a future
+# phase editing this list is deliberate, and the round-trip test below fails the
+# moment the generated model grows or loses one.
+V3_PRINT_PARAM_FIELDS = [
+    "place",
+    "regions",
+    "colour",
+    "printer_profile",
+    "custom_profile",
+    "export_target",
+    "terrain",
+    "heights",
+    "bridges",
+    "height_exaggeration",
+    "hero_auto",
+    "tiling",
+    "frame_style",
+    "hanger_magnet",
+]
+
+# A fully-populated v3 payload: every new field present, in range, and every
+# new enum member (Engraving.mode "inlay", Engraving.edge "underside",
+# hanger "cleat") exercised at least once, so the out-of-range/enum cases
+# below have a non-vacuous baseline to mutate.
+PRINT_PARAMS_V3_EXAMPLE = {
+    **PRINT_PARAMS_V2_EXAMPLE,
+    "schema_version": 3,
+    "engravings": [
+        {
+            "edge": "bottom",
+            "align": "center",
+            "text": "{city} {coords}",
+            "mode": "engrave",
+            "size_mm": 3.0,
+            "depth_mm": 0.4,
+            "font": "sans",
+        },
+        {
+            "edge": "underside",
+            "align": "center",
+            "text": "{author}",
+            "mode": "inlay",
+            "size_mm": 2.5,
+            "depth_mm": 0.3,
+            "font": "mono",
+        },
+    ],
+    "hanger": "cleat",
+    "place": {"country": "USA", "state": "Illinois", "neighbourhood": "Loop", "author": "V. Alizadeh"},
+    "regions": {
+        "roads": {"depth_mm": 0.6, "proud_mm": -0.2},
+        "water": {"depth_mm": 1.0, "proud_mm": -0.5},
+        "parks": {"depth_mm": 0.4, "proud_mm": 0.0},
+        "rail": {"depth_mm": 0.4, "proud_mm": 0.3, "width_m": 6.0},
+        "building_skirt_mm": 0.3,
+    },
+    "colour": {
+        "region_slots": {
+            "base": 1, "frame": 1, "matting": 1, "buildings": 2, "hero_building": 4,
+            "roads": 4, "water": 3, "parks": 4, "rail": 4, "lettering": 4, "attribution": 1,
+        },
+        "region_colors": {
+            "base": "#D8D3C6", "frame": "#3A3A3A", "matting": "#EDE9E0", "buildings": "#D8D3C6",
+            "hero_building": "#E3A72F", "roads": "#3A3A3A", "water": "#2F7FC1", "parks": "#5A9E4B",
+            "rail": "#6B6B6B", "lettering": "#E3A72F", "attribution": "#D8D3C6",
+        },
+        "palette": "default",
+        "tint": {"enabled": True, "hue_range_deg": 12, "lightness_range": 0.12, "seed": 1},
+        "gradient": {"enabled": True, "slots": [2, 3]},
+        "preview_theme": "dark",
+    },
+    "printer_profile": "bambu-x1c",
+    "custom_profile": {
+        "plate_x_mm": 256, "plate_y_mm": 256, "max_height_mm": 250,
+        "nozzle_mm": 0.4, "slots": 4, "change_gcode": "M600",
+    },
+    "export_target": "bambu-3mf",
+    "terrain": {"enabled": True, "smoothing": 1},
+    "heights": {
+        "floor_height_m": 3.0,
+        "unknown_default_m": 8.0,
+        "type_defaults": {"house": 6, "apartments": 15, "commercial": 12, "retail": 6, "industrial": 8, "garage": 3},
+    },
+    "bridges": {"enabled": True, "clearance_mm": 1.0, "abutments": True},
+    "height_exaggeration": {"multiplier": 1.0, "curve": 0.0},
+    "hero_auto": {"enabled": True, "count": 3},
+    "tiling": {"enabled": True, "cols": 1, "rows": 1, "joint": "dovetail", "tolerance_mm": 0.15, "index_mark": True},
+    "frame_style": {
+        "profile": "plain",
+        "corner": "square",
+        "corner_radius_mm": 3,
+        "lip_depth_mm": 0.4,
+        "shadow_gap": {"enabled": False, "width_mm": 1.0, "depth_mm": 0.8},
+        "matting": {"enabled": False, "width_mm": 6, "proud_mm": 0.4},
+        "separate": {"enabled": False, "mount": "snap", "tolerance_mm": 0.2},
+        "texture": {"pattern": "none", "scale_mm": 1.0, "depth_mm": 0.2},
+    },
+    "hanger_magnet": {"diameter_mm": 6, "thickness_mm": 2, "count": 2},
+}
+
 # status placeholder "queued|running|done|failed" resolved to "done" since
 # files/stats are populated, matching a completed job; progress/error are
 # the ADDITIVE fields (DECISIONS.md) and default to null when unset.
@@ -259,16 +360,29 @@ def test_scene_graph_round_trips():
 
 def test_print_params_round_trips():
     """02's example is a v1 payload: every v1 key round-trips unchanged, and the
-    only keys the v2 model adds are the eleven named above."""
+    only keys the v2+v3 model adds are the ones named above."""
     obj = contracts.PrintParams(**PRINT_PARAMS_EXAMPLE)
     dumped = obj.model_dump(mode="json")
     assert {k: dumped[k] for k in PRINT_PARAMS_EXAMPLE} == PRINT_PARAMS_EXAMPLE
-    assert sorted(set(dumped) - set(PRINT_PARAMS_EXAMPLE)) == sorted(V2_PRINT_PARAM_FIELDS)
+    assert sorted(set(dumped) - set(PRINT_PARAMS_EXAMPLE)) == sorted(
+        V2_PRINT_PARAM_FIELDS + V3_PRINT_PARAM_FIELDS
+    )
 
 
 def test_print_params_v2_round_trips():
+    """A v2 payload (which carries none of the fourteen v3 keys) round-trips
+    every v2 key unchanged; the v3 keys land at their own defaults."""
     obj = contracts.PrintParams(**PRINT_PARAMS_V2_EXAMPLE)
-    assert obj.model_dump(mode="json") == PRINT_PARAMS_V2_EXAMPLE
+    dumped = obj.model_dump(mode="json")
+    assert {k: dumped[k] for k in PRINT_PARAMS_V2_EXAMPLE} == PRINT_PARAMS_V2_EXAMPLE
+    assert sorted(set(dumped) - set(PRINT_PARAMS_V2_EXAMPLE)) == sorted(V3_PRINT_PARAM_FIELDS)
+
+
+def test_print_params_v3_round_trips():
+    """A fully-populated v3 payload - every new group, every new enum member -
+    survives load and dump unchanged."""
+    obj = contracts.PrintParams(**PRINT_PARAMS_V3_EXAMPLE)
+    assert obj.model_dump(mode="json") == PRINT_PARAMS_V3_EXAMPLE
 
 
 def test_bake_result_round_trips():
@@ -298,6 +412,7 @@ VALID_EXAMPLES = [
     ("scene_graph.json", "SceneGraph", SCENE_GRAPH_EXAMPLE),
     ("print_params.json", "PrintParams", PRINT_PARAMS_EXAMPLE),
     ("print_params.json", "PrintParams", PRINT_PARAMS_V2_EXAMPLE),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE),
     ("bake_result.json", "BakeResult", BAKE_RESULT_EXAMPLE),
 ]
 
@@ -329,7 +444,7 @@ OUT_OF_RANGE_CASES = [
     # v2 fields: numeric bounds, string lengths, the hex pattern, array caps
     # and the schema_version enum.
     ("print_params.json", "PrintParams", PRINT_PARAMS_V2_EXAMPLE, ["schema_version"], 1),
-    ("print_params.json", "PrintParams", PRINT_PARAMS_V2_EXAMPLE, ["schema_version"], 3),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["schema_version"], 4),
     ("print_params.json", "PrintParams", PRINT_PARAMS_V2_EXAMPLE, ["city_label"], TOO_LONG),
     (
         "print_params.json",
@@ -429,6 +544,68 @@ OUT_OF_RANGE_CASES = [
         ["hero_building_ids"],
         [f"w{i}" for i in range(13)],
     ),
+    # v3 fields: numeric bounds, string lengths, the hex pattern, array caps
+    # and the new enum members, one representative case per new group.
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["place", "country"], TOO_LONG),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["place", "author"], TOO_LONG),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["regions", "roads", "depth_mm"], 0.1),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["regions", "roads", "depth_mm"], 3.1),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["regions", "water", "proud_mm"], -2.1),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["regions", "water", "proud_mm"], 2.1),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["regions", "rail", "width_m"], 1),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["regions", "rail", "width_m"], 21),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["regions", "building_skirt_mm"], -0.1),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["regions", "building_skirt_mm"], 1.1),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["colour", "region_slots", "buildings"], 0),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["colour", "region_slots", "buildings"], 17),
+    (
+        "print_params.json",
+        "PrintParams",
+        PRINT_PARAMS_V3_EXAMPLE,
+        ["colour", "region_colors", "hero_building"],
+        "not-a-hex-colour",
+    ),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["colour", "palette"], "x" * 33),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["colour", "tint", "hue_range_deg"], 61),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["colour", "tint", "lightness_range"], 0.51),
+    (
+        "print_params.json",
+        "PrintParams",
+        PRINT_PARAMS_V3_EXAMPLE,
+        ["colour", "gradient", "slots"],
+        list(range(1, 18)),
+    ),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["colour", "preview_theme"], "sepia"),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["printer_profile"], "makerbot"),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["custom_profile", "plate_x_mm"], 99),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["custom_profile", "plate_x_mm"], 401),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["custom_profile", "nozzle_mm"], 0.1),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["custom_profile", "slots"], 17),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["export_target"], "gcode"),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["terrain", "smoothing"], -1),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["terrain", "smoothing"], 6),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["heights", "floor_height_m"], 1.9),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["heights", "unknown_default_m"], 61),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["bridges", "clearance_mm"], 5.1),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["height_exaggeration", "multiplier"], 0.24),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["height_exaggeration", "curve"], 1.1),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["hero_auto", "count"], 13),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["tiling", "cols"], 7),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["tiling", "joint"], "glue"),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["tiling", "tolerance_mm"], 1.1),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["frame_style", "profile"], "gothic"),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["frame_style", "corner"], "beveled"),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["frame_style", "corner_radius_mm"], 21),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["frame_style", "shadow_gap", "width_mm"], 0.3),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["frame_style", "matting", "width_mm"], 31),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["frame_style", "separate", "mount"], "glue"),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["frame_style", "texture", "pattern"], "weave"),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["frame_style", "texture", "depth_mm"], 1.1),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["hanger"], "velcro"),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["hanger_magnet", "diameter_mm"], 21),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["hanger_magnet", "count"], 9),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["engravings", 1, "mode"], "3d-print"),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["engravings", 1, "edge"], "diagonal"),
     ("scene_graph.json", "SceneGraph", SCENE_GRAPH_EXAMPLE, ["roads", 0, "width_m"], 0),
     ("scene_graph.json", "SceneGraph", SCENE_GRAPH_EXAMPLE, ["roads", 0, "path"], [[0.0, 0.0]]),
     ("scene_graph.json", "SceneGraph", SCENE_GRAPH_EXAMPLE, ["buildings", 0, "height_m"], -1),
@@ -485,16 +662,25 @@ MISSHAPEN_CASES = [
         {k: v for k, v in FULL_ENGRAVING.items() if k != "text"},
     ),
     ("Engraving empty", ["engravings", 0], {}),
-    # additionalProperties: false holds on all five new $defs, not just the root.
+    # additionalProperties: false holds on all five v2 $defs, not just the root.
     ("unknown key in PartColors", ["part_colors", "hue"], "#FFFFFF"),
     ("unknown key in Engraving", ["engravings", 0, "colour"], "#FFFFFF"),
     ("unknown key in NorthArrow", ["north_arrow", "cornre"], "ne"),
     ("unknown key in ScaleBar", ["scale_bar", "length_ft"], 1640),
     ("unknown key in UndersideMark", ["underside_mark", "tempalte"], "{city}"),
+    # additionalProperties: false holds on every v3 $defs too, including a
+    # nested-inside-nested one (FrameStyle.shadow_gap).
+    ("unknown key in Place", ["place", "coutnry"], "USA"),
+    ("unknown key in Regions", ["regions", "sidewalks"], {}),
+    ("unknown key in RegionSlots", ["colour", "region_slots", "sidewalks"], 1),
+    ("unknown key in CustomProfile", ["custom_profile", "bed_type"], "textured"),
+    ("unknown key in Tiling", ["tiling", "columns"], 2),
+    ("unknown key in FrameStyle.shadow_gap", ["frame_style", "shadow_gap", "colour"], "#000000"),
+    ("unknown key in HangerMagnet", ["hanger_magnet", "shape"], "round"),
 ]
 
-# The deliberate asymmetry: NorthArrow, ScaleBar and UndersideMark require
-# NOTHING, so a share link may send `{"enabled": true}` and let the rest default.
+# The deliberate asymmetry: these $defs require NOTHING, so a share link may
+# send a partial object (e.g. `{"enabled": true}`) and let the rest default.
 # Pinned here so a later "make everything required" pass has to argue with a
 # test instead of quietly breaking short links.
 UNDER_SPECIFIED_CASES = [
@@ -504,6 +690,31 @@ UNDER_SPECIFIED_CASES = [
     ("scale_bar", {"enabled": True}, "ScaleBar"),
     ("underside_mark", {}, "UndersideMark"),
     ("underside_mark", {"enabled": True}, "UndersideMark"),
+    # v3: every new top-level object $defs is equally partial-friendly.
+    ("place", {}, "Place"),
+    ("place", {"author": "V. Alizadeh"}, "Place"),
+    ("regions", {}, "Regions"),
+    ("regions", {"building_skirt_mm": 0.5}, "Regions"),
+    ("colour", {}, "Colour"),
+    ("colour", {"palette": "noir"}, "Colour"),
+    ("custom_profile", {}, "CustomProfile"),
+    ("custom_profile", {"slots": 8}, "CustomProfile"),
+    ("terrain", {}, "Terrain"),
+    ("terrain", {"enabled": True}, "Terrain"),
+    ("heights", {}, "Heights"),
+    ("heights", {"floor_height_m": 2.5}, "Heights"),
+    ("bridges", {}, "Bridges"),
+    ("bridges", {"enabled": False}, "Bridges"),
+    ("height_exaggeration", {}, "HeightExaggeration"),
+    ("height_exaggeration", {"curve": 0.5}, "HeightExaggeration"),
+    ("hero_auto", {}, "HeroAuto"),
+    ("hero_auto", {"enabled": True}, "HeroAuto"),
+    ("tiling", {}, "Tiling"),
+    ("tiling", {"enabled": True}, "Tiling"),
+    ("frame_style", {}, "FrameStyle"),
+    ("frame_style", {"profile": "chamfer"}, "FrameStyle"),
+    ("hanger_magnet", {}, "HangerMagnet"),
+    ("hanger_magnet", {"count": 4}, "HangerMagnet"),
 ]
 
 
@@ -549,7 +760,7 @@ def test_misshapen_nested_objects_rejected_by_schema_and_model(path, value):
     """A nested object missing a required key, or carrying an unknown one, is
     illegal under the schema - so the model must refuse it too, rather than
     quietly filling in what the caller did not send."""
-    instance = _with(PRINT_PARAMS_V2_EXAMPLE, path, value)
+    instance = _with(PRINT_PARAMS_V3_EXAMPLE, path, value)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(instance=instance, schema=_schema("print_params.json"))
     with pytest.raises(ValidationError):
@@ -562,15 +773,16 @@ def test_misshapen_nested_objects_rejected_by_schema_and_model(path, value):
     ids=[f"{c[0]}={c[1]}" for c in UNDER_SPECIFIED_CASES],
 )
 def test_ornaments_accept_a_partial_object_in_schema_and_model(field, value, model_name):
-    """The three ornament objects require nothing, in BOTH validators, and the
-    model fills each absent member from that object's own schema default."""
-    instance = _with(PRINT_PARAMS_V2_EXAMPLE, [field], value)
+    """These objects require nothing, in BOTH validators, and the model fills
+    each absent member from that object's own schema default - all the way
+    down, so this also covers a group whose own members are themselves nested
+    objects (Colour, Regions, FrameStyle, Heights)."""
+    instance = _with(PRINT_PARAMS_V3_EXAMPLE, [field], value)
     jsonschema.validate(instance=instance, schema=_schema("print_params.json"))
     loaded = getattr(contracts.PrintParams(**instance), field)
     defaults = _schema("print_params.json")["$defs"][model_name]["properties"]
-    for name, prop in defaults.items():
-        expected = value.get(name, prop["default"])
-        assert getattr(loaded, name) == expected, name
+    expected = {name: value.get(name, prop["default"]) for name, prop in defaults.items()}
+    assert loaded.model_dump(mode="json") == expected
 
 
 def _model_field_names(model) -> dict:
@@ -670,9 +882,34 @@ def test_the_default_nested_objects_are_complete_instances():
         ("north_arrow", "NorthArrow"),
         ("scale_bar", "ScaleBar"),
         ("underside_mark", "UndersideMark"),
+        # v3
+        ("place", "Place"),
+        ("regions", "Regions"),
+        ("colour", "Colour"),
+        ("custom_profile", "CustomProfile"),
+        ("terrain", "Terrain"),
+        ("heights", "Heights"),
+        ("bridges", "Bridges"),
+        ("height_exaggeration", "HeightExaggeration"),
+        ("hero_auto", "HeroAuto"),
+        ("tiling", "Tiling"),
+        ("frame_style", "FrameStyle"),
+        ("hanger_magnet", "HangerMagnet"),
     ):
         declared = _schema("print_params.json")["$defs"][model_name]["properties"]
         assert set(getattr(params, field).model_dump()) == set(declared), model_name
+
+
+def test_default_print_params_matches_every_schema_default_recursively():
+    """Every field of PrintParams() equals the JSON Schema's own ``default``
+    for that field - which, because dict equality is recursive, checks every
+    v1, v2 and v3 leaf at once, at whatever depth it sits (docs/handoff/v3-01-
+    contracts.md is the field-by-field reference; this is the test that keeps
+    it honest)."""
+    schema = _schema("print_params.json")
+    dumped = contracts.PrintParams().model_dump(mode="json")
+    for name, prop in schema["properties"].items():
+        assert dumped[name] == prop["default"], name
 
 
 def test_a_v1_print_params_payload_still_validates_against_the_v2_schema():
@@ -684,15 +921,18 @@ def test_default_print_params_dump_validates_against_the_v2_schema():
     its pattern or its enum, and no required key goes missing."""
     instance = contracts.PrintParams().model_dump(mode="json")
     jsonschema.validate(instance=instance, schema=_schema("print_params.json"))
-    assert instance["schema_version"] == 2
+    assert instance["schema_version"] == 3
 
 
 def test_schema_version_is_optional_and_not_required():
     schema = _schema("print_params.json")
     assert "schema_version" not in schema["required"]
-    assert schema["properties"]["schema_version"]["enum"] == [2]
-    # Absent is legal, and loading a payload without it still yields v2.
-    assert contracts.PrintParams(**PRINT_PARAMS_EXAMPLE).schema_version == 2
+    assert schema["properties"]["schema_version"]["enum"] == [2, 3]
+    # Absent is legal, and loading a payload without it still yields the
+    # current default (v3, [V3-P1c] below).
+    assert contracts.PrintParams(**PRINT_PARAMS_EXAMPLE).schema_version == 3
+    # A v2 payload that spells out schema_version=2 explicitly still loads.
+    assert contracts.PrintParams(**PRINT_PARAMS_V2_EXAMPLE).schema_version == 2
 
 
 def test_every_v1_field_keeps_its_name_type_range_and_default():

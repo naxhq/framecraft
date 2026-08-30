@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://framecraft.app/schema/print_params.json",
   "title": "PrintParams",
-  "description": "Editor parameters shared verbatim by the live preview and the bake pipeline. Ranges from 01_PRODUCT_SPEC.md's editor parameter table (percent ranges expressed as fractions), defaults from 02_TECH_SPEC.md's example. schema_version 2 adds the v2 personalisation block (labelling, ornaments, colours, hero buildings); every v2 field is optional and defaults to the behaviour v1 had, so a v1 payload - which carries none of them - loads unchanged.",
+  "description": "Editor parameters shared verbatim by the live preview and the bake pipeline. Ranges from 01_PRODUCT_SPEC.md's editor parameter table (percent ranges expressed as fractions), defaults from 02_TECH_SPEC.md's example. schema_version 2 added the v2 personalisation block (labelling, ornaments, colours, hero buildings). schema_version 3 adds the v3 engine block (place context, per-region solid placement, colour slots/palette/tint/gradient, printer profiles, export target, terrain, heights, bridges, height exaggeration curve, auto heroes, tiling, frame styling, a hanger magnet, and two more Engraving members) for the browser engine (docs/IMPLEMENTATION_PLAN.md). Every v2 and v3 field is optional and defaults to the behaviour the previous version had, so a v1 payload - which carries none of them - loads unchanged.",
   "type": "object",
   "additionalProperties": false,
   "$defs": {
@@ -63,8 +63,8 @@
       "properties": {
         "edge": {
           "type": "string",
-          "enum": ["top", "bottom", "left", "right"],
-          "description": "Which frame edge carries the line."
+          "enum": ["top", "bottom", "left", "right", "underside"],
+          "description": "Which frame edge carries the line. \"underside\" was added in schema_version 3 for a line on the base's underside rather than a frame edge."
         },
         "align": {
           "type": "string",
@@ -79,8 +79,9 @@
         },
         "mode": {
           "type": "string",
-          "enum": ["engrave", "emboss"],
-          "default": "engrave"
+          "enum": ["engrave", "emboss", "inlay"],
+          "default": "engrave",
+          "description": "\"inlay\" (schema_version 3) is its own region: a second-colour solid seated in the cut rather than a cut or a raised emboss."
         },
         "size_mm": {
           "type": "number",
@@ -94,7 +95,7 @@
           "minimum": 0.2,
           "maximum": 1.5,
           "default": 0.4,
-          "description": "Cut depth (engrave) or raise height (emboss), mm."
+          "description": "Cut depth (engrave/inlay) or raise height (emboss), mm."
         },
         "font": {
           "type": "string",
@@ -163,14 +164,306 @@
           "description": "Token template expanded by the shared token table."
         }
       }
+    },
+    "Place": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Free-text location context beyond the map pin: sources for the {country}/{state}/{neighbourhood}/{author} tokens. None of these are reverse-geocoded here; a caller (or apps/web/lib/geocode.ts) fills them in.",
+      "properties": {
+        "country": { "type": "string", "maxLength": 64, "default": "", "description": "{country} token source." },
+        "state": { "type": "string", "maxLength": 64, "default": "", "description": "{state} token source." },
+        "neighbourhood": { "type": "string", "maxLength": 64, "default": "", "description": "{neighbourhood} token source." },
+        "author": { "type": "string", "maxLength": 64, "default": "", "description": "{author} token source, e.g. for an underside or attribution line." }
+      }
+    },
+    "RoadRegion": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Solid placement for the roads region in the browser engine.",
+      "properties": {
+        "depth_mm": { "type": "number", "minimum": 0.2, "maximum": 3.0, "default": 0.6, "description": "Recess depth below the base top, mm." },
+        "proud_mm": { "type": "number", "minimum": -2.0, "maximum": 2.0, "default": -0.2, "description": "Height above (positive) or below (negative) the base top after the recess, mm." }
+      }
+    },
+    "WaterRegion": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Solid placement for the water region in the browser engine.",
+      "properties": {
+        "depth_mm": { "type": "number", "minimum": 0.2, "maximum": 3.0, "default": 1.0, "description": "Recess depth below the base top, mm." },
+        "proud_mm": { "type": "number", "minimum": -2.0, "maximum": 2.0, "default": -0.5, "description": "Height above (positive) or below (negative) the base top after the recess, mm." }
+      }
+    },
+    "ParkRegion": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Solid placement for the parks region in the browser engine.",
+      "properties": {
+        "depth_mm": { "type": "number", "minimum": 0.2, "maximum": 3.0, "default": 0.4, "description": "Recess depth below the base top, mm." },
+        "proud_mm": { "type": "number", "minimum": -2.0, "maximum": 2.0, "default": 0.0, "description": "Height above (positive) or below (negative) the base top after the recess, mm." }
+      }
+    },
+    "RailRegion": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Solid placement for the rail region in the browser engine.",
+      "properties": {
+        "depth_mm": { "type": "number", "minimum": 0.2, "maximum": 3.0, "default": 0.4, "description": "Recess depth below the base top, mm." },
+        "proud_mm": { "type": "number", "minimum": -2.0, "maximum": 2.0, "default": 0.3, "description": "Height above (positive) or below (negative) the base top after the recess, mm." },
+        "width_m": { "type": "number", "minimum": 2, "maximum": 20, "default": 6.0, "description": "Ground width of the rail ribbon before the minimum-feature clamp, metres." }
+      }
+    },
+    "Regions": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Per-region solid placement for the browser engine (docs/IMPLEMENTATION_PLAN.md E2). services/bake ignores this block; it drives apps/web/lib/engine/solid/{areas,roads}.ts only.",
+      "properties": {
+        "roads": { "$ref": "#/$defs/RoadRegion", "default": { "depth_mm": 0.6, "proud_mm": -0.2 } },
+        "water": { "$ref": "#/$defs/WaterRegion", "default": { "depth_mm": 1.0, "proud_mm": -0.5 } },
+        "parks": { "$ref": "#/$defs/ParkRegion", "default": { "depth_mm": 0.4, "proud_mm": 0.0 } },
+        "rail": { "$ref": "#/$defs/RailRegion", "default": { "depth_mm": 0.4, "proud_mm": 0.3, "width_m": 6.0 } },
+        "building_skirt_mm": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.3,
+          "description": "Skirt width added around each building footprint before extrusion, mm."
+        }
+      }
+    },
+    "RegionSlots": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. AMS/MMU filament slot (1-16) assigned to each printed region.",
+      "properties": {
+        "base": { "type": "integer", "minimum": 1, "maximum": 16, "default": 1 },
+        "frame": { "type": "integer", "minimum": 1, "maximum": 16, "default": 1 },
+        "matting": { "type": "integer", "minimum": 1, "maximum": 16, "default": 1 },
+        "buildings": { "type": "integer", "minimum": 1, "maximum": 16, "default": 2 },
+        "hero_building": { "type": "integer", "minimum": 1, "maximum": 16, "default": 4 },
+        "roads": { "type": "integer", "minimum": 1, "maximum": 16, "default": 4 },
+        "water": { "type": "integer", "minimum": 1, "maximum": 16, "default": 3 },
+        "parks": { "type": "integer", "minimum": 1, "maximum": 16, "default": 4 },
+        "rail": { "type": "integer", "minimum": 1, "maximum": 16, "default": 4 },
+        "lettering": { "type": "integer", "minimum": 1, "maximum": 16, "default": 4 },
+        "attribution": { "type": "integer", "minimum": 1, "maximum": 16, "default": 1 }
+      }
+    },
+    "RegionColors": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Filament colour swatch for each printed region, independent of part_colors (the v2 seven-part palette used by color_mode \"parts\"). #RRGGBB or #RRGGBBAA.",
+      "properties": {
+        "base": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", "default": "#D8D3C6" },
+        "frame": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", "default": "#3A3A3A" },
+        "matting": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", "default": "#EDE9E0" },
+        "buildings": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", "default": "#D8D3C6" },
+        "hero_building": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", "default": "#E3A72F" },
+        "roads": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", "default": "#3A3A3A" },
+        "water": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", "default": "#2F7FC1" },
+        "parks": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", "default": "#5A9E4B" },
+        "rail": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", "default": "#6B6B6B" },
+        "lettering": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", "default": "#E3A72F" },
+        "attribution": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$", "default": "#D8D3C6" }
+      }
+    },
+    "Tint": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Per-building colour jitter within a slot's hue, gated by colour.region_slots.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "hue_range_deg": { "type": "number", "minimum": 0, "maximum": 60, "default": 12 },
+        "lightness_range": { "type": "number", "minimum": 0, "maximum": 0.5, "default": 0.12 },
+        "seed": { "type": "integer", "default": 1, "description": "PRNG seed, so a reload reproduces the same jitter." }
+      }
+    },
+    "Gradient": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Height-based colour gradient across a small ordered set of slots.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "slots": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1, "maximum": 16 },
+          "maxItems": 16,
+          "default": [2, 3],
+          "description": "Ordered slot numbers the gradient interpolates across, low buildings to high."
+        }
+      }
+    },
+    "Colour": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Filament slot assignment, palette selection and colour effects for the browser engine's multi-material export.",
+      "properties": {
+        "region_slots": { "$ref": "#/$defs/RegionSlots", "default": { "base": 1, "frame": 1, "matting": 1, "buildings": 2, "hero_building": 4, "roads": 4, "water": 3, "parks": 4, "rail": 4, "lettering": 4, "attribution": 1 } },
+        "region_colors": { "$ref": "#/$defs/RegionColors", "default": { "base": "#D8D3C6", "frame": "#3A3A3A", "matting": "#EDE9E0", "buildings": "#D8D3C6", "hero_building": "#E3A72F", "roads": "#3A3A3A", "water": "#2F7FC1", "parks": "#5A9E4B", "rail": "#6B6B6B", "lettering": "#E3A72F", "attribution": "#D8D3C6" } },
+        "palette": { "type": "string", "maxLength": 32, "default": "default", "description": "Named entry in apps/web/lib/palettes.ts, or \"default\" for the built-in region_colors above." },
+        "tint": { "$ref": "#/$defs/Tint", "default": { "enabled": false, "hue_range_deg": 12, "lightness_range": 0.12, "seed": 1 } },
+        "gradient": { "$ref": "#/$defs/Gradient", "default": { "enabled": false, "slots": [2, 3] } },
+        "preview_theme": { "type": "string", "enum": ["dark", "light"], "default": "dark" }
+      }
+    },
+    "CustomProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Printer geometry used when printer_profile is \"custom\".",
+      "properties": {
+        "plate_x_mm": { "type": "number", "minimum": 100, "maximum": 400, "default": 256 },
+        "plate_y_mm": { "type": "number", "minimum": 100, "maximum": 400, "default": 256 },
+        "max_height_mm": { "type": "number", "minimum": 20, "maximum": 500, "default": 250 },
+        "nozzle_mm": { "type": "number", "minimum": 0.2, "maximum": 1.0, "default": 0.4 },
+        "slots": { "type": "integer", "minimum": 1, "maximum": 16, "default": 4, "description": "AMS/MMU filament slot count." },
+        "change_gcode": { "type": "string", "default": "M600", "description": "G-code inserted at each filament change, single-nozzle colour-change exports only." }
+      }
+    },
+    "Terrain": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. DEM heightfield draped under the base (docs/IMPLEMENTATION_PLAN.md Phase 3), off by default. Exaggeration is NOT duplicated here: the existing top-level terrain_exaggeration (v1/v2, range 0.0-3.0, default 1.0) is the one exaggeration control and applies once terrain.enabled is true.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "smoothing": { "type": "integer", "minimum": 0, "maximum": 5, "default": 1, "description": "Smoothing pass count applied to the heightfield." }
+      }
+    },
+    "TypeDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Fallback building height, metres, by OSM building=* value, used when heights.unknown_default_m's blanket fallback would otherwise apply.",
+      "properties": {
+        "house": { "type": "number", "default": 6 },
+        "apartments": { "type": "number", "default": 15 },
+        "commercial": { "type": "number", "default": 12 },
+        "retail": { "type": "number", "default": 6 },
+        "industrial": { "type": "number", "default": 8 },
+        "garage": { "type": "number", "default": 3 }
+      }
+    },
+    "Heights": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Building height fallback chain settings (apps/web/lib/engine/osm/heights.ts).",
+      "properties": {
+        "floor_height_m": { "type": "number", "minimum": 2, "maximum": 5, "default": 3.0, "description": "Assumed storey height when only a building:levels tag is present." },
+        "unknown_default_m": { "type": "number", "minimum": 2, "maximum": 60, "default": 8.0, "description": "Blanket fallback height when no tag and no type_defaults entry applies." },
+        "type_defaults": { "$ref": "#/$defs/TypeDefaults", "default": { "house": 6, "apartments": 15, "commercial": 12, "retail": 6, "industrial": 8, "garage": 3 } }
+      }
+    },
+    "Bridges": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Roads tagged bridge=yes get abutments and clearance instead of draping onto the terrain/base.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "clearance_mm": { "type": "number", "minimum": 0, "maximum": 5, "default": 1.0, "description": "Gap left under the bridge deck, mm." },
+        "abutments": { "type": "boolean", "default": true, "description": "Print solid support columns at each bridge end." }
+      }
+    },
+    "HeightExaggeration": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Non-linear building height exaggeration curve, layered on top of small_scale/large_scale.",
+      "properties": {
+        "multiplier": { "type": "number", "minimum": 0.25, "maximum": 4, "default": 1.0 },
+        "curve": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.0, "description": "0 is linear; higher values compress tall buildings relative to short ones." }
+      }
+    },
+    "HeroAuto": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Automatic hero-building selection (apps/web/lib/heroes.ts), additive to the manual hero_building_ids list.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "count": { "type": "integer", "minimum": 1, "maximum": 12, "default": 3 }
+      }
+    },
+    "Tiling": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Splits the print into a grid of interlocking tiles for plates smaller than the model.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "cols": { "type": "integer", "minimum": 1, "maximum": 6, "default": 1 },
+        "rows": { "type": "integer", "minimum": 1, "maximum": 6, "default": 1 },
+        "joint": { "type": "string", "enum": ["dovetail", "pin"], "default": "dovetail" },
+        "tolerance_mm": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.15 },
+        "index_mark": { "type": "boolean", "default": true, "description": "Engrave a row/column index near each tile joint." }
+      }
+    },
+    "ShadowGap": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Recessed reveal between the frame and the matting/base, floating-frame look.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "width_mm": { "type": "number", "minimum": 0.4, "maximum": 5, "default": 1.0 },
+        "depth_mm": { "type": "number", "minimum": 0.2, "maximum": 5, "default": 0.8 }
+      }
+    },
+    "Matting": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Raised or flush border between the frame and the base, picture-mat look.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "width_mm": { "type": "number", "minimum": 1, "maximum": 30, "default": 6 },
+        "proud_mm": { "type": "number", "minimum": 0, "maximum": 3, "default": 0.4 }
+      }
+    },
+    "Separate": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Prints the frame as its own part that mates to the base after printing.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "mount": { "type": "string", "enum": ["snap", "magnet"], "default": "snap" },
+        "tolerance_mm": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.2 }
+      }
+    },
+    "Texture": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Relief texture applied to the frame's outward-facing surface.",
+      "properties": {
+        "pattern": { "type": "string", "enum": ["none", "brush", "knurl", "hatch", "dots"], "default": "none" },
+        "scale_mm": { "type": "number", "minimum": 0.3, "maximum": 5, "default": 1.0 },
+        "depth_mm": { "type": "number", "minimum": 0.05, "maximum": 1, "default": 0.2 }
+      }
+    },
+    "FrameStyle": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Frame profile, corners and add-ons, beyond the v1 flat 6 mm border.",
+      "properties": {
+        "profile": { "type": "string", "enum": ["plain", "chamfer", "stepped", "bevel_in", "bullnose", "ogee", "floating"], "default": "plain" },
+        "corner": { "type": "string", "enum": ["square", "mitred", "rounded"], "default": "square" },
+        "corner_radius_mm": { "type": "number", "minimum": 0, "maximum": 20, "default": 3 },
+        "lip_depth_mm": { "type": "number", "minimum": 0, "maximum": 3, "default": 0.4 },
+        "shadow_gap": { "$ref": "#/$defs/ShadowGap", "default": { "enabled": false, "width_mm": 1.0, "depth_mm": 0.8 } },
+        "matting": { "$ref": "#/$defs/Matting", "default": { "enabled": false, "width_mm": 6, "proud_mm": 0.4 } },
+        "separate": { "$ref": "#/$defs/Separate", "default": { "enabled": false, "mount": "snap", "tolerance_mm": 0.2 } },
+        "texture": { "$ref": "#/$defs/Texture", "default": { "pattern": "none", "scale_mm": 1.0, "depth_mm": 0.2 } }
+      }
+    },
+    "HangerMagnet": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 3. Recessed magnet dimensions, used when hanger is \"magnets\".",
+      "properties": {
+        "diameter_mm": { "type": "number", "minimum": 3, "maximum": 20, "default": 6 },
+        "thickness_mm": { "type": "number", "minimum": 1, "maximum": 10, "default": 2 },
+        "count": { "type": "integer", "minimum": 1, "maximum": 8, "default": 2 }
+      }
     }
   },
   "properties": {
     "schema_version": {
       "type": "integer",
-      "enum": [2],
-      "default": 2,
-      "description": "Contract revision this payload was written against. Absent means v1, which is exactly this object with every v2 field at its default."
+      "enum": [2, 3],
+      "default": 3,
+      "description": "Contract revision this payload was written against. Absent means v1, which is exactly this object with every v2 and v3 field at its default."
     },
     "plate_mm": {
       "type": "number",
@@ -275,9 +568,9 @@
     },
     "hanger": {
       "type": "string",
-      "enum": ["none", "keyhole", "magnets"],
+      "enum": ["none", "keyhole", "magnets", "cleat", "easel"],
       "default": "none",
-      "description": "Wall-mount feature cut into the back of the base."
+      "description": "Wall-mount feature cut into the back of the base. \"cleat\" and \"easel\" were added in schema_version 3."
     },
     "underside_mark": {
       "$ref": "#/$defs/UndersideMark",
@@ -295,6 +588,104 @@
       "enum": ["true_height", "own_color", "both"],
       "default": "true_height",
       "description": "How a hero building differs: kept at true height, given its own colour, or both."
+    },
+    "place": {
+      "$ref": "#/$defs/Place",
+      "default": { "country": "", "state": "", "neighbourhood": "", "author": "" },
+      "description": "schema_version 3. Token sources beyond city_label."
+    },
+    "regions": {
+      "$ref": "#/$defs/Regions",
+      "default": {
+        "roads": { "depth_mm": 0.6, "proud_mm": -0.2 },
+        "water": { "depth_mm": 1.0, "proud_mm": -0.5 },
+        "parks": { "depth_mm": 0.4, "proud_mm": 0.0 },
+        "rail": { "depth_mm": 0.4, "proud_mm": 0.3, "width_m": 6.0 },
+        "building_skirt_mm": 0.3
+      },
+      "description": "schema_version 3. Per-region solid placement for the browser engine."
+    },
+    "colour": {
+      "$ref": "#/$defs/Colour",
+      "default": {
+        "region_slots": { "base": 1, "frame": 1, "matting": 1, "buildings": 2, "hero_building": 4, "roads": 4, "water": 3, "parks": 4, "rail": 4, "lettering": 4, "attribution": 1 },
+        "region_colors": { "base": "#D8D3C6", "frame": "#3A3A3A", "matting": "#EDE9E0", "buildings": "#D8D3C6", "hero_building": "#E3A72F", "roads": "#3A3A3A", "water": "#2F7FC1", "parks": "#5A9E4B", "rail": "#6B6B6B", "lettering": "#E3A72F", "attribution": "#D8D3C6" },
+        "palette": "default",
+        "tint": { "enabled": false, "hue_range_deg": 12, "lightness_range": 0.12, "seed": 1 },
+        "gradient": { "enabled": false, "slots": [2, 3] },
+        "preview_theme": "dark"
+      },
+      "description": "schema_version 3. Filament slot assignment, palette and colour effects for the browser engine's multi-material export."
+    },
+    "printer_profile": {
+      "type": "string",
+      "enum": ["custom", "bambu-h2s", "bambu-p1s", "bambu-x1c", "bambu-a1", "bambu-a1-mini", "prusa-mk4", "prusa-mini", "ender-3"],
+      "default": "custom",
+      "description": "schema_version 3. Named printer geometry; \"custom\" uses custom_profile."
+    },
+    "custom_profile": {
+      "$ref": "#/$defs/CustomProfile",
+      "default": { "plate_x_mm": 256, "plate_y_mm": 256, "max_height_mm": 250, "nozzle_mm": 0.4, "slots": 4, "change_gcode": "M600" },
+      "description": "schema_version 3. Printer geometry used when printer_profile is \"custom\"."
+    },
+    "export_target": {
+      "type": "string",
+      "enum": ["bambu-3mf", "generic-3mf", "stl", "stl-parts-zip", "obj", "step", "color-change-3mf"],
+      "default": "bambu-3mf",
+      "description": "schema_version 3. File format apps/web/lib/engine/export writes."
+    },
+    "terrain": {
+      "$ref": "#/$defs/Terrain",
+      "default": { "enabled": false, "smoothing": 1 },
+      "description": "schema_version 3. DEM heightfield draped under the base. Exaggeration uses the existing top-level terrain_exaggeration field, not a field here."
+    },
+    "heights": {
+      "$ref": "#/$defs/Heights",
+      "default": {
+        "floor_height_m": 3.0,
+        "unknown_default_m": 8.0,
+        "type_defaults": { "house": 6, "apartments": 15, "commercial": 12, "retail": 6, "industrial": 8, "garage": 3 }
+      },
+      "description": "schema_version 3. Building height fallback chain settings."
+    },
+    "bridges": {
+      "$ref": "#/$defs/Bridges",
+      "default": { "enabled": true, "clearance_mm": 1.0, "abutments": true },
+      "description": "schema_version 3. Bridge deck clearance and abutments."
+    },
+    "height_exaggeration": {
+      "$ref": "#/$defs/HeightExaggeration",
+      "default": { "multiplier": 1.0, "curve": 0.0 },
+      "description": "schema_version 3. Non-linear building height exaggeration curve, on top of small_scale/large_scale."
+    },
+    "hero_auto": {
+      "$ref": "#/$defs/HeroAuto",
+      "default": { "enabled": false, "count": 3 },
+      "description": "schema_version 3. Automatic hero-building selection, additive to hero_building_ids."
+    },
+    "tiling": {
+      "$ref": "#/$defs/Tiling",
+      "default": { "enabled": false, "cols": 1, "rows": 1, "joint": "dovetail", "tolerance_mm": 0.15, "index_mark": true },
+      "description": "schema_version 3. Splits the print into an interlocking tile grid."
+    },
+    "frame_style": {
+      "$ref": "#/$defs/FrameStyle",
+      "default": {
+        "profile": "plain",
+        "corner": "square",
+        "corner_radius_mm": 3,
+        "lip_depth_mm": 0.4,
+        "shadow_gap": { "enabled": false, "width_mm": 1.0, "depth_mm": 0.8 },
+        "matting": { "enabled": false, "width_mm": 6, "proud_mm": 0.4 },
+        "separate": { "enabled": false, "mount": "snap", "tolerance_mm": 0.2 },
+        "texture": { "pattern": "none", "scale_mm": 1.0, "depth_mm": 0.2 }
+      },
+      "description": "schema_version 3. Frame profile, corners and add-ons, beyond the v1 flat 6 mm border."
+    },
+    "hanger_magnet": {
+      "$ref": "#/$defs/HangerMagnet",
+      "default": { "diameter_mm": 6, "thickness_mm": 2, "count": 2 },
+      "description": "schema_version 3. Recessed magnet dimensions, used when hanger is \"magnets\"."
     }
   },
   "required": [

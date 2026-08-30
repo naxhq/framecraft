@@ -89,10 +89,10 @@ export interface PartColors {
 }
 
 export interface Engraving {
-  edge: "top" | "bottom" | "left" | "right";
+  edge: "top" | "bottom" | "left" | "right" | "underside";
   align?: "start" | "center" | "end";
   text: string;
-  mode?: "engrave" | "emboss";
+  mode?: "engrave" | "emboss" | "inlay";
   size_mm?: number;
   depth_mm?: number;
   font?: "sans" | "serif" | "mono";
@@ -116,8 +116,188 @@ export interface UndersideMark {
   template?: string;
 }
 
+export interface Place {
+  country?: string;
+  state?: string;
+  neighbourhood?: string;
+  author?: string;
+}
+
+export interface RoadRegion {
+  depth_mm?: number;
+  proud_mm?: number;
+}
+
+export interface WaterRegion {
+  depth_mm?: number;
+  proud_mm?: number;
+}
+
+export interface ParkRegion {
+  depth_mm?: number;
+  proud_mm?: number;
+}
+
+export interface RailRegion {
+  depth_mm?: number;
+  proud_mm?: number;
+  width_m?: number;
+}
+
+export interface Regions {
+  roads?: RoadRegion;
+  water?: WaterRegion;
+  parks?: ParkRegion;
+  rail?: RailRegion;
+  building_skirt_mm?: number;
+}
+
+export interface RegionSlots {
+  base?: number;
+  frame?: number;
+  matting?: number;
+  buildings?: number;
+  hero_building?: number;
+  roads?: number;
+  water?: number;
+  parks?: number;
+  rail?: number;
+  lettering?: number;
+  attribution?: number;
+}
+
+export interface RegionColors {
+  base?: string;
+  frame?: string;
+  matting?: string;
+  buildings?: string;
+  hero_building?: string;
+  roads?: string;
+  water?: string;
+  parks?: string;
+  rail?: string;
+  lettering?: string;
+  attribution?: string;
+}
+
+export interface Tint {
+  enabled?: boolean;
+  hue_range_deg?: number;
+  lightness_range?: number;
+  seed?: number;
+}
+
+export interface Gradient {
+  enabled?: boolean;
+  slots?: number[];
+}
+
+export interface Colour {
+  region_slots?: RegionSlots;
+  region_colors?: RegionColors;
+  palette?: string;
+  tint?: Tint;
+  gradient?: Gradient;
+  preview_theme?: "dark" | "light";
+}
+
+export interface CustomProfile {
+  plate_x_mm?: number;
+  plate_y_mm?: number;
+  max_height_mm?: number;
+  nozzle_mm?: number;
+  slots?: number;
+  change_gcode?: string;
+}
+
+export interface Terrain {
+  enabled?: boolean;
+  smoothing?: number;
+}
+
+export interface TypeDefaults {
+  house?: number;
+  apartments?: number;
+  commercial?: number;
+  retail?: number;
+  industrial?: number;
+  garage?: number;
+}
+
+export interface Heights {
+  floor_height_m?: number;
+  unknown_default_m?: number;
+  type_defaults?: TypeDefaults;
+}
+
+export interface Bridges {
+  enabled?: boolean;
+  clearance_mm?: number;
+  abutments?: boolean;
+}
+
+export interface HeightExaggeration {
+  multiplier?: number;
+  curve?: number;
+}
+
+export interface HeroAuto {
+  enabled?: boolean;
+  count?: number;
+}
+
+export interface Tiling {
+  enabled?: boolean;
+  cols?: number;
+  rows?: number;
+  joint?: "dovetail" | "pin";
+  tolerance_mm?: number;
+  index_mark?: boolean;
+}
+
+export interface ShadowGap {
+  enabled?: boolean;
+  width_mm?: number;
+  depth_mm?: number;
+}
+
+export interface Matting {
+  enabled?: boolean;
+  width_mm?: number;
+  proud_mm?: number;
+}
+
+export interface Separate {
+  enabled?: boolean;
+  mount?: "snap" | "magnet";
+  tolerance_mm?: number;
+}
+
+export interface Texture {
+  pattern?: "none" | "brush" | "knurl" | "hatch" | "dots";
+  scale_mm?: number;
+  depth_mm?: number;
+}
+
+export interface FrameStyle {
+  profile?: "plain" | "chamfer" | "stepped" | "bevel_in" | "bullnose" | "ogee" | "floating";
+  corner?: "square" | "mitred" | "rounded";
+  corner_radius_mm?: number;
+  lip_depth_mm?: number;
+  shadow_gap?: ShadowGap;
+  matting?: Matting;
+  separate?: Separate;
+  texture?: Texture;
+}
+
+export interface HangerMagnet {
+  diameter_mm?: number;
+  thickness_mm?: number;
+  count?: number;
+}
+
 export interface PrintParams {
-  schema_version?: 2;
+  schema_version?: 2 | 3;
   plate_mm: number;
   base_thickness_mm: number;
   nozzle_mm: number;
@@ -135,10 +315,24 @@ export interface PrintParams {
   engravings?: Engraving[];
   north_arrow?: NorthArrow;
   scale_bar?: ScaleBar;
-  hanger?: "none" | "keyhole" | "magnets";
+  hanger?: "none" | "keyhole" | "magnets" | "cleat" | "easel";
   underside_mark?: UndersideMark;
   hero_building_ids?: string[];
   hero_mode?: "true_height" | "own_color" | "both";
+  place?: Place;
+  regions?: Regions;
+  colour?: Colour;
+  printer_profile?: "custom" | "bambu-h2s" | "bambu-p1s" | "bambu-x1c" | "bambu-a1" | "bambu-a1-mini" | "prusa-mk4" | "prusa-mini" | "ender-3";
+  custom_profile?: CustomProfile;
+  export_target?: "bambu-3mf" | "generic-3mf" | "stl" | "stl-parts-zip" | "obj" | "step" | "color-change-3mf";
+  terrain?: Terrain;
+  heights?: Heights;
+  bridges?: Bridges;
+  height_exaggeration?: HeightExaggeration;
+  hero_auto?: HeroAuto;
+  tiling?: Tiling;
+  frame_style?: FrameStyle;
+  hanger_magnet?: HangerMagnet;
 }
 
 // ---- from bake_result.json ------------------------
@@ -188,7 +382,7 @@ function deepFreeze<T>(value: T): T {
 }
 
 export const DEFAULT_PRINT_PARAMS: PrintParams = deepFreeze<PrintParams>({
-  schema_version: 2,
+  schema_version: 3,
   plate_mm: 180,
   base_thickness_mm: 3.0,
   nozzle_mm: 0.4,
@@ -230,6 +424,150 @@ export const DEFAULT_PRINT_PARAMS: PrintParams = deepFreeze<PrintParams>({
   },
   hero_building_ids: [],
   hero_mode: "true_height",
+  place: {
+    country: "",
+    state: "",
+    neighbourhood: "",
+    author: "",
+  },
+  regions: {
+    roads: {
+      depth_mm: 0.6,
+      proud_mm: -0.2,
+    },
+    water: {
+      depth_mm: 1.0,
+      proud_mm: -0.5,
+    },
+    parks: {
+      depth_mm: 0.4,
+      proud_mm: 0.0,
+    },
+    rail: {
+      depth_mm: 0.4,
+      proud_mm: 0.3,
+      width_m: 6.0,
+    },
+    building_skirt_mm: 0.3,
+  },
+  colour: {
+    region_slots: {
+      base: 1,
+      frame: 1,
+      matting: 1,
+      buildings: 2,
+      hero_building: 4,
+      roads: 4,
+      water: 3,
+      parks: 4,
+      rail: 4,
+      lettering: 4,
+      attribution: 1,
+    },
+    region_colors: {
+      base: "#D8D3C6",
+      frame: "#3A3A3A",
+      matting: "#EDE9E0",
+      buildings: "#D8D3C6",
+      hero_building: "#E3A72F",
+      roads: "#3A3A3A",
+      water: "#2F7FC1",
+      parks: "#5A9E4B",
+      rail: "#6B6B6B",
+      lettering: "#E3A72F",
+      attribution: "#D8D3C6",
+    },
+    palette: "default",
+    tint: {
+      enabled: false,
+      hue_range_deg: 12,
+      lightness_range: 0.12,
+      seed: 1,
+    },
+    gradient: {
+      enabled: false,
+      slots: [2, 3],
+    },
+    preview_theme: "dark",
+  },
+  printer_profile: "custom",
+  custom_profile: {
+    plate_x_mm: 256,
+    plate_y_mm: 256,
+    max_height_mm: 250,
+    nozzle_mm: 0.4,
+    slots: 4,
+    change_gcode: "M600",
+  },
+  export_target: "bambu-3mf",
+  terrain: {
+    enabled: false,
+    smoothing: 1,
+  },
+  heights: {
+    floor_height_m: 3.0,
+    unknown_default_m: 8.0,
+    type_defaults: {
+      house: 6,
+      apartments: 15,
+      commercial: 12,
+      retail: 6,
+      industrial: 8,
+      garage: 3,
+    },
+  },
+  bridges: {
+    enabled: true,
+    clearance_mm: 1.0,
+    abutments: true,
+  },
+  height_exaggeration: {
+    multiplier: 1.0,
+    curve: 0.0,
+  },
+  hero_auto: {
+    enabled: false,
+    count: 3,
+  },
+  tiling: {
+    enabled: false,
+    cols: 1,
+    rows: 1,
+    joint: "dovetail",
+    tolerance_mm: 0.15,
+    index_mark: true,
+  },
+  frame_style: {
+    profile: "plain",
+    corner: "square",
+    corner_radius_mm: 3,
+    lip_depth_mm: 0.4,
+    shadow_gap: {
+      enabled: false,
+      width_mm: 1.0,
+      depth_mm: 0.8,
+    },
+    matting: {
+      enabled: false,
+      width_mm: 6,
+      proud_mm: 0.4,
+    },
+    separate: {
+      enabled: false,
+      mount: "snap",
+      tolerance_mm: 0.2,
+    },
+    texture: {
+      pattern: "none",
+      scale_mm: 1.0,
+      depth_mm: 0.2,
+    },
+  },
+  hanger_magnet: {
+    diameter_mm: 6,
+    thickness_mm: 2,
+    count: 2,
+  },
 });
 
 /**
@@ -262,6 +600,98 @@ export const PARAM_RANGES = {
   scale_bar: {
     length_m: { min: 10, max: 5000, default: 500 },
   },
+  regions: {
+    roads: {
+      depth_mm: { min: 0.2, max: 3.0, default: 0.6 },
+      proud_mm: { min: -2.0, max: 2.0, default: -0.2 },
+    },
+    water: {
+      depth_mm: { min: 0.2, max: 3.0, default: 1.0 },
+      proud_mm: { min: -2.0, max: 2.0, default: -0.5 },
+    },
+    parks: {
+      depth_mm: { min: 0.2, max: 3.0, default: 0.4 },
+      proud_mm: { min: -2.0, max: 2.0, default: 0.0 },
+    },
+    rail: {
+      depth_mm: { min: 0.2, max: 3.0, default: 0.4 },
+      proud_mm: { min: -2.0, max: 2.0, default: 0.3 },
+      width_m: { min: 2, max: 20, default: 6.0 },
+    },
+    building_skirt_mm: { min: 0, max: 1, default: 0.3 },
+  },
+  colour: {
+    region_slots: {
+      base: { min: 1, max: 16, default: 1 },
+      frame: { min: 1, max: 16, default: 1 },
+      matting: { min: 1, max: 16, default: 1 },
+      buildings: { min: 1, max: 16, default: 2 },
+      hero_building: { min: 1, max: 16, default: 4 },
+      roads: { min: 1, max: 16, default: 4 },
+      water: { min: 1, max: 16, default: 3 },
+      parks: { min: 1, max: 16, default: 4 },
+      rail: { min: 1, max: 16, default: 4 },
+      lettering: { min: 1, max: 16, default: 4 },
+      attribution: { min: 1, max: 16, default: 1 },
+    },
+    tint: {
+      hue_range_deg: { min: 0, max: 60, default: 12 },
+      lightness_range: { min: 0, max: 0.5, default: 0.12 },
+    },
+  },
+  custom_profile: {
+    plate_x_mm: { min: 100, max: 400, default: 256 },
+    plate_y_mm: { min: 100, max: 400, default: 256 },
+    max_height_mm: { min: 20, max: 500, default: 250 },
+    nozzle_mm: { min: 0.2, max: 1.0, default: 0.4 },
+    slots: { min: 1, max: 16, default: 4 },
+  },
+  terrain: {
+    smoothing: { min: 0, max: 5, default: 1 },
+  },
+  heights: {
+    floor_height_m: { min: 2, max: 5, default: 3.0 },
+    unknown_default_m: { min: 2, max: 60, default: 8.0 },
+  },
+  bridges: {
+    clearance_mm: { min: 0, max: 5, default: 1.0 },
+  },
+  height_exaggeration: {
+    multiplier: { min: 0.25, max: 4, default: 1.0 },
+    curve: { min: 0, max: 1, default: 0.0 },
+  },
+  hero_auto: {
+    count: { min: 1, max: 12, default: 3 },
+  },
+  tiling: {
+    cols: { min: 1, max: 6, default: 1 },
+    rows: { min: 1, max: 6, default: 1 },
+    tolerance_mm: { min: 0, max: 1, default: 0.15 },
+  },
+  frame_style: {
+    corner_radius_mm: { min: 0, max: 20, default: 3 },
+    lip_depth_mm: { min: 0, max: 3, default: 0.4 },
+    shadow_gap: {
+      width_mm: { min: 0.4, max: 5, default: 1.0 },
+      depth_mm: { min: 0.2, max: 5, default: 0.8 },
+    },
+    matting: {
+      width_mm: { min: 1, max: 30, default: 6 },
+      proud_mm: { min: 0, max: 3, default: 0.4 },
+    },
+    separate: {
+      tolerance_mm: { min: 0, max: 1, default: 0.2 },
+    },
+    texture: {
+      scale_mm: { min: 0.3, max: 5, default: 1.0 },
+      depth_mm: { min: 0.05, max: 1, default: 0.2 },
+    },
+  },
+  hanger_magnet: {
+    diameter_mm: { min: 3, max: 20, default: 6 },
+    thickness_mm: { min: 1, max: 10, default: 2 },
+    count: { min: 1, max: 8, default: 2 },
+  },
 } as const;
 
 /**
@@ -280,4 +710,16 @@ export const PARAM_LIMITS = {
     template: { max_length: 64 },
   },
   hero_building_ids: { max_items: 12 },
+  place: {
+    country: { max_length: 64 },
+    state: { max_length: 64 },
+    neighbourhood: { max_length: 64 },
+    author: { max_length: 64 },
+  },
+  colour: {
+    palette: { max_length: 32 },
+    gradient: {
+      slots: { max_items: 16 },
+    },
+  },
 } as const;

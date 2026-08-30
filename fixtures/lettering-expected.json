@@ -4,7 +4,7 @@
     {
       "name": "every-edge",
       "params": {
-        "schema_version": 2,
+        "schema_version": 3,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -82,7 +82,154 @@
           "template": "{city} {scale} {date}"
         },
         "hero_building_ids": [],
-        "hero_mode": "true_height"
+        "hero_mode": "true_height",
+        "place": {
+          "country": "",
+          "state": "",
+          "neighbourhood": "",
+          "author": ""
+        },
+        "regions": {
+          "roads": {
+            "depth_mm": 0.6,
+            "proud_mm": -0.2
+          },
+          "water": {
+            "depth_mm": 1.0,
+            "proud_mm": -0.5
+          },
+          "parks": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.0
+          },
+          "rail": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.3,
+            "width_m": 6.0
+          },
+          "building_skirt_mm": 0.3
+        },
+        "colour": {
+          "region_slots": {
+            "base": 1,
+            "frame": 1,
+            "matting": 1,
+            "buildings": 2,
+            "hero_building": 4,
+            "roads": 4,
+            "water": 3,
+            "parks": 4,
+            "rail": 4,
+            "lettering": 4,
+            "attribution": 1
+          },
+          "region_colors": {
+            "base": "#D8D3C6",
+            "frame": "#3A3A3A",
+            "matting": "#EDE9E0",
+            "buildings": "#D8D3C6",
+            "hero_building": "#E3A72F",
+            "roads": "#3A3A3A",
+            "water": "#2F7FC1",
+            "parks": "#5A9E4B",
+            "rail": "#6B6B6B",
+            "lettering": "#E3A72F",
+            "attribution": "#D8D3C6"
+          },
+          "palette": "default",
+          "tint": {
+            "enabled": false,
+            "hue_range_deg": 12.0,
+            "lightness_range": 0.12,
+            "seed": 1
+          },
+          "gradient": {
+            "enabled": false,
+            "slots": [
+              2,
+              3
+            ]
+          },
+          "preview_theme": "dark"
+        },
+        "printer_profile": "custom",
+        "custom_profile": {
+          "plate_x_mm": 256.0,
+          "plate_y_mm": 256.0,
+          "max_height_mm": 250.0,
+          "nozzle_mm": 0.4,
+          "slots": 4,
+          "change_gcode": "M600"
+        },
+        "export_target": "bambu-3mf",
+        "terrain": {
+          "enabled": false,
+          "smoothing": 1
+        },
+        "heights": {
+          "floor_height_m": 3.0,
+          "unknown_default_m": 8.0,
+          "type_defaults": {
+            "house": 6.0,
+            "apartments": 15.0,
+            "commercial": 12.0,
+            "retail": 6.0,
+            "industrial": 8.0,
+            "garage": 3.0
+          }
+        },
+        "bridges": {
+          "enabled": true,
+          "clearance_mm": 1.0,
+          "abutments": true
+        },
+        "height_exaggeration": {
+          "multiplier": 1.0,
+          "curve": 0.0
+        },
+        "hero_auto": {
+          "enabled": false,
+          "count": 3
+        },
+        "tiling": {
+          "enabled": false,
+          "cols": 1,
+          "rows": 1,
+          "joint": "dovetail",
+          "tolerance_mm": 0.15,
+          "index_mark": true
+        },
+        "frame_style": {
+          "profile": "plain",
+          "corner": "square",
+          "corner_radius_mm": 3.0,
+          "lip_depth_mm": 0.4,
+          "shadow_gap": {
+            "enabled": false,
+            "width_mm": 1.0,
+            "depth_mm": 0.8
+          },
+          "matting": {
+            "enabled": false,
+            "width_mm": 6.0,
+            "proud_mm": 0.4
+          },
+          "separate": {
+            "enabled": false,
+            "mount": "snap",
+            "tolerance_mm": 0.2
+          },
+          "texture": {
+            "pattern": "none",
+            "scale_mm": 1.0,
+            "depth_mm": 0.2
+          }
+        },
+        "hanger_magnet": {
+          "diameter_mm": 6.0,
+          "thickness_mm": 2.0,
+          "count": 2
+        }
       },
       "ctx": {
         "lat": 41.8827,
@@ -276,7 +423,7 @@
     {
       "name": "aligns-on-one-edge",
       "params": {
-        "schema_version": 2,
+        "schema_version": 3,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -345,7 +492,154 @@
           "template": "{city} {scale} {date}"
         },
         "hero_building_ids": [],
-        "hero_mode": "true_height"
+        "hero_mode": "true_height",
+        "place": {
+          "country": "",
+          "state": "",
+          "neighbourhood": "",
+          "author": ""
+        },
+        "regions": {
+          "roads": {
+            "depth_mm": 0.6,
+            "proud_mm": -0.2
+          },
+          "water": {
+            "depth_mm": 1.0,
+            "proud_mm": -0.5
+          },
+          "parks": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.0
+          },
+          "rail": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.3,
+            "width_m": 6.0
+          },
+          "building_skirt_mm": 0.3
+        },
+        "colour": {
+          "region_slots": {
+            "base": 1,
+            "frame": 1,
+            "matting": 1,
+            "buildings": 2,
+            "hero_building": 4,
+            "roads": 4,
+            "water": 3,
+            "parks": 4,
+            "rail": 4,
+            "lettering": 4,
+            "attribution": 1
+          },
+          "region_colors": {
+            "base": "#D8D3C6",
+            "frame": "#3A3A3A",
+            "matting": "#EDE9E0",
+            "buildings": "#D8D3C6",
+            "hero_building": "#E3A72F",
+            "roads": "#3A3A3A",
+            "water": "#2F7FC1",
+            "parks": "#5A9E4B",
+            "rail": "#6B6B6B",
+            "lettering": "#E3A72F",
+            "attribution": "#D8D3C6"
+          },
+          "palette": "default",
+          "tint": {
+            "enabled": false,
+            "hue_range_deg": 12.0,
+            "lightness_range": 0.12,
+            "seed": 1
+          },
+          "gradient": {
+            "enabled": false,
+            "slots": [
+              2,
+              3
+            ]
+          },
+          "preview_theme": "dark"
+        },
+        "printer_profile": "custom",
+        "custom_profile": {
+          "plate_x_mm": 256.0,
+          "plate_y_mm": 256.0,
+          "max_height_mm": 250.0,
+          "nozzle_mm": 0.4,
+          "slots": 4,
+          "change_gcode": "M600"
+        },
+        "export_target": "bambu-3mf",
+        "terrain": {
+          "enabled": false,
+          "smoothing": 1
+        },
+        "heights": {
+          "floor_height_m": 3.0,
+          "unknown_default_m": 8.0,
+          "type_defaults": {
+            "house": 6.0,
+            "apartments": 15.0,
+            "commercial": 12.0,
+            "retail": 6.0,
+            "industrial": 8.0,
+            "garage": 3.0
+          }
+        },
+        "bridges": {
+          "enabled": true,
+          "clearance_mm": 1.0,
+          "abutments": true
+        },
+        "height_exaggeration": {
+          "multiplier": 1.0,
+          "curve": 0.0
+        },
+        "hero_auto": {
+          "enabled": false,
+          "count": 3
+        },
+        "tiling": {
+          "enabled": false,
+          "cols": 1,
+          "rows": 1,
+          "joint": "dovetail",
+          "tolerance_mm": 0.15,
+          "index_mark": true
+        },
+        "frame_style": {
+          "profile": "plain",
+          "corner": "square",
+          "corner_radius_mm": 3.0,
+          "lip_depth_mm": 0.4,
+          "shadow_gap": {
+            "enabled": false,
+            "width_mm": 1.0,
+            "depth_mm": 0.8
+          },
+          "matting": {
+            "enabled": false,
+            "width_mm": 6.0,
+            "proud_mm": 0.4
+          },
+          "separate": {
+            "enabled": false,
+            "mount": "snap",
+            "tolerance_mm": 0.2
+          },
+          "texture": {
+            "pattern": "none",
+            "scale_mm": 1.0,
+            "depth_mm": 0.2
+          }
+        },
+        "hanger_magnet": {
+          "diameter_mm": 6.0,
+          "thickness_mm": 2.0,
+          "count": 2
+        }
       },
       "ctx": {
         "lat": 41.8827,
@@ -496,7 +790,7 @@
     {
       "name": "auto-fit-shrinks",
       "params": {
-        "schema_version": 2,
+        "schema_version": 3,
         "plate_mm": 100.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -547,7 +841,154 @@
           "template": "{city} {scale} {date}"
         },
         "hero_building_ids": [],
-        "hero_mode": "true_height"
+        "hero_mode": "true_height",
+        "place": {
+          "country": "",
+          "state": "",
+          "neighbourhood": "",
+          "author": ""
+        },
+        "regions": {
+          "roads": {
+            "depth_mm": 0.6,
+            "proud_mm": -0.2
+          },
+          "water": {
+            "depth_mm": 1.0,
+            "proud_mm": -0.5
+          },
+          "parks": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.0
+          },
+          "rail": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.3,
+            "width_m": 6.0
+          },
+          "building_skirt_mm": 0.3
+        },
+        "colour": {
+          "region_slots": {
+            "base": 1,
+            "frame": 1,
+            "matting": 1,
+            "buildings": 2,
+            "hero_building": 4,
+            "roads": 4,
+            "water": 3,
+            "parks": 4,
+            "rail": 4,
+            "lettering": 4,
+            "attribution": 1
+          },
+          "region_colors": {
+            "base": "#D8D3C6",
+            "frame": "#3A3A3A",
+            "matting": "#EDE9E0",
+            "buildings": "#D8D3C6",
+            "hero_building": "#E3A72F",
+            "roads": "#3A3A3A",
+            "water": "#2F7FC1",
+            "parks": "#5A9E4B",
+            "rail": "#6B6B6B",
+            "lettering": "#E3A72F",
+            "attribution": "#D8D3C6"
+          },
+          "palette": "default",
+          "tint": {
+            "enabled": false,
+            "hue_range_deg": 12.0,
+            "lightness_range": 0.12,
+            "seed": 1
+          },
+          "gradient": {
+            "enabled": false,
+            "slots": [
+              2,
+              3
+            ]
+          },
+          "preview_theme": "dark"
+        },
+        "printer_profile": "custom",
+        "custom_profile": {
+          "plate_x_mm": 256.0,
+          "plate_y_mm": 256.0,
+          "max_height_mm": 250.0,
+          "nozzle_mm": 0.4,
+          "slots": 4,
+          "change_gcode": "M600"
+        },
+        "export_target": "bambu-3mf",
+        "terrain": {
+          "enabled": false,
+          "smoothing": 1
+        },
+        "heights": {
+          "floor_height_m": 3.0,
+          "unknown_default_m": 8.0,
+          "type_defaults": {
+            "house": 6.0,
+            "apartments": 15.0,
+            "commercial": 12.0,
+            "retail": 6.0,
+            "industrial": 8.0,
+            "garage": 3.0
+          }
+        },
+        "bridges": {
+          "enabled": true,
+          "clearance_mm": 1.0,
+          "abutments": true
+        },
+        "height_exaggeration": {
+          "multiplier": 1.0,
+          "curve": 0.0
+        },
+        "hero_auto": {
+          "enabled": false,
+          "count": 3
+        },
+        "tiling": {
+          "enabled": false,
+          "cols": 1,
+          "rows": 1,
+          "joint": "dovetail",
+          "tolerance_mm": 0.15,
+          "index_mark": true
+        },
+        "frame_style": {
+          "profile": "plain",
+          "corner": "square",
+          "corner_radius_mm": 3.0,
+          "lip_depth_mm": 0.4,
+          "shadow_gap": {
+            "enabled": false,
+            "width_mm": 1.0,
+            "depth_mm": 0.8
+          },
+          "matting": {
+            "enabled": false,
+            "width_mm": 6.0,
+            "proud_mm": 0.4
+          },
+          "separate": {
+            "enabled": false,
+            "mount": "snap",
+            "tolerance_mm": 0.2
+          },
+          "texture": {
+            "pattern": "none",
+            "scale_mm": 1.0,
+            "depth_mm": 0.2
+          }
+        },
+        "hanger_magnet": {
+          "diameter_mm": 6.0,
+          "thickness_mm": 2.0,
+          "count": 2
+        }
       },
       "ctx": {
         "lat": 41.8827,
@@ -644,7 +1085,7 @@
     {
       "name": "refused-counters",
       "params": {
-        "schema_version": 2,
+        "schema_version": 3,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -704,7 +1145,154 @@
           "template": "{city} {scale} {date}"
         },
         "hero_building_ids": [],
-        "hero_mode": "true_height"
+        "hero_mode": "true_height",
+        "place": {
+          "country": "",
+          "state": "",
+          "neighbourhood": "",
+          "author": ""
+        },
+        "regions": {
+          "roads": {
+            "depth_mm": 0.6,
+            "proud_mm": -0.2
+          },
+          "water": {
+            "depth_mm": 1.0,
+            "proud_mm": -0.5
+          },
+          "parks": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.0
+          },
+          "rail": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.3,
+            "width_m": 6.0
+          },
+          "building_skirt_mm": 0.3
+        },
+        "colour": {
+          "region_slots": {
+            "base": 1,
+            "frame": 1,
+            "matting": 1,
+            "buildings": 2,
+            "hero_building": 4,
+            "roads": 4,
+            "water": 3,
+            "parks": 4,
+            "rail": 4,
+            "lettering": 4,
+            "attribution": 1
+          },
+          "region_colors": {
+            "base": "#D8D3C6",
+            "frame": "#3A3A3A",
+            "matting": "#EDE9E0",
+            "buildings": "#D8D3C6",
+            "hero_building": "#E3A72F",
+            "roads": "#3A3A3A",
+            "water": "#2F7FC1",
+            "parks": "#5A9E4B",
+            "rail": "#6B6B6B",
+            "lettering": "#E3A72F",
+            "attribution": "#D8D3C6"
+          },
+          "palette": "default",
+          "tint": {
+            "enabled": false,
+            "hue_range_deg": 12.0,
+            "lightness_range": 0.12,
+            "seed": 1
+          },
+          "gradient": {
+            "enabled": false,
+            "slots": [
+              2,
+              3
+            ]
+          },
+          "preview_theme": "dark"
+        },
+        "printer_profile": "custom",
+        "custom_profile": {
+          "plate_x_mm": 256.0,
+          "plate_y_mm": 256.0,
+          "max_height_mm": 250.0,
+          "nozzle_mm": 0.4,
+          "slots": 4,
+          "change_gcode": "M600"
+        },
+        "export_target": "bambu-3mf",
+        "terrain": {
+          "enabled": false,
+          "smoothing": 1
+        },
+        "heights": {
+          "floor_height_m": 3.0,
+          "unknown_default_m": 8.0,
+          "type_defaults": {
+            "house": 6.0,
+            "apartments": 15.0,
+            "commercial": 12.0,
+            "retail": 6.0,
+            "industrial": 8.0,
+            "garage": 3.0
+          }
+        },
+        "bridges": {
+          "enabled": true,
+          "clearance_mm": 1.0,
+          "abutments": true
+        },
+        "height_exaggeration": {
+          "multiplier": 1.0,
+          "curve": 0.0
+        },
+        "hero_auto": {
+          "enabled": false,
+          "count": 3
+        },
+        "tiling": {
+          "enabled": false,
+          "cols": 1,
+          "rows": 1,
+          "joint": "dovetail",
+          "tolerance_mm": 0.15,
+          "index_mark": true
+        },
+        "frame_style": {
+          "profile": "plain",
+          "corner": "square",
+          "corner_radius_mm": 3.0,
+          "lip_depth_mm": 0.4,
+          "shadow_gap": {
+            "enabled": false,
+            "width_mm": 1.0,
+            "depth_mm": 0.8
+          },
+          "matting": {
+            "enabled": false,
+            "width_mm": 6.0,
+            "proud_mm": 0.4
+          },
+          "separate": {
+            "enabled": false,
+            "mount": "snap",
+            "tolerance_mm": 0.2
+          },
+          "texture": {
+            "pattern": "none",
+            "scale_mm": 1.0,
+            "depth_mm": 0.2
+          }
+        },
+        "hanger_magnet": {
+          "diameter_mm": 6.0,
+          "thickness_mm": 2.0,
+          "count": 2
+        }
       },
       "ctx": {
         "lat": 41.8827,
@@ -827,7 +1415,7 @@
     {
       "name": "north-arrow-ne-rotated",
       "params": {
-        "schema_version": 2,
+        "schema_version": 3,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -868,7 +1456,154 @@
           "template": "{city} {scale} {date}"
         },
         "hero_building_ids": [],
-        "hero_mode": "true_height"
+        "hero_mode": "true_height",
+        "place": {
+          "country": "",
+          "state": "",
+          "neighbourhood": "",
+          "author": ""
+        },
+        "regions": {
+          "roads": {
+            "depth_mm": 0.6,
+            "proud_mm": -0.2
+          },
+          "water": {
+            "depth_mm": 1.0,
+            "proud_mm": -0.5
+          },
+          "parks": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.0
+          },
+          "rail": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.3,
+            "width_m": 6.0
+          },
+          "building_skirt_mm": 0.3
+        },
+        "colour": {
+          "region_slots": {
+            "base": 1,
+            "frame": 1,
+            "matting": 1,
+            "buildings": 2,
+            "hero_building": 4,
+            "roads": 4,
+            "water": 3,
+            "parks": 4,
+            "rail": 4,
+            "lettering": 4,
+            "attribution": 1
+          },
+          "region_colors": {
+            "base": "#D8D3C6",
+            "frame": "#3A3A3A",
+            "matting": "#EDE9E0",
+            "buildings": "#D8D3C6",
+            "hero_building": "#E3A72F",
+            "roads": "#3A3A3A",
+            "water": "#2F7FC1",
+            "parks": "#5A9E4B",
+            "rail": "#6B6B6B",
+            "lettering": "#E3A72F",
+            "attribution": "#D8D3C6"
+          },
+          "palette": "default",
+          "tint": {
+            "enabled": false,
+            "hue_range_deg": 12.0,
+            "lightness_range": 0.12,
+            "seed": 1
+          },
+          "gradient": {
+            "enabled": false,
+            "slots": [
+              2,
+              3
+            ]
+          },
+          "preview_theme": "dark"
+        },
+        "printer_profile": "custom",
+        "custom_profile": {
+          "plate_x_mm": 256.0,
+          "plate_y_mm": 256.0,
+          "max_height_mm": 250.0,
+          "nozzle_mm": 0.4,
+          "slots": 4,
+          "change_gcode": "M600"
+        },
+        "export_target": "bambu-3mf",
+        "terrain": {
+          "enabled": false,
+          "smoothing": 1
+        },
+        "heights": {
+          "floor_height_m": 3.0,
+          "unknown_default_m": 8.0,
+          "type_defaults": {
+            "house": 6.0,
+            "apartments": 15.0,
+            "commercial": 12.0,
+            "retail": 6.0,
+            "industrial": 8.0,
+            "garage": 3.0
+          }
+        },
+        "bridges": {
+          "enabled": true,
+          "clearance_mm": 1.0,
+          "abutments": true
+        },
+        "height_exaggeration": {
+          "multiplier": 1.0,
+          "curve": 0.0
+        },
+        "hero_auto": {
+          "enabled": false,
+          "count": 3
+        },
+        "tiling": {
+          "enabled": false,
+          "cols": 1,
+          "rows": 1,
+          "joint": "dovetail",
+          "tolerance_mm": 0.15,
+          "index_mark": true
+        },
+        "frame_style": {
+          "profile": "plain",
+          "corner": "square",
+          "corner_radius_mm": 3.0,
+          "lip_depth_mm": 0.4,
+          "shadow_gap": {
+            "enabled": false,
+            "width_mm": 1.0,
+            "depth_mm": 0.8
+          },
+          "matting": {
+            "enabled": false,
+            "width_mm": 6.0,
+            "proud_mm": 0.4
+          },
+          "separate": {
+            "enabled": false,
+            "mount": "snap",
+            "tolerance_mm": 0.2
+          },
+          "texture": {
+            "pattern": "none",
+            "scale_mm": 1.0,
+            "depth_mm": 0.2
+          }
+        },
+        "hanger_magnet": {
+          "diameter_mm": 6.0,
+          "thickness_mm": 2.0,
+          "count": 2
+        }
       },
       "ctx": {
         "lat": 41.8827,
@@ -928,7 +1663,7 @@
     {
       "name": "north-arrow-nw-rotated",
       "params": {
-        "schema_version": 2,
+        "schema_version": 3,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -969,7 +1704,154 @@
           "template": "{city} {scale} {date}"
         },
         "hero_building_ids": [],
-        "hero_mode": "true_height"
+        "hero_mode": "true_height",
+        "place": {
+          "country": "",
+          "state": "",
+          "neighbourhood": "",
+          "author": ""
+        },
+        "regions": {
+          "roads": {
+            "depth_mm": 0.6,
+            "proud_mm": -0.2
+          },
+          "water": {
+            "depth_mm": 1.0,
+            "proud_mm": -0.5
+          },
+          "parks": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.0
+          },
+          "rail": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.3,
+            "width_m": 6.0
+          },
+          "building_skirt_mm": 0.3
+        },
+        "colour": {
+          "region_slots": {
+            "base": 1,
+            "frame": 1,
+            "matting": 1,
+            "buildings": 2,
+            "hero_building": 4,
+            "roads": 4,
+            "water": 3,
+            "parks": 4,
+            "rail": 4,
+            "lettering": 4,
+            "attribution": 1
+          },
+          "region_colors": {
+            "base": "#D8D3C6",
+            "frame": "#3A3A3A",
+            "matting": "#EDE9E0",
+            "buildings": "#D8D3C6",
+            "hero_building": "#E3A72F",
+            "roads": "#3A3A3A",
+            "water": "#2F7FC1",
+            "parks": "#5A9E4B",
+            "rail": "#6B6B6B",
+            "lettering": "#E3A72F",
+            "attribution": "#D8D3C6"
+          },
+          "palette": "default",
+          "tint": {
+            "enabled": false,
+            "hue_range_deg": 12.0,
+            "lightness_range": 0.12,
+            "seed": 1
+          },
+          "gradient": {
+            "enabled": false,
+            "slots": [
+              2,
+              3
+            ]
+          },
+          "preview_theme": "dark"
+        },
+        "printer_profile": "custom",
+        "custom_profile": {
+          "plate_x_mm": 256.0,
+          "plate_y_mm": 256.0,
+          "max_height_mm": 250.0,
+          "nozzle_mm": 0.4,
+          "slots": 4,
+          "change_gcode": "M600"
+        },
+        "export_target": "bambu-3mf",
+        "terrain": {
+          "enabled": false,
+          "smoothing": 1
+        },
+        "heights": {
+          "floor_height_m": 3.0,
+          "unknown_default_m": 8.0,
+          "type_defaults": {
+            "house": 6.0,
+            "apartments": 15.0,
+            "commercial": 12.0,
+            "retail": 6.0,
+            "industrial": 8.0,
+            "garage": 3.0
+          }
+        },
+        "bridges": {
+          "enabled": true,
+          "clearance_mm": 1.0,
+          "abutments": true
+        },
+        "height_exaggeration": {
+          "multiplier": 1.0,
+          "curve": 0.0
+        },
+        "hero_auto": {
+          "enabled": false,
+          "count": 3
+        },
+        "tiling": {
+          "enabled": false,
+          "cols": 1,
+          "rows": 1,
+          "joint": "dovetail",
+          "tolerance_mm": 0.15,
+          "index_mark": true
+        },
+        "frame_style": {
+          "profile": "plain",
+          "corner": "square",
+          "corner_radius_mm": 3.0,
+          "lip_depth_mm": 0.4,
+          "shadow_gap": {
+            "enabled": false,
+            "width_mm": 1.0,
+            "depth_mm": 0.8
+          },
+          "matting": {
+            "enabled": false,
+            "width_mm": 6.0,
+            "proud_mm": 0.4
+          },
+          "separate": {
+            "enabled": false,
+            "mount": "snap",
+            "tolerance_mm": 0.2
+          },
+          "texture": {
+            "pattern": "none",
+            "scale_mm": 1.0,
+            "depth_mm": 0.2
+          }
+        },
+        "hanger_magnet": {
+          "diameter_mm": 6.0,
+          "thickness_mm": 2.0,
+          "count": 2
+        }
       },
       "ctx": {
         "lat": 41.8827,
@@ -1031,7 +1913,7 @@
     {
       "name": "north-arrow-sw-rotated",
       "params": {
-        "schema_version": 2,
+        "schema_version": 3,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -1072,7 +1954,154 @@
           "template": "{city} {scale} {date}"
         },
         "hero_building_ids": [],
-        "hero_mode": "true_height"
+        "hero_mode": "true_height",
+        "place": {
+          "country": "",
+          "state": "",
+          "neighbourhood": "",
+          "author": ""
+        },
+        "regions": {
+          "roads": {
+            "depth_mm": 0.6,
+            "proud_mm": -0.2
+          },
+          "water": {
+            "depth_mm": 1.0,
+            "proud_mm": -0.5
+          },
+          "parks": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.0
+          },
+          "rail": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.3,
+            "width_m": 6.0
+          },
+          "building_skirt_mm": 0.3
+        },
+        "colour": {
+          "region_slots": {
+            "base": 1,
+            "frame": 1,
+            "matting": 1,
+            "buildings": 2,
+            "hero_building": 4,
+            "roads": 4,
+            "water": 3,
+            "parks": 4,
+            "rail": 4,
+            "lettering": 4,
+            "attribution": 1
+          },
+          "region_colors": {
+            "base": "#D8D3C6",
+            "frame": "#3A3A3A",
+            "matting": "#EDE9E0",
+            "buildings": "#D8D3C6",
+            "hero_building": "#E3A72F",
+            "roads": "#3A3A3A",
+            "water": "#2F7FC1",
+            "parks": "#5A9E4B",
+            "rail": "#6B6B6B",
+            "lettering": "#E3A72F",
+            "attribution": "#D8D3C6"
+          },
+          "palette": "default",
+          "tint": {
+            "enabled": false,
+            "hue_range_deg": 12.0,
+            "lightness_range": 0.12,
+            "seed": 1
+          },
+          "gradient": {
+            "enabled": false,
+            "slots": [
+              2,
+              3
+            ]
+          },
+          "preview_theme": "dark"
+        },
+        "printer_profile": "custom",
+        "custom_profile": {
+          "plate_x_mm": 256.0,
+          "plate_y_mm": 256.0,
+          "max_height_mm": 250.0,
+          "nozzle_mm": 0.4,
+          "slots": 4,
+          "change_gcode": "M600"
+        },
+        "export_target": "bambu-3mf",
+        "terrain": {
+          "enabled": false,
+          "smoothing": 1
+        },
+        "heights": {
+          "floor_height_m": 3.0,
+          "unknown_default_m": 8.0,
+          "type_defaults": {
+            "house": 6.0,
+            "apartments": 15.0,
+            "commercial": 12.0,
+            "retail": 6.0,
+            "industrial": 8.0,
+            "garage": 3.0
+          }
+        },
+        "bridges": {
+          "enabled": true,
+          "clearance_mm": 1.0,
+          "abutments": true
+        },
+        "height_exaggeration": {
+          "multiplier": 1.0,
+          "curve": 0.0
+        },
+        "hero_auto": {
+          "enabled": false,
+          "count": 3
+        },
+        "tiling": {
+          "enabled": false,
+          "cols": 1,
+          "rows": 1,
+          "joint": "dovetail",
+          "tolerance_mm": 0.15,
+          "index_mark": true
+        },
+        "frame_style": {
+          "profile": "plain",
+          "corner": "square",
+          "corner_radius_mm": 3.0,
+          "lip_depth_mm": 0.4,
+          "shadow_gap": {
+            "enabled": false,
+            "width_mm": 1.0,
+            "depth_mm": 0.8
+          },
+          "matting": {
+            "enabled": false,
+            "width_mm": 6.0,
+            "proud_mm": 0.4
+          },
+          "separate": {
+            "enabled": false,
+            "mount": "snap",
+            "tolerance_mm": 0.2
+          },
+          "texture": {
+            "pattern": "none",
+            "scale_mm": 1.0,
+            "depth_mm": 0.2
+          }
+        },
+        "hanger_magnet": {
+          "diameter_mm": 6.0,
+          "thickness_mm": 2.0,
+          "count": 2
+        }
       },
       "ctx": {
         "lat": 41.8827,
@@ -1132,7 +2161,7 @@
     {
       "name": "scale-bar-auto-chicago",
       "params": {
-        "schema_version": 2,
+        "schema_version": 3,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -1183,7 +2212,154 @@
           "template": "{city} {scale} {date}"
         },
         "hero_building_ids": [],
-        "hero_mode": "true_height"
+        "hero_mode": "true_height",
+        "place": {
+          "country": "",
+          "state": "",
+          "neighbourhood": "",
+          "author": ""
+        },
+        "regions": {
+          "roads": {
+            "depth_mm": 0.6,
+            "proud_mm": -0.2
+          },
+          "water": {
+            "depth_mm": 1.0,
+            "proud_mm": -0.5
+          },
+          "parks": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.0
+          },
+          "rail": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.3,
+            "width_m": 6.0
+          },
+          "building_skirt_mm": 0.3
+        },
+        "colour": {
+          "region_slots": {
+            "base": 1,
+            "frame": 1,
+            "matting": 1,
+            "buildings": 2,
+            "hero_building": 4,
+            "roads": 4,
+            "water": 3,
+            "parks": 4,
+            "rail": 4,
+            "lettering": 4,
+            "attribution": 1
+          },
+          "region_colors": {
+            "base": "#D8D3C6",
+            "frame": "#3A3A3A",
+            "matting": "#EDE9E0",
+            "buildings": "#D8D3C6",
+            "hero_building": "#E3A72F",
+            "roads": "#3A3A3A",
+            "water": "#2F7FC1",
+            "parks": "#5A9E4B",
+            "rail": "#6B6B6B",
+            "lettering": "#E3A72F",
+            "attribution": "#D8D3C6"
+          },
+          "palette": "default",
+          "tint": {
+            "enabled": false,
+            "hue_range_deg": 12.0,
+            "lightness_range": 0.12,
+            "seed": 1
+          },
+          "gradient": {
+            "enabled": false,
+            "slots": [
+              2,
+              3
+            ]
+          },
+          "preview_theme": "dark"
+        },
+        "printer_profile": "custom",
+        "custom_profile": {
+          "plate_x_mm": 256.0,
+          "plate_y_mm": 256.0,
+          "max_height_mm": 250.0,
+          "nozzle_mm": 0.4,
+          "slots": 4,
+          "change_gcode": "M600"
+        },
+        "export_target": "bambu-3mf",
+        "terrain": {
+          "enabled": false,
+          "smoothing": 1
+        },
+        "heights": {
+          "floor_height_m": 3.0,
+          "unknown_default_m": 8.0,
+          "type_defaults": {
+            "house": 6.0,
+            "apartments": 15.0,
+            "commercial": 12.0,
+            "retail": 6.0,
+            "industrial": 8.0,
+            "garage": 3.0
+          }
+        },
+        "bridges": {
+          "enabled": true,
+          "clearance_mm": 1.0,
+          "abutments": true
+        },
+        "height_exaggeration": {
+          "multiplier": 1.0,
+          "curve": 0.0
+        },
+        "hero_auto": {
+          "enabled": false,
+          "count": 3
+        },
+        "tiling": {
+          "enabled": false,
+          "cols": 1,
+          "rows": 1,
+          "joint": "dovetail",
+          "tolerance_mm": 0.15,
+          "index_mark": true
+        },
+        "frame_style": {
+          "profile": "plain",
+          "corner": "square",
+          "corner_radius_mm": 3.0,
+          "lip_depth_mm": 0.4,
+          "shadow_gap": {
+            "enabled": false,
+            "width_mm": 1.0,
+            "depth_mm": 0.8
+          },
+          "matting": {
+            "enabled": false,
+            "width_mm": 6.0,
+            "proud_mm": 0.4
+          },
+          "separate": {
+            "enabled": false,
+            "mount": "snap",
+            "tolerance_mm": 0.2
+          },
+          "texture": {
+            "pattern": "none",
+            "scale_mm": 1.0,
+            "depth_mm": 0.2
+          }
+        },
+        "hanger_magnet": {
+          "diameter_mm": 6.0,
+          "thickness_mm": 2.0,
+          "count": 2
+        }
       },
       "ctx": {
         "lat": 41.8827,
@@ -1294,7 +2470,7 @@
     {
       "name": "scale-bar-auto-wide",
       "params": {
-        "schema_version": 2,
+        "schema_version": 3,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -1335,7 +2511,154 @@
           "template": "{city} {scale} {date}"
         },
         "hero_building_ids": [],
-        "hero_mode": "true_height"
+        "hero_mode": "true_height",
+        "place": {
+          "country": "",
+          "state": "",
+          "neighbourhood": "",
+          "author": ""
+        },
+        "regions": {
+          "roads": {
+            "depth_mm": 0.6,
+            "proud_mm": -0.2
+          },
+          "water": {
+            "depth_mm": 1.0,
+            "proud_mm": -0.5
+          },
+          "parks": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.0
+          },
+          "rail": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.3,
+            "width_m": 6.0
+          },
+          "building_skirt_mm": 0.3
+        },
+        "colour": {
+          "region_slots": {
+            "base": 1,
+            "frame": 1,
+            "matting": 1,
+            "buildings": 2,
+            "hero_building": 4,
+            "roads": 4,
+            "water": 3,
+            "parks": 4,
+            "rail": 4,
+            "lettering": 4,
+            "attribution": 1
+          },
+          "region_colors": {
+            "base": "#D8D3C6",
+            "frame": "#3A3A3A",
+            "matting": "#EDE9E0",
+            "buildings": "#D8D3C6",
+            "hero_building": "#E3A72F",
+            "roads": "#3A3A3A",
+            "water": "#2F7FC1",
+            "parks": "#5A9E4B",
+            "rail": "#6B6B6B",
+            "lettering": "#E3A72F",
+            "attribution": "#D8D3C6"
+          },
+          "palette": "default",
+          "tint": {
+            "enabled": false,
+            "hue_range_deg": 12.0,
+            "lightness_range": 0.12,
+            "seed": 1
+          },
+          "gradient": {
+            "enabled": false,
+            "slots": [
+              2,
+              3
+            ]
+          },
+          "preview_theme": "dark"
+        },
+        "printer_profile": "custom",
+        "custom_profile": {
+          "plate_x_mm": 256.0,
+          "plate_y_mm": 256.0,
+          "max_height_mm": 250.0,
+          "nozzle_mm": 0.4,
+          "slots": 4,
+          "change_gcode": "M600"
+        },
+        "export_target": "bambu-3mf",
+        "terrain": {
+          "enabled": false,
+          "smoothing": 1
+        },
+        "heights": {
+          "floor_height_m": 3.0,
+          "unknown_default_m": 8.0,
+          "type_defaults": {
+            "house": 6.0,
+            "apartments": 15.0,
+            "commercial": 12.0,
+            "retail": 6.0,
+            "industrial": 8.0,
+            "garage": 3.0
+          }
+        },
+        "bridges": {
+          "enabled": true,
+          "clearance_mm": 1.0,
+          "abutments": true
+        },
+        "height_exaggeration": {
+          "multiplier": 1.0,
+          "curve": 0.0
+        },
+        "hero_auto": {
+          "enabled": false,
+          "count": 3
+        },
+        "tiling": {
+          "enabled": false,
+          "cols": 1,
+          "rows": 1,
+          "joint": "dovetail",
+          "tolerance_mm": 0.15,
+          "index_mark": true
+        },
+        "frame_style": {
+          "profile": "plain",
+          "corner": "square",
+          "corner_radius_mm": 3.0,
+          "lip_depth_mm": 0.4,
+          "shadow_gap": {
+            "enabled": false,
+            "width_mm": 1.0,
+            "depth_mm": 0.8
+          },
+          "matting": {
+            "enabled": false,
+            "width_mm": 6.0,
+            "proud_mm": 0.4
+          },
+          "separate": {
+            "enabled": false,
+            "mount": "snap",
+            "tolerance_mm": 0.2
+          },
+          "texture": {
+            "pattern": "none",
+            "scale_mm": 1.0,
+            "depth_mm": 0.2
+          }
+        },
+        "hanger_magnet": {
+          "diameter_mm": 6.0,
+          "thickness_mm": 2.0,
+          "count": 2
+        }
       },
       "ctx": {
         "lat": 41.8827,
@@ -1411,7 +2734,7 @@
     {
       "name": "scale-bar-fixed-clamped",
       "params": {
-        "schema_version": 2,
+        "schema_version": 3,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -1452,7 +2775,154 @@
           "template": "{city} {scale} {date}"
         },
         "hero_building_ids": [],
-        "hero_mode": "true_height"
+        "hero_mode": "true_height",
+        "place": {
+          "country": "",
+          "state": "",
+          "neighbourhood": "",
+          "author": ""
+        },
+        "regions": {
+          "roads": {
+            "depth_mm": 0.6,
+            "proud_mm": -0.2
+          },
+          "water": {
+            "depth_mm": 1.0,
+            "proud_mm": -0.5
+          },
+          "parks": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.0
+          },
+          "rail": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.3,
+            "width_m": 6.0
+          },
+          "building_skirt_mm": 0.3
+        },
+        "colour": {
+          "region_slots": {
+            "base": 1,
+            "frame": 1,
+            "matting": 1,
+            "buildings": 2,
+            "hero_building": 4,
+            "roads": 4,
+            "water": 3,
+            "parks": 4,
+            "rail": 4,
+            "lettering": 4,
+            "attribution": 1
+          },
+          "region_colors": {
+            "base": "#D8D3C6",
+            "frame": "#3A3A3A",
+            "matting": "#EDE9E0",
+            "buildings": "#D8D3C6",
+            "hero_building": "#E3A72F",
+            "roads": "#3A3A3A",
+            "water": "#2F7FC1",
+            "parks": "#5A9E4B",
+            "rail": "#6B6B6B",
+            "lettering": "#E3A72F",
+            "attribution": "#D8D3C6"
+          },
+          "palette": "default",
+          "tint": {
+            "enabled": false,
+            "hue_range_deg": 12.0,
+            "lightness_range": 0.12,
+            "seed": 1
+          },
+          "gradient": {
+            "enabled": false,
+            "slots": [
+              2,
+              3
+            ]
+          },
+          "preview_theme": "dark"
+        },
+        "printer_profile": "custom",
+        "custom_profile": {
+          "plate_x_mm": 256.0,
+          "plate_y_mm": 256.0,
+          "max_height_mm": 250.0,
+          "nozzle_mm": 0.4,
+          "slots": 4,
+          "change_gcode": "M600"
+        },
+        "export_target": "bambu-3mf",
+        "terrain": {
+          "enabled": false,
+          "smoothing": 1
+        },
+        "heights": {
+          "floor_height_m": 3.0,
+          "unknown_default_m": 8.0,
+          "type_defaults": {
+            "house": 6.0,
+            "apartments": 15.0,
+            "commercial": 12.0,
+            "retail": 6.0,
+            "industrial": 8.0,
+            "garage": 3.0
+          }
+        },
+        "bridges": {
+          "enabled": true,
+          "clearance_mm": 1.0,
+          "abutments": true
+        },
+        "height_exaggeration": {
+          "multiplier": 1.0,
+          "curve": 0.0
+        },
+        "hero_auto": {
+          "enabled": false,
+          "count": 3
+        },
+        "tiling": {
+          "enabled": false,
+          "cols": 1,
+          "rows": 1,
+          "joint": "dovetail",
+          "tolerance_mm": 0.15,
+          "index_mark": true
+        },
+        "frame_style": {
+          "profile": "plain",
+          "corner": "square",
+          "corner_radius_mm": 3.0,
+          "lip_depth_mm": 0.4,
+          "shadow_gap": {
+            "enabled": false,
+            "width_mm": 1.0,
+            "depth_mm": 0.8
+          },
+          "matting": {
+            "enabled": false,
+            "width_mm": 6.0,
+            "proud_mm": 0.4
+          },
+          "separate": {
+            "enabled": false,
+            "mount": "snap",
+            "tolerance_mm": 0.2
+          },
+          "texture": {
+            "pattern": "none",
+            "scale_mm": 1.0,
+            "depth_mm": 0.2
+          }
+        },
+        "hanger_magnet": {
+          "diameter_mm": 6.0,
+          "thickness_mm": 2.0,
+          "count": 2
+        }
       },
       "ctx": {
         "lat": 41.8827,
@@ -1532,7 +3002,7 @@
     {
       "name": "underside-and-hanger",
       "params": {
-        "schema_version": 2,
+        "schema_version": 3,
         "plate_mm": 180.0,
         "base_thickness_mm": 5.0,
         "nozzle_mm": 0.4,
@@ -1573,7 +3043,154 @@
           "template": "{city} {scale} {date}"
         },
         "hero_building_ids": [],
-        "hero_mode": "true_height"
+        "hero_mode": "true_height",
+        "place": {
+          "country": "",
+          "state": "",
+          "neighbourhood": "",
+          "author": ""
+        },
+        "regions": {
+          "roads": {
+            "depth_mm": 0.6,
+            "proud_mm": -0.2
+          },
+          "water": {
+            "depth_mm": 1.0,
+            "proud_mm": -0.5
+          },
+          "parks": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.0
+          },
+          "rail": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.3,
+            "width_m": 6.0
+          },
+          "building_skirt_mm": 0.3
+        },
+        "colour": {
+          "region_slots": {
+            "base": 1,
+            "frame": 1,
+            "matting": 1,
+            "buildings": 2,
+            "hero_building": 4,
+            "roads": 4,
+            "water": 3,
+            "parks": 4,
+            "rail": 4,
+            "lettering": 4,
+            "attribution": 1
+          },
+          "region_colors": {
+            "base": "#D8D3C6",
+            "frame": "#3A3A3A",
+            "matting": "#EDE9E0",
+            "buildings": "#D8D3C6",
+            "hero_building": "#E3A72F",
+            "roads": "#3A3A3A",
+            "water": "#2F7FC1",
+            "parks": "#5A9E4B",
+            "rail": "#6B6B6B",
+            "lettering": "#E3A72F",
+            "attribution": "#D8D3C6"
+          },
+          "palette": "default",
+          "tint": {
+            "enabled": false,
+            "hue_range_deg": 12.0,
+            "lightness_range": 0.12,
+            "seed": 1
+          },
+          "gradient": {
+            "enabled": false,
+            "slots": [
+              2,
+              3
+            ]
+          },
+          "preview_theme": "dark"
+        },
+        "printer_profile": "custom",
+        "custom_profile": {
+          "plate_x_mm": 256.0,
+          "plate_y_mm": 256.0,
+          "max_height_mm": 250.0,
+          "nozzle_mm": 0.4,
+          "slots": 4,
+          "change_gcode": "M600"
+        },
+        "export_target": "bambu-3mf",
+        "terrain": {
+          "enabled": false,
+          "smoothing": 1
+        },
+        "heights": {
+          "floor_height_m": 3.0,
+          "unknown_default_m": 8.0,
+          "type_defaults": {
+            "house": 6.0,
+            "apartments": 15.0,
+            "commercial": 12.0,
+            "retail": 6.0,
+            "industrial": 8.0,
+            "garage": 3.0
+          }
+        },
+        "bridges": {
+          "enabled": true,
+          "clearance_mm": 1.0,
+          "abutments": true
+        },
+        "height_exaggeration": {
+          "multiplier": 1.0,
+          "curve": 0.0
+        },
+        "hero_auto": {
+          "enabled": false,
+          "count": 3
+        },
+        "tiling": {
+          "enabled": false,
+          "cols": 1,
+          "rows": 1,
+          "joint": "dovetail",
+          "tolerance_mm": 0.15,
+          "index_mark": true
+        },
+        "frame_style": {
+          "profile": "plain",
+          "corner": "square",
+          "corner_radius_mm": 3.0,
+          "lip_depth_mm": 0.4,
+          "shadow_gap": {
+            "enabled": false,
+            "width_mm": 1.0,
+            "depth_mm": 0.8
+          },
+          "matting": {
+            "enabled": false,
+            "width_mm": 6.0,
+            "proud_mm": 0.4
+          },
+          "separate": {
+            "enabled": false,
+            "mount": "snap",
+            "tolerance_mm": 0.2
+          },
+          "texture": {
+            "pattern": "none",
+            "scale_mm": 1.0,
+            "depth_mm": 0.2
+          }
+        },
+        "hanger_magnet": {
+          "diameter_mm": 6.0,
+          "thickness_mm": 2.0,
+          "count": 2
+        }
       },
       "ctx": {
         "lat": 41.8827,
@@ -1649,7 +3266,7 @@
     {
       "name": "frame-off-skips-the-lip",
       "params": {
-        "schema_version": 2,
+        "schema_version": 3,
         "plate_mm": 180.0,
         "base_thickness_mm": 4.0,
         "nozzle_mm": 0.4,
@@ -1700,7 +3317,154 @@
           "template": "made by hand"
         },
         "hero_building_ids": [],
-        "hero_mode": "true_height"
+        "hero_mode": "true_height",
+        "place": {
+          "country": "",
+          "state": "",
+          "neighbourhood": "",
+          "author": ""
+        },
+        "regions": {
+          "roads": {
+            "depth_mm": 0.6,
+            "proud_mm": -0.2
+          },
+          "water": {
+            "depth_mm": 1.0,
+            "proud_mm": -0.5
+          },
+          "parks": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.0
+          },
+          "rail": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.3,
+            "width_m": 6.0
+          },
+          "building_skirt_mm": 0.3
+        },
+        "colour": {
+          "region_slots": {
+            "base": 1,
+            "frame": 1,
+            "matting": 1,
+            "buildings": 2,
+            "hero_building": 4,
+            "roads": 4,
+            "water": 3,
+            "parks": 4,
+            "rail": 4,
+            "lettering": 4,
+            "attribution": 1
+          },
+          "region_colors": {
+            "base": "#D8D3C6",
+            "frame": "#3A3A3A",
+            "matting": "#EDE9E0",
+            "buildings": "#D8D3C6",
+            "hero_building": "#E3A72F",
+            "roads": "#3A3A3A",
+            "water": "#2F7FC1",
+            "parks": "#5A9E4B",
+            "rail": "#6B6B6B",
+            "lettering": "#E3A72F",
+            "attribution": "#D8D3C6"
+          },
+          "palette": "default",
+          "tint": {
+            "enabled": false,
+            "hue_range_deg": 12.0,
+            "lightness_range": 0.12,
+            "seed": 1
+          },
+          "gradient": {
+            "enabled": false,
+            "slots": [
+              2,
+              3
+            ]
+          },
+          "preview_theme": "dark"
+        },
+        "printer_profile": "custom",
+        "custom_profile": {
+          "plate_x_mm": 256.0,
+          "plate_y_mm": 256.0,
+          "max_height_mm": 250.0,
+          "nozzle_mm": 0.4,
+          "slots": 4,
+          "change_gcode": "M600"
+        },
+        "export_target": "bambu-3mf",
+        "terrain": {
+          "enabled": false,
+          "smoothing": 1
+        },
+        "heights": {
+          "floor_height_m": 3.0,
+          "unknown_default_m": 8.0,
+          "type_defaults": {
+            "house": 6.0,
+            "apartments": 15.0,
+            "commercial": 12.0,
+            "retail": 6.0,
+            "industrial": 8.0,
+            "garage": 3.0
+          }
+        },
+        "bridges": {
+          "enabled": true,
+          "clearance_mm": 1.0,
+          "abutments": true
+        },
+        "height_exaggeration": {
+          "multiplier": 1.0,
+          "curve": 0.0
+        },
+        "hero_auto": {
+          "enabled": false,
+          "count": 3
+        },
+        "tiling": {
+          "enabled": false,
+          "cols": 1,
+          "rows": 1,
+          "joint": "dovetail",
+          "tolerance_mm": 0.15,
+          "index_mark": true
+        },
+        "frame_style": {
+          "profile": "plain",
+          "corner": "square",
+          "corner_radius_mm": 3.0,
+          "lip_depth_mm": 0.4,
+          "shadow_gap": {
+            "enabled": false,
+            "width_mm": 1.0,
+            "depth_mm": 0.8
+          },
+          "matting": {
+            "enabled": false,
+            "width_mm": 6.0,
+            "proud_mm": 0.4
+          },
+          "separate": {
+            "enabled": false,
+            "mount": "snap",
+            "tolerance_mm": 0.2
+          },
+          "texture": {
+            "pattern": "none",
+            "scale_mm": 1.0,
+            "depth_mm": 0.2
+          }
+        },
+        "hanger_magnet": {
+          "diameter_mm": 6.0,
+          "thickness_mm": 2.0,
+          "count": 2
+        }
       },
       "ctx": {
         "lat": 41.8827,
@@ -1809,7 +3573,7 @@
     {
       "name": "fat-nozzle-refuses-everything",
       "params": {
-        "schema_version": 2,
+        "schema_version": 3,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.8,
@@ -1860,7 +3624,154 @@
           "template": "{city} {scale} {date}"
         },
         "hero_building_ids": [],
-        "hero_mode": "true_height"
+        "hero_mode": "true_height",
+        "place": {
+          "country": "",
+          "state": "",
+          "neighbourhood": "",
+          "author": ""
+        },
+        "regions": {
+          "roads": {
+            "depth_mm": 0.6,
+            "proud_mm": -0.2
+          },
+          "water": {
+            "depth_mm": 1.0,
+            "proud_mm": -0.5
+          },
+          "parks": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.0
+          },
+          "rail": {
+            "depth_mm": 0.4,
+            "proud_mm": 0.3,
+            "width_m": 6.0
+          },
+          "building_skirt_mm": 0.3
+        },
+        "colour": {
+          "region_slots": {
+            "base": 1,
+            "frame": 1,
+            "matting": 1,
+            "buildings": 2,
+            "hero_building": 4,
+            "roads": 4,
+            "water": 3,
+            "parks": 4,
+            "rail": 4,
+            "lettering": 4,
+            "attribution": 1
+          },
+          "region_colors": {
+            "base": "#D8D3C6",
+            "frame": "#3A3A3A",
+            "matting": "#EDE9E0",
+            "buildings": "#D8D3C6",
+            "hero_building": "#E3A72F",
+            "roads": "#3A3A3A",
+            "water": "#2F7FC1",
+            "parks": "#5A9E4B",
+            "rail": "#6B6B6B",
+            "lettering": "#E3A72F",
+            "attribution": "#D8D3C6"
+          },
+          "palette": "default",
+          "tint": {
+            "enabled": false,
+            "hue_range_deg": 12.0,
+            "lightness_range": 0.12,
+            "seed": 1
+          },
+          "gradient": {
+            "enabled": false,
+            "slots": [
+              2,
+              3
+            ]
+          },
+          "preview_theme": "dark"
+        },
+        "printer_profile": "custom",
+        "custom_profile": {
+          "plate_x_mm": 256.0,
+          "plate_y_mm": 256.0,
+          "max_height_mm": 250.0,
+          "nozzle_mm": 0.4,
+          "slots": 4,
+          "change_gcode": "M600"
+        },
+        "export_target": "bambu-3mf",
+        "terrain": {
+          "enabled": false,
+          "smoothing": 1
+        },
+        "heights": {
+          "floor_height_m": 3.0,
+          "unknown_default_m": 8.0,
+          "type_defaults": {
+            "house": 6.0,
+            "apartments": 15.0,
+            "commercial": 12.0,
+            "retail": 6.0,
+            "industrial": 8.0,
+            "garage": 3.0
+          }
+        },
+        "bridges": {
+          "enabled": true,
+          "clearance_mm": 1.0,
+          "abutments": true
+        },
+        "height_exaggeration": {
+          "multiplier": 1.0,
+          "curve": 0.0
+        },
+        "hero_auto": {
+          "enabled": false,
+          "count": 3
+        },
+        "tiling": {
+          "enabled": false,
+          "cols": 1,
+          "rows": 1,
+          "joint": "dovetail",
+          "tolerance_mm": 0.15,
+          "index_mark": true
+        },
+        "frame_style": {
+          "profile": "plain",
+          "corner": "square",
+          "corner_radius_mm": 3.0,
+          "lip_depth_mm": 0.4,
+          "shadow_gap": {
+            "enabled": false,
+            "width_mm": 1.0,
+            "depth_mm": 0.8
+          },
+          "matting": {
+            "enabled": false,
+            "width_mm": 6.0,
+            "proud_mm": 0.4
+          },
+          "separate": {
+            "enabled": false,
+            "mount": "snap",
+            "tolerance_mm": 0.2
+          },
+          "texture": {
+            "pattern": "none",
+            "scale_mm": 1.0,
+            "depth_mm": 0.2
+          }
+        },
+        "hanger_magnet": {
+          "diameter_mm": 6.0,
+          "thickness_mm": 2.0,
+          "count": 2
+        }
       },
       "ctx": {
         "lat": 41.8827,

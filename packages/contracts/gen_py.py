@@ -194,6 +194,46 @@ class Emitter:
             return json.dumps(value)
         raise ValueError(f"unhandled literal value: {value!r}")
 
+    def py_value_expr(self, value, schema_fragment: dict) -> str:
+        """A Python source EXPRESSION (not a ``Field(...)`` wrapper) for a JSON
+        value, given the schema fragment that describes its shape.
+
+        Recurses through ``$ref``'d objects and array items, so a nested
+        default that itself contains another nested default or a non-empty
+        scalar array (``FrameStyle.shadow_gap``, ``Colour.gradient.slots``)
+        renders as a single inline constructor expression, keyword by keyword,
+        in the referenced ``$defs``' own property order so the output is
+        stable no matter how the JSON was keyed.
+        """
+        if isinstance(value, dict):
+            ref = schema_fragment.get("$ref")
+            assert ref, f"dict default without a $ref schema: {value!r}"
+            target = self.ref_name(ref)
+            # Ensure the referenced class is emitted (idempotent: resolve_def
+            # short-circuits if it already was), so forward references from a
+            # default that names a $defs entry not yet reached still work.
+            self.resolve_def(target)
+            def_schema = self.defs[target]
+            props = def_schema.get("properties", {})
+            order = list(props)
+            keys = [k for k in order if k in value] + [k for k in value if k not in order]
+            missing = [k for k in def_schema.get("required", []) if k not in value]
+            if missing:
+                # The nested model is required-complete (see emit_class), so an
+                # object default that omits a required key would generate a
+                # default_factory that raises on first construction.  Fail here,
+                # at generation time, where the schema author can see it.
+                raise ValueError(
+                    f"default for {target} omits required key(s) {missing}; "
+                    "an object default must name every required property"
+                )
+            kwargs = ", ".join(f"{k}={self.py_value_expr(value[k], props[k])}" for k in keys)
+            return f"{target}({kwargs})"
+        if isinstance(value, list):
+            items_schema = schema_fragment.get("items", {})
+            return "[" + ", ".join(self.py_value_expr(v, items_schema) for v in value) + "]"
+        return self.py_literal(value)
+
     def py_default(self, prop: dict, py_type: str) -> tuple[str, str] | None:
         """Return ``(kind, source)`` for a JSON Schema ``default``, or None when
         the schema has no default.
@@ -208,28 +248,11 @@ class Emitter:
             return None
         value = prop["default"]
         if isinstance(value, list):
-            if value:
-                raise ValueError(f"only an empty list default is supported, got {value!r}")
-            return ("factory", "list")
+            if not value:
+                return ("factory", "list")
+            return ("factory", f"lambda: {self.py_value_expr(value, prop)}")
         if isinstance(value, dict):
-            # Nested object default: construct the generated model, keyword by
-            # keyword, in the referenced $defs' own property order so the output
-            # is stable no matter how the JSON was keyed.
-            target = self.defs.get(py_type, {})
-            order = list(target.get("properties", {}))
-            keys = [k for k in order if k in value] + [k for k in value if k not in order]
-            missing = [k for k in target.get("required", []) if k not in value]
-            if missing:
-                # The nested model is required-complete (see emit_class), so an
-                # object default that omits a required key would generate a
-                # default_factory that raises on first construction.  Fail here,
-                # at generation time, where the schema author can see it.
-                raise ValueError(
-                    f"default for {py_type} omits required key(s) {missing}; "
-                    "an object default must name every required property"
-                )
-            kwargs = ", ".join(f"{k}={self.py_literal(value[k])}" for k in keys)
-            return ("factory", f"lambda: {py_type}({kwargs})")
+            return ("factory", f"lambda: {self.py_value_expr(value, prop)}")
         return ("value", self.py_literal(value))
 
     def emit_class(self, name: str, obj_schema: dict, *, root: bool = False) -> None:

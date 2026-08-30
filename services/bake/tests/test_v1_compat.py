@@ -167,9 +167,10 @@ def test_the_bake_still_passes_every_validator(baked):
 def test_the_v1_sidecar_print_params_load_and_equal_the_v2_defaults():
     sidecar = json.loads(GOLDEN_SIDECAR.read_text(encoding="utf-8"))
     v1_params = sidecar["print_params"]
-    # It really is a v1 block: none of the v2 keys are in it.
+    # It really is a v1 block: none of the v2 or v3 keys are in it.
     assert "schema_version" not in v1_params
     assert set(v1_params) == set(PrintParams().model_dump().keys()) - {
+        # v2 (schema_version 2)
         "schema_version",
         "city_label",
         "color_mode",
@@ -181,6 +182,24 @@ def test_the_v1_sidecar_print_params_load_and_equal_the_v2_defaults():
         "underside_mark",
         "hero_building_ids",
         "hero_mode",
+        # v3 (schema_version 3), [V3-P1c]: this Python model default is now 3,
+        # not 2, but the golden sidecar is still a genuine v1 payload and must
+        # still load to exactly PrintParams() - the extra fourteen keys just
+        # widen the same "carries none of them" claim.
+        "place",
+        "regions",
+        "colour",
+        "printer_profile",
+        "custom_profile",
+        "export_target",
+        "terrain",
+        "heights",
+        "bridges",
+        "height_exaggeration",
+        "hero_auto",
+        "tiling",
+        "frame_style",
+        "hanger_magnet",
     }
     assert PrintParams(**v1_params) == PrintParams()
 
@@ -258,9 +277,10 @@ def test_single_mode_changes_no_metadata_except_creationdate_and_description(
 
 
 def test_the_description_gains_only_the_v2_defaults(baked, golden_xml):
-    """The Description recites the PrintParams, so a v2 model necessarily adds
-    keys to it.  Nothing else about it may move: the prose, the attribution and
-    the location must match, and every v1 key must keep its v1 value."""
+    """The Description recites the PrintParams, so a v2+v3 model necessarily
+    adds keys to it.  Nothing else about it may move: the prose, the
+    attribution and the location must match, and every v1 key must keep its
+    v1 value."""
     _, now_meta = split_metadata(baked["xml"])
     _, gold_meta = split_metadata(golden_xml)
     now_desc, gold_desc = now_meta["Description"], gold_meta["Description"]
@@ -271,6 +291,7 @@ def test_the_description_gains_only_the_v2_defaults(baked, golden_xml):
     assert {k: now_pairs[k] for k in gold_pairs} == gold_pairs
     added = set(now_pairs) - set(gold_pairs)
     assert added == {
+        # v2 (schema_version 2)
         "schema_version",
         "city_label",
         "color_mode",
@@ -282,4 +303,19 @@ def test_the_description_gains_only_the_v2_defaults(baked, golden_xml):
         "underside_mark",
         "hero_building_ids",
         "hero_mode",
+        # v3 (schema_version 3), [V3-P1c]
+        "place",
+        "regions",
+        "colour",
+        "printer_profile",
+        "custom_profile",
+        "export_target",
+        "terrain",
+        "heights",
+        "bridges",
+        "height_exaggeration",
+        "hero_auto",
+        "tiling",
+        "frame_style",
+        "hanger_magnet",
     }
