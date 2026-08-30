@@ -85,7 +85,7 @@ export function EditorShell() {
         return;
       }
       case "bake": {
-        if (state.bake.phase === "queued" || state.bake.phase === "running") return;
+        if (state.bake.phase === "exporting") return;
         if (bakeBlockReason(state.scene.graph, state.params) !== null) return;
         event.preventDefault();
         void state.requestBake();

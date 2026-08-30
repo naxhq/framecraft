@@ -67,6 +67,7 @@ export function InstancedBuildings({
   heroIds,
   cursorId,
   onPick,
+  hidden = false,
 }: {
   buildings: PreviewBuilding[];
   params: PrintParams;
@@ -78,6 +79,21 @@ export function InstancedBuildings({
   /** The building the keyboard cursor is on, or null. */
   cursorId: string | null;
   onPick: (id: string) => void;
+  /**
+   * Fully transparent, but still mounted and still raycast against.
+   *
+   * Once a fresh `EngineResult` lands, `components/scene/RegionMeshes.tsx`
+   * draws the real buildings and this instanced approximation would only
+   * double them up -- but hero-picking (a raycast against THIS mesh, both by
+   * click and by the keyboard cursor) has no equivalent on the fused region
+   * mesh, which carries no per-building identity to pick out. Three.js
+   * raycasting does not consult `visible` or a material's opacity, so an
+   * invisible instance here is exactly as clickable as a visible one
+   * (verified against `node_modules/three/src/core/Raycaster.js`'s own
+   * `intersect()`); shadows are turned off with it, or an invisible box would
+   * still paint a visible shadow blob on the real geometry underneath it.
+   */
+  hidden?: boolean;
 }) {
   const meshRef = useRef<InstancedMesh>(null);
   /** Where the pointer went down, so an orbit drag is not read as a click. */
@@ -163,8 +179,8 @@ export function InstancedBuildings({
     <instancedMesh
       ref={meshRef}
       args={[undefined, undefined, buildings.length]}
-      castShadow
-      receiveShadow
+      castShadow={!hidden}
+      receiveShadow={!hidden}
       frustumCulled={false}
       onPointerDown={handleDown}
       onClick={handleClick}
@@ -177,7 +193,14 @@ export function InstancedBuildings({
     >
       <boxGeometry args={[1, 1, 1]} />
       {/* white, so the per-instance colour above is exactly what is drawn */}
-      <meshStandardMaterial color="white" roughness={0.75} metalness={0.02} />
+      <meshStandardMaterial
+        color="white"
+        roughness={0.75}
+        metalness={0.02}
+        transparent={hidden}
+        opacity={hidden ? 0 : 1}
+        depthWrite={!hidden}
+      />
     </instancedMesh>
   );
 }

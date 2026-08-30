@@ -6,14 +6,15 @@ import {
   BAKE_STALE_NOTE,
   bakeDownloadLinks,
   bakeStatusLabel,
-  isTerminal,
 } from "@/lib/bake";
 import { textTokenContext } from "@/lib/previewText";
-import { resolvedOutputLines, type ResolvedLine } from "@/lib/resolvedOutput";
+import { resolvedOutputLines, type ResolvedLine as PredictedLine } from "@/lib/resolvedOutput";
 import { shareUrl } from "@/lib/share";
+import type { ResolvedLine as EngineResolvedLine } from "@/lib/engine/types";
 import { MAX_HEIGHT_MM } from "@/lib/transform";
 import { bakeBlockReason, predictedTopMm, warningDeps } from "@/lib/warnings";
 import { locationToRequest, useEditorStore } from "@/store/editor";
+import ExportMenu from "./ExportMenu";
 import { Note } from "./Controls";
 import StatsCard from "./StatsCard";
 
@@ -30,10 +31,11 @@ import StatsCard from "./StatsCard";
  *    already current. A button that looks alive and does nothing is worse than
  *    one that is honestly out of play.
  *
- * Bake is disabled -- with the reason spelled out -- whenever the server would
+ * Bake is disabled -- with the reason spelled out -- whenever the engine would
  * refuse the job anyway: too few buildings (01/A2) or a model over 04's 60 mm
  * ceiling. Both verdicts come from the SceneGraph already in memory; neither
- * costs a request.
+ * costs a request, and since v3 E4 neither Bake nor Generate ever leave the
+ * browser tab except for the ingest fetch to Overpass.
  */
 export function OutputPanel({
   showResults = true,
@@ -47,6 +49,7 @@ export function OutputPanel({
   const graph = useEditorStore((state) => state.scene.graph);
   const stale = useEditorStore((state) => state.scene.stale);
   const params = useEditorStore((state) => state.params);
+  const engine = useEditorStore((state) => state.engine);
   const bake = useEditorStore((state) => state.bake);
   const generate = useEditorStore((state) => state.generate);
   const requestBake = useEditorStore((state) => state.requestBake);
@@ -65,18 +68,39 @@ export function OutputPanel({
    * place it is consulted (DECISIONS [V2-P2]).
    */
   const [today] = useState(() => new Date().toISOString().slice(0, 10));
-  const resolvedLines = useMemo(
+
+  /**
+   * "Resolved output": one row per text FrameCraft will try to cut.
+   *
+   * Two sources, one truth (E4 brief, item 3): while the engine result is
+   * FRESH (`status === "ready" && !stale`) its own `resolvedText` is
+   * authoritative -- it is what the exported file actually carries, because
+   * the engine resolved every token and every refusal itself. Before the
+   * first bake, or while a newer one is computing, the client-side PREDICTION
+   * (`lib/resolvedOutput.ts`, the same maths the Issues badge and `lib/bake.ts`
+   * used pre-engine) fills the gap so the panel is never empty.
+   */
+  const fresh = engine.status === "ready" && !engine.stale && engine.result !== null;
+  const predictedLines = useMemo(
     () => resolvedOutputLines(params, textTokenContext(graph, params, today)),
     [graph, params, today],
   );
-  const baking = bake.phase === "queued" || bake.phase === "running";
+  const lines: DisplayLine[] = useMemo(
+    () =>
+      fresh && engine.result
+        ? engine.result.resolvedText.map(fromEngineLine)
+        : predictedLines.map(fromPredictedLine),
+    [fresh, engine.result, predictedLines],
+  );
+
+  const exporting = bake.phase === "exporting";
   const generating = sceneStatus === "loading";
   const hasScene = graph !== null;
   // Nothing has moved since the last successful Generate, so there is nothing
   // to generate. Not "inert": genuinely disabled.
   const sceneIsCurrent = sceneStatus === "ready" && !stale;
-  // Empty while the bake is stale: the file on the server was built from
-  // parameters the user has since moved.
+  // Empty while the bake is stale: the file was exported from parameters the
+  // user has since moved.
   const links = bakeDownloadLinks(bake);
 
   /*
@@ -140,14 +164,15 @@ export function OutputPanel({
           type="button"
           data-testid="bake-button"
           onClick={() => void requestBake()}
-          disabled={baking || blockReason !== null}
+          disabled={exporting || blockReason !== null}
           title={blockReason ?? undefined}
           className={`flex-1 ${hasScene ? primary : secondary}`}
         >
-          {baking ? "Baking..." : "Bake"}
+          {exporting ? "Baking..." : "Bake"}
         </button>
+        <ExportMenu />
         {/*
-          Third in the row and deliberately narrower: it is the only action here
+          Fourth in the row and deliberately narrower: it is the only action here
           that changes nothing about the model. The link is on the button as a
           data attribute whether or not the clipboard write is allowed, so it is
           always readable -- by a person, by a test, and by the field below.
@@ -212,13 +237,20 @@ export function OutputPanel({
               >
                 {bakeStatusLabel(bake)}
               </span>
-              {bake.jobId ? (
-                <span className="truncate text-2xs text-ink-faint">{bake.jobId}</span>
+              {bake.target ? (
+                <span className="truncate text-2xs text-ink-faint">{bake.target}</span>
               ) : null}
             </div>
 
-            {!isTerminal(bake.phase) ? (
-              <BakeProgress progress={bake.progress} />
+            {exporting ? (
+              <div
+                data-testid="bake-progress"
+                role="progressbar"
+                aria-label="Exporting"
+                className="h-1.5 overflow-hidden rounded-milled bg-plate-sunken"
+              >
+                <div className="h-full w-1/3 animate-[fc-indeterminate_1.4s_ease-in-out_infinite] rounded-milled bg-accent" />
+              </div>
             ) : null}
 
             {bake.stale ? (
@@ -228,10 +260,10 @@ export function OutputPanel({
             ) : null}
 
             {links.length > 0 ? (
-              <div className="flex gap-2" data-testid="download-links">
+              <div className="flex flex-wrap gap-2" data-testid="download-links">
                 {links.map((link) => (
                   <a
-                    key={link.label}
+                    key={link.filename}
                     href={link.href}
                     download={link.filename}
                     className="flex-1 rounded-milled border border-positive px-3 py-1.5 text-center text-2xs font-medium text-positive transition-colors hover:bg-positive-soft"
@@ -241,23 +273,48 @@ export function OutputPanel({
                 ))}
               </div>
             ) : null}
+
+            {bake.notes.length > 0 ? (
+              <ul className="space-y-1" data-testid="bake-notes">
+                {bake.notes.map((note) => (
+                  <li key={note} className="text-2xs text-ink-faint">
+                    {note}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </div>
         ) : null}
 
-        {showResults ? <ResolvedOutputCard lines={resolvedLines} /> : null}
+        {showResults ? <ResolvedOutputCard lines={lines} fresh={fresh} /> : null}
         {showResults ? <StatsCard /> : null}
       </div>
     </div>
   );
 }
 
+/** The two `ResolvedLine` shapes (the prediction's and the engine's) normalized to what this panel renders. */
+interface DisplayLine {
+  id: string;
+  surface: string;
+  text: string;
+  cut: boolean;
+  reason: string | null;
+}
+
+function fromPredictedLine(line: PredictedLine): DisplayLine {
+  return { id: line.id, surface: line.surface, text: line.text, cut: line.status === "cut", reason: line.reason };
+}
+
+function fromEngineLine(line: EngineResolvedLine): DisplayLine {
+  return { id: line.id, surface: line.surface, text: line.text, cut: line.status === "cuts", reason: line.reason ?? null };
+}
+
 /**
  * "Resolved output": one row per text FrameCraft will try to cut, in the
- * order the bake sees them -- exactly `lib/bake.ts`'s `resolveParamsForBake`
- * inputs, so nothing that bakes is ever missing from this list and nothing
- * listed here as "cuts" fails to reach the bake request.
+ * order the source (engine or prediction) reports them.
  */
-function ResolvedOutputCard({ lines }: { lines: readonly ResolvedLine[] }) {
+function ResolvedOutputCard({ lines, fresh }: { lines: readonly DisplayLine[]; fresh: boolean }) {
   if (lines.length === 0) {
     return (
       <p data-testid="resolved-output-empty" className="text-2xs text-ink-faint">
@@ -267,7 +324,7 @@ function ResolvedOutputCard({ lines }: { lines: readonly ResolvedLine[] }) {
     );
   }
   return (
-    <div className="space-y-2" data-testid="resolved-output">
+    <div className="space-y-2" data-testid="resolved-output" data-source={fresh ? "engine" : "prediction"}>
       <h3 className="font-display text-2xs font-semibold uppercase tracking-[0.14em] text-ink-faint">
         Resolved output
       </h3>
@@ -276,20 +333,16 @@ function ResolvedOutputCard({ lines }: { lines: readonly ResolvedLine[] }) {
           <li
             key={line.id}
             data-testid={`resolved-output-row-${line.id}`}
-            data-status={line.status}
+            data-status={line.cut ? "cut" : "skipped"}
             className="rounded-milled border border-line bg-plate-sunken px-2 py-1.5 text-2xs"
           >
             <div className="flex items-baseline justify-between gap-2">
               <span className="text-ink-faint">{line.surface}</span>
-              <span
-                className={
-                  line.status === "cut" ? "text-positive" : "text-ink-faint"
-                }
-              >
-                {line.status === "cut" ? "cuts" : "skipped"}
+              <span className={line.cut ? "text-positive" : "text-ink-faint"}>
+                {line.cut ? "cuts" : "skipped"}
               </span>
             </div>
-            {line.status === "cut" ? (
+            {line.cut ? (
               <p className="mt-0.5 truncate text-ink" title={line.text}>
                 {line.text}
               </p>
@@ -299,46 +352,6 @@ function ResolvedOutputCard({ lines }: { lines: readonly ResolvedLine[] }) {
           </li>
         ))}
       </ul>
-    </div>
-  );
-}
-
-/**
- * Determinate whenever the server reports progress, indeterminate only when it
- * does not. `BakeResult.progress` is optional in the contract and `reduceBake`
- * keeps the last known value, so the bar stops moving rather than resetting.
- */
-function BakeProgress({ progress }: { progress: number | null }) {
-  if (progress === null) {
-    return (
-      <div
-        data-testid="bake-progress"
-        data-determinate="false"
-        role="progressbar"
-        aria-label="Baking"
-        className="h-1.5 overflow-hidden rounded-milled bg-plate-sunken"
-      >
-        <div className="h-full w-1/3 animate-[fc-indeterminate_1.4s_ease-in-out_infinite] rounded-milled bg-accent" />
-      </div>
-    );
-  }
-  const percent = Math.round(progress * 100);
-  return (
-    <div
-      data-testid="bake-progress"
-      data-determinate="true"
-      data-progress={percent}
-      role="progressbar"
-      aria-label="Baking"
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={percent}
-      className="h-1.5 overflow-hidden rounded-milled bg-plate-sunken"
-    >
-      <div
-        className="h-full rounded-milled bg-accent transition-[width] duration-500"
-        style={{ width: `${percent}%` }}
-      />
     </div>
   );
 }

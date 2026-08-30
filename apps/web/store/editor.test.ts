@@ -6,25 +6,30 @@
  * The test drives *every* key of the frozen PrintParams object through
  * `setParam` with `fetch` spied on, so adding a control that secretly refetches
  * fails here.
+ *
+ * Since FrameCraft v3 E4 `fetch` is ONLY ever touched by the ingest job
+ * (`generate()` -> `EngineClient.ingest()` -> Overpass) -- never by a
+ * PrintParams write, and never by Bake, which runs the browser engine and
+ * exports a Blob. Everywhere else in this file the scene/engine/bake state is
+ * injected directly with `setState`, exactly as it was before, so the vast
+ * majority of these tests still cost nothing to run: no WASM, no worker, no
+ * network.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  bakeDownloadLinks,
-  bakeStarted,
-  bakeStatusLabel,
-  initialBakeState,
-  reduceBake,
-} from "@/lib/bake";
+import { bakeDone, bakeDownloadLinks, initialBakeState, runExport } from "@/lib/bake";
 import { DEFAULT_PRINT_PARAMS, defaultPrintParams } from "@/lib/contracts";
-import type { BakeResult, PrintParams, SceneGraph, SceneRequest } from "@/lib/contracts";
+import type { PrintParams, SceneGraph, SceneRequest } from "@/lib/contracts";
+import type { EngineResult, RegionMesh } from "@/lib/engine/types";
+import { resetOverpassCacheForTest } from "@/lib/engine/protocol";
 import { HERO_CAP } from "@/lib/heroes";
 import { encodeShare } from "@/lib/share";
 import {
   activePresetId,
   IDLE_PLACE_DETECT,
   INITIAL_LOCATION,
+  initialEngineState,
   locationToRequest,
   useEditorStore,
 } from "./editor";
@@ -52,6 +57,66 @@ const fixtureScene = (): SceneGraph => ({
   trees: [],
   stats: { building_count: 40, coverage: "good", height_tag_ratio: 0.5 },
 });
+
+/** A minimal, valid Overpass QL "out geom" response: `count` tiny square building ways, spread out so none touch. */
+function fixtureOverpassResponse(count: number): { elements: unknown[] } {
+  const elements: unknown[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const lat = 41.8827 + Math.floor(i / 6) * 0.001;
+    const lon = -87.6233 + (i % 6) * 0.001;
+    const d = 0.00004;
+    elements.push({
+      type: "way",
+      id: 900_000 + i,
+      tags: { building: "yes", height: "12" },
+      geometry: [
+        { lat: lat - d, lon: lon - d },
+        { lat: lat - d, lon: lon + d },
+        { lat: lat + d, lon: lon + d },
+        { lat: lat + d, lon: lon - d },
+        { lat: lat - d, lon: lon - d },
+      ],
+    });
+  }
+  return { elements };
+}
+
+function fakeRegion(name: RegionMesh["region"]): RegionMesh {
+  return {
+    region: name,
+    positions: new Float64Array([0, 0, 0, 10, 0, 0, 10, 10, 0]),
+    indices: new Uint32Array([0, 1, 2]),
+    volumeMm3: 100,
+    bbox: { min: [0, 0, 0], max: [10, 10, 1] },
+    bodies: 1,
+    slot: 1,
+    colorHex: "#D8D3C6",
+  };
+}
+
+function fakeEngineResult(params: PrintParams = defaultPrintParams()): EngineResult {
+  return {
+    regions: [fakeRegion("base"), fakeRegion("buildings")],
+    merged: fakeRegion("base"),
+    stats: {
+      scaleDenominator: 1000,
+      minWallMm: 0.8,
+      measuredMinWallMm: 0.85,
+      buildings: 40,
+      buildingsMerged: 0,
+      buildingsDilated: 0,
+      heightFallbacks: 0,
+      triangles: 2,
+      widthMm: 180,
+      depthMm: 180,
+      heightMm: 30,
+      elapsedMs: 5,
+    },
+    findings: [],
+    resolvedText: [],
+    params,
+  };
+}
 
 /**
  * Every PrintParams key with a value that differs from the default.
@@ -125,8 +190,8 @@ beforeEach(() => {
     // `setNested` would throw.
     params: defaultPrintParams(),
     scene: { status: "idle", graph: null, message: null, request: null, stale: false },
+    engine: { ...initialEngineState },
     bake: { ...initialBakeState },
-    presets: { status: "idle", items: [], message: null },
     placeDetect: { ...IDLE_PLACE_DETECT },
     presetChosen: false,
   });
@@ -135,7 +200,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  useEditorStore.getState().stopBakePolling();
+  // Drops any 400 ms debounced engine job `setParam`/`setNested` scheduled:
+  // without this, a real bake (WASM, off whatever `scene.graph`/`params` a
+  // LATER test happens to have set) can fire after this test already
+  // returned, since these are real timers.
+  useEditorStore.getState().cancelEngineJob();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -492,11 +561,14 @@ describe("place resolution", () => {
   });
 });
 
+// ==========================================================================
+// Ingest ([V3 E4]: EngineClient.ingest(), never POST /scene)
+// ==========================================================================
+
 describe("generate", () => {
-  it("POSTs exactly the current SceneRequest and stores the graph", async () => {
-    const graph = fixtureScene();
+  it("fetches an Overpass mirror and stores the resulting graph", async () => {
     fetchSpy.mockResolvedValue(
-      new Response(JSON.stringify(graph), {
+      new Response(JSON.stringify(fixtureOverpassResponse(24)), {
         status: 200,
         headers: { "content-type": "application/json" },
       }),
@@ -506,89 +578,65 @@ describe("generate", () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(url).toMatch(/\/scene$/);
+    // An Overpass mirror, not this app's own (long-gone) /scene route.
+    expect(url).toMatch(/^https:\/\/overpass/);
     expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toEqual(locationToRequest(INITIAL_LOCATION));
+    expect(String(init.body)).toContain("[out:json]");
 
     const scene = useEditorStore.getState().scene;
     expect(scene.status).toBe("ready");
     expect(scene.stale).toBe(false);
-    expect(scene.graph?.stats.building_count).toBe(40);
+    expect(scene.graph?.buildings.length).toBeGreaterThan(0);
     expect(scene.request).toEqual(locationToRequest(INITIAL_LOCATION));
   });
 
   it("surfaces a real error state instead of silently falling back", async () => {
-    fetchSpy.mockResolvedValue(
-      new Response(JSON.stringify({ detail: "Overpass timed out" }), { status: 504 }),
-    );
+    // A location no earlier test in this file has queried: the Overpass
+    // response cache (`lib/engine/osm/overpass.ts`) is keyed by the query
+    // text's sha1, and it is a real, persistent cache -- reusing Chicago
+    // Loop's coordinates here would silently serve the OTHER `generate()`
+    // test's cached success instead of ever calling the mocked `fetch`.
+    useEditorStore.setState((s) => ({ location: { ...s.location, lat: 12.34, lon: 56.78 } }));
+    fetchSpy.mockRejectedValue(new TypeError("Failed to fetch"));
     await useEditorStore.getState().generate();
     const scene = useEditorStore.getState().scene;
     expect(scene.status).toBe("error");
-    expect(scene.message).toContain("Overpass timed out");
+    expect(scene.message).toBeTruthy();
     expect(scene.graph).toBeNull();
-  });
+  }, 15_000);
 
-  it("reports an unreachable API rather than throwing", async () => {
-    fetchSpy.mockRejectedValue(new TypeError("Failed to fetch"));
-    await useEditorStore.getState().generate();
-    expect(useEditorStore.getState().scene.status).toBe("error");
-    expect(useEditorStore.getState().scene.message).toContain("Cannot reach the bake API");
-  });
-});
-
-describe("presets", () => {
-  it("loads the six SceneRequests from GET /presets", async () => {
-    const presets: SceneRequest[] = [
-      { lat: 41.8827, lon: -87.6233, radius_m: 900, rotation_deg: 0, preset_id: "chicago-loop" },
-    ];
+  it("schedules a debounced engine job once the scene is ready", async () => {
     fetchSpy.mockResolvedValue(
-      new Response(JSON.stringify(presets), {
+      new Response(JSON.stringify(fixtureOverpassResponse(24)), {
         status: 200,
         headers: { "content-type": "application/json" },
       }),
     );
-    await useEditorStore.getState().loadPresets();
-    expect(useEditorStore.getState().presets.status).toBe("ready");
-    expect(useEditorStore.getState().presets.items).toHaveLength(1);
-  });
-
-  it("keeps an error message when the API is down", async () => {
-    fetchSpy.mockRejectedValue(new TypeError("Failed to fetch"));
-    await useEditorStore.getState().loadPresets();
-    expect(useEditorStore.getState().presets.status).toBe("error");
-    expect(useEditorStore.getState().presets.message).toBeTruthy();
+    await useEditorStore.getState().generate();
+    // Not yet: the job is debounced, not synchronous with `generate()`.
+    expect(useEditorStore.getState().engine.status).not.toBe("ready");
   });
 });
 
-/** A finished bake, as `GET /bake/{id}` would report it. */
-const doneResult: BakeResult = {
-  job_id: "job-1",
-  status: "done",
-  files: { "3mf": "/files/ab12.3mf", stl: "/files/ab12.stl" },
-  stats: {
-    triangles: 412330,
-    volume_mm3: 39122.5,
-    bbox_mm: [180, 180, 41.2],
-    est_grams: 48.6,
-    is_manifold: true,
-    min_wall_mm: 0.81,
-  },
-  warnings: [],
-  progress: 1,
-  error: null,
-};
+// ==========================================================================
+// Bake staleness and the Bake action ([V3 E4]: the browser engine + export)
+// ==========================================================================
 
-/** Put the store in "Chicago is previewed and a bake of it just finished". */
+/** Put the store in "Chicago is previewed, the engine is fresh and a bake of it just finished". */
 function withFinishedBake(): void {
+  const graph = fixtureScene();
+  const result = fakeEngineResult();
+  const outcome = runExport(result, "stl", graph);
   useEditorStore.setState({
     scene: {
       status: "ready",
-      graph: fixtureScene(),
+      graph,
       message: null,
       request: locationToRequest(INITIAL_LOCATION),
       stale: false,
     },
-    bake: reduceBake(bakeStarted("job-1"), doneResult),
+    engine: { status: "ready", result, error: null, stale: false },
+    bake: bakeDone(initialBakeState, "stl", outcome, result.findings),
   });
 }
 
@@ -598,21 +646,22 @@ describe("bake staleness", () => {
     const bake = useEditorStore.getState().bake;
     expect(bake.phase).toBe("done");
     expect(bake.stale).toBe(false);
-    expect(bakeDownloadLinks(bake)).toHaveLength(2);
+    expect(bakeDownloadLinks(bake)).toHaveLength(2); // the mesh file + the sidecar
   });
 
-  it("goes stale on EVERY PrintParams control, keeping the result", () => {
+  it("goes stale on EVERY PrintParams control, keeping the engine result", () => {
     for (const [key, value] of PARAM_MOVES) {
       withFinishedBake();
       useEditorStore.getState().setParam(key, value as never);
-      const bake = useEditorStore.getState().bake;
-      expect(bake.stale, `${key} left the bake looking current`).toBe(true);
+      const state = useEditorStore.getState();
+      expect(state.bake.stale, `${key} left the bake looking current`).toBe(true);
+      expect(state.engine.stale, `${key} left the engine result looking current`).toBe(true);
       // The result is KEPT (the stats card still shows the last real bake) but
       // it may no longer be offered as a download.
-      expect(bake.result).not.toBeNull();
-      expect(bake.phase).toBe("done");
-      expect(bakeDownloadLinks(bake)).toHaveLength(0);
-      expect(bakeStatusLabel(bake)).toContain("outdated");
+      expect(state.engine.result).not.toBeNull();
+      expect(state.bake.phase).toBe("done");
+      expect(bakeDownloadLinks(state.bake)).toHaveLength(0);
+      useEditorStore.getState().cancelEngineJob();
     }
   });
 
@@ -640,45 +689,32 @@ describe("bake staleness", () => {
       expect(useEditorStore.getState().bake.stale, `${name} did not invalidate the bake`).toBe(
         true,
       );
+      expect(useEditorStore.getState().engine.stale, `${name} did not invalidate the engine result`).toBe(
+        true,
+      );
+      useEditorStore.getState().cancelEngineJob();
     }
   });
 
-  it("goes stale when a fresh SceneGraph arrives", async () => {
-    withFinishedBake();
-    fetchSpy.mockResolvedValue(
-      new Response(JSON.stringify(fixtureScene()), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
-    await useEditorStore.getState().generate();
-    expect(useEditorStore.getState().scene.status).toBe("ready");
-    expect(useEditorStore.getState().bake.stale).toBe(true);
-  });
-
-  it("does not invalidate a bake that is still running", () => {
-    useEditorStore.setState({ bake: bakeStarted("job-9") });
+  it("does not invalidate a bake that is still exporting", () => {
+    useEditorStore.setState({ bake: { ...initialBakeState, phase: "exporting" } });
     useEditorStore.getState().setParam("plate_mm", 256);
     const bake = useEditorStore.getState().bake;
-    expect(bake.phase).toBe("queued");
+    expect(bake.phase).toBe("exporting");
     expect(bake.stale).toBe(false);
+    useEditorStore.getState().cancelEngineJob();
   });
 
   it("is cleared by the next bake", async () => {
     withFinishedBake();
-    useEditorStore.getState().setParam("plate_mm", 256);
-    expect(useEditorStore.getState().bake.stale).toBe(true);
-
-    fetchSpy.mockResolvedValue(
-      new Response(JSON.stringify({ job_id: "job-2" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
+    // A fresh, un-stale engine result already sits in the store (as it would
+    // once the debounced job actually landed), so `requestBake()` reuses it
+    // rather than running a real WASM bake here.
     await useEditorStore.getState().requestBake();
-    useEditorStore.getState().stopBakePolling();
-    expect(useEditorStore.getState().bake.stale).toBe(false);
-    expect(useEditorStore.getState().bake.jobId).toBe("job-2");
+    const state = useEditorStore.getState();
+    expect(state.bake.stale).toBe(false);
+    expect(state.bake.phase).toBe("done");
+    expect(state.bake.target).toBe("bambu-3mf"); // the contract default export_target
   });
 });
 
@@ -716,13 +752,15 @@ describe("the active preset chip", () => {
   });
 
   it("stays dark when the generate at the initial location fails", async () => {
-    fetchSpy.mockResolvedValue(
-      new Response(JSON.stringify({ detail: "Overpass timed out" }), { status: 504 }),
-    );
+    // The earlier "fetches an Overpass mirror..." test cached a SUCCESS for
+    // this exact location's query text; drop it so this test really exercises
+    // the mocked rejection rather than serving that cached response.
+    resetOverpassCacheForTest();
+    fetchSpy.mockRejectedValue(new TypeError("Failed to fetch"));
     await useEditorStore.getState().generate();
     expect(useEditorStore.getState().scene.status).toBe("error");
     expect(activePresetId(useEditorStore.getState())).toBeNull();
-  });
+  }, 15_000);
 
   it("goes dark again when the user drops a pin of their own", () => {
     useEditorStore.getState().applyPreset({
@@ -761,33 +799,21 @@ describe("bake gating", () => {
     expect(bake.error).toContain("enlarge the radius");
   });
 
-  it("POSTs {scene_request, print_params} for a good scene", async () => {
+  it("exports through the fresh engine result for a good scene, never a network call", async () => {
+    const graph = fixtureScene();
+    const result = fakeEngineResult();
     useEditorStore.setState({
-      scene: {
-        status: "ready",
-        graph: fixtureScene(),
-        message: null,
-        request: locationToRequest(INITIAL_LOCATION),
-        stale: false,
-      },
+      scene: { status: "ready", graph, message: null, request: locationToRequest(INITIAL_LOCATION), stale: false },
+      engine: { status: "ready", result, error: null, stale: false },
     });
-    fetchSpy.mockResolvedValue(
-      new Response(JSON.stringify({ job_id: "job-1" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
 
     await useEditorStore.getState().requestBake();
-    useEditorStore.getState().stopBakePolling();
 
-    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(url).toMatch(/\/bake$/);
-    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
-    expect(Object.keys(body).sort()).toEqual(["print_params", "scene_request"]);
-    expect(body.scene_request).toEqual(locationToRequest(INITIAL_LOCATION));
-    expect(body.print_params).toEqual(DEFAULT_PRINT_PARAMS);
-    expect(useEditorStore.getState().bake.jobId).toBe("job-1");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const state = useEditorStore.getState();
+    expect(state.bake.phase).toBe("done");
+    expect(state.bake.target).toBe("bambu-3mf");
+    expect(state.bake.files.length).toBeGreaterThan(0);
   });
 });
 
@@ -796,6 +822,10 @@ describe("bake gating", () => {
 // ==========================================================================
 
 describe("hero buildings", () => {
+  afterEach(() => {
+    useEditorStore.getState().cancelEngineJob();
+  });
+
   it("toggles an id on and off, through setParam and never the network", async () => {
     const store = useEditorStore.getState();
     store.toggleHero("w7");
@@ -839,9 +869,7 @@ describe("hero buildings", () => {
   });
 
   it("retires a finished bake, because a hero changes the geometry", () => {
-    useEditorStore.setState({
-      bake: { ...initialBakeState, phase: "done", jobId: "job-1", stale: false },
-    });
+    withFinishedBake();
     useEditorStore.getState().toggleHero("w3");
     expect(useEditorStore.getState().bake.stale).toBe(true);
   });
@@ -854,6 +882,7 @@ describe("setNested", () => {
     expect(arrow?.enabled).toBe(true);
     expect(arrow?.corner).toBe(DEFAULT_PRINT_PARAMS.north_arrow?.corner);
     expect(arrow?.size_mm).toBe(DEFAULT_PRINT_PARAMS.north_arrow?.size_mm);
+    useEditorStore.getState().cancelEngineJob();
   });
 
   it("writes a NEW object every time, so a memo can see the change", () => {
@@ -863,6 +892,7 @@ describe("setNested", () => {
     expect(after).not.toBe(before);
     // ...and the contract default was not mutated in place.
     expect(DEFAULT_PRINT_PARAMS.scale_bar?.enabled).toBe(false);
+    useEditorStore.getState().cancelEngineJob();
   });
 
   it("never makes a server call", async () => {
@@ -876,6 +906,7 @@ describe("setNested", () => {
     expect(useEditorStore.getState().params.part_colors?.base).toBe(
       DEFAULT_PRINT_PARAMS.part_colors?.base,
     );
+    useEditorStore.getState().cancelEngineJob();
   });
 });
 
@@ -947,6 +978,7 @@ describe("the params object the store hands out", () => {
         before[key],
       );
     }
+    useEditorStore.getState().cancelEngineJob();
   });
 
   it("survives a nested write after a reset, i.e. nothing frozen leaked in", () => {
@@ -959,6 +991,7 @@ describe("the params object the store hands out", () => {
     expect(useEditorStore.getState().params.part_colors?.water).toBe("#010203");
     // The constant itself is untouched.
     expect(DEFAULT_PRINT_PARAMS.part_colors?.water).toBe("#2F7FC1");
+    useEditorStore.getState().cancelEngineJob();
   });
 
   it("keeps the frozen constant frozen, so a stray write cannot corrupt it", () => {
@@ -987,6 +1020,10 @@ describe("a shared link", () => {
 
   beforeEach(() => {
     useEditorStore.setState({ shareNotice: null });
+  });
+
+  afterEach(() => {
+    useEditorStore.getState().cancelEngineJob();
   });
 
   it("restores the location and every parameter it names", () => {
@@ -1022,15 +1059,7 @@ describe("a shared link", () => {
   });
 
   it("retires a finished bake, like every other parameter change", () => {
-    useEditorStore.setState({
-      bake: reduceBake(bakeStarted("job-1"), {
-        job_id: "job-1",
-        status: "done",
-        files: { "3mf": "http://x/a.3mf", stl: "http://x/a.stl" },
-        stats: null,
-        warnings: [],
-      }),
-    });
+    withFinishedBake();
     useEditorStore.getState().loadShared(`?s=${shared()}`);
     expect(useEditorStore.getState().bake.stale).toBe(true);
     expect(bakeDownloadLinks(useEditorStore.getState().bake)).toEqual([]);
@@ -1100,5 +1129,30 @@ describe("a shared link", () => {
     expect(locationToRequest(restored.location)).toEqual(
       locationToRequest(current.location),
     );
+  });
+});
+
+// ==========================================================================
+// The engine job debounce (E4): scheduled, cancellable, coalesced
+// ==========================================================================
+
+describe("the engine job debounce", () => {
+  afterEach(() => {
+    useEditorStore.getState().cancelEngineJob();
+  });
+
+  it("cancelEngineJob drops a pending job without throwing", () => {
+    withFinishedBake();
+    useEditorStore.getState().setParam("plate_mm", 220);
+    expect(() => useEditorStore.getState().cancelEngineJob()).not.toThrow();
+    // Calling it again (nothing pending) is still a no-op, not an error.
+    expect(() => useEditorStore.getState().cancelEngineJob()).not.toThrow();
+  });
+
+  it("a PrintParams write with no scene yet schedules nothing observable and never throws", async () => {
+    useEditorStore.getState().setParam("plate_mm", 220);
+    await Promise.resolve();
+    expect(useEditorStore.getState().engine.status).toBe("idle");
+    useEditorStore.getState().cancelEngineJob();
   });
 });

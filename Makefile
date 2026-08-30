@@ -13,7 +13,8 @@ help:
 	@echo "  down              stop both services"
 	@echo "  test              pytest (services/bake) + vitest (apps/web)"
 	@echo "  gate              G4/G7: no-skip guard + pytest + lint + tsc + vitest + next build +"
-	@echo "                    playwright (stack up/down); fails on ANY skipped or xfailed test"
+	@echo "                    browser-engine bake:cli -> validate + playwright (stack up/down);"
+	@echo "                    fails on ANY skipped or xfailed test"
 	@echo "  gate-v2           the v2 bake-side gates end to end: G8, G5 at plate 180 and 256,"
 	@echo "                    G6, COLOR=parts TEXT=all, and make validate on every .3mf and .stl"
 	@echo "  bake-fixture      bake the Chicago preset to artifacts/chicago.3mf"
@@ -179,9 +180,9 @@ gate:
 		curl -sf -o /dev/null --max-time 5 "http://localhost:$$1/health" && return 0; \
 		return 1; \
 	}; \
-	echo "== gate [0/7] stopping any running stack (the gate owns the lifecycle) =="; \
+	echo "== gate [0/8] stopping any running stack (the gate owns the lifecycle) =="; \
 	$(MAKE) down > artifacts/logs/down.log 2>&1 || true; \
-	echo "== gate [1/7] no-skip guard (static, every vitest + playwright source) =="; \
+	echo "== gate [1/8] no-skip guard (static, every vitest + playwright source) =="; \
 	specs=$$(find apps/web -type d \( -name node_modules -o -name .next \) -prune -o \
 		-type f \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.spec.ts' -o -name '*.spec.tsx' \) -print); \
 	if [ -z "$$specs" ]; then \
@@ -202,7 +203,7 @@ gate:
 			echo "no test.skip / .only / .todo / .fixme / .fail / xit marker anywhere"; \
 		fi; \
 	fi; \
-	echo "== gate [2/7] pytest (services/bake), and it must skip nothing =="; \
+	echo "== gate [2/8] pytest (services/bake), and it must skip nothing =="; \
 	( cd services/bake && uv run pytest -q -rs ) > artifacts/logs/pytest.log 2>&1; \
 	pyrc=$$?; \
 	cat artifacts/logs/pytest.log; \
@@ -212,7 +213,7 @@ gate:
 		grep -E '^SKIPPED|^XFAIL|[0-9]+ (skipped|xfailed|xpassed)' artifacts/logs/pytest.log >&2 || true; \
 		rc=1; \
 	fi; \
-	echo "== gate [3/7] lint + typecheck + vitest + next build (apps/web) =="; \
+	echo "== gate [3/8] lint + typecheck + vitest + next build (apps/web) =="; \
 	( cd apps/web && npm run lint ) || { echo "gate: eslint FAILED" >&2; rc=1; }; \
 	( cd apps/web && npm run typecheck ) || { echo "gate: tsc --noEmit FAILED" >&2; rc=1; }; \
 	( cd apps/web && npm test ) > artifacts/logs/vitest.log 2>&1; \
@@ -224,14 +225,18 @@ gate:
 		grep -E '[0-9]+ (skipped|todo)' artifacts/logs/vitest.log >&2 || true; \
 		rc=1; \
 	fi; \
+	rm -rf apps/web/.next; \
 	( cd apps/web && npm run build ) || { echo "gate: next build FAILED" >&2; rc=1; }; \
-	if [ $$rc -ne 0 ]; then \
+	prerc=$$rc; \
+	echo "== gate [4/8] browser engine: bake:cli (Chicago fixture) -> make validate =="; \
+	sh scripts/gate-web-engine.sh "$(MAKE)" || rc=1; \
+	if [ $$prerc -ne 0 ]; then \
 		echo "gate: skipping the Playwright suite after an earlier failure" >&2; \
 	else \
-		echo "== gate [4/7] playwright chromium =="; \
+		echo "== gate [5/8] playwright chromium =="; \
 		if ( cd apps/web && node -e "const{chromium}=require('@playwright/test');if(!require('fs').existsSync(chromium.executablePath()))process.exit(1)" ) 2>/dev/null; then \
 			echo "chromium is installed"; \
-			echo "== gate [5/7] make up + the Playwright suite =="; \
+			echo "== gate [6/8] make up + the Playwright suite =="; \
 			rm -f artifacts/e2e/results.json; \
 			if FRAMECRAFT_OFFLINE= $(MAKE) up > artifacts/logs/up.log 2>&1; then \
 				( cd apps/web && npm run test:e2e ) || { echo "gate: the Playwright suite FAILED" >&2; rc=1; }; \
@@ -242,7 +247,7 @@ gate:
 				tail -20 artifacts/logs/up.log >&2 || true; \
 				rc=1; \
 			fi; \
-			echo "== gate [6/7] teardown (always attempted, and checked) =="; \
+			echo "== gate [7/8] teardown (always attempted, and checked) =="; \
 			if $(MAKE) down > artifacts/logs/down.log 2>&1; then \
 				echo "stack stopped"; \
 			else \
@@ -259,7 +264,7 @@ gate:
 				echo "      stop the survivor(s) before re-running (netstat -ano | grep LISTENING)" >&2; \
 				rc=1; \
 			fi; \
-			echo "== gate [7/7] fixtures/ is clean (the e2e pruned what it cached) =="; \
+			echo "== gate [8/8] fixtures/ is clean (the e2e pruned what it cached) =="; \
 			if command -v git >/dev/null 2>&1; then \
 				stray=$$(git status --porcelain -- fixtures/ 2>/dev/null | cut -c4- | tr -d '"' \
 					| grep -E '(^|/)[0-9a-f]{40}\.json$$' || true); \

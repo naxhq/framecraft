@@ -11,6 +11,20 @@ Data: OpenStreetMap only (Overpass + OSM raster tiles). Attribution
 metadata and a `CREDITS.txt` next to every export. Google/Apple/Bing sources are
 forbidden by design and by review.
 
+**v3 note (this section still describes the pre-v3 architecture; a full
+rewrite is phase 8's work):** since v3's E4 phase, `apps/web` is the whole
+runtime path -- it never calls `services/bake` at all. Ingest (Overpass) and
+the bake (manifold3d) both run in the browser, off the main thread in a Web
+Worker when one is available (`apps/web/lib/engine/{worker,client,protocol}.ts`),
+with an in-page fallback when it is not. `services/bake` is now the REFERENCE
+implementation and the CLI printability validator only: `make gate`'s browser-
+engine step runs `apps/web`'s own `npm run bake:cli` against the committed
+Chicago fixture and judges the result with `services/bake`'s
+`python -m app.cli validate`, exactly as a developer would with any other
+`.3mf`. Every `/scene`/`/bake`/`/presets` reference below describes the
+service's OWN CLI-equivalent behaviour and the reference bake, not anything
+the deployed web app calls over HTTP.
+
 ## 1. Setup
 
 Prerequisites (native run, any OS):
@@ -61,9 +75,16 @@ presets keep working from the committed fixtures - the test suites set this).
 
 Ports: web `localhost:3000`; bake API `localhost:8000` with `GET /health`,
 `GET /presets`, `POST /scene`, `POST /bake`, `GET /bake/{job_id}`,
-`GET /files/{name}`. OpenAPI docs at `localhost:8000/docs`.
+`GET /files/{name}`. OpenAPI docs at `localhost:8000/docs`. **Since v3, the
+web app on :3000 never calls any of these** (see the v3 note above); :8000
+still answers them for the reference CLI and for anyone comparing the two
+pipelines by hand.
 
 ## 3. Architecture
+
+**Since v3 this section describes `services/bake`, the REFERENCE pipeline and
+CLI validator, not what the deployed app runs (see the v3 note above); a full
+rewrite is phase 8's work.**
 
 The browser (Next.js 15, App Router, react-three-fiber, MapLibre, zustand)
 posts a `SceneRequest` (lat, lon, radius, rotation, optional preset) to the

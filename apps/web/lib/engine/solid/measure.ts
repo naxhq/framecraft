@@ -1,0 +1,320 @@
+/**
+ * Measuring the finished solid: minimum wall, bounds, triangles.
+ *
+ * The minimum wall is measured by MORPHOLOGICAL OPENING, not by a distance
+ * field and not by the hydraulic diameter the repair uses to decide a
+ * dilation. An opening at radius `w / 2` erases every part of a region narrower
+ * than `w`; if what it erases is under one per cent of the area, nothing of
+ * consequence in that slice is thinner than `w`. Binary searching the largest
+ * such `w` is therefore a direct answer to "how thick is this thing", which is
+ * what 04 stage 4's `min_wall` row asks and what the reference implementation
+ * measures with GEOS' maximum inscribed circle.
+ *
+ * The units are print millimetres throughout, and the measurement runs on the
+ * assembled model, so what is reported is the narrowest wall the printer will
+ * actually be asked to lay down.
+ */
+
+import type { BakeContext } from "./context";
+import { MIN_WALL_KEEP_FACTOR } from "./repair";
+import type { CrossSection, Manifold } from "./manifold";
+import { Arena, ROUND } from "./manifold";
+import type { RegionMesh } from "../types";
+
+/** Fraction of a slice's area an opening may remove and still count as "fits". */
+export const OPENING_KEEP_FRACTION = 0.99;
+
+/** Resolution of the binary search, print mm. One fortieth of a 0.4 nozzle. */
+export const OPENING_RESOLUTION_MM = 0.01;
+
+/**
+ * Segments per full circle in the opening's round joins.
+ *
+ * 64 for a REPORTED measurement and 16 for the repair's internal one. The
+ * difference is not cosmetic: a 16-gon disc is 2 % narrower across its flats
+ * than the circle it stands for, and 2 % of a 0.8 mm wall is exactly the gap
+ * between "0.795 mm, fails" and "0.801 mm, passes". A coarse probe inside the
+ * repair only ever widens a wing slightly more than it had to, which is the
+ * harmless direction; a coarse probe in the gate reports a number that is
+ * wrong.
+ */
+export const OPENING_SEGMENTS = 64;
+export const REPAIR_OPENING_SEGMENTS = 16;
+
+/**
+ * Ceiling of the whole-slice opening search, as a multiple of the minimum wall.
+ */
+export const OPENING_BRACKET = 1.5;
+
+/**
+ * Vertex simplification applied to a slice before it is measured, print mm.
+ *
+ * A slice through the assembled Chicago model carries ~40 000 vertices, most of
+ * them collinear pairs left by the union of two coplanar road ribbons. Removing
+ * them costs one pass and takes the measurement from 13 s to under 3 s; a
+ * 2 micrometre boundary move cannot change a reading whose resolution is
+ * 10 micrometres.
+ */
+export const SLICE_SIMPLIFY_MM = 0.002;
+
+/**
+ * The look-ahead of the "is this a wall or a lip?" test, as a fraction of the
+ * nozzle (`checks.WALL_PERSIST_PER_NOZZLE`).
+ *
+ * 0.625 nozzles is the classic 0.25 mm layer at a 0.4 mm nozzle. A region that
+ * does not survive one printed layer upward is not a wall: it is the top of a
+ * ridge, a roof, or the tip of a cone, and measuring its width says nothing
+ * about what the printer has to do. Without this test the narrowest thing in
+ * the Chicago model reads as 0.010 mm - a 0.1 mm tall ridge of base between two
+ * grooves, which prints as a bump on a solid surface, and which the reference
+ * validator does not measure either.
+ */
+export const WALL_PERSIST_PER_NOZZLE = 0.625;
+
+/** Fraction of a region that must survive the look-ahead to count as a wall. */
+export const WALL_PERSIST_RATIO = 0.7;
+
+export interface OpeningOptions {
+  keepFraction?: number;
+  resolutionMm?: number;
+  segments?: number;
+}
+
+/**
+ * The largest `w` for which opening `section` by `w` keeps at least
+ * `keepFraction` of its area, in print millimetres.
+ *
+ * Returns 0 when even the smallest probe removes more than the tolerance, which
+ * means the section is essentially all thin.
+ */
+export function openingWidthMm(
+  section: CrossSection,
+  maxMm: number,
+  options: OpeningOptions = {},
+): number {
+  const resolutionMm = options.resolutionMm ?? OPENING_RESOLUTION_MM;
+  const area = section.area();
+  if (!(area > 0)) return 0;
+  const survives = (width: number): boolean =>
+    survivesOpening(section, width, area, options);
+  if (!survives(resolutionMm)) return 0;
+  let lo = resolutionMm;
+  let hi = maxMm;
+  if (survives(hi)) return hi;
+  while (hi - lo > resolutionMm) {
+    const mid = (lo + hi) / 2;
+    if (survives(mid)) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * The width of the widest disc that fits inside `section`, print mm.
+ *
+ * This is the reference validator's own measure (`thicken.inscribed_width`,
+ * twice GEOS' maximum inscribed circle) expressed as an erosion, which is what
+ * Clipper2 can answer: a disc of `w` fits exactly when `offset(-w / 2)` leaves
+ * something behind. It is the right question for a REGION - "is there anywhere
+ * in this island the nozzle can lay a bead" - and the area-ratio opening above
+ * is the right question for a whole slice. Using the area rule on a single
+ * region bottoms out at zero the moment the region has a thin tail worth more
+ * than a per cent of its area, which says nothing about the region's width.
+ */
+export function inscribedWidthMm(
+  section: CrossSection,
+  maxMm: number,
+  resolutionMm: number = OPENING_RESOLUTION_MM,
+): number {
+  const fits = (width: number): boolean => {
+    if (width <= 0) return true;
+    const eroded = section.offset(-width / 2, ROUND, 2, OPENING_SEGMENTS);
+    const alive = !eroded.isEmpty();
+    eroded.delete();
+    return alive;
+  };
+  if (!fits(resolutionMm)) return 0;
+  let lo = resolutionMm;
+  let hi = maxMm;
+  if (fits(hi)) return hi;
+  while (hi - lo > resolutionMm) {
+    const mid = (lo + hi) / 2;
+    if (fits(mid)) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * Does opening `section` by `width` keep enough of its area?
+ *
+ * Exposed on its own because the answer is worth having without the search
+ * around it: measuring N slices only needs the SMALLEST width, so a slice that
+ * survives the best width found so far cannot be the narrowest and is skipped
+ * after this one question instead of being searched from scratch. On the
+ * Chicago plate that is the difference between ~200 offsets and ~40.
+ */
+export function survivesOpening(
+  section: CrossSection,
+  width: number,
+  area: number = section.area(),
+  options: OpeningOptions = {},
+): boolean {
+  if (width <= 0) return true;
+  if (!(area > 0)) return false;
+  const keepFraction = options.keepFraction ?? OPENING_KEEP_FRACTION;
+  const segments = options.segments ?? OPENING_SEGMENTS;
+  const arena = new Arena();
+  try {
+    const radius = width / 2;
+    const eroded = arena.keep(section.offset(-radius, ROUND, 2, segments));
+    if (eroded.isEmpty()) return false;
+    const opened = arena.keep(eroded.offset(radius, ROUND, 2, segments));
+    return opened.area() >= keepFraction * area;
+  } finally {
+    arena.dispose();
+  }
+}
+
+/**
+ * Z heights the min-wall probe samples, print mm.
+ *
+ * Every band where the model changes character gets a slice: the middle of the
+ * base, the floor and the mouth of the deepest recess, just under and just over
+ * the base top, the frame lip, and four evenly spaced heights through the
+ * buildings. A wall that is thin only between two of these is thin over a
+ * vanishing height and is not what the check is for.
+ */
+export function sliceHeights(ctx: BakeContext, topMm: number): number[] {
+  const baseTop = ctx.baseTopMm;
+  const eps = 0.05;
+  const out = new Set<number>([
+    eps,
+    baseTop / 2,
+    baseTop - eps,
+    baseTop + eps,
+  ]);
+  const params = ctx.params;
+  const regions = params.regions;
+  for (const spec of [regions?.roads, regions?.water, regions?.parks, regions?.rail]) {
+    if (spec === undefined) continue;
+    const proud = spec.proud_mm ?? 0;
+    const depth = spec.depth_mm ?? 0;
+    out.add(Math.max(eps, baseTop + proud - depth / 2));
+    if (proud < 0) out.add(Math.max(eps, baseTop + proud / 2));
+  }
+  if (params.frame) {
+    out.add(baseTop + 1.0);
+  }
+  const span = topMm - baseTop;
+  if (span > 0.5) {
+    for (const t of [0.15, 0.35, 0.6, 0.85]) {
+      out.add(baseTop + span * t);
+    }
+  }
+  return [...out].filter((z) => z > 0 && z < topMm).sort((a, b) => a - b);
+}
+
+export interface MinWallReport {
+  measuredMm: number | null;
+  /** Z of the slice that produced the narrowest measurement. */
+  atZMm: number | null;
+  slices: number;
+}
+
+/**
+ * The narrowest wall in the assembled model, print mm.
+ *
+ * `null` when the solid has no area at any sampled height, which only happens
+ * for an empty scene.
+ */
+export function measureMinWall(ctx: BakeContext, solid: Manifold): MinWallReport {
+  const bbox = solid.boundingBox();
+  const heights = sliceHeights(ctx, bbox.max[2]);
+  let narrowest: number | null = null;
+  let atZ: number | null = null;
+  let sampled = 0;
+  // Probed at HALF a wall, so "not thin" means a disc of a full minimum wall
+  // fits - the same factor the repair keeps a region on
+  // (`repair.MIN_WALL_KEEP_FACTOR`), so the gate and the repair cannot disagree
+  // about which regions are worth measuring.
+  const probe = MIN_WALL_KEEP_FACTOR * ctx.thresholdsMm.minWall;
+  const persist = WALL_PERSIST_PER_NOZZLE * ctx.params.nozzle_mm;
+  for (const z of heights) {
+    const section = solid.slice(z);
+    const lean = section.simplify(SLICE_SIMPLIFY_MM);
+    const above = solid.slice(z + persist);
+    const components: CrossSection[] = [];
+    try {
+      const area = lean.area();
+      if (lean.isEmpty() || area <= 0) continue;
+      sampled += 1;
+      // PER CONNECTED REGION, not per slice. A whole-slice opening answers
+      // "how thick is this slice", and one narrow island among the 1200
+      // regions of a Chicago slice is under a per cent of its area, so a
+      // 99 % rule cannot see it - the reference validator measures each
+      // region's inscribed circle and does (`checks.min_wall`). The cheap
+      // form of the same question is one erosion per region: what survives
+      // `offset(-0.45 * min_wall)` is at least 0.9 of a wall wide somewhere,
+      // and only what does not is worth searching.
+      components.push(...lean.decompose());
+      for (const piece of components) {
+        const eroded = piece.offset(-probe, ROUND, 2, OPENING_SEGMENTS);
+        const thin = eroded.isEmpty();
+        eroded.delete();
+        if (!thin) continue;
+        // A wall, or the top of a ridge? Only what survives one printed layer
+        // upward is judged (`WALL_PERSIST_PER_NOZZLE`).
+        if (!above.isEmpty()) {
+          const kept = piece.intersect(above);
+          const survives = kept.area() >= WALL_PERSIST_RATIO * piece.area();
+          kept.delete();
+          if (!survives) continue;
+        }
+        const width = inscribedWidthMm(piece, ctx.thresholdsMm.minWall);
+        if (narrowest === null || width < narrowest) {
+          narrowest = width;
+          atZ = z;
+        }
+      }
+      // Nothing thin in this slice: every region in it holds a disc of a full
+      // minimum wall. The measurement SATURATES there rather than searching
+      // upward - the only question it exists to answer is whether the model
+      // clears the nozzle, and every extra millimetre of range costs another
+      // erosion of a 40 000-vertex slice.
+      if (narrowest === null) {
+        narrowest = ctx.thresholdsMm.minWall;
+        atZ = z;
+      }
+    } finally {
+      for (const piece of components) piece.delete();
+      section.delete();
+      lean.delete();
+      above.delete();
+    }
+  }
+  return { measuredMm: narrowest, atZMm: atZ, slices: sampled };
+}
+
+/** Total triangles across every region. */
+export function triangleCount(regions: readonly RegionMesh[]): number {
+  let total = 0;
+  for (const region of regions) total += region.indices.length / 3;
+  return total;
+}
+
+/** Axis-aligned bounds over every region, or null when there are none. */
+export function regionBounds(
+  regions: readonly RegionMesh[],
+): { min: [number, number, number]; max: [number, number, number] } | null {
+  if (regions.length === 0) return null;
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  for (const region of regions) {
+    for (let axis = 0; axis < 3; axis += 1) {
+      min[axis] = Math.min(min[axis], region.bbox.min[axis]);
+      max[axis] = Math.max(max[axis], region.bbox.max[axis]);
+    }
+  }
+  return { min, max };
+}

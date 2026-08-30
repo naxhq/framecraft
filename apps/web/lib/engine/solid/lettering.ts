@@ -1,0 +1,641 @@
+/**
+ * Frame lettering: engrave, emboss and inlay.
+ *
+ * Every size, anchor, rotation and refusal comes from
+ * `transform.lettering_layout`, the shared function the preview draws from and
+ * the reference bake cuts from. This module turns those numbers into solids and
+ * decides nothing about where anything goes. The glyph outlines are the
+ * committed assets in `lib/fonts/*.glyphs.json`, read through
+ * `lib/previewText.ts`'s `glyphAreas`, so the letterforms the editor draws and
+ * the letterforms the engine cuts are the same points.
+ *
+ * Three differences from `services/bake/app/geom/lettering.py`, all recorded in
+ * DECISIONS `[V3-P2-E2]`:
+ *
+ * * the dilation is a real Clipper2 offset with ROUND joins (the reference uses
+ *   shapely for the same reason: a mitre offset puts a spike on every vertex of
+ *   a curve and turns a smooth counter into a jagged one);
+ * * `inlay` is a v3 mode the reference does not have: it cuts the same pocket
+ *   an engraving would and fills it with a solid in the `lettering` region, so
+ *   the letters print in their own filament;
+ * * `edge: "underside"` is a v3 value `transform.edge_axis` does not accept, so
+ *   underside lines are laid out here with the underside mark's own placement
+ *   rule (mirrored, so they read when the plate is turned over) instead of
+ *   being pushed through the frame-edge path.
+ */
+
+import type { Engraving, PrintParams } from "../../contracts";
+import { loadGlyphFace, loadedGlyphFace, type GlyphFace } from "../../fontGlyphs";
+import type { PreviewArea } from "../../preview";
+import { glyphAreas, placeArea } from "../../previewText";
+import type { TokenContext } from "../../tokens";
+import { expand_tokens } from "../../tokens";
+import * as T from "../../transform";
+import type { AuditFinding, ResolvedLine } from "../types";
+import { placementFor, type SurfaceName } from "./areas";
+import {
+  CUTTER_OVERSHOOT_MM,
+  PART_OVERLAP_MM,
+  addFinding,
+  finding,
+  type BakeContext,
+} from "./context";
+import { lipKeepSection, lipTopMm } from "./frame";
+import type { Contour, CrossSection, Manifold } from "./manifold";
+import {
+  ROUND,
+  contourFromFlat,
+  extrudeSection,
+  intersectSection,
+  sectionOf,
+} from "./manifold";
+import { openingWidthMm } from "./measure";
+import { MIN_WALL_PROBE_FACTOR, widenThinParts } from "./repair";
+
+/** Segments per full circle in a glyph dilation. */
+export const GLYPH_JOIN_SEGMENTS = 16;
+
+/** Fraction of the stroke target the finished groove must still measure. */
+export const STROKE_FAIL_FACTOR = 0.9;
+
+/**
+ * Fraction of a text piece's area the opening must still cover for a width to
+ * count as "the stroke".
+ *
+ * Half, and not the 99 % the structural min-wall probe uses, because a letter
+ * is not a wall: every glyph has tapering terminals and a join or two that are
+ * narrower than its stem, and a 99 % rule measures those instead of the stroke
+ * the nozzle has to lay. It is the same 0.5 the generated metrics were built
+ * with (`gen_font_assets.py`'s `stem_area_ratio`), so this measurement of a
+ * finished groove and `transform.text_stroke_mm`'s prediction from the metrics
+ * agree: 0.426 mm against 0.427 mm for "Chicago" at 5 mm in Inter.
+ */
+export const STROKE_AREA_RATIO = 0.5;
+
+/** Line pitch for stacked underside lines, as a multiple of the fitted size. */
+export const UNDERSIDE_LINE_PITCH = 1.6;
+
+export interface LetteringGeometry {
+  /** Cutters for the frame lip: engraved text only. */
+  frameCut: Manifold[];
+  /**
+   * Pockets an inlay fills, on the lip and on the underside.
+   *
+   * Kept apart from the plain cutters because the single-object model does not
+   * want them: an inlay is flush with the surface, so a pocket cut and then
+   * filled by its own solid is the surface it started as. The REGIONS need both
+   * (the frame keeps the hole, the lettering region keeps the plug); the merged
+   * solid needs neither.
+   */
+  inlayCut: Manifold[];
+  /** Solids that join the frame region: embossed text. */
+  frameAdd: Manifold[];
+  /** Cutters for the base, from below: underside text and inlay pockets. */
+  baseCut: Manifold[];
+  /** Solids of the `lettering` region: the inlays. */
+  inlay: Manifold[];
+  /** The layout the ornaments are cut from, so it is computed once. */
+  layout: T.LetteringLayout;
+}
+
+/** Faces a parameter set will ask for, including the underside lines. */
+export function facesFor(params: PrintParams): string[] {
+  const out = new Set<string>();
+  for (const engraving of params.engravings ?? []) {
+    if (engraving.edge === "underside" || params.frame) {
+      out.add(engraving.font ?? T.ENGRAVING_DEFAULT_FACE);
+    }
+  }
+  if (params.frame && params.scale_bar?.enabled) out.add(T.SCALE_BAR_FACE);
+  if (params.underside_mark?.enabled) out.add(T.UNDERSIDE_MARK_FACE);
+  return [...out];
+}
+
+/** Load every face a parameter set needs, once. */
+export async function loadFaces(params: PrintParams): Promise<void> {
+  await Promise.all(facesFor(params).map((face) => loadGlyphFace(face)));
+}
+
+// ---------------------------------------------------------------------------
+// Glyphs -> sections
+// ---------------------------------------------------------------------------
+
+/** A placed `PreviewArea` list as manifold contours. */
+export function contoursFromAreas(areas: readonly PreviewArea[]): Contour[] {
+  const out: Contour[] = [];
+  for (const area of areas) {
+    const outer = contourFromFlat(area.outer, true);
+    if (outer === null) continue;
+    out.push(outer);
+    for (const hole of area.holes) {
+      const inner = contourFromFlat(hole, false);
+      if (inner !== null) out.push(inner);
+    }
+  }
+  return out;
+}
+
+/** Counters (clockwise contours) in a section. */
+export function holeCount(section: CrossSection): number {
+  let holes = 0;
+  for (const ring of section.toPolygons()) {
+    let twice = 0;
+    for (let i = 0; i < ring.length; i += 1) {
+      const a = ring[i];
+      const b = ring[(i + 1) % ring.length];
+      twice += a[0] * b[1] - b[0] * a[1];
+    }
+    if (twice < 0) holes += 1;
+  }
+  return holes;
+}
+
+export interface RepairedText {
+  section: CrossSection;
+  /** Counters the dilation closed. Any at all refuses the piece. */
+  lostCounters: number;
+  /** Dominant stroke width of the finished shape, print mm. */
+  strokeMm: number;
+  /** A part of the piece that is under the target everywhere, if there is one. */
+  starvedParts: number;
+}
+
+/**
+ * 04 stage 1 applied to a piece of text, in print millimetres.
+ *
+ * Dilate to a full minimum wall (the layout already computed by how much),
+ * clip to where ink is allowed, then MEASURE what came out: a groove narrower
+ * than 0.9 of its target is what the Stage 4 lettering rule fails on, so it is
+ * refused here rather than shipped.
+ */
+export function repairText(
+  ctx: BakeContext,
+  areas: readonly PreviewArea[],
+  dilationMm: number,
+  targetMm: number,
+  keep: CrossSection | null,
+): RepairedText | null {
+  const contours = contoursFromAreas(areas);
+  const raw = sectionOf(ctx.wasm, ctx.arena, contours);
+  if (raw === null) return null;
+  const before = holeCount(raw);
+
+  let section = raw;
+  if (dilationMm > 0) {
+    const grown = raw.offset(dilationMm, ROUND, 2, GLYPH_JOIN_SEGMENTS);
+    if (grown.isEmpty()) {
+      grown.delete();
+      ctx.arena.drop(raw);
+      return null;
+    }
+    section = ctx.arena.keep(grown);
+    ctx.arena.drop(raw);
+  }
+
+  if (keep !== null) {
+    const clipped = intersectSection(ctx.arena, section, keep);
+    if (section !== clipped) ctx.arena.drop(section);
+    if (clipped === null) return null;
+    section = clipped;
+  }
+
+  // 04 stage 1 applied to the letterform: a terminal narrower than the target
+  // is brought up to it, exactly as a building's wing is. The target is the
+  // TEXT's (one nozzle for a groove, two for an emboss), not the structural
+  // minimum wall, or every engraving would come out as a fat smear.
+  const widened = widenThinParts(ctx, section, undefined, targetMm, keep);
+  if (widened !== section) {
+    ctx.arena.drop(section);
+    section = widened;
+  }
+
+  const strokeMm = openingWidthMm(section, 3 * targetMm, {
+    keepFraction: STROKE_AREA_RATIO,
+    resolutionMm: targetMm / 20,
+    segments: GLYPH_JOIN_SEGMENTS,
+  });
+  // A piece of the text that is under the target EVERYWHERE cannot be saved by
+  // a stroke measurement that half the glyph passes: it is a letter the nozzle
+  // would miss entirely. This is the reference implementation's own erosion
+  // probe (`thicken.MIN_WALL_PROBE_FACTOR`), applied per connected piece.
+  let starved = 0;
+  const pieces = ctx.arena.keepAll(section.decompose());
+  for (const piece of pieces) {
+    const eroded = piece.offset(-MIN_WALL_PROBE_FACTOR * targetMm, ROUND, 2, GLYPH_JOIN_SEGMENTS);
+    if (eroded.isEmpty()) starved += 1;
+    eroded.delete();
+  }
+  ctx.arena.dropAll(pieces);
+
+  return {
+    section,
+    lostCounters: Math.max(0, before - holeCount(section)),
+    strokeMm,
+    starvedParts: starved,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The whole thing
+// ---------------------------------------------------------------------------
+
+interface Piece {
+  id: string;
+  surface: string;
+  mode: "engrave" | "emboss" | "inlay";
+  areas: PreviewArea[];
+  fit: T.TextFit;
+  depthMm: number;
+  face: "top" | "bottom";
+}
+
+/** Split the engravings into the ones on the lip and the ones underneath. */
+function splitEngravings(params: PrintParams): {
+  edges: Engraving[];
+  underside: Engraving[];
+} {
+  const edges: Engraving[] = [];
+  const underside: Engraving[] = [];
+  for (const engraving of params.engravings ?? []) {
+    if (engraving.edge === "underside") underside.push(engraving);
+    else edges.push(engraving);
+  }
+  return { edges, underside };
+}
+
+/** How far below the base top the deepest surface region reaches, print mm. */
+function deepestRecessMm(ctx: BakeContext): number {
+  let depth = 0;
+  const layers: SurfaceName[] = ["water", "rail", "roads", "parks"];
+  for (const layer of layers) {
+    const placement = placementFor(ctx, layer);
+    depth = Math.max(depth, ctx.baseTopMm - placement.bottomMm);
+  }
+  return depth;
+}
+
+/** Thinnest base that can carry a pocket of `depthMm` cut from underneath. */
+function undersideFloorOk(ctx: BakeContext, depthMm: number): boolean {
+  return (
+    depthMm + T.HANGER_MIN_ROOF_MM + deepestRecessMm(ctx) <= ctx.params.base_thickness_mm + 1e-9
+  );
+}
+
+function resolved(
+  id: string,
+  fit: T.TextFit,
+  surface: string,
+  mode: "engrave" | "emboss" | "inlay",
+  status: "cuts" | "skipped",
+  depthMm: number,
+  reason?: string,
+): ResolvedLine {
+  const line: ResolvedLine = {
+    id,
+    text: fit.text,
+    surface,
+    mode,
+    status,
+    depthMm,
+    sizeMm: fit.size_mm,
+  };
+  if (reason !== undefined) line.reason = reason;
+  return line;
+}
+
+function skipFinding(title: string, detail: string): AuditFinding {
+  return finding("text-too-small", "warning", title, detail, "lettering");
+}
+
+const EDGE_LABEL: Record<string, string> = {
+  top: "Frame, top edge",
+  bottom: "Frame, bottom edge",
+  left: "Frame, left edge",
+  right: "Frame, right edge",
+  underside: "Underside",
+};
+
+/**
+ * Lay the underside lines out in a column, mirrored so they read from below.
+ *
+ * The pen origin is on the RIGHT of a mirrored block (`x -> -x + anchor`), so a
+ * block laid out from 0 to W spans `[anchor - W, anchor]` and `+W/2` centres
+ * it, exactly as `transform.underside_mark_layout` does it.
+ */
+function undersideColumn(
+  ctx: BakeContext,
+  fits: readonly T.TextFit[],
+  reservedMm: number,
+): T.Placement[] {
+  const pitches = fits.map((fit) => UNDERSIDE_LINE_PITCH * fit.size_mm);
+  let total = 0;
+  for (const pitch of pitches) total += pitch;
+  let cursor = reservedMm > 0 ? -reservedMm / 2 : total / 2;
+  const out: T.Placement[] = [];
+  for (let i = 0; i < fits.length; i += 1) {
+    const centre = cursor - pitches[i] / 2;
+    cursor -= pitches[i];
+    out.push({
+      anchor_x: fits[i].width_mm / 2 - fits[i].dilation_mm,
+      anchor_y: centre - (fits[i].ink_top_mm + fits[i].ink_bottom_mm) / 2,
+      rotation_deg: 0,
+      mirror_x: true,
+    });
+  }
+  void ctx;
+  return out;
+}
+
+/**
+ * Every engraving, as solids.
+ *
+ * Refusals never throw: each one becomes a `ResolvedLine` with status
+ * `"skipped"` carrying the reason, plus an `AuditFinding` the Issues badge can
+ * show. A caller that asked for six lines always gets six resolved lines back.
+ */
+export function buildLettering(
+  ctx: BakeContext,
+  tokens: TokenContext,
+  rotationDeg = 0,
+): LetteringGeometry {
+  const { params } = ctx;
+  const { edges, underside } = splitEngravings(params);
+  // The shared layout only knows the four frame edges, so it is given exactly
+  // those; the underside lines are laid out below with the mark's own rule.
+  const edgeParams: PrintParams = { ...params, engravings: edges };
+  const layout = T.lettering_layout(edgeParams, tokens, rotationDeg);
+  for (const warning of layout.warnings) ctx.warnings.push(warning);
+
+  const out: LetteringGeometry = {
+    frameCut: [],
+    inlayCut: [],
+    frameAdd: [],
+    baseCut: [],
+    inlay: [],
+    layout,
+  };
+
+  const keep = lipKeepSection(ctx);
+  const lipTop = lipTopMm(ctx);
+  const pieces: Piece[] = [];
+
+  for (const entry of layout.engravings) {
+    const source = edges[entry.index];
+    const face = source?.font ?? T.ENGRAVING_DEFAULT_FACE;
+    const mode = (entry.mode as "engrave" | "emboss" | "inlay") ?? "engrave";
+    const surface = EDGE_LABEL[entry.edge] ?? entry.edge;
+    const id = `engraving-${entry.index}`;
+    if (entry.fit.refused || entry.fit.text.trim() === "") {
+      ctx.resolvedText.push(
+        resolved(id, entry.fit, surface, mode, "skipped", entry.depth_mm, entry.fit.reason),
+      );
+      addFinding(
+        ctx,
+        skipFinding(`"${entry.fit.text || source?.text || ""}" was not cut`, entry.fit.reason),
+      );
+      continue;
+    }
+    const asset = loadedGlyphFace(face);
+    if (asset === null) {
+      ctx.resolvedText.push(
+        resolved(id, entry.fit, surface, mode, "skipped", entry.depth_mm, `the ${face} font is not loaded`),
+      );
+      continue;
+    }
+    pieces.push({
+      id,
+      surface,
+      mode,
+      areas: placedGlyphs(asset, entry.fit, entry.placement),
+      fit: entry.fit,
+      depthMm: entry.depth_mm,
+      face: "top",
+    });
+  }
+
+  // --- the underside lines ---------------------------------------------
+  const undersideFits: T.TextFit[] = [];
+  for (const engraving of underside) {
+    const face = engraving.font ?? T.ENGRAVING_DEFAULT_FACE;
+    const text = expand_tokens(engraving.text, tokens);
+    undersideFits.push(
+      T.fit_text(
+        face,
+        text,
+        engraving.size_mm ?? T.ENGRAVING_DEFAULT_SIZE_MM,
+        T.underside_mark_available_mm(params),
+        (engraving.size_mm ?? T.ENGRAVING_DEFAULT_SIZE_MM) * 2,
+        params,
+        "underside engraving",
+        engraving.mode ?? "engrave",
+      ),
+    );
+  }
+  const markLayout = layout.underside_mark;
+  const reserved =
+    markLayout.enabled && markLayout.fit !== null
+      ? UNDERSIDE_LINE_PITCH * markLayout.fit.size_mm
+      : 0;
+  const placements = undersideColumn(ctx, undersideFits, reserved);
+  for (let i = 0; i < underside.length; i += 1) {
+    const engraving = underside[i];
+    const fit = undersideFits[i];
+    const mode = (engraving.mode ?? "engrave") as "engrave" | "emboss" | "inlay";
+    const depth = engraving.depth_mm ?? T.ENGRAVING_DEFAULT_DEPTH_MM;
+    const id = `underside-${i}`;
+    const surface = EDGE_LABEL.underside;
+    let reason: string | null = null;
+    if (fit.refused || fit.text.trim() === "") reason = fit.reason;
+    else if (mode === "emboss") {
+      reason = "an embossed line on the underside would stop the plate sitting flat";
+    } else if (!undersideFloorOk(ctx, depth)) {
+      reason =
+        `a ${depth.toFixed(2)} mm pocket needs a base of at least ` +
+        `${(depth + T.HANGER_MIN_ROOF_MM + deepestRecessMm(ctx)).toFixed(2)} mm`;
+    }
+    if (reason !== null) {
+      ctx.resolvedText.push(resolved(id, fit, surface, mode, "skipped", depth, reason));
+      addFinding(ctx, skipFinding(`"${fit.text}" was not cut on the underside`, reason));
+      continue;
+    }
+    const asset = loadedGlyphFace(fit.face);
+    if (asset === null) {
+      ctx.resolvedText.push(
+        resolved(id, fit, surface, mode, "skipped", depth, `the ${fit.face} font is not loaded`),
+      );
+      continue;
+    }
+    pieces.push({
+      id,
+      surface,
+      mode,
+      areas: placedGlyphs(asset, fit, placements[i]),
+      fit,
+      depthMm: depth,
+      face: "bottom",
+    });
+  }
+
+  // --- repair, measure and cut -----------------------------------------
+  for (const piece of pieces) {
+    const target = T.text_stroke_target_mm(params, piece.mode === "emboss" ? "emboss" : "engrave");
+    const repaired = repairText(
+      ctx,
+      piece.areas,
+      piece.fit.dilation_mm,
+      target,
+      piece.face === "top" ? keep : null,
+    );
+    if (repaired === null) {
+      ctx.resolvedText.push(
+        resolved(piece.id, piece.fit, piece.surface, piece.mode, "skipped", piece.depthMm, "the glyphs came back empty"),
+      );
+      continue;
+    }
+    if (repaired.lostCounters > 0) {
+      const reason =
+        `widening it to a full minimum wall closed ${repaired.lostCounters} counter(s); ` +
+        `it needs about ${piece.fit.min_size_mm.toFixed(2)} mm`;
+      ctx.resolvedText.push(
+        resolved(piece.id, piece.fit, piece.surface, piece.mode, "skipped", piece.depthMm, reason),
+      );
+      addFinding(ctx, skipFinding(`"${piece.fit.text}" was not cut`, reason));
+      ctx.arena.drop(repaired.section);
+      continue;
+    }
+    if (repaired.strokeMm < STROKE_FAIL_FACTOR * target || repaired.starvedParts > 0) {
+      const reason =
+        repaired.starvedParts > 0
+          ? `${repaired.starvedParts} piece(s) of it are under ${target.toFixed(2)} mm wide ` +
+            `everywhere, so a ${params.nozzle_mm} mm nozzle would miss them`
+          : `its stroke measures ${repaired.strokeMm.toFixed(2)} mm against a ` +
+            `${target.toFixed(2)} mm target for a ${params.nozzle_mm} mm nozzle`;
+      ctx.resolvedText.push(
+        resolved(piece.id, piece.fit, piece.surface, piece.mode, "skipped", piece.depthMm, reason),
+      );
+      addFinding(ctx, skipFinding(`"${piece.fit.text}" was not cut`, reason));
+      ctx.arena.drop(repaired.section);
+      continue;
+    }
+
+    const cut = emitPiece(ctx, piece, repaired.section, lipTop);
+    if (!cut) {
+      ctx.resolvedText.push(
+        resolved(piece.id, piece.fit, piece.surface, piece.mode, "skipped", piece.depthMm, "the extrusion came back empty"),
+      );
+      ctx.arena.drop(repaired.section);
+      continue;
+    }
+    for (const solid of cut.frameCut) out.frameCut.push(solid);
+    for (const solid of cut.inlayCut) out.inlayCut.push(solid);
+    for (const solid of cut.frameAdd) out.frameAdd.push(solid);
+    for (const solid of cut.baseCut) out.baseCut.push(solid);
+    for (const solid of cut.inlay) out.inlay.push(solid);
+    ctx.resolvedText.push(
+      resolved(piece.id, piece.fit, piece.surface, piece.mode, "cuts", piece.depthMm),
+    );
+    ctx.arena.drop(repaired.section);
+  }
+
+  if (keep !== null) ctx.arena.drop(keep);
+  return out;
+}
+
+/** One string's glyphs, at the fitted size, placed on the plate. */
+function placedGlyphs(
+  asset: GlyphFace,
+  fit: T.TextFit,
+  placement: T.Placement,
+): PreviewArea[] {
+  // Dilation 0 here: the preview's vertex-bisector offset is a stand-in for a
+  // real one, and this pipeline has a real one (`repairText`).
+  const areas = glyphAreas(asset, fit.text, fit.size_mm, 0);
+  return areas.map((area) => placeArea(area, placement));
+}
+
+interface EmittedPiece {
+  frameCut: Manifold[];
+  inlayCut: Manifold[];
+  frameAdd: Manifold[];
+  baseCut: Manifold[];
+  inlay: Manifold[];
+}
+
+/**
+ * One repaired piece as solids.
+ *
+ * Engraved: a cutter from the depth up past the surface. Embossed: a solid
+ * standing on the surface, overlapping it by 04's own 0.2 mm so the union with
+ * the frame is unambiguous. Inlay: the engraved cutter AND a solid filling the
+ * pocket exactly, in the `lettering` region.
+ */
+function emitPiece(
+  ctx: BakeContext,
+  piece: Piece,
+  section: CrossSection,
+  lipTop: number,
+): EmittedPiece | null {
+  const { wasm, arena } = ctx;
+  const out: EmittedPiece = {
+    frameCut: [],
+    inlayCut: [],
+    frameAdd: [],
+    baseCut: [],
+    inlay: [],
+  };
+  if (piece.face === "bottom") {
+    const cutter = extrudeSection(wasm, arena, section, -CUTTER_OVERSHOOT_MM, piece.depthMm);
+    if (cutter === null) return null;
+    out.baseCut.push(cutter);
+    if (piece.mode === "inlay") {
+      out.inlayCut.push(cutter);
+      // Up into the plate by `PART_OVERLAP_MM`, for the same reason.
+      const fill = extrudeSection(
+        wasm,
+        arena,
+        section,
+        0,
+        piece.depthMm + PART_OVERLAP_MM,
+      );
+      if (fill !== null) out.inlay.push(fill);
+    }
+    return out;
+  }
+  if (piece.mode === "emboss") {
+    const solid = extrudeSection(
+      wasm,
+      arena,
+      section,
+      lipTop - T.BUILDING_OVERLAP_MM,
+      lipTop + piece.depthMm,
+    );
+    if (solid === null) return null;
+    out.frameAdd.push(solid);
+    return out;
+  }
+  const cutter = extrudeSection(
+    wasm,
+    arena,
+    section,
+    lipTop - piece.depthMm,
+    lipTop + CUTTER_OVERSHOOT_MM,
+  );
+  if (cutter === null) return null;
+  out.frameCut.push(cutter);
+  if (piece.mode === "inlay") {
+    out.inlayCut.push(cutter);
+    // Down into the lip by `PART_OVERLAP_MM`: the inlay is its own colour part
+    // and must interpenetrate the frame rather than share its pocket floor
+    // (`context.PART_OVERLAP_MM`). The extra is inside the lip, which is
+    // 2 mm tall against a 1.5 mm maximum engraving depth.
+    const fill = extrudeSection(
+      wasm,
+      arena,
+      section,
+      lipTop - piece.depthMm - PART_OVERLAP_MM,
+      lipTop,
+    );
+    if (fill !== null) out.inlay.push(fill);
+  }
+  return out;
+}

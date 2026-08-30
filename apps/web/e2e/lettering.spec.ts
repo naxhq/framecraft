@@ -1,5 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
+import { mockChicagoOverpass } from "./overpassMock";
+
 /**
  * Phase 1: the lettering token fix ([V3-P1]).
  *
@@ -13,10 +15,11 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  * the flow below never drops a custom pin (it stays on the Chicago preset,
  * which resolves its city name client-side, per `lib/presets.ts`), but the
  * mock is in place defensively so a future edit to this file cannot
- * accidentally add a live network dependency.
+ * accidentally add a live network dependency. Since v3 E4 the bake itself is
+ * a client-side WASM export, so the sidecar is fetched as a Blob object URL
+ * from inside the page rather than over HTTP.
  */
 
-const API_URL = process.env.NEXT_PUBLIC_BAKE_API_URL ?? "http://localhost:8000";
 const WARMUP_BUDGET_MS = 60_000;
 const A4_BUDGET_MS = 90_000;
 
@@ -38,6 +41,7 @@ function mockNominatim(page: Page): void {
 }
 
 async function generateChicago(page: Page): Promise<void> {
+  await mockChicagoOverpass(page);
   await page.locator('[data-preset-id="chicago-loop"]').click();
   await expect(page.getByTestId("preview-canvas")).toBeVisible({
     timeout: WARMUP_BUDGET_MS,
@@ -58,7 +62,6 @@ async function openGroup(page: Page, id: string): Promise<void> {
 
 test("Chicago's {city} resolves in the preview, the Resolved output panel and the baked sidecar; an empty label warns; Frame off disables lettering", async ({
   page,
-  request,
 }) => {
   mockNominatim(page);
   await page.goto("/");
@@ -90,23 +93,27 @@ test("Chicago's {city} resolves in the preview, the Resolved output panel and th
   await expect(resolvedRow).toContainText("Frame, top edge");
 
   // ---- bake, and the sidecar carries the resolved text, not the token ---
+  //
+  // The prediction (`lib/resolvedOutput.ts`) already showed "cuts Chicago"
+  // above; this proves the ENGINE resolved the same token the same way, by
+  // reading its own real `resolvedText`/`print_params` off the exported
+  // sidecar Blob -- the two truths the E4 brief asks to never disagree.
   const bakeButton = page.getByTestId("bake-button");
   await expect(bakeButton).toBeEnabled();
   await bakeButton.click();
   const downloads = page.getByTestId("download-links");
   await expect(downloads).toBeVisible({ timeout: A4_BUDGET_MS });
-  const link = downloads.getByRole("link", { name: /3MF/ });
-  const href = await link.getAttribute("href");
-  expect(href, "the 3MF link has no href").toBeTruthy();
-
-  const sidecarName = (href as string).replace(/\.3mf$/i, ".json");
-  const sidecar = await request.get(
-    sidecarName.startsWith("http") ? sidecarName : `${API_URL}${sidecarName}`,
+  const sidecarLink = downloads.getByRole("link", { name: /\.json$/ });
+  const sidecarHref = await sidecarLink.getAttribute("href");
+  expect(sidecarHref, "the sidecar link has no href").toBeTruthy();
+  expect(sidecarHref, "the sidecar is a Blob object URL, not a server path").toMatch(
+    /^blob:/,
   );
-  expect(sidecar.status(), `no bake sidecar at ${sidecarName}`).toBe(200);
-  const sidecarBody = (await sidecar.json()) as {
-    print_params: { engravings: Array<{ text: string }> };
-  };
+
+  const sidecarBody = await page.evaluate(async (url) => {
+    const res = await fetch(url);
+    return (await res.json()) as { print_params: { engravings: Array<{ text: string }> } };
+  }, sidecarHref as string);
   expect(sidecarBody.print_params.engravings).toHaveLength(1);
   expect(sidecarBody.print_params.engravings[0].text).toBe("Chicago");
 

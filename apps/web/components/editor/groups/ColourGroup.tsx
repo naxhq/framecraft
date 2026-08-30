@@ -1,9 +1,13 @@
 "use client";
 
-import { DEFAULT_PRINT_PARAMS } from "@/lib/contracts";
-import type { PartColors } from "@/lib/contracts";
+import { colourRows, distinctSlots, exceedsProfileSlots, planMergeToSlots } from "@/lib/colourMap";
+import { DEFAULT_PRINT_PARAMS, PARAM_RANGES } from "@/lib/contracts";
+import type { PartColors, RegionColors, RegionSlots } from "@/lib/contracts";
+import type { RegionName } from "@/lib/engine/types";
+import { PRINTER_PROFILE_IDS, PRINTER_PROFILES, resolveProfile } from "@/lib/printers";
+import type { PrinterProfileId } from "@/lib/printers";
 import { useEditorStore } from "@/store/editor";
-import { ColorField, Field, Note, SelectField, Segmented } from "../Controls";
+import { ColorField, Field, Note, SelectField, Segmented, Slider, TextField } from "../Controls";
 
 const COLOR_MODES = [
   { value: "single" as const, label: "one filament" },
@@ -20,6 +24,13 @@ const HERO_MODES = [
  * The seven parts, in the order they stack up off the plate. The pairing note
  * on each is DECISIONS [V2-P2]: the defaults are four distinct filaments, not
  * seven, so a four-slot AMS prints the file with no slot re-assignment.
+ *
+ * This "Part colours" section (and its `color_mode` toggle) is the v1/v2
+ * palette: it still decides the instanced preview's fallback colours while an
+ * engine job is computing, and `generic-3mf`'s own `single`/`parts` default
+ * ([lib/engine/export/generic3mf.ts]). It is NOT what the real engine result,
+ * the Bambu export or the colour-change plan use for filament SLOTS -- that
+ * is the "Filament slots" section below, `params.colour`, added in v3.
  */
 const PARTS: ReadonlyArray<{ key: keyof PartColors; label: string }> = [
   { key: "base", label: "Base" },
@@ -32,12 +43,51 @@ const PARTS: ReadonlyArray<{ key: keyof PartColors; label: string }> = [
 ];
 
 const DEFAULT_PART_COLORS = DEFAULT_PRINT_PARAMS.part_colors as PartColors;
+const DEFAULT_REGION_SLOTS = DEFAULT_PRINT_PARAMS.colour?.region_slots as RegionSlots;
+const DEFAULT_REGION_COLORS = DEFAULT_PRINT_PARAMS.colour?.region_colors as RegionColors;
 
-/** One filament, or one per part — plus what makes a hero building a hero. */
+const REGION_LABELS: Record<RegionName, string> = {
+  base: "Base",
+  frame: "Frame",
+  matting: "Matting",
+  buildings: "Buildings",
+  hero_building: "Hero buildings",
+  roads: "Roads",
+  water: "Water",
+  parks: "Parks",
+  rail: "Rail",
+  lettering: "Lettering",
+  attribution: "Attribution",
+  easel: "Easel",
+};
+
+const SLOT_MAX: number = PARAM_RANGES.colour.region_slots.base.max;
+const SLOT_OPTIONS = Array.from({ length: SLOT_MAX }, (_, i) => {
+  const value = String(i + 1);
+  return { value, label: `Slot ${i + 1}` };
+});
+
+const PRINTER_PROFILE_OPTIONS = PRINTER_PROFILE_IDS.map((id) => ({
+  value: id,
+  label: PRINTER_PROFILES[id].label,
+}));
+
+/**
+ * The v1/v2 parts palette (still read by the instanced fallback preview and
+ * by `generic-3mf`'s single/parts default), plus the v3 filament-slot table
+ * that the real engine result, the preview once it is fresh, the Bambu
+ * export and the colour-change plan all read from the same place
+ * (`params.colour`, resolved through `lib/engine/solid/context.ts`'s
+ * `regionSlot`/`regionColor` -- the one function every one of those reads,
+ * so they can never disagree). One row per region the current bake produced,
+ * or every colourable region name before the first one has (`lib/colourMap.ts:
+ * colourRows`).
+ */
 export function ColourGroup() {
   const params = useEditorStore((state) => state.params);
   const setParam = useEditorStore((state) => state.setParam);
   const setNested = useEditorStore((state) => state.setNested);
+  const engineResult = useEditorStore((state) => state.engine.result);
 
   const mode = params.color_mode ?? "single";
   const colours = params.part_colors ?? DEFAULT_PART_COLORS;
@@ -51,6 +101,32 @@ export function ColourGroup() {
    */
   const setPart = (key: keyof PartColors, value: string): void => {
     setNested("part_colors", { ...colours, [key]: value } as PartColors);
+  };
+
+  const rows = colourRows(params, engineResult);
+  const slots = params.colour?.region_slots ?? DEFAULT_REGION_SLOTS;
+  const regionColors = params.colour?.region_colors ?? DEFAULT_REGION_COLORS;
+
+  const setSlot = (region: RegionName, value: number): void => {
+    setNested("colour", { region_slots: { ...slots, [region]: value } as RegionSlots });
+  };
+  const setColor = (region: RegionName, value: string): void => {
+    setNested("colour", { region_colors: { ...regionColors, [region]: value } as RegionColors });
+  };
+
+  const printerProfileId: PrinterProfileId = params.printer_profile ?? "custom";
+  const profile = resolveProfile(params);
+  const usedSlots = distinctSlots(rows);
+  const overProfile = exceedsProfileSlots(rows, profile.slots);
+  const custom = params.custom_profile ?? DEFAULT_PRINT_PARAMS.custom_profile ?? {};
+
+  const mergeToProfile = (): void => {
+    const plan = planMergeToSlots(rows, profile.slots);
+    if (!plan.changed) return;
+    setNested("colour", {
+      region_slots: { ...slots, ...plan.regionSlots } as RegionSlots,
+      region_colors: { ...regionColors, ...plan.regionColors } as RegionColors,
+    });
   };
 
   return (
@@ -101,6 +177,123 @@ export function ColourGroup() {
         <Note testId="hero-mode-idle-note">
           No hero buildings picked yet — click one in the preview and this starts
           to matter.
+        </Note>
+      ) : null}
+
+      <Field
+        label="Filament slots"
+        hint="What the printed model, the Bambu project and the colour-change plan actually use: a slot and a colour per region. This is what the preview shows once a bake has run."
+      >
+        <div className="space-y-1.5" data-testid="colour-region-rows">
+          {rows.map((row) => (
+            <div
+              key={row.region}
+              data-testid={`colour-region-row-${row.region}`}
+              className="flex items-center justify-between gap-2 rounded-milled border border-line bg-plate-sunken px-2 py-1.5"
+            >
+              <span className="min-w-0 flex-1 truncate text-sm text-ink">
+                {REGION_LABELS[row.region]}
+              </span>
+              <select
+                id={`colour_slot_${row.region}`}
+                aria-label={`${REGION_LABELS[row.region]} filament slot`}
+                data-testid={`colour-slot-${row.region}`}
+                value={String(row.slot)}
+                onChange={(event) => setSlot(row.region, Number(event.target.value))}
+                className="rounded-milled border border-control bg-plate-raised px-1.5 py-1 text-2xs text-ink"
+              >
+                {SLOT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <input
+                id={`colour_color_${row.region}`}
+                type="color"
+                aria-label={`${REGION_LABELS[row.region]} colour`}
+                data-testid={`colour-color-${row.region}`}
+                value={row.colorHex.slice(0, 7)}
+                onChange={(event) => setColor(row.region, event.target.value)}
+                className="h-6 w-9 shrink-0"
+              />
+            </div>
+          ))}
+        </div>
+      </Field>
+
+      <SelectField
+        id="printer_profile"
+        label="Printer profile"
+        value={printerProfileId}
+        options={PRINTER_PROFILE_OPTIONS}
+        onChange={(value) => setParam("printer_profile", value)}
+        hint="Sets the plate size, the height ceiling and how many filament slots the profile has, for the Bambu export and the slot warning below."
+      />
+
+      {printerProfileId === "custom" ? (
+        <div className="space-y-3 rounded-milled border border-line bg-plate-sunken p-2.5" data-testid="custom-profile-fields">
+          <Slider
+            id="custom_profile_plate_x_mm"
+            label="Plate width"
+            min={PARAM_RANGES.custom_profile.plate_x_mm.min}
+            max={PARAM_RANGES.custom_profile.plate_x_mm.max}
+            step={1}
+            value={custom.plate_x_mm ?? PARAM_RANGES.custom_profile.plate_x_mm.default}
+            display={`${custom.plate_x_mm ?? PARAM_RANGES.custom_profile.plate_x_mm.default} mm`}
+            onChange={(value) => setNested("custom_profile", { plate_x_mm: value })}
+          />
+          <Slider
+            id="custom_profile_plate_y_mm"
+            label="Plate depth"
+            min={PARAM_RANGES.custom_profile.plate_y_mm.min}
+            max={PARAM_RANGES.custom_profile.plate_y_mm.max}
+            step={1}
+            value={custom.plate_y_mm ?? PARAM_RANGES.custom_profile.plate_y_mm.default}
+            display={`${custom.plate_y_mm ?? PARAM_RANGES.custom_profile.plate_y_mm.default} mm`}
+            onChange={(value) => setNested("custom_profile", { plate_y_mm: value })}
+          />
+          <Slider
+            id="custom_profile_max_height_mm"
+            label="Height ceiling"
+            min={PARAM_RANGES.custom_profile.max_height_mm.min}
+            max={PARAM_RANGES.custom_profile.max_height_mm.max}
+            step={5}
+            value={custom.max_height_mm ?? PARAM_RANGES.custom_profile.max_height_mm.default}
+            display={`${custom.max_height_mm ?? PARAM_RANGES.custom_profile.max_height_mm.default} mm`}
+            onChange={(value) => setNested("custom_profile", { max_height_mm: value })}
+          />
+          <Slider
+            id="custom_profile_slots"
+            label="Filament slots"
+            min={PARAM_RANGES.custom_profile.slots.min}
+            max={PARAM_RANGES.custom_profile.slots.max}
+            step={1}
+            value={custom.slots ?? PARAM_RANGES.custom_profile.slots.default}
+            display={String(custom.slots ?? PARAM_RANGES.custom_profile.slots.default)}
+            onChange={(value) => setNested("custom_profile", { slots: value })}
+          />
+          <TextField
+            id="custom_profile_change_gcode"
+            label="Colour-change command"
+            value={custom.change_gcode ?? "M600"}
+            onChange={(value) => setNested("custom_profile", { change_gcode: value })}
+          />
+        </div>
+      ) : null}
+
+      {overProfile ? (
+        <Note tone="warn" testId="colour-slots-exceed-profile">
+          This model uses {usedSlots.length} filament slots, more than the{" "}
+          {profile.label} profile&apos;s {profile.slots}.{" "}
+          <button
+            type="button"
+            data-testid="merge-to-profile-slots"
+            onClick={mergeToProfile}
+            className="font-medium text-accent underline-offset-2 hover:underline"
+          >
+            Merge to {profile.slots} slot{profile.slots === 1 ? "" : "s"}
+          </button>
         </Note>
       ) : null}
     </>

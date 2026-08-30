@@ -115,6 +115,59 @@ jobs:
         working-directory: apps/web
         run: npm run build
 
+      # Mirrors `make gate` step 4: the browser engine baking the committed
+      # Chicago fixture, judged by the reference Python validator (the CLI
+      # validator services/bake stays as, per CLAUDE.md). Needs `uv` only for
+      # that judging step, not to run the app itself.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "services/bake/uv.lock"
+          version: ${{ env.UV_VERSION }}
+
+      - name: uv sync (bake service, validator only)
+        working-directory: services/bake
+        run: uv sync
+
+      # Both files: fixtures/print-params-default.json (color_mode=single, the
+      # literal default) and fixtures/print-params-parts.json (color_mode=
+      # parts). Single mode's own single-object 3MF is written from
+      # EngineResult.merged, a real manifold3d union, so it is expected to
+      # pass the validator's `bodies` check exactly like parts mode's
+      # assembled union does -- see DECISIONS.md [V3-P2-E4] for the history
+      # and the numbers if either file is still red.
+      - name: browser engine bake:cli (Chicago fixture, single mode)
+        working-directory: apps/web
+        run: |
+          npm run bake:cli -- --scene ../../fixtures/chicago-scene.json \
+            --params ../../fixtures/print-params-default.json \
+            --target generic-3mf --out ../../artifacts/chicago-web-single.3mf
+
+      - name: browser engine bake:cli (Chicago fixture, parts mode)
+        working-directory: apps/web
+        run: |
+          npm run bake:cli -- --scene ../../fixtures/chicago-scene.json \
+            --params ../../fixtures/print-params-parts.json \
+            --target generic-3mf --out ../../artifacts/chicago-web-parts.3mf
+
+      # A real, non-suppressed failure ("no test may be weakened to make a
+      # gate pass") for either row: if this workflow shows one red, see
+      # DECISIONS.md [V3-P2-E4] for the measured numbers before assuming it
+      # is a regression here -- it may still be a known, documented gap in
+      # lib/engine/solid/** (E2). Scoped to THIS job only: the `e2e` job
+      # below has no `needs:` on `web` and keeps running (and reporting its
+      # own status) independently.
+      # Both run regardless of the first's outcome (plain `&&` would stop at
+      # the first failure and hide whether the second file is clean too).
+      - name: validate the browser engine's files (single + parts mode)
+        working-directory: services/bake
+        run: |
+          rc=0
+          uv run python -m app.cli validate ../../artifacts/chicago-web-single.3mf || rc=1
+          uv run python -m app.cli validate ../../artifacts/chicago-web-parts.3mf || rc=1
+          exit $rc
+
   # Mirrors `make gate` steps 4-5 (Playwright against the real stack). The
   # bake API and the web app are started by playwright.config.ts's own
   # `webServer` array (uv run uvicorn on :8000, next dev on :3000, each

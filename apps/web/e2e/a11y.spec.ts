@@ -1,6 +1,8 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
+import { mockChicagoOverpass } from "./overpassMock";
+
 /**
  * Accessibility, measured rather than asserted by hand.
  *
@@ -95,6 +97,7 @@ async function setTheme(page: Page, theme: "light" | "dark"): Promise<void> {
 }
 
 async function generateChicago(page: Page): Promise<void> {
+  await mockChicagoOverpass(page);
   await page.locator('[data-preset-id="chicago-loop"]').click();
   await expect(page.getByTestId("preview-stats")).toBeVisible({
     timeout: WARMUP_BUDGET_MS,

@@ -165,9 +165,12 @@ describe("keyboard navigation through the Location sliders", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("costs one request for five arrow taps", () => {
+  it("costs one request for five arrow taps", async () => {
     fetchSpy.mockResolvedValue(
-      new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
+      new Response(JSON.stringify({ elements: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
     );
     const slider = wire();
     for (let i = 0; i < 5; i += 1) {
@@ -176,10 +179,19 @@ describe("keyboard navigation through the Location sliders", () => {
       vi.advanceTimersByTime(60);
     }
     expect(fetchSpy).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(COMMIT_DEBOUNCE_MS);
+    // The commit gate's own timer is the only thing under test; everything
+    // after it (ingest -> the engine worker's in-page fallback -> Overpass'
+    // own cache lookup -> `fetch`) is a real Promise chain with several
+    // microtask hops before the request actually goes out, so the fake-timer
+    // advance has to let those settle too (`...Async` flushes microtasks
+    // between each due timer, `advanceTimersByTime` does not).
+    await vi.advanceTimersByTimeAsync(COMMIT_DEBOUNCE_MS);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(useEditorStore.getState().location.radius_m).toBe(950);
     const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(String(init.body)).radius_m).toBe(950);
+    // The request body is now the Overpass QL query text (never a
+    // `POST /scene` JSON payload): the radius is baked into its bbox, not a
+    // JSON field, so this asserts on the query text itself.
+    expect(String(init.body)).toContain("[out:json]");
   });
 });

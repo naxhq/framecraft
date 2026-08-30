@@ -1,14 +1,17 @@
-import fs from "node:fs";
-import path from "node:path";
-
-import { expect, test, type Page, type Request } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 import { DEFAULT_PRINT_PARAMS, PARAM_RANGES } from "../lib/contracts";
 import * as T from "../lib/transform";
+import { mockChicagoOverpass, watchOverpass, type OverpassCall } from "./overpassMock";
 
 /**
- * The editor's own behaviour, against the REAL stack (next on :3000 -> FastAPI
- * on :8000 -> the committed Overpass fixtures). Nothing here is mocked.
+ * The editor's own behaviour. Since FrameCraft v3 E4 the only network call
+ * this app ever makes is the ingest fetch to an Overpass mirror
+ * (`**\/api/interpreter`), routed to the committed Chicago Loop fixture by
+ * `overpassMock.ts` so this suite runs fully offline and deterministically;
+ * everything else (the bake, every export target, every PrintParams write)
+ * is client-side WASM and a Blob download, asserted with no network watcher
+ * at all.
  *
  * `smoke.spec.ts` owns 01's acceptance criteria; this file owns the things the
  * v2 redesign introduced and that a unit test cannot reach: self-hosted fonts,
@@ -16,7 +19,6 @@ import * as T from "../lib/transform";
  * the adjustments chip, the keyboard map, and hero picking by raycast.
  */
 
-const API_URL = process.env.NEXT_PUBLIC_BAKE_API_URL ?? "http://localhost:8000";
 const WARMUP_BUDGET_MS = 60_000;
 
 /**
@@ -78,22 +80,13 @@ const REFUSED_SIZE_MM = largestRefusedCapHeightMm();
 /** Every font host this product is forbidden to touch at runtime. */
 const FONT_HOSTS = ["fonts.googleapis.com", "fonts.gstatic.com"];
 
-function watchApi(page: Page): Array<{ method: string; path: string }> {
-  const calls: Array<{ method: string; path: string }> = [];
-  page.on("request", (request: Request) => {
-    const url = request.url();
-    if (url.startsWith(API_URL)) {
-      calls.push({ method: request.method(), path: new URL(url).pathname });
-    }
-  });
-  return calls;
-}
+const ingestFetches = (calls: OverpassCall[]): number =>
+  calls.filter((call) => call.method === "POST").length;
 
-const scenePosts = (calls: Array<{ method: string; path: string }>): number =>
-  calls.filter((call) => call.method === "POST" && call.path === "/scene").length;
-
-/** Load Chicago and wait for the preview to exist. */
+/** Mock Overpass, load Chicago and wait for the preview to exist. */
 async function generateChicago(page: Page): Promise<void> {
+  await mockChicagoOverpass(page);
+  await page.goto("/");
   await page.locator('[data-preset-id="chicago-loop"]').click();
   await expect(page.getByTestId("preview-canvas")).toBeVisible({
     timeout: WARMUP_BUDGET_MS,
@@ -106,8 +99,8 @@ async function generateChicago(page: Page): Promise<void> {
 /**
  * Move a range input the way a user does, WITHOUT releasing it: `fill` fires
  * input/change and never pointerup/keyup, so it exercises a PrintParams change
- * that must not reach the server (the radius and rotation commit gates fire on
- * release, and only those two fetch).
+ * that must never trigger a fetch (the radius and rotation commit gates fire on
+ * release, and only those two ever cause one, via the ingest job).
  */
 async function setSlider(page: Page, id: string, value: number): Promise<void> {
   await page.locator(`#${id}`).fill(String(value));
@@ -116,38 +109,6 @@ async function setSlider(page: Page, id: string, value: number): Promise<void> {
 function log(message: string): void {
   console.log(`[ui] ${message}`);
 }
-
-const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
-
-/**
- * Delete the per-run Overpass fixtures a non-preset `/scene` leaves behind.
- *
- * The same helper `smoke.spec.ts` has, for the same reason: this file now
- * clicks the advisor's radius remedy, which is by construction not a preset
- * radius, so `overpass.load_raw` caches one `fixtures/<sha1>.json` per run.
- * `presets-index.json` lists the six that are meant to be there.
- */
-function pruneStrayFixtures(): void {
-  const dir = path.join(REPO_ROOT, "fixtures");
-  const indexPath = path.join(dir, "presets-index.json");
-  if (!fs.existsSync(indexPath)) return;
-  const index = JSON.parse(fs.readFileSync(indexPath, "utf-8")) as {
-    presets: Array<{ fixture_file: string }>;
-  };
-  const keep = new Set(index.presets.map((preset) => preset.fixture_file));
-  for (const name of fs.readdirSync(dir)) {
-    if (/^[0-9a-f]{40}\.json$/.test(name) && !keep.has(name)) {
-      fs.rmSync(path.join(dir, name));
-      log(`pruned stray Overpass fixture ${name}`);
-    }
-  }
-}
-
-test.describe.configure({ mode: "serial" });
-
-test.afterAll(() => {
-  pruneStrayFixtures();
-});
 
 // ==========================================================================
 // Typography
@@ -253,9 +214,8 @@ test("control groups collapse, persist across a reload, and hide their controls"
 // The v2 fields are still purely local
 // ==========================================================================
 
-test("the v2 personalisation fields never reach the server", async ({ page }) => {
-  const calls = watchApi(page);
-  await page.goto("/");
+test("the v2 personalisation fields never trigger a fetch", async ({ page }) => {
+  const calls = watchOverpass(page);
   await generateChicago(page);
 
   const before = calls.length;
@@ -301,14 +261,14 @@ test("the v2 personalisation fields never reach the server", async ({ page }) =>
   await expect(page.locator("#hero_mode")).toHaveValue("true_height");
 
   // The remaining v2 writes that are neither text nor colour: the scale bar and
-  // the underside mark, both of which the bake reads and the server does not.
+  // the underside mark, both of which the bake reads and never causes a fetch.
   await page.locator("#scale_bar_enabled").click();
   await expect(page.locator("#scale_bar_edge")).toBeVisible();
   await page.locator("#underside_mark_enabled").click();
 
   await page.waitForTimeout(1_000);
   const after = calls.slice(before);
-  expect(after, `a v2 field hit the bake API: ${JSON.stringify(after)}`).toEqual([]);
+  expect(after, `a v2 field triggered a fetch: ${JSON.stringify(after)}`).toEqual([]);
 });
 
 // ==========================================================================
@@ -318,8 +278,7 @@ test("the v2 personalisation fields never reach the server", async ({ page }) =>
 test("an engraving appears on the frame, and a refused one does not", async ({
   page,
 }) => {
-  const calls = watchApi(page);
-  await page.goto("/");
+  const calls = watchOverpass(page);
   await generateChicago(page);
 
   // The count is rings actually drawn on the plate, published by the viewport.
@@ -393,7 +352,7 @@ test("an engraving appears on the frame, and a refused one does not", async ({
   await page.locator("#frame").click();
   await expect.poll(drawn).toBeGreaterThan(0);
 
-  // None of that was a server call.
+  // None of that ever triggered a fetch.
   await page.waitForTimeout(500);
   expect(calls.slice(before)).toEqual([]);
 });
@@ -405,16 +364,10 @@ test("an engraving appears on the frame, and a refused one does not", async ({
 test("a keyhole the base cannot carry disables Bake and names the minimum", async ({
   page,
 }) => {
-  // `transform.underside_min_base_mm` is what `lettering.build` refuses on, and
-  // two docstrings in `transform.py` claimed the editor predicted the refusal
-  // from it while nothing in apps/web called it: `hanger = keyhole` on the
-  // default 3 mm base was silently offered and the user learned about it from a
-  // failed bake (v2-07 audit, finding 4). Both numbers below come from the
-  // shared math, not from this file.
-  const calls = watchApi(page);
-  await page.goto("/");
+  // `transform.underside_min_base_mm` is what the engine refuses on, and two
+  // docstrings in `transform.ts` claim the editor predicts the refusal from
+  // it. Both numbers below come from the shared math, not from this file.
   await generateChicago(page);
-  const before = calls.length;
 
   const bake = page.getByTestId("bake-button");
   await expect(bake).toBeEnabled();
@@ -442,12 +395,11 @@ test("a keyhole the base cannot carry disables Bake and names the minimum", asyn
   await expect(bake).toBeDisabled();
 
   // Clicking it must do nothing either -- a disabled button is the UI, the
-  // store's own guard is the contract (`store.requestBake` re-checks).
+  // store's own guard is the contract (`store.requestBake` re-checks): the
+  // bake state stays exactly `idle`, nothing starts exporting.
   await bake.click({ force: true });
   await page.waitForTimeout(500);
-  expect(
-    calls.slice(before).filter((call) => call.path.startsWith("/bake")),
-  ).toEqual([]);
+  await expect(page.getByTestId("bake-status")).toHaveCount(0);
 
   // Raise the base past the minimum and Bake comes back.
   await page.locator("#base_thickness_mm").fill("4");
@@ -455,9 +407,6 @@ test("a keyhole the base cannot carry disables Bake and names the minimum", asyn
   await expect(page.getByTestId("warning-base-too-thin-for-underside")).toHaveCount(0);
   await expect(page.getByTestId("bake-block-reason")).toHaveCount(0);
   await expect(bake).toBeEnabled();
-
-  // Deciding all that took no server call: it is the shared math in the browser.
-  expect(calls.slice(before)).toEqual([]);
 });
 
 // ==========================================================================
@@ -467,8 +416,7 @@ test("a keyhole the base cannot carry disables Bake and names the minimum", asyn
 test("the detail chip follows the plate, and names a radius that would fix it", async ({
   page,
 }) => {
-  const calls = watchApi(page);
-  await page.goto("/");
+  const calls = watchOverpass(page);
   await generateChicago(page);
 
   const chip = page.getByTestId("detail-health");
@@ -504,7 +452,7 @@ test("the detail chip follows the plate, and names a radius that would fix it", 
   await expect(advice).toContainText(`Try ${radius} m`);
   log(`advisor offers "${await useRadius.textContent()}"`);
 
-  // Nothing so far was a server call: the whole advisor is arithmetic over the
+  // Nothing so far triggered a fetch: the whole advisor is arithmetic over the
   // scene already in memory.
   await page.waitForTimeout(800);
   expect(
@@ -519,20 +467,18 @@ test("the detail chip follows the plate, and names a radius that would fix it", 
   // `setRadius` then `generate` on a stub (audit v2-06 finding 6).
   //
   // The remedy is by construction NOT a preset radius, so this is the one
-  // place in this file that reaches Overpass. Only the REQUEST is asserted --
-  // that the radius moved and that exactly one `POST /scene` followed, which is
-  // what a slider release does -- never the response, so the test does not
-  // depend on Overpass being reachable. `afterAll` prunes the fixture a
-  // completed query would leave behind.
-  const beforeClick = scenePosts(calls);
+  // place in this file that re-ingests: the mocked route from
+  // `generateChicago` still answers it (Overpass does not see the radius),
+  // so only the REQUEST COUNT is asserted, never a live network dependency.
+  const ingestBefore = ingestFetches(calls);
   await useRadius.click();
   await expect(page.getByTestId("radius_m-value")).toHaveText(`${radius} m`);
-  await expect.poll(() => scenePosts(calls) - beforeClick, { timeout: 15_000 }).toBe(1);
-  // Exactly one, not one per re-render: `generate` aborts and replaces, it does
-  // not stack.
+  await expect.poll(() => ingestFetches(calls) - ingestBefore, { timeout: 15_000 }).toBe(1);
+  // Exactly one, not one per re-render: `generate` supersedes and replaces
+  // through the engine client, it does not stack.
   await page.waitForTimeout(1_500);
-  expect(scenePosts(calls) - beforeClick).toBe(1);
-  log(`"Use ${radius} m" moved the radius to ${radius} m with exactly 1 POST /scene`);
+  expect(ingestFetches(calls) - ingestBefore).toBe(1);
+  log(`"Use ${radius} m" moved the radius to ${radius} m with exactly 1 ingest fetch`);
 });
 
 // ==========================================================================
@@ -542,7 +488,6 @@ test("the detail chip follows the plate, and names a radius that would fix it", 
 test("a hero keeps its true height when the other buildings are scaled down", async ({
   page,
 }) => {
-  await page.goto("/");
   await generateChicago(page);
   await page.waitForTimeout(1_000);
 
@@ -567,7 +512,7 @@ test("a hero keeps its true height when the other buildings are scaled down", as
 
   // `hero_height_scale` is `max(1.0, the multiplier its class would get)`, so
   // at 50 % the hero comes back to its full relative height and the model gets
-  // taller -- the number the server's own 60 mm guard compares.
+  // taller -- the number the engine's own 60 mm guard compares.
   await expect.poll(heightMm).toBeGreaterThan(halved);
   const withHero = await heightMm();
   log(`predicted height: ${halved} mm halved -> ${withHero} mm with a hero`);
@@ -588,7 +533,6 @@ test("a hero keeps its true height when the other buildings are scaled down", as
 test("informational warnings collapse into one chip that opens a grouped drawer", async ({
   page,
 }) => {
-  await page.goto("/");
   await generateChicago(page);
 
   const chip = page.getByTestId("adjustments-chip");
@@ -625,8 +569,7 @@ test("informational warnings collapse into one chip that opens a grouped drawer"
 test("keyboard: ? opens the sheet, letters are ignored while typing, R resets", async ({
   page,
 }) => {
-  const calls = watchApi(page);
-  await page.goto("/");
+  const calls = watchOverpass(page);
   await generateChicago(page);
 
   // ? opens the sheet; Escape closes it.
@@ -661,18 +604,17 @@ test("keyboard: ? opens the sheet, letters are ignored while typing, R resets", 
   // would be correct behaviour and the request count would be the wrong thing
   // to blame.
   await expect(page.getByTestId("generate-button")).toBeDisabled();
-  const beforeG = scenePosts(calls);
+  const beforeG = ingestFetches(calls);
   await page.keyboard.press("g");
   await page.waitForTimeout(800);
-  expect(scenePosts(calls) - beforeG).toBe(0);
+  expect(ingestFetches(calls) - beforeG).toBe(0);
   await expect(page.getByTestId("generate-button")).toBeDisabled();
 });
 
 test("the shortcut sheet is really modal: no letter reaches the editor behind it", async ({
   page,
 }) => {
-  const calls = watchApi(page);
-  await page.goto("/");
+  const calls = watchOverpass(page);
   await generateChicago(page);
 
   await page.getByTestId("plate_mm-value").waitFor();
@@ -707,7 +649,6 @@ test("the shortcut sheet is really modal: no letter reaches the editor behind it
 test("Escape closes the adjustments drawer from anywhere, and hands focus back", async ({
   page,
 }) => {
-  await page.goto("/");
   await generateChicago(page);
 
   const chip = page.getByTestId("adjustments-chip");
@@ -749,8 +690,7 @@ test("Escape closes the adjustments drawer from anywhere, and hands focus back",
 // ==========================================================================
 
 test("a hero building can be picked with the keyboard alone", async ({ page }) => {
-  const calls = watchApi(page);
-  await page.goto("/");
+  const calls = watchOverpass(page);
   await generateChicago(page);
   await page.waitForTimeout(1_000);
 
@@ -789,8 +729,7 @@ test("a hero building can be picked with the keyboard alone", async ({ page }) =
 test("clicking a building in the preview picks it as a hero, and clicking it again drops it", async ({
   page,
 }) => {
-  const calls = watchApi(page);
-  await page.goto("/");
+  const calls = watchOverpass(page);
   await generateChicago(page);
   // The camera settles after the fit; a click mid-animation can miss.
   await page.waitForTimeout(1_500);
@@ -803,7 +742,11 @@ test("clicking a building in the preview picks it as a hero, and clicking it aga
   const before = calls.length;
 
   // The plate is dense but a single point can still land on the base, so try a
-  // small grid around the centre until one click lands on a building.
+  // small grid around the centre until one click lands on a building. This
+  // works whether the instanced approximation or the fresh RegionMeshes are
+  // what is visually on screen: picking always raycasts the (possibly
+  // invisible) instanced mesh, which three.js does regardless of visibility
+  // or material opacity (`components/scene/InstancedBuildings.tsx`).
   const offsets = [
     [0, 0],
     [-0.08, 0.02],
@@ -839,7 +782,7 @@ test("clicking a building in the preview picks it as a hero, and clicking it aga
   await canvas.click({ position: hit as { x: number; y: number } });
   await expect(heroes).toHaveCount(0);
 
-  // ...and none of that touched the server.
+  // ...and none of that triggered a fetch.
   await page.waitForTimeout(500);
   expect(calls.slice(before)).toEqual([]);
 });
@@ -850,6 +793,7 @@ test("clicking a building in the preview picks it as a hero, and clicking it aga
 
 test("tablet width turns the sidebar into a bottom sheet", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 800 });
+  await mockChicagoOverpass(page);
   await page.goto("/");
 
   await expect(page.getByTestId("editor")).toBeVisible();

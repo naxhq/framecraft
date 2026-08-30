@@ -1,4 +1,6 @@
-import { expect, test, type Page, type Request } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+
+import { mockChicagoOverpass, watchOverpass } from "./overpassMock";
 
 /**
  * The shareable configuration, end to end and across two browser contexts.
@@ -11,22 +13,10 @@ import { expect, test, type Page, type Request } from "@playwright/test";
  * for.
  */
 
-const API_URL = process.env.NEXT_PUBLIC_BAKE_API_URL ?? "http://localhost:8000";
 const WARMUP_BUDGET_MS = 60_000;
 
-function watchApi(page: Page): Array<{ method: string; path: string }> {
-  const calls: Array<{ method: string; path: string }> = [];
-  page.on("request", (request: Request) => {
-    const url = request.url();
-    if (url.startsWith(API_URL)) {
-      calls.push({ method: request.method(), path: new URL(url).pathname });
-    }
-  });
-  return calls;
-}
-
-const scenePosts = (calls: Array<{ method: string; path: string }>): number =>
-  calls.filter((call) => call.method === "POST" && call.path === "/scene").length;
+const ingestFetches = (calls: ReturnType<typeof watchOverpass>): number =>
+  calls.filter((call) => call.method === "POST").length;
 
 function log(message: string): void {
   console.log(`[share] ${message}`);
@@ -44,7 +34,8 @@ test("a copied link restores the whole editor in a fresh browser", async ({
   // that denies this permission falls back to -- and what this test reads.
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
 
-  const calls = watchApi(page);
+  const calls = watchOverpass(page);
+  await mockChicagoOverpass(page);
   await page.goto("/");
 
   // ---- 1. a preset, then a spread of v2 settings ------------------------
@@ -100,7 +91,8 @@ test("a copied link restores the whole editor in a fresh browser", async ({
   // ---- 3. open it in a browser that has never seen this editor ----------
   const fresh = await browser.newContext();
   const other = await fresh.newPage();
-  const otherCalls = watchApi(other);
+  const otherCalls = watchOverpass(other);
+  await mockChicagoOverpass(other);
   try {
     await other.goto(link);
     await expect(other.getByTestId("editor")).toBeVisible();
@@ -123,13 +115,13 @@ test("a copied link restores the whole editor in a fresh browser", async ({
     await other.getByTestId("group-colour-toggle").click();
     await expect(other.getByTestId("part_color_water-hex")).toHaveText("#123456");
 
-    // ---- 4. it stops there: stale, ready to Generate, no request --------
+    // ---- 4. it stops there: stale, ready to Generate, no fetch ----------
     await expect(other.getByTestId("preview-empty")).toBeVisible();
     await expect(other.getByTestId("generate-button")).toBeEnabled();
     await expect(other.getByTestId("share-notice")).toHaveCount(0);
     await other.waitForTimeout(1_000);
     expect(
-      scenePosts(otherCalls),
+      ingestFetches(otherCalls),
       "opening a shared link fetched a scene by itself",
     ).toBe(0);
 
@@ -138,7 +130,7 @@ test("a copied link restores the whole editor in a fresh browser", async ({
     await expect(other.getByTestId("preview-stats")).toBeVisible({
       timeout: WARMUP_BUDGET_MS,
     });
-    expect(scenePosts(otherCalls)).toBe(1);
+    expect(ingestFetches(otherCalls)).toBe(1);
 
     const viewport = other.locator("[data-preview-text-count]");
     await expect
@@ -153,12 +145,12 @@ test("a copied link restores the whole editor in a fresh browser", async ({
     await fresh.close();
   }
 
-  // Copying a link never touched the bake API either.
-  expect(scenePosts(calls)).toBe(1);
+  // Copying a link never triggered a fetch on the original page either.
+  expect(ingestFetches(calls)).toBe(1);
 });
 
 test("a link this build cannot read is refused, not half-applied", async ({ page }) => {
-  const calls = watchApi(page);
+  const calls = watchOverpass(page);
   // A valid-looking payload from a future schema: the version is the first
   // thing checked, so it is named rather than guessed at.
   await page.goto("/?s=v9.abcdef.00000000");
@@ -173,7 +165,7 @@ test("a link this build cannot read is refused, not half-applied", async ({ page
   await expect(page.locator("#city_label")).toHaveValue("");
   await expect(page.getByTestId("preview-empty")).toBeVisible();
   await page.waitForTimeout(500);
-  expect(scenePosts(calls)).toBe(0);
+  expect(ingestFetches(calls)).toBe(0);
 
   // The bad payload is taken back out of the address bar, so dismissing the
   // banner and reloading does not bring the same refusal back forever on what

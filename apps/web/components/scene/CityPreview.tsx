@@ -16,6 +16,8 @@ import {
   type AdvisorTone,
 } from "@/lib/advisor";
 import type { PrintParams, SceneGraph } from "@/lib/contracts";
+import type { AuditFinding } from "@/lib/engine/types";
+import { freshEngineResult as engineFresh } from "@/lib/enginePreview";
 import { loadGlyphFace, loadedGlyphFace } from "@/lib/fontGlyphs";
 import { heroCapMessage } from "@/lib/heroes";
 import {
@@ -54,6 +56,7 @@ import { useEditorStore } from "@/store/editor";
 import AreaSurfaces from "./AreaSurfaces";
 import BasePlate from "./BasePlate";
 import InstancedBuildings from "./InstancedBuildings";
+import RegionMeshes from "./RegionMeshes";
 import RoadRibbons from "./RoadRibbons";
 import TreeInstances from "./TreeInstances";
 import { paletteFor, readPreviewPalette, type PreviewPalette } from "./palette";
@@ -195,6 +198,15 @@ export const previewDeps = {
 
 /** Identity-stable fallback: a fresh `[]` per render would re-run an effect. */
 const NO_HEROES: readonly string[] = [];
+/**
+ * Identity-stable fallback for a zustand selector, for the same reason: a
+ * store selector returning a FRESH `[]` when there is no engine result yet
+ * reports "changed" to `useSyncExternalStore` on every render (a new
+ * reference is never `Object.is`-equal to the last one), which reproduces as
+ * "Maximum update depth exceeded" -- measured, not theoretical, in a real
+ * browser click-through of the Chicago preset before this constant existed.
+ */
+const NO_FINDINGS: readonly AuditFinding[] = [];
 
 /** Which token each lettering tone paints with. */
 function textColour(tone: string, colours: PreviewPalette): string {
@@ -223,7 +235,17 @@ export function CityPreview() {
   const status = useEditorStore((state) => state.scene.status);
   const params = useEditorStore((state) => state.params);
   const theme = useEditorStore((state) => state.theme);
-  const bakeWarnings = useEditorStore((state) => state.bake.warnings);
+  const engineStatus = useEditorStore((state) => state.engine.status);
+  const engineResult = useEditorStore((state) => state.engine.result);
+  const engineStale = useEditorStore((state) => state.engine.stale);
+  const engineFindings = useEditorStore((state) => state.engine.result?.findings ?? NO_FINDINGS);
+  const bakeWarnings = useMemo(
+    () =>
+      engineFindings
+        .filter((finding) => finding.severity !== "info")
+        .map((finding) => `${finding.title}: ${finding.detail}`),
+    [engineFindings],
+  );
   const toggleHero = useEditorStore((state) => state.toggleHero);
   const heroCapHit = useEditorStore((state) => state.heroCapHit);
   const rotationDeg = useEditorStore((state) => state.location.rotation_deg);
@@ -445,6 +467,13 @@ export function CityPreview() {
   const baseTop = T.base_top_mm(params);
   const roadZ = T.road_z_mm(params);
   const waterZ = T.water_z_mm(params);
+  // The real thing, when there is one to show: `RegionMeshes` replaces every
+  // approximate instanced/flat-fill layer below (base, frame, water, green,
+  // roads, buildings, trees, lettering) the moment a fresh `EngineResult`
+  // lands, so the preview and a downloaded file can never disagree. See
+  // `lib/enginePreview.ts:freshEngineResult`'s own docstring for what "fresh"
+  // means and why a stale result is never shown here.
+  const freshEngineResult = engineFresh({ status: engineStatus, result: engineResult, stale: engineStale });
   const heroIds = params.hero_building_ids ?? NO_HEROES;
   /*
     A hero takes the printed hero filament only in a mode that actually gives it
@@ -527,30 +556,44 @@ export function CityPreview() {
 
         {/* Print space is z-up; three is y-up. One rotation, once. */}
         <group rotation={[-Math.PI / 2, 0, 0]}>
-          <BasePlate
-            params={params}
-            baseColor={colours.base}
-            frameColor={colours.frame}
-          />
-          {water.length > 0 && waterZ !== null ? (
+          {/*
+            The real thing, the moment there is a fresh one: every RegionMesh
+            the engine produced, replacing every approximate layer below so the
+            preview and a downloaded file can never disagree (E4 brief, item 3).
+          */}
+          {freshEngineResult ? <RegionMeshes regions={freshEngineResult.regions} /> : null}
+
+          {!freshEngineResult ? (
+            <BasePlate params={params} baseColor={colours.base} frameColor={colours.frame} />
+          ) : null}
+          {!freshEngineResult && water.length > 0 && waterZ !== null ? (
             <AreaSurfaces
               areas={water}
               zMm={baseTop + Math.max(waterZ, 0.02)}
               color={colours.water}
             />
           ) : null}
-          <AreaSurfaces
-            areas={green}
-            zMm={baseTop + T.green_z_mm(params)}
-            color={colours.green}
-          />
-          {roads && roadZ !== null ? (
+          {!freshEngineResult ? (
+            <AreaSurfaces
+              areas={green}
+              zMm={baseTop + T.green_z_mm(params)}
+              color={colours.green}
+            />
+          ) : null}
+          {!freshEngineResult && roads && roadZ !== null ? (
             <RoadRibbons
               ribbons={roads}
               zMm={baseTop + Math.max(roadZ, 0.04)}
               color={colours.road}
             />
           ) : null}
+          {/*
+            Hero-picking (click and the keyboard cursor) has no equivalent on
+            the fused region mesh, which carries no per-building identity, so
+            this stays mounted and interactive even once RegionMeshes is what
+            is actually seen -- `hidden` only turns off its own draw and its
+            own shadow.
+          */}
           <InstancedBuildings
             buildings={layout.buildings}
             params={params}
@@ -564,25 +607,32 @@ export function CityPreview() {
               setCursorId(id);
               toggleHero(id);
             }}
+            hidden={Boolean(freshEngineResult)}
           />
-          <TreeInstances trees={trees} baseTopMm={baseTop} color={colours.tree} />
+          {!freshEngineResult ? (
+            <TreeInstances trees={trees} baseTopMm={baseTop} color={colours.tree} />
+          ) : null}
 
           {/*
             Frame lettering, the north arrow, the scale bar, the underside mark
             and the hanger pockets. Flat fills at the SHARED layout's own sizes
             and anchors (`transform.lettering_layout`, the function the bake
             cuts from), two-sided because the underside half is looked at from
-            below.
+            below. Once RegionMeshes is showing, its own `lettering` region (or
+            the frame's embossed letters) is the real cut -- these flat fills
+            would only sit on top of it.
           */}
-          {textDraw.map((textLayer) => (
-            <AreaSurfaces
-              key={textLayer.key}
-              areas={textLayer.areas}
-              zMm={textLayer.z_mm}
-              color={textColour(textLayer.tone, colours)}
-              doubleSide
-            />
-          ))}
+          {!freshEngineResult
+            ? textDraw.map((textLayer) => (
+                <AreaSurfaces
+                  key={textLayer.key}
+                  areas={textLayer.areas}
+                  zMm={textLayer.z_mm}
+                  color={textColour(textLayer.tone, colours)}
+                  doubleSide
+                />
+              ))
+            : null}
         </group>
 
         <Grid
@@ -603,6 +653,22 @@ export function CityPreview() {
 
       {/* The chip docks top-left, over the model's own empty corner. */}
       <div className="pointer-events-none absolute left-3 top-3 flex flex-col items-start gap-2">
+        {/*
+          Subtle, not blocking: the instanced approximation stays fully
+          interactive and on screen the whole time a newer engine job runs
+          underneath it, so there is never a flicker back to an empty canvas
+          -- this badge is the only thing that says a fresher result is on
+          its way (E4 brief, item 3).
+        */}
+        {engineStatus === "computing" ? (
+          <span
+            role="status"
+            data-testid="engine-updating"
+            className="rounded-milled border border-line bg-plate/95 px-2 py-1 text-2xs text-ink-muted shadow-raised"
+          >
+            Updating model...
+          </span>
+        ) : null}
         <AdjustmentsChip adjustments={adjustments} />
         {/*
           The cursor readout: visible so a sighted keyboard user can see where

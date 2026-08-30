@@ -1,313 +1,193 @@
 /**
- * Bake polling reducer tests.
+ * Bake, v3: the pure export/state-transition functions in `lib/bake.ts`.
  *
- * The `/bake` endpoints are mesh-bake's phase-3 deliverable and do not exist
- * yet, so the state machine is tested against canned `BakeResult` objects that
- * conform to the FROZEN contract. These canned objects live in the TEST only:
- * no app-code path ever fabricates a BakeResult.
+ * There is no server round trip left to test: `bake()` (the browser engine)
+ * is `lib/engine/solid`'s job and `lib/engine/export`'s writers are tested in
+ * `lib/engine/export/*.test.ts`. This file owns the glue -- turning a fake
+ * (but shape-correct) `EngineResult` into `DownloadFile[]`, and the small
+ * state machine (`idle -> exporting -> done|failed`, staleness) around it.
  */
 
 import { describe, expect, it } from "vitest";
 
-import { BAKE_API_URL } from "./api";
 import {
+  BAKE_STALE_NOTE,
+  bakeDone,
   bakeDownloadLinks,
+  bakeExporting,
   bakeFailedLocally,
-  bakeStarted,
   bakeStatusLabel,
-  downloadLinks,
   initialBakeState,
   isTerminal,
   markBakeStale,
-  reduceBake,
-  resolveParamsForBake,
-  shouldPoll,
+  revokeBakeUrls,
+  runExport,
+  stemForResult,
+  type BakeState,
 } from "./bake";
 import { defaultPrintParams } from "./contracts";
-import type { BakeResult, PrintParams } from "./contracts";
-import type { TokenContext } from "./tokens";
+import type { EngineResult, RegionMesh } from "./engine/types";
 
-const queued: BakeResult = {
-  job_id: "job-1",
-  status: "queued",
-  files: null,
-  stats: null,
-  warnings: [],
-  progress: null,
-  error: null,
+function region(name: RegionMesh["region"], slot = 1, colorHex = "#D8D3C6"): RegionMesh {
+  return {
+    region: name,
+    positions: new Float64Array([0, 0, 0, 10, 0, 0, 10, 10, 0]),
+    indices: new Uint32Array([0, 1, 2]),
+    volumeMm3: 100,
+    bbox: { min: [0, 0, 0], max: [10, 10, 1] },
+    bodies: 1,
+    slot,
+    colorHex,
+  };
+}
+
+function fakeResult(overrides: Partial<EngineResult> = {}): EngineResult {
+  const params = { ...defaultPrintParams(), ...(overrides.params ?? {}) };
+  return {
+    regions: [region("base", 1), region("buildings", 2, "#3A3A3A")],
+    // A real welded solid in the reference implementation would be one body;
+    // this fixture reuses the same triangle since none of these tests judge
+    // its geometry, only that it round-trips through the export/state layer.
+    merged: region("base", 1),
+    stats: {
+      scaleDenominator: 1000,
+      minWallMm: 0.8,
+      measuredMinWallMm: 0.85,
+      buildings: 40,
+      buildingsMerged: 0,
+      buildingsDilated: 0,
+      heightFallbacks: 0,
+      triangles: 2,
+      widthMm: 180,
+      depthMm: 180,
+      heightMm: 30,
+      elapsedMs: 12,
+    },
+    findings: [],
+    resolvedText: [],
+    ...overrides,
+    params,
+  };
+}
+
+const scene = {
+  bounds: { min_x: -900, min_y: -900, max_x: 900, max_y: 900 },
+  center: { lat: 41.8827, lon: -87.6233 },
+  buildings: [],
+  roads: [],
+  water: [],
+  green: [],
+  trees: [],
+  stats: { building_count: 40, coverage: "good" as const, height_tag_ratio: 0.5 },
 };
 
-const running: BakeResult = {
-  ...queued,
-  status: "running",
-  progress: 0.42,
-  warnings: ["47 buildings widened to meet minimum feature size"],
-};
-
-const done: BakeResult = {
-  job_id: "job-1",
-  status: "done",
-  files: { "3mf": "/files/ab12.3mf", stl: "/files/ab12.stl" },
-  stats: {
-    triangles: 412330,
-    volume_mm3: 39122.5,
-    bbox_mm: [180, 180, 41.2],
-    est_grams: 48.6,
-    is_manifold: true,
-    min_wall_mm: 0.81,
-  },
-  warnings: ["47 buildings widened to meet minimum feature size"],
-  progress: 1,
-  error: null,
-};
-
-const failed: BakeResult = {
-  job_id: "job-1",
-  status: "failed",
-  files: null,
-  stats: null,
-  warnings: [],
-  progress: 0.6,
-  error: "watertight: mesh has 12 boundary edges",
-};
-
-describe("lifecycle", () => {
-  it("runs queued -> running -> done", () => {
-    let state = bakeStarted("job-1");
-    expect(state.phase).toBe("queued");
-    expect(shouldPoll(state)).toBe(true);
-
-    state = reduceBake(state, queued);
-    expect(state.phase).toBe("queued");
-    expect(state.progress).toBeNull();
-
-    state = reduceBake(state, running);
-    expect(state.phase).toBe("running");
-    expect(state.progress).toBeCloseTo(0.42, 9);
-    expect(state.warnings).toHaveLength(1);
-    expect(shouldPoll(state)).toBe(true);
-
-    state = reduceBake(state, done);
-    expect(state.phase).toBe("done");
-    expect(state.progress).toBe(1);
-    expect(state.result?.stats?.triangles).toBe(412330);
-    expect(shouldPoll(state)).toBe(false);
-    expect(isTerminal(state.phase)).toBe(true);
-  });
-
-  it("carries the failing validator name into the error", () => {
-    const state = reduceBake(bakeStarted("job-1"), failed);
-    expect(state.phase).toBe("failed");
-    expect(state.error).toBe("watertight: mesh has 12 boundary edges");
-    expect(shouldPoll(state)).toBe(false);
-  });
-
-  it("always produces a message even if the server names no reason", () => {
-    const state = reduceBake(bakeStarted("job-1"), { ...failed, error: null });
-    expect(state.error).toBeTruthy();
-  });
-
-  it("never polls an idle state", () => {
-    expect(shouldPoll(initialBakeState)).toBe(false);
+describe("state transitions", () => {
+  it("starts idle", () => {
+    expect(initialBakeState.phase).toBe("idle");
     expect(bakeStatusLabel(initialBakeState)).toBe("Not baked yet");
+    expect(isTerminal(initialBakeState.phase)).toBe(false);
+  });
+
+  it("bakeExporting moves to exporting and clears any previous error", () => {
+    const state = bakeExporting(bakeFailedLocally(initialBakeState, "boom"));
+    expect(state.phase).toBe("exporting");
+    expect(state.error).toBeNull();
+    expect(isTerminal(state.phase)).toBe(false);
+  });
+
+  it("bakeFailedLocally carries the message and is terminal", () => {
+    const state = bakeFailedLocally(initialBakeState, "The engine could not build a model.");
+    expect(state.phase).toBe("failed");
+    expect(state.error).toBe("The engine could not build a model.");
+    expect(isTerminal(state.phase)).toBe(true);
+    expect(bakeStatusLabel(state)).toBe("The engine could not build a model.");
   });
 });
 
-describe("progress handling", () => {
-  it("keeps the last known value when the server omits progress", () => {
-    let state = reduceBake(bakeStarted("job-1"), running);
-    state = reduceBake(state, { ...running, progress: null });
-    expect(state.progress).toBeCloseTo(0.42, 9);
+describe("runExport / bakeDone", () => {
+  it("exports an stl and its sidecar as download files", () => {
+    const result = fakeResult();
+    const outcome = runExport(result, "stl", scene);
+    expect(outcome.output.files).toHaveLength(1);
+    expect(outcome.output.files[0].name.endsWith(".stl")).toBe(true);
+    expect(outcome.sidecarName.endsWith(".json")).toBe(true);
+    expect(outcome.sidecarBytes.length).toBeGreaterThan(0);
+
+    const state = bakeDone(initialBakeState, "stl", outcome, result.findings);
+    expect(state.phase).toBe("done");
+    expect(state.stale).toBe(false);
+    expect(state.target).toBe("stl");
+    // The mesh file plus the sidecar.
+    expect(state.files).toHaveLength(2);
+    expect(state.files.map((f) => f.filename)).toContain(outcome.sidecarName);
+    for (const file of state.files) {
+      expect(file.href.startsWith("blob:")).toBe(true);
+    }
+    revokeBakeUrls(state); // must not throw
   });
 
-  it("never moves backwards and never leaves 0..1", () => {
-    let state = reduceBake(bakeStarted("job-1"), { ...running, progress: 0.8 });
-    state = reduceBake(state, { ...running, progress: 0.1 });
-    expect(state.progress).toBeCloseTo(0.8, 9);
-    state = reduceBake(state, { ...running, progress: 5 });
-    expect(state.progress).toBe(1);
+  it("the sidecar carries the real PrintParams, stats and export target", () => {
+    const result = fakeResult({ params: { ...defaultPrintParams(), plate_mm: 220 } });
+    const outcome = runExport(result, "generic-3mf", scene);
+    const sidecar = JSON.parse(new TextDecoder().decode(outcome.sidecarBytes)) as {
+      print_params: { plate_mm: number };
+      export_target: string;
+      bake_result: { stats: { triangles: number } };
+    };
+    expect(sidecar.print_params.plate_mm).toBe(220);
+    expect(sidecar.export_target).toBe("generic-3mf");
+    expect(sidecar.bake_result.stats.triangles).toBe(2);
   });
 
-  it("labels the progress row from the contract fields", () => {
-    const state = reduceBake(bakeStarted("job-1"), running);
-    expect(bakeStatusLabel(state)).toBe("Baking... 42%");
-    expect(bakeStatusLabel(reduceBake(state, done))).toBe("Done");
-    expect(bakeStatusLabel(reduceBake(state, failed))).toContain("watertight");
-  });
-});
-
-describe("stale responses", () => {
-  it("ignores a poll answer for a job the user already replaced", () => {
-    const state = reduceBake(bakeStarted("job-2"), running);
-    expect(state.phase).toBe("queued");
-    expect(state.jobId).toBe("job-2");
+  it("defaults the stem to the city label, sanitised, or 'framecraft' when there is none", () => {
+    expect(stemForResult(fakeResult({ params: { ...defaultPrintParams(), city_label: "Chicago Loop" } }))).toBe(
+      "chicago-loop",
+    );
+    expect(stemForResult(fakeResult({ params: { ...defaultPrintParams(), city_label: "" } }))).toBe("framecraft");
   });
 
-  it("accepts the first answer when no job id is known yet", () => {
-    const state = reduceBake(initialBakeState, running);
-    expect(state.jobId).toBe("job-1");
-    expect(state.phase).toBe("running");
-  });
-});
-
-describe("download links", () => {
-  it("prefixes the API base URL and puts 3MF first", () => {
-    const state = reduceBake(bakeStarted("job-1"), done);
-    const links = downloadLinks(state.result);
-    expect(links.map((l) => l.label)).toEqual(["3MF", "STL"]);
-    expect(links[0].href).toBe(`${BAKE_API_URL}/files/ab12.3mf`);
-    expect(links[0].filename).toBe("ab12.3mf");
-    expect(links[1].href).toBe(`${BAKE_API_URL}/files/ab12.stl`);
-  });
-
-  it("offers nothing while the job is unfinished or failed", () => {
-    expect(downloadLinks(null)).toHaveLength(0);
-    expect(downloadLinks(running)).toHaveLength(0);
-    expect(downloadLinks(failed)).toHaveLength(0);
+  it("revoking a previous export's URLs happens automatically on the next bakeDone", () => {
+    const result = fakeResult();
+    const first = bakeDone(initialBakeState, "stl", runExport(result, "stl", scene), []);
+    const firstHrefs = first.files.map((f) => f.href);
+    const second = bakeDone(first, "stl", runExport(result, "stl", scene), []);
+    // Different object URLs (a second createObjectURL call never reuses the first's).
+    expect(second.files.map((f) => f.href)).not.toEqual(firstHrefs);
   });
 });
 
 describe("staleness", () => {
-  it("keeps the result but withdraws the downloads", () => {
-    const fresh = reduceBake(bakeStarted("job-1"), done);
+  function withFinishedBake(): BakeState {
+    const result = fakeResult();
+    return bakeDone(initialBakeState, "stl", runExport(result, "stl", scene), result.findings);
+  }
+
+  it("keeps the files but withdraws the download links once stale", () => {
+    const fresh = withFinishedBake();
     expect(bakeDownloadLinks(fresh)).toHaveLength(2);
 
     const stale = markBakeStale(fresh);
     expect(stale.stale).toBe(true);
-    expect(stale.result).toBe(fresh.result);
+    expect(stale.files).toBe(fresh.files);
     expect(stale.phase).toBe("done");
     expect(bakeDownloadLinks(stale)).toHaveLength(0);
     expect(bakeStatusLabel(stale)).toBe("Done (outdated)");
   });
 
   it("marks a failed bake too, so its error stops looking current", () => {
-    const state = markBakeStale(reduceBake(bakeStarted("job-1"), failed));
+    const state = markBakeStale(bakeFailedLocally(initialBakeState, "boom"));
     expect(state.stale).toBe(true);
   });
 
   it("leaves a non-terminal or already-stale bake untouched, by identity", () => {
-    const queuedState = bakeStarted("job-1");
-    expect(markBakeStale(queuedState)).toBe(queuedState);
     expect(markBakeStale(initialBakeState)).toBe(initialBakeState);
-    const runningState = reduceBake(queuedState, running);
-    expect(markBakeStale(runningState)).toBe(runningState);
-    const once = markBakeStale(reduceBake(queuedState, done));
+    const exporting = bakeExporting(initialBakeState);
+    expect(markBakeStale(exporting)).toBe(exporting);
+    const once = markBakeStale(withFinishedBake());
     expect(markBakeStale(once)).toBe(once);
   });
 
-  it("is cleared by the next server response", () => {
-    const stale = markBakeStale(reduceBake(bakeStarted("job-1"), done));
-    expect(reduceBake(stale, done).stale).toBe(false);
-  });
-});
-
-describe("transport failures", () => {
-  it("end the job locally without losing the job id", () => {
-    const state = bakeFailedLocally(bakeStarted("job-1"), "Cannot reach the bake API");
-    expect(state.phase).toBe("failed");
-    expect(state.jobId).toBe("job-1");
-    expect(state.error).toContain("Cannot reach");
-    expect(shouldPoll(state)).toBe(false);
-  });
-});
-
-// ==========================================================================
-// resolveParamsForBake ([V3-P1]: token expansion happens once, client-side)
-// ==========================================================================
-
-describe("resolveParamsForBake", () => {
-  const ctx: TokenContext = {
-    lat: 41.8827,
-    lon: -87.6233,
-    scale_mm_per_m: 168 / 1800,
-    radius_m: 900,
-    date: "2026-08-29",
-    buildings: 994,
-    city: "Chicago",
-  };
-  const noCity: TokenContext = { ...ctx, city: "" };
-
-  function withParams(overrides: Partial<PrintParams>): PrintParams {
-    return { ...defaultPrintParams(), ...overrides };
-  }
-
-  it("passes the contract defaults through unchanged", () => {
-    expect(resolveParamsForBake(defaultPrintParams(), ctx)).toEqual(defaultPrintParams());
-  });
-
-  it("sends the fully expanded text, not the raw {token} template", () => {
-    const params = withParams({
-      frame: true,
-      engravings: [{ edge: "top", text: "{city} — {radius}" }],
-    });
-    const resolved = resolveParamsForBake(params, ctx);
-    expect(resolved.engravings).toEqual([
-      { edge: "top", text: "Chicago — 900 m" },
-    ]);
-  });
-
-  it("omits an engraving line that resolves empty, never sends it as \"\"", () => {
-    const params = withParams({
-      frame: true,
-      engravings: [
-        { edge: "top", text: "{city}" },
-        { edge: "bottom", text: "a real line" },
-      ],
-    });
-    const resolved = resolveParamsForBake(params, noCity);
-    expect(resolved.engravings).toEqual([{ edge: "bottom", text: "a real line" }]);
-  });
-
-  it("omits every engraving line when the frame is off, rather than failing", () => {
-    const params = withParams({
-      frame: false,
-      engravings: [{ edge: "top", text: "{city}" }, { edge: "bottom", text: "real text" }],
-    });
-    const resolved = resolveParamsForBake(params, ctx);
-    expect(resolved.engravings).toEqual([]);
-  });
-
-  it("resolves the underside mark template", () => {
-    const params = withParams({
-      underside_mark: { enabled: true, template: "{city} {scale} {date}" },
-    });
-    const resolved = resolveParamsForBake(params, ctx);
-    expect(resolved.underside_mark).toEqual({
-      enabled: true,
-      template: "Chicago 1:10,714 2026-08-29",
-    });
-  });
-
-  it("turns the underside mark off, rather than sending an empty template, when it resolves empty", () => {
-    const params = withParams({
-      underside_mark: { enabled: true, template: "{city}" },
-    });
-    const resolved = resolveParamsForBake(params, noCity);
-    expect(resolved.underside_mark?.enabled).toBe(false);
-  });
-
-  it("leaves an already-disabled underside mark alone", () => {
-    const params = withParams({
-      underside_mark: { enabled: false, template: "{city}" },
-    });
-    const resolved = resolveParamsForBake(params, noCity);
-    expect(resolved.underside_mark).toEqual({ enabled: false, template: "{city}" });
-  });
-
-  it("leaves every other field untouched", () => {
-    const params = withParams({ plate_mm: 220, base_thickness_mm: 5, hanger: "keyhole" });
-    const resolved = resolveParamsForBake(params, ctx);
-    expect(resolved.plate_mm).toBe(220);
-    expect(resolved.base_thickness_mm).toBe(5);
-    expect(resolved.hanger).toBe("keyhole");
-  });
-
-  it("an unknown {token} survives verbatim: it is someone's literal text, not empty", () => {
-    const params = withParams({
-      frame: true,
-      engravings: [{ edge: "top", text: "{unknown}" }],
-    });
-    const resolved = resolveParamsForBake(params, ctx);
-    expect(resolved.engravings).toEqual([{ edge: "top", text: "{unknown}" }]);
+  it("the stale note is real copy, not empty", () => {
+    expect(BAKE_STALE_NOTE.length).toBeGreaterThan(0);
   });
 });

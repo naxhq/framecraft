@@ -3,21 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "predev": "node scripts/copy-maplibre-worker.mjs",
+    "predev": "node scripts/copy-maplibre-worker.mjs && node scripts/copy-manifold-wasm.mjs",
     "dev": "next dev",
-    "prebuild": "node scripts/copy-maplibre-worker.mjs",
+    "prebuild": "node scripts/copy-maplibre-worker.mjs && node scripts/copy-manifold-wasm.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "bake:cli": "vite-node scripts/bake-cli.ts --"
   },
   "dependencies": {
     "@fontsource-variable/archivo": "5.3.0",
     "@fontsource-variable/ibm-plex-sans": "5.3.0",
     "@react-three/drei": "10.7.8",
     "@react-three/fiber": "9.7.0",
+    "fflate": "^0.8.3",
+    "manifold-3d": "^3.5.1",
     "maplibre-gl": "6.6.0",
     "next": "15.5.24",
     "react": "19.2.8",
@@ -39,6 +42,7 @@
     "eslint-config-next": "15.5.24",
     "tailwindcss": "4.3.3",
     "typescript": "5.9.3",
+    "vite-node": "6.0.0",
     "vitest": "4.1.11"
   }
 }
