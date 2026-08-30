@@ -57,3 +57,10 @@ docker-compose.yml  Makefile  RUNBOOK.md
 
 Web `localhost:3000`, bake API `localhost:8000` (`/health`, `/presets`,
 `/scene`, `/bake`, `/bake/{id}`, `/files/{name}`).
+
+## Git authorship
+
+Every commit is authored by `Vahid Alizadeh <vahid.alizadeh@gmail.com>` only.
+No `Co-Authored-By:` trailers, no session links, no generator lines in commit
+messages. The repo-local `git config user.name/user.email` is already set;
+subagents must not commit (the orchestrator commits per phase).

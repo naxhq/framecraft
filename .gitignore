@@ -41,3 +41,8 @@ artifacts/logs/*
 # OS
 .DS_Store
 Thumbs.db
+
+# planning-with-files working memory (session scratch, not repo content)
+/task_plan.md
+/progress.md
+/findings.md
