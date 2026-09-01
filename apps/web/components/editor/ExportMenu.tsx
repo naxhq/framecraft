@@ -2,6 +2,7 @@
 
 import { notServedSentence } from "@/lib/colourMap";
 import { EXPORT_TARGETS, EXPORT_TARGET_LABELS, type ExportTarget } from "@/lib/engine/export";
+import { resolveProfile } from "@/lib/printers";
 import { useEditorStore } from "@/store/editor";
 
 /**
@@ -26,12 +27,25 @@ import { useEditorStore } from "@/store/editor";
  * base (audit v3-02 finding 1's own follow-up note).
  */
 export function ExportMenu() {
-  const target = useEditorStore((state) => state.params.export_target ?? "bambu-3mf");
+  const params = useEditorStore((state) => state.params);
+  const target = params.export_target ?? "bambu-3mf";
   const setParam = useEditorStore((state) => state.setParam);
   const requestBake = useEditorStore((state) => state.requestBake);
   const plan = useEditorStore((state) => state.bake.plan);
   const planIsForThisTarget =
     useEditorStore((state) => state.bake.target) === "color-change-3mf" && target === "color-change-3mf";
+  const tiles = useEditorStore((state) => state.engine.result?.tiles);
+  /**
+   * Mirrors `lib/engine/export/index.ts:exportForTarget`'s own tiled-dispatch
+   * condition exactly (`target === "bambu-3mf" && profile.vendor === "bambu"`):
+   * that is the ONLY combination a tiled bake writes as one multi-plate file.
+   * Every other target -- including `color-change-3mf`, which is a plan for
+   * ONE printed object and cannot become several plates of one -- comes back
+   * as a zip of per-tile files (p4-engine, `[V3-P4-E5]`). Read from the real
+   * dispatch condition rather than guessed a second time, so this note can
+   * never drift from what a bake actually produces.
+   */
+  const singleTiledFile = target === "bambu-3mf" && resolveProfile(params).vendor === "bambu";
 
   const onChange = (value: ExportTarget): void => {
     setParam("export_target", value);
@@ -64,6 +78,18 @@ export function ExportMenu() {
         >
           Approximate: one nozzle, colour changes at the height bands the
           geometry allows. {notServedSentence(plan)}
+        </p>
+      ) : null}
+
+      {tiles && tiles.length > 1 ? (
+        <p
+          data-testid="tiled-export-note"
+          className="max-w-[16rem] text-2xs leading-snug text-ink-faint"
+        >
+          Tiling is on: {tiles.length} tiles ({tiles.map((tile) => tile.label).join(", ")}).{" "}
+          {singleTiledFile
+            ? `${tiles.length} tiles, one plate each, in a single Bambu Studio project.`
+            : `${tiles.length} tiles, one ${EXPORT_TARGET_LABELS[target]} file each, in a zip named by tile.`}
         </p>
       ) : null}
     </div>

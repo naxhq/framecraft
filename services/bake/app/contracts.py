@@ -236,7 +236,7 @@ class CustomProfile(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
     plate_x_mm: Annotated[float, Field(ge=100, le=400)] = 256
     plate_y_mm: Annotated[float, Field(ge=100, le=400)] = 256
-    max_height_mm: Annotated[float, Field(ge=20, le=500)] = 250
+    max_height_mm: Annotated[float, Field(ge=20, le=500)] = 60
     nozzle_mm: Annotated[float, Field(ge=0.2, le=1.0)] = 0.4
     slots: Annotated[int, Field(ge=1, le=16)] = 4
     change_gcode: str = "M600"
@@ -369,7 +369,7 @@ class PrintParams(BaseModel):
     regions: Regions = Field(default_factory=lambda: Regions(roads=RoadRegion(depth_mm=0.6, proud_mm=-0.2), water=WaterRegion(depth_mm=1.0, proud_mm=-0.5), parks=ParkRegion(depth_mm=0.4, proud_mm=0.0), rail=RailRegion(depth_mm=0.4, proud_mm=0.3, width_m=6.0), building_skirt_mm=0.3))
     colour: Colour = Field(default_factory=lambda: Colour(region_slots=RegionSlots(base=1, frame=1, matting=1, buildings=2, hero_building=4, roads=4, water=3, parks=4, rail=4, lettering=4, attribution=1), region_colors=RegionColors(base="#D8D3C6", frame="#3A3A3A", matting="#EDE9E0", buildings="#D8D3C6", hero_building="#E3A72F", roads="#3A3A3A", water="#2F7FC1", parks="#5A9E4B", rail="#6B6B6B", lettering="#E3A72F", attribution="#D8D3C6"), palette="default", tint=Tint(enabled=False, hue_range_deg=12, lightness_range=0.12, seed=1), gradient=Gradient(enabled=False, slots=[2, 3]), preview_theme="dark"))
     printer_profile: Literal["custom", "bambu-h2s", "bambu-p1s", "bambu-x1c", "bambu-a1", "bambu-a1-mini", "prusa-mk4", "prusa-mini", "ender-3"] = "custom"
-    custom_profile: CustomProfile = Field(default_factory=lambda: CustomProfile(plate_x_mm=256, plate_y_mm=256, max_height_mm=250, nozzle_mm=0.4, slots=4, change_gcode="M600"))
+    custom_profile: CustomProfile = Field(default_factory=lambda: CustomProfile(plate_x_mm=256, plate_y_mm=256, max_height_mm=60, nozzle_mm=0.4, slots=4, change_gcode="M600"))
     export_target: Literal["bambu-3mf", "generic-3mf", "stl", "stl-parts-zip", "obj", "step", "color-change-3mf"] = "bambu-3mf"
     terrain: Terrain = Field(default_factory=lambda: Terrain(enabled=False, smoothing=1))
     heights: Heights = Field(default_factory=lambda: Heights(floor_height_m=3.0, unknown_default_m=8.0, type_defaults=TypeDefaults(house=6, apartments=15, commercial=12, retail=6, industrial=8, garage=3)))

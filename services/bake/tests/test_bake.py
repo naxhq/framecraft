@@ -1278,6 +1278,31 @@ def test_validator_rejects_a_model_taller_than_sixty_millimetres():
     assert "60 mm" in report.get("bounding_box").message
 
 
+def test_validator_judges_height_against_the_printer_the_bake_names():
+    """``max_height_mm`` is the ACTIVE printer's gantry, not a fixed 60.
+
+    The ceiling belongs to the machine (DECISIONS ``[V3-P4-E9]``): the same
+    70 mm model is unprintable on a 60 mm ceiling and perfectly printable on a
+    P1S, and the browser bake records which one it was made for in its sidecar.
+    Passing nothing keeps 04's own figure, so every file without a sidecar is
+    judged exactly as it always was (the test above).
+    """
+    box = trimesh.creation.box(extents=(10.0, 10.0, 70.0))
+    box.apply_translation([0.0, 0.0, 35.0])
+
+    tall = validators.validate(
+        box, PrintParams(), self_intersection_sample=False, max_height_mm=250.0
+    )
+    assert "bounding_box" not in tall.failed
+    assert "250 mm" in tall.get("bounding_box").threshold
+
+    short = validators.validate(
+        box, PrintParams(), self_intersection_sample=False, max_height_mm=50.0
+    )
+    assert "bounding_box" in short.failed
+    assert "50 mm" in short.get("bounding_box").message
+
+
 def test_validator_min_wall_probe_catches_a_thin_wall():
     """A 0.3 mm wall is under 0.9 x min_wall (0.72 mm) and must fail."""
     wall = trimesh.creation.box(extents=(0.3, 40.0, 20.0))

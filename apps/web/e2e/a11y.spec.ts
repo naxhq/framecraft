@@ -15,9 +15,17 @@ import { mockChicagoOverpass } from "./overpassMock";
  * rather than asserted is axe's `incomplete` list, which on this page is mostly
  * "cannot determine the background behind a WebGL canvas" -- a genuine limit of
  * a static checker, not a defect to hide.
+ *
+ * Budgets scale with `E2E_BUDGET_FACTOR`, matching `smoke.spec.ts`/
+ * `terrain.spec.ts`'s own convention: the 2-core software-WebGL CI runner
+ * measured slower on every wait here, not just one, and the real tab walk
+ * below additionally raises its own PER-TEST timeout (`test.setTimeout`) --
+ * the default 300 s Playwright test budget is separate from any one
+ * `expect(...).toBeVisible({timeout})` and was what actually tripped on CI
+ * (5.1 min into a 120-press walk), not a single slow assertion.
  */
-
-const WARMUP_BUDGET_MS = 60_000;
+const BUDGET_FACTOR = Number(process.env.E2E_BUDGET_FACTOR ?? 1) || 1;
+const WARMUP_BUDGET_MS = 60_000 * BUDGET_FACTOR;
 const BLOCKING_IMPACTS = new Set(["serious", "critical"]);
 
 interface Violation {
@@ -108,6 +116,9 @@ test.describe.configure({ mode: "serial" });
 
 for (const theme of ["light", "dark"] as const) {
   test(`axe: the ${theme} editor is clean in every state`, async ({ page }) => {
+    // Five states, each a real axe scan over the same slower CI runner the
+    // tab-walk test above measures its own overrun on.
+    test.setTimeout(300_000 * BUDGET_FACTOR);
     await page.goto("/");
     await expect(page.getByTestId("editor")).toBeVisible();
     await setTheme(page, theme);
@@ -118,7 +129,7 @@ for (const theme of ["light", "dark"] as const) {
 
     // 2. A real scene, with every group open so nothing is audited unrendered.
     await generateChicago(page);
-    for (const group of ["frame", "colour"]) {
+    for (const group of ["frame", "colour", "printer"]) {
       const toggle = page.getByTestId(`group-${group}-toggle`);
       if ((await toggle.getAttribute("aria-expanded")) === "false") {
         await toggle.click();
@@ -135,6 +146,21 @@ for (const theme of ["light", "dark"] as const) {
     await auditWithAxe(page, `${theme} / adjustments drawer open`);
     await chip.click();
 
+    // 3b. The Issues drawer open, WITH a real fix button in it (phase 4): the
+    // default Chicago scene has no error/warning-level finding of its own, so
+    // one is forced -- a region on a filament slot the default 4-slot custom
+    // profile does not have -- exactly like `print.spec.ts`'s own "a finding
+    // with a fix" test.
+    await page.locator("#colour_slot_buildings").selectOption("9");
+    const issuesBadge = page.getByTestId("issues-badge");
+    await expect(issuesBadge).toBeVisible({ timeout: WARMUP_BUDGET_MS });
+    await issuesBadge.click();
+    await expect(page.getByTestId("issues-drawer")).toBeVisible();
+    await expect(page.getByTestId("issue-fix-slot-beyond-profile")).toBeVisible();
+    await auditWithAxe(page, `${theme} / issues drawer open, with a fix button`);
+    await issuesBadge.click();
+    await page.locator("#colour_slot_buildings").selectOption("1");
+
     // 4. The shortcut sheet, which is the one modal in the product.
     await page.getByTestId("shortcuts-button").click();
     await expect(page.getByTestId("shortcut-sheet")).toBeVisible();
@@ -146,7 +172,7 @@ for (const theme of ["light", "dark"] as const) {
 test("every control in the panel is reachable and named", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId("editor")).toBeVisible();
-  for (const group of ["frame", "colour"]) {
+  for (const group of ["frame", "colour", "printer"]) {
     const toggle = page.getByTestId(`group-${group}-toggle`);
     if ((await toggle.getAttribute("aria-expanded")) === "false") await toggle.click();
   }
@@ -196,10 +222,23 @@ test("every control in the panel is reachable and named", async ({ page }) => {
 test("every control is reachable by Tab, in order, with a visible focus ring", async ({
   page,
 }) => {
+  // 120 real key presses plus a DOM read after each one, on the real Chicago
+  // scene: measured 5.1 min on a 2-core software-WebGL CI runner, against
+  // Playwright's own 300 s default TEST timeout (separate from any single
+  // `expect(...).toBeVisible({timeout})` above, which is why raising
+  // WARMUP_BUDGET_MS alone did not cover this one).
+  test.setTimeout(300_000 * BUDGET_FACTOR);
+
   await page.goto("/");
   await expect(page.getByTestId("editor")).toBeVisible();
   await generateChicago(page);
-  for (const group of ["frame", "colour"]) {
+  // Let the debounced WASM engine job settle before spending the walk's own
+  // budget: a Tab press that lands mid-bake pays for whatever store-wide
+  // re-render the engine result's arrival triggers on TOP of its own work,
+  // which is exactly the kind of unrelated cost this walk should not have to
+  // absorb 120 times over.
+  await expect(page.getByTestId("engine-updating")).toHaveCount(0, { timeout: WARMUP_BUDGET_MS });
+  for (const group of ["frame", "colour", "printer"]) {
     const toggle = page.getByTestId(`group-${group}-toggle`);
     if ((await toggle.getAttribute("aria-expanded")) === "false") await toggle.click();
   }
@@ -290,6 +329,7 @@ test("every control is reachable by Tab, in order, with a visible focus ring", a
     "frame", // Frame and text
     "hanger",
     "hero_mode", // Colour
+    "printer_profile", // Printer
   ];
   const missingIds = REQUIRED_IDS.filter((id) => !ids.has(id));
   expect(missingIds, `never reached by Tab: ${missingIds.join(", ")}`).toEqual([]);

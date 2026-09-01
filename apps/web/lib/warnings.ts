@@ -25,9 +25,34 @@
 import type { PrintParams, SceneGraph } from "./contracts";
 import type { EngineBuilding } from "./engine/osm/types";
 import { effectiveHeroHeightKey, effectiveHeroIds } from "./heroes";
+import { resolveProfile } from "./printers";
 import { resolvedOutputLines } from "./resolvedOutput";
 import type { TokenContext } from "./tokens";
 import * as T from "./transform";
+
+/**
+ * The height ceiling `predictedTopMm` is judged against: the ACTIVE printer
+ * profile's own usable height, `lib/printers.ts:resolveProfile(params).
+ * maxHeightMm` -- straight, no `Math.min` with 04's old flat 60 mm figure
+ * (team lead's ruling, `[V3-P4]`/`[V3-P4-E9]` in DECISIONS.md; mirrors
+ * `lib/engine/solid/validate.ts:maxHeightMm(ctx)`, so the UI's block/readout
+ * and the engine's own "exceeds-height" finding can never disagree about
+ * which model is too tall). The ceiling is a property of the machine: a P1S
+ * really does have 250 mm of gantry, and refusing a 90 mm model on it
+ * because a different printer's product ceiling said 60 would be wrong.
+ *
+ * This holds every existing default in place without a `min()`: the
+ * contract's own `custom_profile.max_height_mm` default is 60 (moved from
+ * 250 alongside this ruling -- `packages/contracts/schema/print_params.json`,
+ * regenerated), and `printer_profile` defaults to `"custom"`, so a
+ * default-constructed `PrintParams` still resolves to 60 mm here. Picking a
+ * NAMED printer genuinely raises or lowers the ceiling to what that printer
+ * can actually do (the P1S's own 250 mm, the A1 mini's 180 mm, ...), which is
+ * the whole point of the PRINTER group existing.
+ */
+export function heightCeilingMm(params: PrintParams): number {
+  return resolveProfile(params).maxHeightMm;
+}
 
 /** 01/A2. `coverage: "empty"` is the server's own verdict on the same rule. */
 export const MIN_BUILDINGS_TO_BAKE = 20;
@@ -133,6 +158,18 @@ export function warningDeps(
  * (and therefore the predicted top) actually changes -- which needs a
  * building for `hero_auto` to promote, so it is a no-op on an empty scene,
  * same as every other hero move on one.
+ *
+ * `printer_profile` and `custom_profile?.max_height_mm` (phase 4,
+ * `[V3-P4-U]`) are the ONE pair of exceptions to "names every parameter the
+ * PREDICTION reads, and no other": neither moves `predicted_top_mm` itself --
+ * only `heightCeilingMm`, what it is compared AGAINST, moves with them. They
+ * are listed here anyway because every reader of this dep list (the OUTPUT
+ * panel's ceiling text, the preview's HUD tone, its too-tall pill) recomputes
+ * from the SAME memo key, and a stale ceiling comparison after switching
+ * printers -- correct number, wrong colour -- is exactly the kind of thing
+ * this list exists to prevent. `warnings.test.ts`'s own closed-set check only
+ * asserts the one direction that matters (a dep that DOES move the
+ * prediction must be listed); it does not fail on an extra, honest dep.
  */
 export function predictedTopDeps(
   graph: SceneGraph | null,
@@ -147,6 +184,8 @@ export function predictedTopDeps(
     params.large_scale,
     params.trees,
     effectiveHeroHeightKey(graph ? (graph.buildings as EngineBuilding[]) : undefined, params),
+    params.printer_profile,
+    params.custom_profile?.max_height_mm,
   ];
 }
 
@@ -222,14 +261,15 @@ export function sceneWarnings(
   }
 
   const top = predictedTopMm(graph, params);
-  if (top !== null && top >= T.MAX_HEIGHT_MM) {
+  const ceiling = heightCeilingMm(params);
+  if (top !== null && top >= ceiling) {
     warnings.push({
       id: "model-too-tall",
       level: "block",
       message:
         `Model would be ${top.toFixed(1)} mm tall ` +
-        `(limit ${T.MAX_HEIGHT_MM.toFixed(0)} mm) — ` +
-        "lower the building scales or the plate size",
+        `(${resolveProfile(params).label} ceiling ${ceiling.toFixed(0)} mm) — ` +
+        "lower the building scales or the plate size, or pick a taller printer",
     });
   }
 

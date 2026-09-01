@@ -156,7 +156,7 @@
         "custom_profile": {
           "plate_x_mm": 256.0,
           "plate_y_mm": 256.0,
-          "max_height_mm": 250.0,
+          "max_height_mm": 60.0,
           "nozzle_mm": 0.4,
           "slots": 4,
           "change_gcode": "M600"
@@ -566,7 +566,7 @@
         "custom_profile": {
           "plate_x_mm": 256.0,
           "plate_y_mm": 256.0,
-          "max_height_mm": 250.0,
+          "max_height_mm": 60.0,
           "nozzle_mm": 0.4,
           "slots": 4,
           "change_gcode": "M600"
@@ -915,7 +915,7 @@
         "custom_profile": {
           "plate_x_mm": 256.0,
           "plate_y_mm": 256.0,
-          "max_height_mm": 250.0,
+          "max_height_mm": 60.0,
           "nozzle_mm": 0.4,
           "slots": 4,
           "change_gcode": "M600"
@@ -1219,7 +1219,7 @@
         "custom_profile": {
           "plate_x_mm": 256.0,
           "plate_y_mm": 256.0,
-          "max_height_mm": 250.0,
+          "max_height_mm": 60.0,
           "nozzle_mm": 0.4,
           "slots": 4,
           "change_gcode": "M600"
@@ -1530,7 +1530,7 @@
         "custom_profile": {
           "plate_x_mm": 256.0,
           "plate_y_mm": 256.0,
-          "max_height_mm": 250.0,
+          "max_height_mm": 60.0,
           "nozzle_mm": 0.4,
           "slots": 4,
           "change_gcode": "M600"
@@ -1778,7 +1778,7 @@
         "custom_profile": {
           "plate_x_mm": 256.0,
           "plate_y_mm": 256.0,
-          "max_height_mm": 250.0,
+          "max_height_mm": 60.0,
           "nozzle_mm": 0.4,
           "slots": 4,
           "change_gcode": "M600"
@@ -2028,7 +2028,7 @@
         "custom_profile": {
           "plate_x_mm": 256.0,
           "plate_y_mm": 256.0,
-          "max_height_mm": 250.0,
+          "max_height_mm": 60.0,
           "nozzle_mm": 0.4,
           "slots": 4,
           "change_gcode": "M600"
@@ -2286,7 +2286,7 @@
         "custom_profile": {
           "plate_x_mm": 256.0,
           "plate_y_mm": 256.0,
-          "max_height_mm": 250.0,
+          "max_height_mm": 60.0,
           "nozzle_mm": 0.4,
           "slots": 4,
           "change_gcode": "M600"
@@ -2585,7 +2585,7 @@
         "custom_profile": {
           "plate_x_mm": 256.0,
           "plate_y_mm": 256.0,
-          "max_height_mm": 250.0,
+          "max_height_mm": 60.0,
           "nozzle_mm": 0.4,
           "slots": 4,
           "change_gcode": "M600"
@@ -2849,7 +2849,7 @@
         "custom_profile": {
           "plate_x_mm": 256.0,
           "plate_y_mm": 256.0,
-          "max_height_mm": 250.0,
+          "max_height_mm": 60.0,
           "nozzle_mm": 0.4,
           "slots": 4,
           "change_gcode": "M600"
@@ -3117,7 +3117,7 @@
         "custom_profile": {
           "plate_x_mm": 256.0,
           "plate_y_mm": 256.0,
-          "max_height_mm": 250.0,
+          "max_height_mm": 60.0,
           "nozzle_mm": 0.4,
           "slots": 4,
           "change_gcode": "M600"
@@ -3391,7 +3391,7 @@
         "custom_profile": {
           "plate_x_mm": 256.0,
           "plate_y_mm": 256.0,
-          "max_height_mm": 250.0,
+          "max_height_mm": 60.0,
           "nozzle_mm": 0.4,
           "slots": 4,
           "change_gcode": "M600"
@@ -3698,7 +3698,7 @@
         "custom_profile": {
           "plate_x_mm": 256.0,
           "plate_y_mm": 256.0,
-          "max_height_mm": 250.0,
+          "max_height_mm": 60.0,
           "nozzle_mm": 0.4,
           "slots": 4,
           "change_gcode": "M600"

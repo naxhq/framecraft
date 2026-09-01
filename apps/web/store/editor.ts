@@ -46,10 +46,10 @@ import {
   runExport,
   type BakeState,
 } from "@/lib/bake";
-import { DEFAULT_PRINT_PARAMS, defaultPrintParams } from "@/lib/contracts";
+import { DEFAULT_PRINT_PARAMS, PARAM_RANGES, defaultPrintParams } from "@/lib/contracts";
 import type { PrintParams, SceneGraph, SceneRequest } from "@/lib/contracts";
 import { createEngineClient, EngineClientError } from "@/lib/engine/client";
-import type { EngineResult, TerrainGrid } from "@/lib/engine/types";
+import type { AuditFinding, EngineResult, TerrainGrid } from "@/lib/engine/types";
 import type { EngineBuilding } from "@/lib/engine/osm/types";
 import type { OverpassFetchError } from "@/lib/engine/osm/overpass";
 import type { ExportTarget } from "@/lib/engine/export";
@@ -57,7 +57,9 @@ import { fetchTerrainGrid } from "@/lib/engine/terrain/tiles";
 import type { GeocodeResult } from "@/lib/geocode";
 import { RADIUS_MAX_M, RADIUS_MIN_M, snapRadius } from "@/lib/geo";
 import { autoHeroIds, heroCandidates, toggleHeroId } from "@/lib/heroes";
+import { applyFix, applySafeFixes, type FixApplication } from "@/lib/issues";
 import { presetCityName } from "@/lib/presets";
+import { profileApplyPatch, type PrinterProfileId } from "@/lib/printers";
 import { decodeShare, readShareParam } from "@/lib/share";
 import { terrainCache, terrainCacheKey } from "@/lib/terrainCache";
 import { bakeBlockReason } from "@/lib/warnings";
@@ -194,7 +196,8 @@ export type NestedParamKey =
   | "terrain"
   | "heights"
   | "height_exaggeration"
-  | "hero_auto";
+  | "hero_auto"
+  | "tiling";
 
 export interface EditorState {
   location: LocationState;
@@ -226,6 +229,8 @@ export interface EditorState {
    * `EditorShell` -- Escape has to close a drawer whatever has focus.
    */
   adjustmentsOpen: boolean;
+  /** Whether the Issues drawer (engine findings + client warnings, phase 4) is open. Same Escape/focus discipline as `adjustmentsOpen`. */
+  issuesOpen: boolean;
   /**
    * Why a shared link was not applied, or null. Informational: a rejected link
    * leaves the editor on its defaults rather than half-restored, and saying
@@ -247,6 +252,28 @@ export interface EditorState {
     patch: Partial<NonNullable<PrintParams[K]>>,
   ) => void;
   resetParams: () => void;
+  /**
+   * The PRINTER group's profile select. For every named printer this ALSO
+   * writes `plate_mm`/`nozzle_mm` from the profile (clamped to their own
+   * contract range) -- once, on the selection change itself
+   * (`lib/printers.ts:profileApplyPatch`); the user can still move either
+   * slider afterwards and nothing fights them back. Selecting `custom`
+   * writes only the id.
+   */
+  setPrinterProfile: (id: PrinterProfileId) => void;
+  /**
+   * Apply one `AuditFinding.fix` through `lib/engine/audit/fixes.ts:applyFix`
+   * (the Issues drawer's per-row button): one state change, stale-marks the
+   * engine/bake and reschedules a bake exactly like any other control.
+   * Returns what moved (or why nothing did) so the row can report it.
+   */
+  applyFinding: (finding: AuditFinding) => FixApplication;
+  /**
+   * "Auto-fix all safe issues": every current finding whose `fix.safe` is
+   * true, folded into one write through `applySafeFixes`. Returns what
+   * changed so the button can report it ("3 changes: ...").
+   */
+  applySafeFindingFixes: () => FixApplication;
 
   // --- place resolution ([V3-P1]: preset > geocode > user override) --------
   /**
@@ -282,6 +309,7 @@ export interface EditorState {
 
   // --- transient UI ---
   setAdjustmentsOpen: (open: boolean) => void;
+  setIssuesOpen: (open: boolean) => void;
 
   // --- theme ---
   setTheme: (theme: Theme) => void;
@@ -530,6 +558,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   presetChosen: false,
   heroCapHit: false,
   adjustmentsOpen: false,
+  issuesOpen: false,
   shareNotice: null,
 
   setPin: (lat, lon) => {
@@ -651,6 +680,44 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     }));
     scheduleEngineJob(get, set);
     scheduleTerrainJob(get, set);
+  },
+
+  setPrinterProfile: (id) => {
+    const patch = profileApplyPatch(id, {
+      plate_mm: PARAM_RANGES.plate_mm,
+      nozzle_mm: PARAM_RANGES.nozzle_mm,
+    });
+    set((state) => ({
+      params: { ...state.params, ...patch },
+      engine: markEngineStale(state.engine),
+      bake: markBakeStale(state.bake),
+    }));
+    scheduleEngineJob(get, set);
+  },
+
+  applyFinding: (finding) => {
+    const outcome = applyFix(get().params, finding);
+    if (outcome.changes.length === 0) return outcome;
+    set((state) => ({
+      params: outcome.params,
+      engine: markEngineStale(state.engine),
+      bake: markBakeStale(state.bake),
+    }));
+    scheduleEngineJob(get, set);
+    return outcome;
+  },
+
+  applySafeFindingFixes: () => {
+    const findings = get().engine.result?.findings ?? [];
+    const outcome = applySafeFixes(get().params, findings);
+    if (outcome.changes.length === 0) return outcome;
+    set((state) => ({
+      params: outcome.params,
+      engine: markEngineStale(state.engine),
+      bake: markBakeStale(state.bake),
+    }));
+    scheduleEngineJob(get, set);
+    return outcome;
   },
 
   applyGeocodeResult: (lat, lon, result) => {
@@ -818,6 +885,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   setShareNotice: (message) => set({ shareNotice: message }),
 
   setAdjustmentsOpen: (open) => set({ adjustmentsOpen: open }),
+  setIssuesOpen: (open) => set({ issuesOpen: open }),
 
   setTheme: (theme) => {
     if (typeof document !== "undefined") {

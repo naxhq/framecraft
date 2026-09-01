@@ -11,11 +11,11 @@ import { textTokenContext } from "@/lib/previewText";
 import { resolvedOutputLines, type ResolvedLine as PredictedLine } from "@/lib/resolvedOutput";
 import { shareUrl } from "@/lib/share";
 import type { ResolvedLine as EngineResolvedLine } from "@/lib/engine/types";
-import { MAX_HEIGHT_MM } from "@/lib/transform";
-import { bakeBlockReason, predictedTopMm, warningDeps } from "@/lib/warnings";
+import { bakeBlockReason, heightCeilingMm, predictedTopMm, warningDeps } from "@/lib/warnings";
 import { locationToRequest, useEditorStore } from "@/store/editor";
-import ExportMenu from "./ExportMenu";
 import { Note } from "./Controls";
+import EstimateCard from "./EstimateCard";
+import ExportMenu from "./ExportMenu";
 import StatsCard from "./StatsCard";
 
 /**
@@ -61,6 +61,11 @@ export function OutputPanel({
     warningDeps(graph, params),
   );
   const blockReason = bakeBlockReason(graph, params);
+  // The selected printer's own ceiling, `lib/warnings.ts:heightCeilingMm`
+  // (team lead's ruling, `[V3-P4]`): the ACTIVE profile's `maxHeightMm`,
+  // straight, so this line and the block reason above can never name two
+  // different numbers for the same model.
+  const heightCeiling = heightCeilingMm(params);
 
   /**
    * `{date}` is pinned once, the same reason `CityPreview` and `FrameTextGroup`
@@ -213,11 +218,12 @@ export function OutputPanel({
         <p
           data-testid="predicted-height"
           data-predicted-mm={predictedTop.toFixed(1)}
+          data-ceiling-mm={heightCeiling.toFixed(0)}
           className={`text-2xs ${
-            predictedTop >= MAX_HEIGHT_MM ? "font-medium text-danger" : "text-ink-faint"
+            predictedTop >= heightCeiling ? "font-medium text-danger" : "text-ink-faint"
           }`}
         >
-          Predicted height {predictedTop.toFixed(1)} mm of {MAX_HEIGHT_MM.toFixed(0)} mm
+          Predicted height {predictedTop.toFixed(1)} mm of {heightCeiling.toFixed(0)} mm
         </p>
       ) : null}
 
@@ -227,8 +233,40 @@ export function OutputPanel({
         </Note>
       ) : null}
 
-      {/* The results, which are what the Output group's toggle folds. */}
-      <div id={resultsId} className="space-y-3">
+      {/*
+        The results, which are what the Output group's toggle folds.
+
+        `max-h` + `overflow-y-auto`, not `space-y-3` alone: `group-output` is
+        a `shrink-0` sibling of the scrollable group list in `ParamPanel.tsx`
+        (never itself scrollable), so unbounded content here -- the estimate
+        card, a finished bake's status and download links, and the stats
+        card, all at once -- pushed the whole Output section past the
+        sidebar's own height and squeezed that group list to zero visible
+        height, making every group above it unreachable by click (found by
+        actually running `e2e/print.spec.ts` against a real browser, not
+        assumed: `group-output intercepts pointer events` on a click aimed at
+        the Printer group's toggle, two groups above it). The action row,
+        the predicted height and the block reason above stay OUTSIDE this
+        cap -- Bake must never itself be scrolled out of reach.
+
+        `tabIndex={0}`, same discipline as `AdjustmentsChip`'s drawer: this is
+        now an `overflow-y-auto` region with no focusable child guaranteed
+        (a fresh scene with nothing baked yet has no links, no notes, nothing
+        to tab to), so without it a keyboard-only user could not reach
+        content past the fold -- and axe's `scrollable-region-focusable` rule
+        (serious) agrees, caught by `e2e/a11y.spec.ts`'s Issues-drawer state.
+      */}
+      <div id={resultsId} tabIndex={0} className="max-h-[45vh] space-y-3 overflow-y-auto">
+        {/*
+          Ahead of the bake status/download links: what the print will cost,
+          before or after the decision to run it. Folded under the same
+          toggle as the rest of the results (not always on screen): a card
+          with a slot row per filament plus a caveat paragraph is real height,
+          and the whole point of "hide results" is to let the panel's
+          scrollable group list recover that space on a short viewport.
+        */}
+        {showResults ? <EstimateCard /> : null}
+
         {showResults && bake.phase !== "idle" ? (
           <div className="space-y-2" data-testid="bake-status">
             <div className="flex items-center justify-between gap-2 text-2xs">

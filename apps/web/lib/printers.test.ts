@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_PRINT_PARAMS, defaultPrintParams, PARAM_RANGES } from "./contracts";
-import { PRINTER_PROFILE_IDS, PRINTER_PROFILES, isPrinterProfileId, resolveProfile, type PrinterProfileId } from "./printers";
+import {
+  PRINTER_PROFILE_IDS,
+  PRINTER_PROFILES,
+  isPrinterProfileId,
+  profileApplyPatch,
+  resolveProfile,
+  type PrinterProfileId,
+} from "./printers";
 
 const CONTRACT_IDS: PrinterProfileId[] = ["custom", "bambu-h2s", "bambu-p1s", "bambu-x1c", "bambu-a1", "bambu-a1-mini", "prusa-mk4", "prusa-mini", "ender-3"];
 
@@ -85,7 +92,7 @@ describe("resolveProfile", () => {
     expect(row.id).toBe("custom");
     expect(row.plateXMm).toBe(300);
     expect(row.plateYMm).toBe(200);
-    expect(row.maxHeightMm).toBe(250);
+    expect(row.maxHeightMm).toBe(DEFAULT_PRINT_PARAMS.custom_profile?.max_height_mm);
     expect(row.nozzleMm).toBe(0.4);
     expect(row.slots).toBe(2);
     expect(row.changeGcode).toBe("M600 ; pause");
@@ -96,5 +103,42 @@ describe("resolveProfile", () => {
     expect(resolveProfile({}).id).toBe("custom");
     expect(resolveProfile({ printer_profile: "nope" as PrinterProfileId }).id).toBe("custom");
     expect(resolveProfile({ printer_profile: "custom", custom_profile: { change_gcode: "" } }).changeGcode).toBe("M600");
+  });
+});
+
+describe("profileApplyPatch", () => {
+  const RANGES = { plate_mm: PARAM_RANGES.plate_mm, nozzle_mm: PARAM_RANGES.nozzle_mm };
+
+  it("writes only the id for custom, restoring nothing", () => {
+    expect(profileApplyPatch("custom", RANGES)).toEqual({ printer_profile: "custom" });
+  });
+
+  it("writes the smaller bed dimension and the nozzle, clamped to plate_mm's own range, for a named printer", () => {
+    // P1S: 256 x 256, nozzle 0.4 -- inside plate_mm's [100, 256] range untouched.
+    expect(profileApplyPatch("bambu-p1s", RANGES)).toEqual({
+      printer_profile: "bambu-p1s",
+      plate_mm: 256,
+      nozzle_mm: 0.4,
+    });
+    // A1 mini: 180 x 180.
+    expect(profileApplyPatch("bambu-a1-mini", RANGES)).toEqual({
+      printer_profile: "bambu-a1-mini",
+      plate_mm: 180,
+      nozzle_mm: 0.4,
+    });
+  });
+
+  it("clamps a bed bigger than plate_mm's contract range down to its max, and takes the SHORTER of a non-square bed", () => {
+    // H2S: 340 x 320 -- both over plate_mm's 256 mm ceiling, and not square.
+    expect(profileApplyPatch("bambu-h2s", RANGES)).toEqual({
+      printer_profile: "bambu-h2s",
+      plate_mm: PARAM_RANGES.plate_mm.max,
+      nozzle_mm: 0.4,
+    });
+  });
+
+  it("clamps a bed smaller than plate_mm's contract range up to its min", () => {
+    const tinyRanges = { plate_mm: { min: 200, max: 400 }, nozzle_mm: PARAM_RANGES.nozzle_mm };
+    expect(profileApplyPatch("bambu-a1-mini", tinyRanges).plate_mm).toBe(200);
   });
 });

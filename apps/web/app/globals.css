@@ -120,6 +120,11 @@
   /* The hemisphere light: sky above, bounce off the ground below. */
   --fc-preview-sky: #ffffff;
   --fc-preview-bounce: #445566;
+  /* TileGrid's cut lines and index labels, drawn over the model when
+     `params.tiling.enabled` (phase 4). A colour distinct from every material
+     above: it is an overlay describing where the print SPLITS, never a
+     filament. */
+  --fc-preview-tile-line: #c2661a;
 
   /*
    * Map overlays (`components/map/palette.ts`). Defined once, outside the
@@ -199,6 +204,7 @@
   --fc-preview-pocket: #211f1a;
   --fc-preview-sky: #dfe6ee;
   --fc-preview-bounce: #232a33;
+  --fc-preview-tile-line: #e08a3e;
 
   --fc-shadow-flush: inset 0 1px 0 rgb(255 255 255 / 0.04);
   --fc-shadow-raised: 0 1px 1px rgb(0 0 0 / 0.5), 0 2px 6px -2px rgb(0 0 0 / 0.6);

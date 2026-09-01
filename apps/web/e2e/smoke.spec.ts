@@ -551,7 +551,13 @@ test("the downloaded file passes the Python printability validator (full Chicago
   await page.locator("#export_target").selectOption("generic-3mf");
 
   const bakeButton = page.getByTestId("bake-button");
-  await expect(bakeButton).toBeEnabled();
+  // A short fixed timeout measured flaky on a slower CI runner at full
+  // Chicago complexity (992 buildings): `preview-stats` visible does not
+  // guarantee the button has actually become interactive yet on a 2-core
+  // software-WebGL host still busy with the instanced preview's first paint.
+  // The assertion itself (enabled, not merely present) is unchanged; only
+  // how long it is given to become true scales with `E2E_BUDGET_FACTOR`.
+  await expect(bakeButton).toBeEnabled({ timeout: WARMUP_BUDGET_MS });
   const bakeStartedAt = Date.now();
   await bakeButton.click();
   const downloads = page.getByTestId("download-links");

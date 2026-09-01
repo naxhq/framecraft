@@ -296,7 +296,7 @@ PRINT_PARAMS_V3_EXAMPLE = {
     },
     "printer_profile": "bambu-x1c",
     "custom_profile": {
-        "plate_x_mm": 256, "plate_y_mm": 256, "max_height_mm": 250,
+        "plate_x_mm": 256, "plate_y_mm": 256, "max_height_mm": 60,
         "nozzle_mm": 0.4, "slots": 4, "change_gcode": "M600",
     },
     "export_target": "bambu-3mf",

@@ -6,6 +6,7 @@ import { Canvas, useThree } from "@react-three/fiber";
 import type { PerspectiveCamera } from "three";
 
 import AdjustmentsChip from "@/components/editor/AdjustmentsChip";
+import IssuesBadge from "@/components/editor/IssuesBadge";
 import { collectAdjustments } from "@/lib/adjustments";
 import {
   advisorDeps,
@@ -21,6 +22,7 @@ import type { AuditFinding } from "@/lib/engine/types";
 import { freshEngineResult as engineFresh } from "@/lib/enginePreview";
 import { loadGlyphFace, loadedGlyphFace } from "@/lib/fontGlyphs";
 import { autoHeroIds, heroCandidates, heroCapMessage } from "@/lib/heroes";
+import { mergeIssues } from "@/lib/issues";
 import {
   cursorLabel,
   cursorOrder,
@@ -47,6 +49,7 @@ import {
 } from "@/lib/previewText";
 import * as T from "@/lib/transform";
 import {
+  heightCeilingMm,
   letteringWarnings,
   predictedTopDeps,
   predictedTopMm,
@@ -59,6 +62,7 @@ import BasePlate from "./BasePlate";
 import InstancedBuildings from "./InstancedBuildings";
 import RegionMeshes from "./RegionMeshes";
 import RoadRibbons from "./RoadRibbons";
+import TileGrid from "./TileGrid";
 import TreeInstances from "./TreeInstances";
 import { paletteFor, readPreviewPalette, type PreviewPalette } from "./palette";
 
@@ -415,6 +419,13 @@ export function CityPreview() {
     [...warningDeps(graph, params), textParamsKey(params), today],
   );
 
+  /**
+   * The Issues badge's own list (phase 4, [V3-P4-U]): every client warning
+   * above, merged with the live engine's own findings, engine winning a
+   * shared id (`lib/issues.ts:mergeIssues`).
+   */
+  const issues = useMemo(() => mergeIssues(warnings, engineFindings), [warnings, engineFindings]);
+
   const treeFloor =
     scale === null || !params.trees ? null : treeFloorNoticeMetres(params, scale);
   const dilatedNote =
@@ -577,6 +588,9 @@ export function CityPreview() {
             preview and a downloaded file can never disagree (E4 brief, item 3).
           */}
           {freshEngineResult ? <RegionMeshes regions={freshEngineResult.regions} /> : null}
+          {freshEngineResult ? (
+            <TileGrid tiles={freshEngineResult.tiles} color={colours.tileLine} />
+          ) : null}
 
           {!freshEngineResult ? (
             <BasePlate params={params} baseColor={colours.base} frameColor={colours.frame} />
@@ -685,6 +699,7 @@ export function CityPreview() {
           </span>
         ) : null}
         <AdjustmentsChip adjustments={adjustments} />
+        <IssuesBadge issues={issues} />
         {/*
           The cursor readout: visible so a sighted keyboard user can see where
           the walk has reached, and a live region so a screen-reader user hears
@@ -847,12 +862,13 @@ export function CityPreview() {
       </div>
 
 
-      {predictedTop !== null && predictedTop >= T.MAX_HEIGHT_MM ? (
+      {predictedTop !== null && predictedTop >= heightCeilingMm(params) ? (
         <span
           data-testid="preview-too-tall"
           className="pointer-events-none absolute bottom-16 left-3 rounded-milled bg-danger px-2 py-1 text-2xs font-medium text-primary-ink shadow-raised"
         >
-          Over the 60 mm print ceiling — the bake will refuse this.
+          Over the {heightCeilingMm(params).toFixed(0)} mm print ceiling — the bake will
+          refuse this.
         </span>
       ) : null}
       {treeFloor !== null ? (

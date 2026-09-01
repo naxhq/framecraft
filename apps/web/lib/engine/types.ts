@@ -111,14 +111,102 @@ export interface EngineStats {
   treesDropped?: number;
   /** Elevated road and rail segments built as decks. */
   bridges?: number;
+  /**
+   * v3 phase 4. Tiles the model was split into, absent when tiling is off.
+   * `tileCols * tileRows`, repeated so a consumer does not have to multiply.
+   */
+  tiles?: number;
+  tileCols?: number;
+  tileRows?: number;
 }
 
 export interface TileResult {
-  /** [column, row], zero-based. */
+  /** [column, row], zero-based. Column 0 is the west edge, row 0 the north one. */
   index: [number, number];
+  /** Grid reference, column letter then row number, one-based: "A1", "B2". */
   label: string;
   regions: RegionMesh[];
   bbox: Bbox3;
+  /**
+   * This tile's regions welded into one solid, the per-tile twin of
+   * {@link EngineResult.merged}. Absent only when the tile came out empty.
+   * Single-object formats (STL, single-mode 3MF) write this; the volume of a
+   * tile is read from here and never from the sum of `regions`.
+   */
+  merged?: RegionMesh;
+}
+
+/**
+ * A leaf value one applied fix wrote.
+ *
+ * `path` is dotted into PrintParams (`colour.region_slots.roads`), so a UI can
+ * show what moved without diffing two parameter objects.
+ */
+export interface FixChange {
+  path: string;
+  before: unknown;
+  after: unknown;
+  /** The finding whose fix wrote it. */
+  findingId: string;
+  /** One line for the UI: "Plate 256 mm becomes 180 mm". */
+  label: string;
+}
+
+/** What `applyFix` / `applySafeFixes` hand back: new params plus what moved. */
+export interface FixApplication {
+  params: PrintParams;
+  changes: FixChange[];
+  /** Finding ids whose fix was applied, in the order they were applied. */
+  applied: string[];
+  /** Finding ids that carried no applicable fix, with the reason. */
+  skipped: Array<{ id: string; reason: string }>;
+}
+
+/** Filament for one slot. Every number is an estimate (see `EstimateResult`). */
+export interface SlotEstimate {
+  slot: number;
+  colorHex: string;
+  /** Regions printed in this slot, in REGION_NAMES order. */
+  regions: RegionName[];
+  /** Geometric volume of the model in this slot, mm3. */
+  volumeMm3: number;
+  /** Volume a slicer would actually extrude for it, mm3 (see the assumptions). */
+  filamentVolumeMm3: number;
+  grams: number;
+  metres: number;
+}
+
+/** The constants the estimate was computed with, so the UI can name them. */
+export interface EstimateAssumptions {
+  densityGCm3: number;
+  filamentDiameterMm: number;
+  layerHeightMm: number;
+  /** Extruded volume as a fraction of the model's own volume. */
+  materialFraction: number;
+  flowMm3PerS: number;
+  overheadSPerLayer: number;
+  travelAreaRateMm2PerS: number;
+}
+
+/**
+ * Filament and time, estimated. Not a slicer result and never presented as one:
+ * `isEstimate` is always true and `caveat` is the sentence that says so.
+ */
+export interface EstimateResult {
+  isEstimate: true;
+  slots: SlotEstimate[];
+  /** Geometric volume of the whole model, mm3 (from `merged`, never the sum of regions). */
+  volumeMm3: number;
+  filamentVolumeMm3: number;
+  grams: number;
+  metres: number;
+  layers: number;
+  layerHeightMm: number;
+  seconds: number;
+  /** "5 h 12 min", for a label. */
+  duration: string;
+  assumptions: EstimateAssumptions;
+  caveat: string;
 }
 
 /**

@@ -23,8 +23,9 @@ import { defaultPrintParams, type PrintParams, type SceneGraph } from "../lib/co
 import { sceneFromOverpass } from "../lib/engine/osm/scene";
 import type { TerrainGrid } from "../lib/engine/types";
 import { buildSidecarJson, sanitizeStem } from "../lib/engine/export/common";
-import { EXPORT_TARGETS, exportForTarget, isExportTarget, type ExportTarget } from "../lib/engine/export/index";
+import { EXPORT_TARGETS, exportForTarget, isExportTarget, resultForTile, tileStem, type ExportTarget } from "../lib/engine/export/index";
 import { CREDITS_TEXT } from "../lib/engine/export/stl";
+import { estimate } from "../lib/engine/estimate";
 import type { EngineInput, EngineResult } from "../lib/engine/types";
 import { resolveProfile } from "../lib/printers";
 
@@ -38,13 +39,55 @@ interface Args {
   terrain: string | null;
   radiusM: number;
   rotationDeg: number;
+  /** Raw `--tiling` text; resolved against the parameter file in `main`. */
+  tilingSpec: string | null;
+  tiling: PrintParams["tiling"] | null;
+}
+
+/**
+ * `--tiling 2x2`, `--tiling 3x2:pin`, `--tiling 2x2:dovetail:0.2`.
+ *
+ * The joint and the tolerance are optional and default to the parameter file's
+ * own; everything the flag does not name is left exactly as the file had it, so
+ * the flag adds a grid to a parameter set rather than replacing its tiling.
+ */
+function parseTiling(spec: string, base: PrintParams["tiling"]): PrintParams["tiling"] {
+  const [grid, joint, tolerance] = spec.split(":");
+  const match = /^(\d+)x(\d+)$/i.exec(grid ?? "");
+  if (match === null) {
+    throw new Error(`--tiling wants COLSxROWS[:joint[:tolerance_mm]], got ${spec}\n${USAGE}`);
+  }
+  const cols = Number(match[1]);
+  const rows = Number(match[2]);
+  if (!(cols >= 1) || !(rows >= 1) || cols > 6 || rows > 6) {
+    throw new Error(`--tiling: columns and rows must be 1 to 6, got ${cols}x${rows}`);
+  }
+  if (joint !== undefined && joint !== "dovetail" && joint !== "pin") {
+    throw new Error(`--tiling: the joint is dovetail or pin, got ${joint}`);
+  }
+  const toleranceMm = tolerance === undefined ? undefined : Number(tolerance);
+  if (toleranceMm !== undefined && !Number.isFinite(toleranceMm)) {
+    throw new Error(`--tiling: the tolerance must be a number of mm, got ${tolerance}`);
+  }
+  return {
+    ...(base ?? {}),
+    enabled: true,
+    cols,
+    rows,
+    ...(joint === undefined ? {} : { joint }),
+    ...(toleranceMm === undefined ? {} : { tolerance_mm: toleranceMm }),
+  };
 }
 
 const USAGE =
   "usage: bake-cli (--scene <scene.json> | --overpass <overpass.json>) --params <print-params.json>\n" +
   "                [--target <export_target>] [--terrain <grid.json|demo|demo:<relief_m>>]\n" +
-  "                [--radius <m>] [--rotation <deg>] --out <file> [--title <text>]\n" +
+  "                [--radius <m>] [--rotation <deg>] [--tiling COLSxROWS[:joint[:tol]]]\n" +
+  "                --out <file> [--title <text>]\n" +
   `  targets: ${EXPORT_TARGETS.join(", ")}\n` +
+  "  --tiling   split the model over COLS x ROWS beds, joint `dovetail` (default) or\n" +
+  "             `pin`, tolerance in mm. Writes the tiled export AND every tile as its\n" +
+  "             own file with its own sidecar, so `make validate` can judge one tile.\n" +
   "  --overpass ingests a raw Overpass response through lib/engine/osm, which is the\n" +
   "             scene the app itself bakes: it carries the rail layer and the\n" +
   "             bridge/layer tags that a SceneGraph from the Python service does not.\n" +
@@ -82,6 +125,7 @@ function parseArgs(argv: string[]): Args {
   const rotation = Number(values.get("rotation") ?? 0);
   if (!Number.isFinite(radius) || radius <= 0) throw new Error(`--radius must be positive\n${USAGE}`);
   if (!Number.isFinite(rotation)) throw new Error(`--rotation must be a number\n${USAGE}`);
+  const tiling = values.get("tiling") ?? null;
   return {
     scene,
     overpass,
@@ -92,6 +136,8 @@ function parseArgs(argv: string[]): Args {
     terrain: values.get("terrain") ?? null,
     radiusM: radius,
     rotationDeg: rotation,
+    tilingSpec: tiling,
+    tiling: null,
   };
 }
 
@@ -203,7 +249,11 @@ function sidecar(args: Args, result: EngineResult, files: Array<{ name: string; 
 async function main(): Promise<void> {
   const started = Date.now();
   const args = parseArgs(process.argv.slice(2));
-  const params: PrintParams = { ...defaultPrintParams(), ...readJson<Partial<PrintParams>>(resolve(args.params)) };
+  const fromFile: PrintParams = { ...defaultPrintParams(), ...readJson<Partial<PrintParams>>(resolve(args.params)) };
+  const params: PrintParams =
+    args.tilingSpec === null
+      ? fromFile
+      : { ...fromFile, tiling: parseTiling(args.tilingSpec, fromFile.tiling) };
   const scene: SceneGraph =
     args.scene !== null
       ? readJson<SceneGraph>(resolve(args.scene))
@@ -236,9 +286,16 @@ async function main(): Promise<void> {
   });
 
   const written: string[] = [];
+  const outExtension = extname(outPath).toLowerCase();
   for (const file of output.files) {
-    // The first file takes the requested name; companions (MTL) keep their own.
-    const path = file === output.files[0] ? outPath : resolve(outDir, file.name);
+    // The first file takes the requested name; companions (MTL) keep their own,
+    // and so does a file whose format is not the one `--out` named - a tiled
+    // bake writes a ZIP of per-tile files, and calling that `city.3mf` would be
+    // a lie about what is in it.
+    const path =
+      file === output.files[0] && extname(file.name).toLowerCase() === outExtension
+        ? outPath
+        : resolve(outDir, file.name);
     writeFileSync(path, file.bytes);
     written.push(path);
   }
@@ -246,11 +303,62 @@ async function main(): Promise<void> {
   writeFileSync(sidecarPath, JSON.stringify(sidecar(args, result, output.files, output.notes, scene, (Date.now() - started) / 1000, created), null, 2) + "\n");
   writeFileSync(resolve(outDir, "CREDITS.txt"), CREDITS_TEXT);
 
+  // Every tile as its own file too, with its own sidecar. The tiled export is
+  // one Bambu project or one zip, and neither is something `make validate` can
+  // open; a tile written on its own is exactly what the reference validator
+  // judges, and judging one tile is the only way to know the SPLIT geometry is
+  // sound rather than the model it came from.
+  const tileFiles: string[] = [];
+  for (const tile of result.tiles ?? []) {
+    const tileResult = resultForTile(result, tile);
+    const tileStemName = tileStem(stem, tile);
+    const tileOutput = exportForTarget(tileResult, target, {
+      stem: tileStemName,
+      title: args.title ?? undefined,
+      created,
+      source: { lat: scene.center.lat, lon: scene.center.lon },
+    });
+    for (const file of tileOutput.files) {
+      const path = resolve(outDir, file.name);
+      writeFileSync(path, file.bytes);
+      tileFiles.push(path);
+    }
+    const tileSidecar = resolve(outDir, `${tileStemName}.json`);
+    writeFileSync(
+      tileSidecar,
+      JSON.stringify(
+        sidecar(args, tileResult, tileOutput.files, tileOutput.notes, scene, (Date.now() - started) / 1000, created),
+        null,
+        2,
+      ) + "\n",
+    );
+    tileFiles.push(tileSidecar);
+  }
+
+  const cost = estimate(result, result.params);
   console.log(`target ${target}: ${result.regions.length} regions, ${result.stats.triangles} triangles, ${result.stats.widthMm.toFixed(1)} x ${result.stats.depthMm.toFixed(1)} x ${result.stats.heightMm.toFixed(1)} mm`);
+  console.log(
+    `estimate: ${cost.volumeMm3.toFixed(0)} mm3 of model, ${cost.grams.toFixed(1)} g, ` +
+      `${cost.metres.toFixed(1)} m of filament, ${cost.layers} layers, about ${cost.duration}`,
+  );
+  for (const slot of cost.slots) {
+    console.log(`  slot ${slot.slot} ${slot.colorHex}: ${slot.grams.toFixed(1)} g (${slot.regions.join(", ")})`);
+  }
+  for (const tile of result.tiles ?? []) {
+    console.log(
+      `tile ${tile.label}: ${tile.regions.length} regions, ` +
+        `${(tile.bbox.max[0] - tile.bbox.min[0]).toFixed(1)} x ` +
+        `${(tile.bbox.max[1] - tile.bbox.min[1]).toFixed(1)} x ` +
+        `${(tile.bbox.max[2] - tile.bbox.min[2]).toFixed(1)} mm, ` +
+        `${(tile.merged?.volumeMm3 ?? 0).toFixed(0)} mm3`,
+    );
+  }
   for (const path of written) console.log(`wrote ${path}`);
   console.log(`wrote ${sidecarPath}`);
+  for (const path of tileFiles) console.log(`wrote ${path}`);
   for (const note of output.notes) console.log(`note: ${note}`);
   for (const finding of result.findings) console.log(`${finding.severity}: ${finding.title} (${finding.detail})`);
+  console.log(`engine ${(result.stats.elapsedMs / 1000).toFixed(2)} s, total ${((Date.now() - started) / 1000).toFixed(2)} s`);
 }
 
 main().catch((error: unknown) => {

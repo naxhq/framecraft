@@ -19,6 +19,7 @@ import {
   ESTIMATED_HEIGHT_RATIO,
   MIN_BUILDINGS_TO_BAKE,
   bakeBlockReason,
+  heightCeilingMm,
   letteringWarnings,
   predictedTopMm,
   sceneWarnings,
@@ -167,8 +168,8 @@ describe("the 60 mm ceiling", () => {
 
     const reason = bakeBlockReason(skyline, tall);
     expect(reason).toBe(
-      `Model would be ${top.toFixed(1)} mm tall (limit 60 mm) — ` +
-        "lower the building scales or the plate size",
+      `Model would be ${top.toFixed(1)} mm tall (Custom printer ceiling 60 mm) — ` +
+        "lower the building scales or the plate size, or pick a taller printer",
     );
     const warning = sceneWarnings(skyline, tall).find((w) => w.id === "model-too-tall");
     expect(warning?.level).toBe("block");
@@ -190,6 +191,40 @@ describe("the 60 mm ceiling", () => {
   it("does not fire on a scene that fits", () => {
     expect(bakeBlockReason(graph, p())).toBeNull();
     expect(sceneWarnings(graph, p()).map((w) => w.id)).not.toContain("model-too-tall");
+  });
+});
+
+describe("heightCeilingMm (team lead's ruling, [V3-P4]/[V3-P4-E9])", () => {
+  it("is 60 mm by default: the contract's own default custom_profile.max_height_mm, not a separate constant", () => {
+    expect(heightCeilingMm(p())).toBe(60);
+    expect(DEFAULT_PRINT_PARAMS.custom_profile?.max_height_mm).toBe(60);
+  });
+
+  it("is the NAMED profile's own usable height, straight, for every printer in the table", () => {
+    const expected: Record<string, number> = {
+      "bambu-h2s": 340,
+      "bambu-p1s": 250,
+      "bambu-x1c": 250,
+      "bambu-a1": 256,
+      "bambu-a1-mini": 180,
+      "prusa-mk4": 220,
+      "prusa-mini": 180,
+      "ender-3": 250,
+    };
+    for (const [id, maxHeightMm] of Object.entries(expected)) {
+      expect(heightCeilingMm(p({ printer_profile: id as PrintParams["printer_profile"] })), id).toBe(
+        maxHeightMm,
+      );
+    }
+  });
+
+  it("follows a custom profile's own ceiling, up or down, whatever it is set to", () => {
+    expect(
+      heightCeilingMm(p({ printer_profile: "custom", custom_profile: { max_height_mm: 40 } })),
+    ).toBe(40);
+    expect(
+      heightCeilingMm(p({ printer_profile: "custom", custom_profile: { max_height_mm: 400 } })),
+    ).toBe(400);
   });
 });
 

@@ -2,9 +2,10 @@
 // `(result, options) => ExportFile | ExportFile[]`, no manifold, no DOM.
 
 import type { PrintParams } from "../../contracts";
-import type { PrinterProfile } from "../../printers";
+import { resolveProfile, type PrinterProfile } from "../../printers";
 import type { EngineResult, ExportFile } from "../types";
 import { exportBambu3mf, type Bambu3mfOptions } from "./bambu3mf";
+import { exportTiledZip, isTiled } from "./tiles";
 import { describePlan, type ColorChangePlan } from "./colorchange";
 import type { ExportOptions } from "./common";
 import { exportGeneric3mf, type Generic3mfOptions } from "./generic3mf";
@@ -53,7 +54,48 @@ export interface ExportOutput {
   plan: ColorChangePlan | null;
 }
 
+/**
+ * Every file for one bake and one target.
+ *
+ * A TILED bake takes one of two routes. A Bambu project can carry many plates
+ * in one file, so a tiled bake for a Bambu printer is one .3mf with one plate
+ * per tile; everything else - a third-party printer, a generic 3MF, an STL, a
+ * colour-change project, which is a plan for ONE printed object - becomes a zip
+ * of per-tile files named by their grid reference. `notes` says which happened,
+ * because "one file" and "a zip of nine" is the kind of thing a user should not
+ * have to discover by opening it (`[V3-P4-E5]`).
+ */
 export function exportForTarget(result: EngineResult, target: ExportTarget, options: ExportForTargetOptions = {}): ExportOutput {
+  const tiles = result.tiles ?? [];
+  if (isTiled(result)) {
+    const profile = options.profile ?? resolveProfile(result.params);
+    if (target === "bambu-3mf" && profile.vendor === "bambu") {
+      const file = exportBambu3mf(result, { ...options, profile, singleNozzle: false });
+      return {
+        target,
+        files: [file],
+        notes: [`${file.plates} tiles, one plate each, in a single Bambu Studio project.`],
+        plan: null,
+      };
+    }
+    const created = options.created ?? new Date();
+    const zip = exportTiledZip({
+      result,
+      tiles,
+      stem: options.stem ?? "framecraft",
+      created,
+      writeTile: (tileResult, tileOptions) =>
+        exportForTarget(tileResult, target, { ...options, ...tileOptions, profile }).files,
+    });
+    return {
+      target,
+      files: [zip],
+      notes: [
+        `${tiles.length} tiles, one ${EXPORT_TARGET_LABELS[target]} file each, in a zip named by tile.`,
+      ],
+      plan: null,
+    };
+  }
   switch (target) {
     case "bambu-3mf": {
       const bambuOptions: Bambu3mfOptions = { ...options, singleNozzle: false };
@@ -96,4 +138,5 @@ export { exportObj } from "./obj";
 export { exportStep, stepCheck } from "./step";
 export type { StepExportFile, StepOptions } from "./step";
 export { exportStl, exportStlPartsZip } from "./stl";
+export { exportTiledZip, isTiled, resultForTile, tileStem } from "./tiles";
 export { unzipAll, unzipText, zipEntries } from "./zip";

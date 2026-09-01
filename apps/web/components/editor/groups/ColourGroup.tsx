@@ -12,10 +12,9 @@ import {
 import { DEFAULT_PRINT_PARAMS, PARAM_RANGES } from "@/lib/contracts";
 import type { PartColors, RegionColors, RegionSlots } from "@/lib/contracts";
 import type { RegionName } from "@/lib/engine/types";
-import { PRINTER_PROFILE_IDS, PRINTER_PROFILES, resolveProfile } from "@/lib/printers";
-import type { PrinterProfileId } from "@/lib/printers";
+import { resolveProfile } from "@/lib/printers";
 import { useEditorStore } from "@/store/editor";
-import { ColorField, Field, Note, SelectField, Segmented, Slider, TextField } from "../Controls";
+import { ColorField, Field, Note, SelectField, Segmented } from "../Controls";
 
 const COLOR_MODES = [
   { value: "single" as const, label: "one filament" },
@@ -75,11 +74,6 @@ const SLOT_OPTIONS = Array.from({ length: SLOT_MAX }, (_, i) => {
   return { value, label: `Slot ${i + 1}` };
 });
 
-const PRINTER_PROFILE_OPTIONS = PRINTER_PROFILE_IDS.map((id) => ({
-  value: id,
-  label: PRINTER_PROFILES[id].label,
-}));
-
 /**
  * The v1/v2 parts palette (still read by the instanced fallback preview and
  * by `generic-3mf`'s single/parts default), plus the v3 filament-slot table
@@ -122,11 +116,9 @@ export function ColourGroup() {
     setNested("colour", { region_colors: { ...regionColors, [region]: value } as RegionColors });
   };
 
-  const printerProfileId: PrinterProfileId = params.printer_profile ?? "custom";
   const profile = resolveProfile(params);
   const usedSlots = distinctSlots(rows);
   const overProfile = exceedsProfileSlots(rows, profile.slots);
-  const custom = params.custom_profile ?? DEFAULT_PRINT_PARAMS.custom_profile ?? {};
 
   const mergeToProfile = (): void => {
     const plan = planMergeToSlots(rows, profile.slots);
@@ -282,70 +274,10 @@ export function ColourGroup() {
         </Note>
       ) : null}
 
-      <SelectField
-        id="printer_profile"
-        label="Printer profile"
-        value={printerProfileId}
-        options={PRINTER_PROFILE_OPTIONS}
-        onChange={(value) => setParam("printer_profile", value)}
-        hint="Sets the plate size, the height ceiling and how many filament slots the profile has, for the Bambu export and the slot warning below."
-      />
-
-      {printerProfileId === "custom" ? (
-        <div className="space-y-3 rounded-milled border border-line bg-plate-sunken p-2.5" data-testid="custom-profile-fields">
-          <Slider
-            id="custom_profile_plate_x_mm"
-            label="Plate width"
-            min={PARAM_RANGES.custom_profile.plate_x_mm.min}
-            max={PARAM_RANGES.custom_profile.plate_x_mm.max}
-            step={1}
-            value={custom.plate_x_mm ?? PARAM_RANGES.custom_profile.plate_x_mm.default}
-            display={`${custom.plate_x_mm ?? PARAM_RANGES.custom_profile.plate_x_mm.default} mm`}
-            onChange={(value) => setNested("custom_profile", { plate_x_mm: value })}
-          />
-          <Slider
-            id="custom_profile_plate_y_mm"
-            label="Plate depth"
-            min={PARAM_RANGES.custom_profile.plate_y_mm.min}
-            max={PARAM_RANGES.custom_profile.plate_y_mm.max}
-            step={1}
-            value={custom.plate_y_mm ?? PARAM_RANGES.custom_profile.plate_y_mm.default}
-            display={`${custom.plate_y_mm ?? PARAM_RANGES.custom_profile.plate_y_mm.default} mm`}
-            onChange={(value) => setNested("custom_profile", { plate_y_mm: value })}
-          />
-          <Slider
-            id="custom_profile_max_height_mm"
-            label="Height ceiling"
-            min={PARAM_RANGES.custom_profile.max_height_mm.min}
-            max={PARAM_RANGES.custom_profile.max_height_mm.max}
-            step={5}
-            value={custom.max_height_mm ?? PARAM_RANGES.custom_profile.max_height_mm.default}
-            display={`${custom.max_height_mm ?? PARAM_RANGES.custom_profile.max_height_mm.default} mm`}
-            onChange={(value) => setNested("custom_profile", { max_height_mm: value })}
-          />
-          <Slider
-            id="custom_profile_slots"
-            label="Filament slots"
-            min={PARAM_RANGES.custom_profile.slots.min}
-            max={PARAM_RANGES.custom_profile.slots.max}
-            step={1}
-            value={custom.slots ?? PARAM_RANGES.custom_profile.slots.default}
-            display={String(custom.slots ?? PARAM_RANGES.custom_profile.slots.default)}
-            onChange={(value) => setNested("custom_profile", { slots: value })}
-          />
-          <TextField
-            id="custom_profile_change_gcode"
-            label="Colour-change command"
-            value={custom.change_gcode ?? "M600"}
-            onChange={(value) => setNested("custom_profile", { change_gcode: value })}
-          />
-        </div>
-      ) : null}
-
       {overProfile ? (
         <Note tone="warn" testId="colour-slots-exceed-profile">
           This model uses {usedSlots.length} filament slots, more than the{" "}
-          {profile.label} profile&apos;s {profile.slots}.{" "}
+          {profile.label} profile&apos;s {profile.slots} (Printer group above).{" "}
           <button
             type="button"
             data-testid="merge-to-profile-slots"

@@ -1171,3 +1171,37 @@ def test_cli_and_bake_run_the_same_container_functions():
 
     source = inspect.getsource(cli_module._threemf_parts_checks)
     assert "container.parts_checks(path, parts)" in source
+
+
+@pytest.mark.parametrize(
+    ("ceiling", "expected"),
+    [
+        (250.0, "250 mm"),
+        (None, "60 mm"),
+        ("tall", "60 mm"),
+    ],
+)
+def test_cli_reads_the_height_ceiling_from_the_sidecar(
+    baked, tmp_path, capsys, ceiling, expected
+):
+    """The bounding-box row is judged against the printer the bake names.
+
+    A browser bake writes the resolved ``resolveProfile(params).maxHeightMm``
+    into its sidecar as ``max_height_mm`` (DECISIONS ``[V3-P4-E9]``), so a 90 mm
+    model made for a 250 mm machine validates honestly instead of failing
+    against 04's reference 60.  A sidecar with no such key, or one carrying
+    something that is not a positive number, leaves the 60 in place: a file that
+    does not say what it was made for is judged as every file always was.
+    """
+    payload = _real_sidecar(baked)
+    if ceiling is None:
+        payload.pop("max_height_mm", None)
+    else:
+        payload["max_height_mm"] = ceiling
+    target = _with_sidecar(baked, tmp_path, payload)
+
+    code, out = run_cli(capsys, "validate", str(target))
+
+    assert code == 0, out
+    row = next(line for line in out.splitlines() if line.startswith("bounding_box"))
+    assert expected in row

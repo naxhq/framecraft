@@ -494,7 +494,7 @@ export const DEFAULT_PRINT_PARAMS: PrintParams = deepFreeze<PrintParams>({
   custom_profile: {
     plate_x_mm: 256,
     plate_y_mm: 256,
-    max_height_mm: 250,
+    max_height_mm: 60,
     nozzle_mm: 0.4,
     slots: 4,
     change_gcode: "M600",
@@ -642,7 +642,7 @@ export const PARAM_RANGES = {
   custom_profile: {
     plate_x_mm: { min: 100, max: 400, default: 256 },
     plate_y_mm: { min: 100, max: 400, default: 256 },
-    max_height_mm: { min: 20, max: 500, default: 250 },
+    max_height_mm: { min: 20, max: 500, default: 60 },
     nozzle_mm: { min: 0.2, max: 1.0, default: 0.4 },
     slots: { min: 1, max: 16, default: 4 },
   },

@@ -27,6 +27,7 @@ export type GroupId =
   | "terrain"
   | "frame"
   | "colour"
+  | "printer"
   | "output";
 
 export interface GroupSpec {
@@ -94,6 +95,12 @@ export const GROUPS: readonly GroupSpec[] = [
     id: "colour",
     title: "Colour",
     summary: "One filament, or one per part.",
+    collapsedByDefault: true,
+  },
+  {
+    id: "printer",
+    title: "Printer",
+    summary: "The plate, the height ceiling and how the model splits to fit them.",
     collapsedByDefault: true,
   },
   {

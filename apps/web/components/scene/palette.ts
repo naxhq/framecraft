@@ -41,6 +41,8 @@ export interface PreviewPalette {
   /** The hemisphere light: sky above, ground bounce below. */
   sky: string;
   bounce: string;
+  /** TileGrid's cut lines and index labels (phase 4). */
+  tileLine: string;
 }
 
 /**
@@ -69,6 +71,7 @@ export const PREVIEW_TOKENS: Record<keyof PreviewPalette, string> = {
   pocket: "--fc-preview-pocket",
   sky: "--fc-preview-sky",
   bounce: "--fc-preview-bounce",
+  tileLine: "--fc-preview-tile-line",
 };
 
 /**

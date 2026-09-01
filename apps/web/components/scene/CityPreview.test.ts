@@ -286,12 +286,18 @@ describe("previewDeps", () => {
    * already IS live today, in `V2_TEXT_MOVES` above -- `{country}`,
    * `{state}`, `{neighbourhood}` and `{author}` are real engraving tokens
    * this phase wired up, not a future engine's job.
+   *
+   * `printer_profile` and `custom_profile` are ALSO not in this list, moved
+   * out by phase 4 ([V3-P4-U]): `lib/warnings.ts:predictedTopDeps` (which
+   * `previewDeps.height` IS) now reads `printer_profile` and
+   * `custom_profile?.max_height_mm`, because `heightCeilingMm` -- what the
+   * predicted top is compared AGAINST for the HUD tone and the too-tall pill
+   * -- moves with them (their own test is below, mirroring the `hero_auto`
+   * pattern above).
    */
   const V3_ENGINE_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintParams]]> = [
     ["regions", { roads: { depth_mm: 1.0 }, building_skirt_mm: 0.6 }],
     ["colour", { palette: "noir", preview_theme: "light" }],
-    ["printer_profile", "bambu-x1c"],
-    ["custom_profile", { plate_x_mm: 256, plate_y_mm: 256 }],
     ["export_target", "stl"],
     ["terrain", { enabled: true, smoothing: 3 }],
     ["heights", { floor_height_m: 3.5 }],
@@ -312,6 +318,15 @@ describe("previewDeps", () => {
     for (const [key, value] of V3_ENGINE_MOVES) {
       expect(rebuiltBy(key, value as never), key).toEqual([]);
     }
+  });
+
+  it("rebuilds only the predicted height when the printer profile or a custom profile's height ceiling moves (phase 4, [V3-P4-U])", () => {
+    // No hull, no earcut, no advisor pass, no glyph fetch -- only the height
+    // ceiling comparison the HUD tone and the too-tall pill read.
+    expect(rebuiltBy("printer_profile", "bambu-x1c")).toEqual(["height"]);
+    expect(rebuiltBy("custom_profile", { plate_x_mm: 256, plate_y_mm: 256, max_height_mm: 40 })).toEqual([
+      "height",
+    ]);
   });
 
   it("rebuilds the predicted height when hero_auto promotes a real building", () => {
@@ -366,6 +381,8 @@ describe("previewDeps", () => {
       ...V2_TEXT_MOVES.map(([key]) => key),
       ...V3_ENGINE_MOVES.map(([key]) => key),
       HERO_AUTO_MOVE[0],
+      "printer_profile",
+      "custom_profile",
     ]);
     expect([...covered].sort()).toEqual(Object.keys(DEFAULT_PRINT_PARAMS).sort());
   });

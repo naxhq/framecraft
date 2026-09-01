@@ -394,6 +394,32 @@ def _params_from_sidecar(
     return params, source, None
 
 
+def _max_height_from_sidecar(path: Path) -> float | None:
+    """The Z ceiling the bake recorded, or ``None`` for the 04 default.
+
+    The ceiling belongs to the PRINTER (``printers.resolveProfile(params)
+    .maxHeightMm`` on the web side), and a validator that judged every file
+    against 04's reference 60 mm would fail an honest 90 mm bake made for a
+    250 mm machine.  The bake writes the resolved number into its sidecar and
+    this reads it back; anything missing, unreadable or not a positive number
+    leaves the default in place, so a file with no sidecar is judged exactly as
+    it always was (DECISIONS ``[V3-P4-E9]``).
+    """
+    sidecar = path.with_suffix(".json")
+    if not sidecar.is_file():
+        return None
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("max_height_mm")
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    return float(value) if value > 0 else None
+
+
 def _index_stl_triangle_soup(mesh: "trimesh.Trimesh") -> tuple["trimesh.Trimesh", int]:
     """Weld the *exactly* coincident vertices of an STL triangle soup.
 
@@ -593,7 +619,9 @@ def _validate_parts_file(path: Path, args: argparse.Namespace) -> int:
     if union is not None:
         # 04 stage 4 judges what PRINTS, and what prints is the union of the
         # parts - not their concatenation, which is self-intersecting by design.
-        report = validators.validate(union, params)
+        report = validators.validate(
+            union, params, max_height_mm=_max_height_from_sidecar(path)
+        )
     else:
         report = validators.ValidationReport(checks=[])
     if sidecar_error is not None:
@@ -692,7 +720,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
             "a binary STL has no vertex index)"
         )
     print()
-    report = validators.validate(mesh, params)
+    report = validators.validate(mesh, params, max_height_mm=_max_height_from_sidecar(path))
     if sidecar_error is not None:
         # The file's own record of how it was printed is broken, so every row
         # below it is being judged against parameters that may not be the ones

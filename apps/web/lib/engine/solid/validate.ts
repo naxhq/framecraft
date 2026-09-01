@@ -14,14 +14,19 @@
  * | min wall | the morphological opening in `measure.ts` |
  * | degenerate faces | manifold3d's own epsilon-validity |
  * | - | every region carries no body under the printable-speck floor |
- * | - | the whole thing is ONE connected body when the frame is on |
+ * | - | `islandReport` below: what in the assembly is not joined to the rest |
  *
  * The regions deliberately OVERLAP each other at every seam by 0.2 mm
  * (`context.PART_OVERLAP_MM`, DECISIONS `[V3-P2-E2]`), so there is no
- * partition check here and there must not be one. What replaced it is the
- * connectivity check below and `engine.test.ts`'s own assertion that the union
- * of the regions is exactly `merged`, which is the property the overlap exists
- * to give.
+ * partition check here and there must not be one. What replaced it is
+ * `islandReport` and `engine.test.ts`'s own assertion that the union of the
+ * regions is exactly `merged`, which is the property the overlap exists to
+ * give.
+ *
+ * Since phase 4 this module raises the findings that need a live solid and
+ * hands the rest to `audit/rules.ts`, which words them: the loose-body COUNT is
+ * measured here and named there, so every finding in the product is phrased in
+ * one file.
  *
  * Nothing here throws. A failure is an `AuditFinding` with the measured number
  * in it, because the caller has to be able to show the user a model that is
@@ -30,10 +35,12 @@
 
 import * as T from "../../transform";
 import type { PrintParams, SceneGraph } from "../../contracts";
-import type { AuditFinding, RegionMesh } from "../types";
+import { resolveProfile } from "../../printers";
+import type { IslandReport } from "../audit/rules";
+import type { AuditFinding, RegionMesh, RegionName } from "../types";
 import { finding, type BakeContext } from "./context";
 import type { Manifold } from "./manifold";
-import { DEBRIS_MM3, UNION_DEBRIS_MM3, countBodies } from "./manifold";
+import { DEBRIS_MM3, UNION_DEBRIS_MM3 } from "./manifold";
 import type { MinWallReport } from "./measure";
 import { regionBounds } from "./measure";
 
@@ -56,15 +63,105 @@ export interface BuiltRegion {
 /**
  * The Z ceiling for this parameter set, print mm.
  *
- * Two rules bind and the smaller wins: 04's own 60 mm product ceiling (which
- * the editor, the reference bake and every existing warning already enforce)
- * and the printer's usable height. The per-model printer table is the printer
- * phase's (`lib/printers.ts`); until it exists, a custom profile's own
- * `max_height_mm` is the only printer number the contract carries.
+ * The ACTIVE printer's usable height, and nothing else. It is not `min`ed with
+ * 04's own 60 mm figure, and that is a deliberate ruling (`[V3-P4-E9]`): the
+ * ceiling is a property of the machine, so a P1S with 250 mm of gantry should
+ * not refuse a 90 mm model because the reference implementation's product
+ * ceiling was written for a different question. The DEFAULT is still 60,
+ * because the contract's own `custom_profile.max_height_mm` default is 60 and
+ * `printer_profile` defaults to `custom`; every number and every test at
+ * defaults is therefore exactly what it was.
+ *
+ * The same number reaches the reference validator through the bake sidecar's
+ * `max_height_mm` (`export/common.ts`), so the engine, the editor and the
+ * validator all judge a model against one ceiling instead of three.
  */
 export function maxHeightMm(ctx: BakeContext): number {
-  const custom = ctx.params.custom_profile?.max_height_mm ?? 250;
-  return Math.min(T.MAX_HEIGHT_MM, custom);
+  return resolveProfile(ctx.params).maxHeightMm;
+}
+
+/**
+ * The most islands worth attributing to a region.
+ *
+ * Each attribution is an intersection against every region solid, so a model
+ * that came apart into hundreds of pieces would spend a minute describing its
+ * own wreckage. The first few name the region; the count is exact regardless,
+ * because it comes from the decomposition and not from this loop.
+ */
+export const MAX_ATTRIBUTED_ISLANDS = 12;
+
+/**
+ * Bodies in the assembled model that are not part of the main one.
+ *
+ * The largest body is the model; everything else is loose. Each loose body is
+ * attributed to the region it shares the most volume with, so the finding can
+ * say WHICH detail came away rather than "the model is in 4 pieces". Runs only
+ * when there is more than one body, so a healthy bake pays one decomposition it
+ * was going to pay for the connectivity check anyway.
+ */
+export function islandReport(
+  ctx: BakeContext,
+  assembly: Manifold | null,
+  regions: readonly BuiltRegion[],
+): IslandReport[] {
+  if (assembly === null) return [];
+  const bodies = ctx.arena.keepAll(assembly.decompose());
+  try {
+    const real = bodies.filter((body) => body.volume() >= UNION_DEBRIS_MM3);
+    if (real.length <= 1) return [];
+    let main = real[0];
+    for (const body of real) {
+      if (body.volume() > main.volume()) main = body;
+    }
+    const loose = real.filter((body) => body !== main);
+    const groups = new Map<RegionName | null, { count: number; volume: number; floating: boolean }>();
+    loose.forEach((body, index) => {
+      const region =
+        index < MAX_ATTRIBUTED_ISLANDS ? attributeIsland(ctx, body, regions) : null;
+      const entry = groups.get(region) ?? { count: 0, volume: 0, floating: true };
+      entry.count += 1;
+      entry.volume += body.volume();
+      if (body.boundingBox().min[2] <= SIT_TOLERANCE_MM) entry.floating = false;
+      groups.set(region, entry);
+    });
+    return [...groups.entries()].map(([region, entry]) => ({
+      region,
+      count: entry.count,
+      volumeMm3: entry.volume,
+      floating: entry.floating,
+    }));
+  } finally {
+    ctx.arena.dropAll(bodies);
+  }
+}
+
+/** The region a loose body shares the most volume with, or null. */
+function attributeIsland(
+  ctx: BakeContext,
+  body: Manifold,
+  regions: readonly BuiltRegion[],
+): RegionName | null {
+  let best: RegionName | null = null;
+  let bestVolume = 0;
+  const box = body.boundingBox();
+  for (const region of regions) {
+    // Cheap rejection first: a region whose bounds miss the body entirely
+    // cannot own it, and most regions miss most islands.
+    const bounds = region.mesh.bbox;
+    let apart = false;
+    for (let axis = 0; axis < 3; axis += 1) {
+      if (box.max[axis] < bounds.min[axis] || box.min[axis] > bounds.max[axis]) apart = true;
+    }
+    if (apart) continue;
+    const shared = ctx.wasm.Manifold.intersection([body, region.solid]);
+    const volume = shared.volume();
+    shared.delete();
+    if (volume > bestVolume) {
+      bestVolume = volume;
+      best = region.mesh.region;
+    }
+  }
+  return best;
 }
 
 /**
@@ -179,20 +276,11 @@ export function validate(
   }
 
   // --- connectivity -----------------------------------------------------
-  if (assembly !== null && ctx.params.frame) {
-    const count = countBodies(assembly, UNION_DEBRIS_MM3).real;
-    if (count !== 1) {
-      out.push(
-        finding(
-          "floating-island",
-          "error",
-          "The model is not one connected piece",
-          `The regions union into ${count} separate bodies. Everything has to be joined ` +
-            "to the base, or the loose pieces will not survive the print.",
-        ),
-      );
-    }
-  }
+  // The COUNT used to be reported here as one anonymous "the model is not one
+  // connected piece". It is now `islandReport` above plus `audit/rules.ts`,
+  // which says which region the loose material belongs to, how much of it there
+  // is, and whether it even reaches the bed - the same defect, named. Nothing
+  // is reported twice: this check no longer raises a finding of its own.
 
   // --- minimum wall -----------------------------------------------------
   const required = T.min_wall_mm(ctx.params);

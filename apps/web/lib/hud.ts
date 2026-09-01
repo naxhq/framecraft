@@ -20,14 +20,14 @@
 import type { PrintParams, SceneGraph } from "./contracts";
 import { format_scale, type TokenContext } from "./tokens";
 import * as T from "./transform";
-import { predictedTopMm } from "./warnings";
+import { heightCeilingMm, predictedTopMm } from "./warnings";
 
 export interface SpecReadout {
   /** Small uppercase caption. */
   label: string;
   value: string;
   testId: string;
-  /** `danger` past 04's 60 mm ceiling: the bake will refuse this model. */
+  /** `danger` past `warnings.heightCeilingMm`: the bake will refuse this model. */
   tone: "normal" | "danger";
 }
 
@@ -76,7 +76,7 @@ export function specStrip(
       label: "Height",
       value: `${top.toFixed(1)} mm`,
       testId: "spec-height",
-      tone: top >= T.MAX_HEIGHT_MM ? "danger" : "normal",
+      tone: top >= heightCeilingMm(params) ? "danger" : "normal",
     });
   }
 

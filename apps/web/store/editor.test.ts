@@ -911,6 +911,147 @@ describe("setNested", () => {
 });
 
 // ==========================================================================
+// The PRINTER group's profile select (phase 4, [V3-P4-U])
+// ==========================================================================
+
+describe("setPrinterProfile", () => {
+  it("applies the plate (clamped to plate_mm's own contract range) and the nozzle for a named printer", () => {
+    useEditorStore.getState().setPrinterProfile("bambu-p1s");
+    const params = useEditorStore.getState().params;
+    expect(params.printer_profile).toBe("bambu-p1s");
+    expect(params.plate_mm).toBe(256);
+    expect(params.nozzle_mm).toBe(0.4);
+    useEditorStore.getState().cancelEngineJob();
+  });
+
+  it("clamps a bed bigger than plate_mm's own range down to its max", () => {
+    // H2S: 340 x 320, both over plate_mm's 256 mm contract ceiling.
+    useEditorStore.getState().setPrinterProfile("bambu-h2s");
+    expect(useEditorStore.getState().params.plate_mm).toBe(256);
+    useEditorStore.getState().cancelEngineJob();
+  });
+
+  it("writes only the id for custom, restoring nothing the user already changed", () => {
+    useEditorStore.getState().setParam("plate_mm", 150);
+    useEditorStore.getState().setParam("nozzle_mm", 0.6);
+    useEditorStore.getState().setPrinterProfile("custom");
+    const params = useEditorStore.getState().params;
+    expect(params.printer_profile).toBe("custom");
+    expect(params.plate_mm).toBe(150);
+    expect(params.nozzle_mm).toBe(0.6);
+    useEditorStore.getState().cancelEngineJob();
+  });
+
+  it("stales the engine and the bake, exactly like an ordinary setParam", () => {
+    useEditorStore.setState({
+      engine: { status: "ready", result: fakeEngineResult(), error: null, stale: false },
+    });
+    useEditorStore.getState().setPrinterProfile("bambu-a1");
+    expect(useEditorStore.getState().engine.stale).toBe(true);
+    useEditorStore.getState().cancelEngineJob();
+  });
+
+  it("switching printers afterwards still lets the user move plate_mm/nozzle_mm freely", () => {
+    useEditorStore.getState().setPrinterProfile("bambu-p1s");
+    useEditorStore.getState().setParam("plate_mm", 200);
+    expect(useEditorStore.getState().params.plate_mm).toBe(200);
+    useEditorStore.getState().cancelEngineJob();
+  });
+});
+
+// ==========================================================================
+// The Issues drawer's fix buttons (phase 4, [V3-P4-U])
+// ==========================================================================
+
+describe("applyFinding / applySafeFindingFixes", () => {
+  it("applies one finding's patch as one settings change and stales the engine/bake", () => {
+    useEditorStore.setState({
+      engine: { status: "ready", result: fakeEngineResult(), error: null, stale: false },
+      bake: { ...initialBakeState, phase: "done" },
+    });
+    const outcome = useEditorStore.getState().applyFinding({
+      id: "exceeds-height",
+      severity: "error",
+      title: "The model is too tall to print",
+      detail: "It reaches 66.5 mm against a 60 mm ceiling.",
+      fix: { label: "Halve the tall-building multiplier", safe: false, patch: { large_scale: 0.5 } },
+    });
+    expect(outcome.applied).toEqual(["exceeds-height"]);
+    expect(useEditorStore.getState().params.large_scale).toBe(0.5);
+    expect(useEditorStore.getState().engine.stale).toBe(true);
+    expect(useEditorStore.getState().bake.stale).toBe(true);
+    useEditorStore.getState().cancelEngineJob();
+  });
+
+  it("changes nothing for a finding with no fix, or one that only asks for the value already there", () => {
+    const before = useEditorStore.getState().params;
+    const noFix = useEditorStore.getState().applyFinding({
+      id: "estimated-heights",
+      severity: "info",
+      title: "Heights are estimated",
+      detail: "...",
+    });
+    expect(noFix.applied).toEqual([]);
+    expect(useEditorStore.getState().params).toBe(before);
+
+    const noOp = useEditorStore.getState().applyFinding({
+      id: "already-there",
+      severity: "info",
+      title: "No-op",
+      detail: "...",
+      fix: { label: "Keep the default plate", safe: true, patch: { plate_mm: before.plate_mm } },
+    });
+    expect(noOp.applied).toEqual([]);
+    expect(useEditorStore.getState().params).toBe(before);
+    useEditorStore.getState().cancelEngineJob();
+  });
+
+  it("folds every SAFE finding from the current engine result into one write, skipping unsafe ones", () => {
+    useEditorStore.setState({
+      engine: {
+        status: "ready",
+        stale: false,
+        error: null,
+        result: {
+          ...fakeEngineResult(),
+          findings: [
+            {
+              id: "wall-too-thin",
+              severity: "warning",
+              title: "A wall is thinner than the nozzle can print",
+              detail: "...",
+              fix: { label: "Halve the terrain exaggeration", safe: true, patch: { terrain_exaggeration: 0.5 } },
+            },
+            {
+              id: "exceeds-height",
+              severity: "error",
+              title: "The model is too tall to print",
+              detail: "...",
+              fix: { label: "Halve the tall-building multiplier", safe: false, patch: { large_scale: 0.5 } },
+            },
+          ],
+        },
+      },
+    });
+    const outcome = useEditorStore.getState().applySafeFindingFixes();
+    expect(outcome.applied).toEqual(["wall-too-thin"]);
+    expect(useEditorStore.getState().params.terrain_exaggeration).toBe(0.5);
+    // The unsafe fix never ran.
+    expect(useEditorStore.getState().params.large_scale).toBe(DEFAULT_PRINT_PARAMS.large_scale);
+    useEditorStore.getState().cancelEngineJob();
+  });
+
+  it("does nothing, and changes no state, when there are no findings at all", () => {
+    const before = useEditorStore.getState();
+    const outcome = useEditorStore.getState().applySafeFindingFixes();
+    expect(outcome.applied).toEqual([]);
+    expect(useEditorStore.getState().params).toBe(before.params);
+    expect(useEditorStore.getState().engine).toBe(before.engine);
+    useEditorStore.getState().cancelEngineJob();
+  });
+});
+
+// ==========================================================================
 // The frozen defaults may never be aliased into live state ([V2-P4])
 // ==========================================================================
 

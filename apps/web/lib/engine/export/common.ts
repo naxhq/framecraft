@@ -3,6 +3,7 @@
 // Everything here is pure; nothing imports manifold.
 
 import type { PrintParams, SceneGraph } from "../../contracts";
+import { resolveProfile } from "../../printers";
 import { REGION_NAMES, type Bbox3, type EngineResult, type RegionMesh, type RegionName } from "../types";
 
 /**
@@ -351,6 +352,16 @@ export function buildSidecarJson(input: SidecarInput): Record<string, unknown> {
     timings_s: { engine: result.stats.elapsedMs / 1000, total: elapsedS },
     export_target: target,
     printer_profile: printerProfileId,
+    /**
+     * The Z ceiling this bake was made against, mm.
+     *
+     * The reference validator's bounding-box row reads it (`app/cli.py`
+     * `_max_height_from_sidecar`) so a 90 mm model made for a 250 mm machine
+     * is judged against that machine rather than against 04's reference 60,
+     * and so the number the validator prints is the number the editor showed
+     * (DECISIONS `[V3-P4-E9]`).
+     */
+    max_height_mm: resolveProfile(result.params).maxHeightMm,
     resolved_text: result.resolvedText,
     findings: result.findings,
   };

@@ -28,7 +28,7 @@
 //   serialises to (every value a string or a string array).
 
 import { resolveProfile, type PrinterProfile } from "../../printers";
-import type { EngineResult, ExportFile, RegionMesh } from "../types";
+import type { EngineResult, ExportFile, RegionMesh, TileResult } from "../types";
 import { constructionOverlapFor, customGcodePerLayerXml, CUSTOM_GCODE_PART, planColorChanges, type ColorChangePlan } from "./colorchange";
 import {
   ATTRIBUTION,
@@ -80,6 +80,60 @@ export const PROJECT_SETTINGS_PART = "Metadata/project_settings.config";
 export const SLICE_INFO_PART = "Metadata/slice_info.config";
 export const PLATE_JSON_PART = "Metadata/plate_1.json";
 
+/** `3D/Objects/object_<n>.model` for the nth plate, one-based (the backup id). */
+export function objectModelPart(backupId: number): string {
+  return `3D/Objects/object_${backupId}.model`;
+}
+
+/** `Metadata/plate_<n>.json` for the nth plate, one-based. */
+export function plateJsonPart(plateNumber: number): string {
+  return `Metadata/plate_${plateNumber}.json`;
+}
+
+/**
+ * Gap between two plates in Bambu Studio's world, as a fraction of the plate.
+ *
+ * `LOGICAL_PART_PLATE_GAP` in `src/slic3r/GUI/PartPlate.cpp` (1/5), used by
+ * `PartPlateList::plate_stride_x/y` as `width * (1 + gap)`.
+ */
+export const PLATE_GAP_FRACTION = 1 / 5;
+
+/**
+ * Columns Bambu Studio arranges `count` plates in.
+ *
+ * `compute_colum_count` in `src/slic3r/GUI/PartPlate.hpp`: the square root,
+ * rounded, plus one when the root is above its own rounding.
+ */
+export function plateColumns(count: number): number {
+  const value = Math.sqrt(Math.max(1, count));
+  const rounded = Math.round(value);
+  return value > rounded ? rounded + 1 : rounded;
+}
+
+/**
+ * World origin of the nth plate, mm.
+ *
+ * `PartPlateList::compute_origin` (PartPlate.cpp): `(col * stride_x, -row *
+ * stride_y)`, so plates run east across a row and SOUTH down the rows. This
+ * matters and is not cosmetic: nothing in the 3MF assigns an object to a plate.
+ * `PartPlateList::reload_all_objects` walks the plates and gives each instance
+ * to the first one whose build volume its bounding box intersects, so an object
+ * is on plate N because it is standing on plate N's patch of the world. The
+ * `<plate>` blocks in `model_settings.config` carry the plate's own settings and
+ * identify ids; they do not move anything.
+ */
+export function plateOrigin(
+  index: number,
+  count: number,
+  plateXMm: number,
+  plateYMm: number,
+): [number, number] {
+  const cols = plateColumns(count);
+  const col = index % cols;
+  const row = Math.floor(index / cols);
+  return [col * plateXMm * (1 + PLATE_GAP_FRACTION), -row * plateYMm * (1 + PLATE_GAP_FRACTION)];
+}
+
 const OBJECT_UUID_SUFFIX = "-61cb-4c03-9d28-80fed5dfa1dc";
 const SUB_OBJECT_UUID_SUFFIX = "-81cb-4c03-9d28-80fed5dfa1dc";
 const COMPONENT_UUID_SUFFIX = "-b206-40ff-9872-83e8017abed1";
@@ -104,11 +158,22 @@ export const BAMBU_RELS_XML =
   ` <Relationship Target="/${MODEL_PART}" Id="rel-1" Type="${REL_TYPE_MODEL}"/>\n` +
   "</Relationships>";
 
-export const BAMBU_MODEL_RELS_XML =
-  XML_DECLARATION +
-  '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n' +
-  ` <Relationship Target="/${OBJECT_MODEL_PART}" Id="rel-1" Type="${REL_TYPE_MODEL}"/>\n` +
-  "</Relationships>";
+/** `3D/_rels/3dmodel.model.rels`: one relationship per per-object sub-model. */
+export function bambuModelRelsXml(backupIds: readonly number[]): string {
+  const out = [
+    XML_DECLARATION,
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n',
+  ];
+  backupIds.forEach((backupId, index) => {
+    out.push(
+      ` <Relationship Target="/${objectModelPart(backupId)}" Id="rel-${index + 1}" Type="${REL_TYPE_MODEL}"/>\n`,
+    );
+  });
+  out.push("</Relationships>");
+  return out.join("");
+}
+
+export const BAMBU_MODEL_RELS_XML = bambuModelRelsXml([BACKUP_ID]);
 
 function hex8(value: number): string {
   return (value >>> 0).toString(16).padStart(8, "0");
@@ -124,21 +189,47 @@ export interface Bambu3mfOptions extends ExportOptions {
   singleNozzle?: boolean;
   /** Layer height the colour changes snap to; defaults to 0.2 mm. */
   layerHeightMm?: number;
+  /**
+   * One plate per tile. Defaults to `result.tiles`; pass `[]` to force the
+   * whole model onto one plate.
+   */
+  tiles?: readonly TileResult[];
 }
 
 export interface Bambu3mfExport extends ExportFile {
   profile: PrinterProfile;
   /** Present for the single-nozzle target. */
   plan: ColorChangePlan | null;
-  /** Object id of the assembly and the part ids in region order, for tests and the sidecar. */
+  /** Object id of the FIRST plate's assembly, for tests and the sidecar. */
   objectId: number;
+  /** Every part id, plate by plate, in region order. */
   partIds: number[];
+  /** Plates in the project: 1 for an untiled bake, one per tile otherwise. */
+  plates: number;
 }
 
 export interface BambuPart {
   id: number;
   region: RegionMesh;
   extruder: number;
+}
+
+/**
+ * One plate of the project: one ModelObject, built from one tile's regions (or
+ * from the whole model when the bake was not tiled).
+ */
+export interface BambuPlate {
+  /** One-based plate number, and the object's backup id and sub-model file. */
+  number: number;
+  name: string;
+  parts: BambuPart[];
+  objectId: number;
+  /** The object's own extruder, from its base part. */
+  extruder: number;
+  /** Bounds of the placed regions, min at the origin. */
+  bounds: { min: readonly number[]; max: readonly number[] };
+  /** Where the build item puts the object in the world. */
+  itemTranslation: [number, number, number];
 }
 
 function modelHeader(): string {
@@ -174,32 +265,50 @@ export function bambuMetadata(result: EngineResult, resolved: ResolvedExportOpti
   ];
 }
 
-/** `3D/3dmodel.model`: metadata, the assembly object of components, one build item. */
-export function bambuMainModelXml(parts: readonly BambuPart[], objectId: number, metadata: ReadonlyArray<readonly [string, string]>, itemTranslation: readonly [number, number, number]): string {
+/**
+ * `3D/3dmodel.model`: metadata, one assembly object of components per plate,
+ * one build item per plate.
+ *
+ * Every plate's object lives in its own sub-model file, exactly as Bambu's own
+ * writer emits one per ModelObject, and its UUIDs are derived from its backup
+ * id, so a one-plate project is byte for byte what the single-plate writer
+ * produced before tiling existed.
+ */
+export function bambuMainModelXml(
+  plates: readonly BambuPlate[],
+  metadata: ReadonlyArray<readonly [string, string]>,
+): string {
   const out: string[] = [modelHeader(), metadataXml(metadata, " ")];
   out.push(" <resources>\n");
-  out.push(`  <object id="${objectId}" p:UUID="${hex8(BACKUP_ID)}${OBJECT_UUID_SUFFIX}" type="model">\n   <components>\n`);
-  parts.forEach((part, index) => {
+  for (const plate of plates) {
     out.push(
-      `    <component p:path="/${OBJECT_MODEL_PART}" objectid="${part.id}" p:UUID="${hex8(index + (BACKUP_ID << 16))}${COMPONENT_UUID_SUFFIX}" transform="${transform3mf()}"/>\n`,
+      `  <object id="${plate.objectId}" p:UUID="${hex8(plate.number)}${OBJECT_UUID_SUFFIX}" type="model">\n   <components>\n`,
     );
-  });
-  out.push("   </components>\n  </object>\n </resources>\n");
+    plate.parts.forEach((part, index) => {
+      out.push(
+        `    <component p:path="/${objectModelPart(plate.number)}" objectid="${part.id}" p:UUID="${hex8(index + (plate.number << 16))}${COMPONENT_UUID_SUFFIX}" transform="${transform3mf()}"/>\n`,
+      );
+    });
+    out.push("   </components>\n  </object>\n");
+  }
+  out.push(" </resources>\n");
   out.push(` <build p:UUID="${BUILD_UUID}">\n`);
-  out.push(
-    `  <item objectid="${objectId}" p:UUID="${hex8(objectId)}${BUILD_UUID_SUFFIX}" transform="${transform3mf(itemTranslation[0], itemTranslation[1], itemTranslation[2])}" printable="1"/>\n`,
-  );
+  for (const plate of plates) {
+    out.push(
+      `  <item objectid="${plate.objectId}" p:UUID="${hex8(plate.objectId)}${BUILD_UUID_SUFFIX}" transform="${transform3mf(plate.itemTranslation[0], plate.itemTranslation[1], plate.itemTranslation[2])}" printable="1"/>\n`,
+    );
+  }
   out.push(" </build>\n</model>\n");
   return out.join("");
 }
 
-/** `3D/Objects/object_1.model`: one mesh object per part, no build items. */
-export function bambuObjectModelXml(parts: readonly BambuPart[]): string {
+/** `3D/Objects/object_<n>.model`: one mesh object per part, no build items. */
+export function bambuObjectModelXml(parts: readonly BambuPart[], backupId: number = BACKUP_ID): string {
   const out: string[] = [modelHeader()];
   out.push(metadataXml([["BambuStudio:3mfVersion", BBS_3MF_VERSION]], " "));
   out.push(" <resources>\n");
   parts.forEach((part, index) => {
-    out.push(`  <object id="${part.id}" p:UUID="${hex8(index + (BACKUP_ID << 16))}${SUB_OBJECT_UUID_SUFFIX}" type="model">\n`);
+    out.push(`  <object id="${part.id}" p:UUID="${hex8(index + (backupId << 16))}${SUB_OBJECT_UUID_SUFFIX}" type="model">\n`);
     out.push(meshXml(part.region.positions, part.region.indices, "   "));
     out.push("  </object>\n");
   });
@@ -207,36 +316,50 @@ export function bambuObjectModelXml(parts: readonly BambuPart[]): string {
   return out.join("");
 }
 
-export function bambuModelSettingsXml(parts: readonly BambuPart[], objectId: number, objectName: string, objectExtruder: number): string {
+/**
+ * `Metadata/model_settings.config`: every object's parts, then one `<plate>`
+ * block per plate carrying that plate's own instance.
+ */
+export function bambuModelSettingsXml(plates: readonly BambuPlate[]): string {
   const out: string[] = [XML_DECLARATION, "<config>\n"];
-  out.push(`  <object id="${objectId}">\n`);
-  out.push(`    <metadata key="name" value="${escapeAttr(objectName)}"/>\n`);
-  out.push(`    <metadata key="extruder" value="${objectExtruder}"/>\n`);
-  out.push(`    <metadata face_count="${triangleCount(parts.map((p) => p.region))}"/>\n`);
-  for (const part of parts) {
-    const faces = Math.floor(part.region.indices.length / 3);
-    out.push(`    <part id="${part.id}" subtype="normal_part">\n`);
-    out.push(`      <metadata key="name" value="${escapeAttr(part.region.region)}"/>\n`);
-    out.push(`      <metadata key="matrix" value="${IDENTITY_MATRIX_4X4}"/>\n`);
-    out.push(`      <metadata key="extruder" value="${part.extruder}"/>\n`);
-    out.push(
-      `      <mesh_stat face_count="${faces}" edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/>\n`,
-    );
-    out.push("    </part>\n");
+  for (const plate of plates) {
+    out.push(`  <object id="${plate.objectId}">\n`);
+    out.push(`    <metadata key="name" value="${escapeAttr(plate.name)}"/>\n`);
+    out.push(`    <metadata key="extruder" value="${plate.extruder}"/>\n`);
+    out.push(`    <metadata face_count="${triangleCount(plate.parts.map((p) => p.region))}"/>\n`);
+    for (const part of plate.parts) {
+      const faces = Math.floor(part.region.indices.length / 3);
+      out.push(`    <part id="${part.id}" subtype="normal_part">\n`);
+      out.push(`      <metadata key="name" value="${escapeAttr(part.region.region)}"/>\n`);
+      out.push(`      <metadata key="matrix" value="${IDENTITY_MATRIX_4X4}"/>\n`);
+      out.push(`      <metadata key="extruder" value="${part.extruder}"/>\n`);
+      out.push(
+        `      <mesh_stat face_count="${faces}" edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/>\n`,
+      );
+      out.push("    </part>\n");
+    }
+    out.push("  </object>\n");
   }
-  out.push("  </object>\n");
-  out.push("  <plate>\n");
-  out.push('    <metadata key="plater_id" value="1"/>\n');
-  out.push('    <metadata key="plater_name" value=""/>\n');
-  out.push('    <metadata key="locked" value="false"/>\n');
-  out.push("    <model_instance>\n");
-  out.push(`      <metadata key="object_id" value="${objectId}"/>\n`);
-  out.push('      <metadata key="instance_id" value="0"/>\n');
-  out.push('      <metadata key="identify_id" value="1"/>\n');
-  out.push("    </model_instance>\n");
-  out.push("  </plate>\n");
+  for (const plate of plates) {
+    out.push("  <plate>\n");
+    out.push(`    <metadata key="plater_id" value="${plate.number}"/>\n`);
+    out.push(
+      `    <metadata key="plater_name" value="${escapeAttr(plates.length > 1 ? plate.name : "")}"/>\n`,
+    );
+    out.push('    <metadata key="locked" value="false"/>\n');
+    out.push("    <model_instance>\n");
+    out.push(`      <metadata key="object_id" value="${plate.objectId}"/>\n`);
+    out.push('      <metadata key="instance_id" value="0"/>\n');
+    out.push(`      <metadata key="identify_id" value="${plate.number}"/>\n`);
+    out.push("    </model_instance>\n");
+    out.push("  </plate>\n");
+  }
   out.push("  <assemble>\n");
-  out.push(`   <assemble_item object_id="${objectId}" instance_id="0" transform="${transform3mf()}" offset="0 0 0" />\n`);
+  for (const plate of plates) {
+    out.push(
+      `   <assemble_item object_id="${plate.objectId}" instance_id="0" transform="${transform3mf()}" offset="0 0 0" />\n`,
+    );
+  }
   out.push("  </assemble>\n");
   out.push("</config>\n");
   return out.join("");
@@ -347,40 +470,78 @@ export function bambuPlateJson(input: PlateJsonInput): string {
   return JSON.stringify(payload);
 }
 
+/**
+ * The regions that go on each plate.
+ *
+ * One plate for an untiled bake; one per tile otherwise, in the order the
+ * engine produced them (west to east, south to north). A tile with no geometry
+ * is dropped rather than becoming an empty plate the slicer would complain
+ * about.
+ */
+function plateRegions(result: EngineResult, options: Bambu3mfOptions): Array<{ name: string; regions: RegionMesh[] }> {
+  const tiles = options.tiles ?? result.tiles ?? [];
+  if (tiles.length > 1) {
+    return tiles
+      .map((tile) => ({ name: `Tile ${tile.label}`, regions: orderedRegions(tile.regions) }))
+      .filter((plate) => plate.regions.length > 0);
+  }
+  return [{ name: "", regions: orderedRegions(result.regions) }];
+}
+
 export function exportBambu3mf(result: EngineResult, options: Bambu3mfOptions = {}): Bambu3mfExport {
   const resolved = resolveOptions(result, options);
   const profile = options.profile ?? resolveProfile(result.params);
   const singleNozzle = options.singleNozzle === true;
-  const placed = placeInBuildSpace(orderedRegions(result.regions));
-  if (placed.regions.length === 0) {
+
+  const groups = plateRegions(result, options);
+  if (groups.length === 0 || groups.every((group) => group.regions.length === 0)) {
     throw new Error("a Bambu project needs at least one region with triangles");
   }
-  const plan = singleNozzle
-    ? planColorChanges(placed.regions, {
-        layerHeightMm: options.layerHeightMm,
-        changeGcode: profile.changeGcode,
-        constructionOverlapMm: constructionOverlapFor(result.params),
-      })
-    : null;
 
-  const parts: BambuPart[] = placed.regions.map((region, index) => ({
-    id: index + 1,
-    region,
-    extruder: singleNozzle ? 1 : region.slot,
-  }));
-  const objectId = parts.length + 1;
-  const base = parts.find((p) => p.region.region === "base") ?? parts[0];
-  const objectExtruder = base.extruder;
+  // The colour-change plan is a property of ONE printed object, so it is only
+  // available for a single-plate project; `export/index.ts` routes a tiled
+  // colour-change bake to one file per tile instead.
+  const plan =
+    singleNozzle && groups.length === 1
+      ? planColorChanges(placeInBuildSpace(groups[0].regions).regions, {
+          layerHeightMm: options.layerHeightMm,
+          changeGcode: profile.changeGcode,
+          constructionOverlapMm: constructionOverlapFor(result.params),
+        })
+      : null;
 
-  const width = placed.bounds.max[0] - placed.bounds.min[0];
-  const depth = placed.bounds.max[1] - placed.bounds.min[1];
-  const itemTranslation: [number, number, number] = [
-    Math.round(((profile.plateXMm - width) / 2) * 1000) / 1000,
-    Math.round(((profile.plateYMm - depth) / 2) * 1000) / 1000,
-    0,
-  ];
+  const plates: BambuPlate[] = [];
+  const everyRegion: RegionMesh[] = [];
+  let nextId = 1;
+  groups.forEach((group, index) => {
+    const placed = placeInBuildSpace(group.regions);
+    const parts: BambuPart[] = placed.regions.map((region) => ({
+      id: nextId++,
+      region,
+      extruder: singleNozzle ? 1 : region.slot,
+    }));
+    const objectId = nextId++;
+    const base = parts.find((p) => p.region.region === "base") ?? parts[0];
+    const width = placed.bounds.max[0] - placed.bounds.min[0];
+    const depth = placed.bounds.max[1] - placed.bounds.min[1];
+    const [originX, originY] = plateOrigin(index, groups.length, profile.plateXMm, profile.plateYMm);
+    plates.push({
+      number: index + 1,
+      name: group.name === "" ? resolved.title : `${resolved.title} ${group.name}`,
+      parts,
+      objectId,
+      extruder: base.extruder,
+      bounds: placed.bounds,
+      itemTranslation: [
+        Math.round((originX + (profile.plateXMm - width) / 2) * 1000) / 1000,
+        Math.round((originY + (profile.plateYMm - depth) / 2) * 1000) / 1000,
+        0,
+      ],
+    });
+    everyRegion.push(...placed.regions);
+  });
 
-  const filamentColors = plan ? [plan.initialColor] : slotColors(placed.regions, profile.slots);
+  const filamentColors = plan ? [plan.initialColor] : slotColors(everyRegion, profile.slots);
   const filamentIds = filamentColors.map((_c, i) => i + 1);
   const layerHeightMm = plan ? plan.layerHeightMm : (options.layerHeightMm ?? 0.2);
   const bedType = profile.bambu?.bedType ?? "Textured PEI Plate";
@@ -388,28 +549,37 @@ export function exportBambu3mf(result: EngineResult, options: Bambu3mfOptions = 
   const entries: ZipEntry[] = [
     { name: CONTENT_TYPES_PART, data: BAMBU_CONTENT_TYPES_XML },
     { name: RELS_PART, data: BAMBU_RELS_XML },
-    { name: MODEL_PART, data: bambuMainModelXml(parts, objectId, bambuMetadata(result, resolved), itemTranslation) },
-    { name: MODEL_RELS_PART, data: BAMBU_MODEL_RELS_XML },
-    { name: OBJECT_MODEL_PART, data: bambuObjectModelXml(parts) },
-    { name: MODEL_SETTINGS_PART, data: bambuModelSettingsXml(parts, objectId, resolved.title, objectExtruder) },
+    { name: MODEL_PART, data: bambuMainModelXml(plates, bambuMetadata(result, resolved)) },
+    { name: MODEL_RELS_PART, data: bambuModelRelsXml(plates.map((plate) => plate.number)) },
+  ];
+  for (const plate of plates) {
+    entries.push({
+      name: objectModelPart(plate.number),
+      data: bambuObjectModelXml(plate.parts, plate.number),
+    });
+  }
+  entries.push(
+    { name: MODEL_SETTINGS_PART, data: bambuModelSettingsXml(plates) },
     { name: PROJECT_SETTINGS_PART, data: JSON.stringify(bambuProjectSettings({ profile, filamentColors, singleNozzle }), null, 4) + "\n" },
     { name: SLICE_INFO_PART, data: bambuSliceInfoXml() },
-    {
-      name: PLATE_JSON_PART,
+  );
+  for (const plate of plates) {
+    entries.push({
+      name: plateJsonPart(plate.number),
       data: bambuPlateJson({
-        objectId,
-        objectName: resolved.title,
-        bounds: placed.bounds,
-        itemTranslation,
+        objectId: plate.objectId,
+        objectName: plate.name,
+        bounds: plate.bounds,
+        itemTranslation: plate.itemTranslation,
         filamentIds,
         filamentColors,
-        firstExtruder: objectExtruder,
+        firstExtruder: plate.extruder,
         nozzleMm: profile.nozzleMm,
         layerHeightMm,
         bedType,
       }),
-    },
-  ];
+    });
+  }
   if (plan) {
     entries.push({ name: CUSTOM_GCODE_PART, data: customGcodePerLayerXml(plan, 1) });
   }
@@ -420,7 +590,8 @@ export function exportBambu3mf(result: EngineResult, options: Bambu3mfOptions = 
     bytes,
     profile,
     plan,
-    objectId,
-    partIds: parts.map((p) => p.id),
+    objectId: plates[0].objectId,
+    partIds: plates.flatMap((plate) => plate.parts.map((part) => part.id)),
+    plates: plates.length,
   };
 }

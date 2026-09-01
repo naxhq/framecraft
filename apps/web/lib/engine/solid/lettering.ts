@@ -108,6 +108,11 @@ export function facesFor(params: PrintParams): string[] {
   }
   if (params.frame && params.scale_bar?.enabled) out.add(T.SCALE_BAR_FACE);
   if (params.underside_mark?.enabled) out.add(T.UNDERSIDE_MARK_FACE);
+  // The tile index marks (`solid/tiling.ts`) are cut in the underside mark's
+  // own face, and they are cut long after `loadFaces` has run.
+  if (params.tiling?.enabled === true && params.tiling.index_mark !== false) {
+    out.add(T.UNDERSIDE_MARK_FACE);
+  }
   return [...out];
 }
 
@@ -247,24 +252,123 @@ interface Piece {
   fit: T.TextFit;
   depthMm: number;
   face: "top" | "bottom";
+  /** Index in `params.engravings`, so a refusal can offer to resize THAT line. */
+  sourceIndex: number;
+  /** Would this line be laid out at all at `sizeMm`? See `tooSmallFinding`. */
+  verifySize: (sizeMm: number) => boolean;
 }
 
-/** Split the engravings into the ones on the lip and the ones underneath. */
+/** An engraving with the index it has in `params.engravings`. */
+interface SourcedEngraving {
+  engraving: Engraving;
+  index: number;
+}
+
+/**
+ * Split the engravings into the ones on the lip and the ones underneath,
+ * keeping the index each one has in the parameter array.
+ *
+ * The index is what lets a "this line was not cut" finding carry a one-click
+ * fix that resizes the line the user actually wrote, rather than a sentence
+ * telling them to go and find it.
+ */
 function splitEngravings(params: PrintParams): {
-  edges: Engraving[];
-  underside: Engraving[];
+  edges: SourcedEngraving[];
+  underside: SourcedEngraving[];
 } {
-  const edges: Engraving[] = [];
-  const underside: Engraving[] = [];
-  for (const engraving of params.engravings ?? []) {
-    if (engraving.edge === "underside") underside.push(engraving);
-    else edges.push(engraving);
-  }
+  const edges: SourcedEngraving[] = [];
+  const underside: SourcedEngraving[] = [];
+  (params.engravings ?? []).forEach((engraving, index) => {
+    if (engraving.edge === "underside") underside.push({ engraving, index });
+    else edges.push({ engraving, index });
+  });
   return { edges, underside };
 }
 
-/** How far below the base top the deepest surface region reaches, print mm. */
-function deepestRecessMm(ctx: BakeContext): number {
+/**
+ * The size this line would have to be cut at, mm, or null when growing it is
+ * not the remedy.
+ *
+ * `TextFit.min_size_mm` is the shared layout's own measurement: the smallest
+ * size at which this face's thinnest stroke in this string still clears the
+ * nozzle. Rounded UP to the size grid, because rounding down would land back on
+ * the refusal; capped at the schema's maximum, and null when the line is
+ * already at or past it, in which case a smaller nozzle or a different face is
+ * the only answer and neither is a PrintParams patch.
+ */
+function workingSizeMm(fit: T.TextFit): number | null {
+  if (!(fit.min_size_mm > 0)) return null;
+  const wanted = Math.ceil(fit.min_size_mm / T.TEXT_FIT_GRID_MM) * T.TEXT_FIT_GRID_MM;
+  const capped = Number(Math.min(T.TEXT_MAX_SIZE_MM, wanted).toFixed(2));
+  if (!(capped > fit.size_mm + T.TEXT_FIT_GRID_MM)) return null;
+  return capped;
+}
+
+/**
+ * "This line was not cut", with the measured size it would need.
+ *
+ * The fix is only offered when growing the line to that size WOULD cut it, and
+ * `verify` is what answers that: it re-runs the same shared layout (or the same
+ * `fit_text`) that refused the line, at the candidate size, and reports whether
+ * the refusal goes away. Guessing instead would be worse than saying nothing -
+ * a line that "does not fit the edge even at the smallest legal 1.5 mm" also
+ * reports a `min_size_mm`, and a button that made it BIGGER would fail in
+ * exactly the same way with a longer error.
+ *
+ * It is never SAFE: a bigger engraving is a design change the user can see.
+ */
+function tooSmallFinding(
+  params: PrintParams,
+  title: string,
+  reason: string,
+  fit: T.TextFit,
+  sourceIndex: number,
+  verify: (sizeMm: number) => boolean,
+): AuditFinding {
+  const base = skipFinding(title, reason);
+  const all = params.engravings ?? [];
+  const size = workingSizeMm(fit);
+  if (size === null || sourceIndex < 0 || sourceIndex >= all.length) return base;
+  if (!verify(size)) return base;
+  return {
+    ...base,
+    detail: `${reason}. At ${size.toFixed(2)} mm it would cut.`,
+    fix: {
+      label: `Set this line to ${size.toFixed(2)} mm`,
+      safe: false,
+      patch: {
+        engravings: all.map((engraving, index) =>
+          index === sourceIndex ? { ...engraving, size_mm: size } : engraving,
+        ),
+      },
+    },
+  };
+}
+
+/** Would this edge line cut at `sizeMm`? Asked of the layout that refused it. */
+function edgeCutsAt(
+  params: PrintParams,
+  edges: readonly SourcedEngraving[],
+  tokens: TokenContext,
+  rotationDeg: number,
+  entryIndex: number,
+  sizeMm: number,
+): boolean {
+  const resized = edges.map((item, index) =>
+    index === entryIndex ? { ...item.engraving, size_mm: sizeMm } : item.engraving,
+  );
+  const layout = T.lettering_layout({ ...params, engravings: resized }, tokens, rotationDeg);
+  const entry = layout.engravings.find((item) => item.index === entryIndex);
+  return entry !== undefined && !entry.fit.refused;
+}
+
+/**
+ * How far below the base top the deepest surface region reaches, print mm.
+ *
+ * Exported for `solid/tiling.ts`, which cuts its own pocket into the same
+ * underside and has to leave the same roof over the same recesses.
+ */
+export function deepestRecessMm(ctx: BakeContext): number {
   let depth = 0;
   const layers: SurfaceName[] = ["water", "rail", "roads", "parks"];
   for (const layer of layers) {
@@ -389,7 +493,7 @@ export function buildLettering(
   const { edges, underside } = splitEngravings(params);
   // The shared layout only knows the four frame edges, so it is given exactly
   // those; the underside lines are laid out below with the mark's own rule.
-  const edgeParams: PrintParams = { ...params, engravings: edges };
+  const edgeParams: PrintParams = { ...params, engravings: edges.map((item) => item.engraving) };
   const layout = T.lettering_layout(edgeParams, tokens, rotationDeg);
   reportLayoutWarnings(ctx, layout.warnings);
 
@@ -407,7 +511,9 @@ export function buildLettering(
   const pieces: Piece[] = [];
 
   for (const entry of layout.engravings) {
-    const source = edges[entry.index];
+    const item = edges[entry.index];
+    const source = item?.engraving;
+    const sourceIndex = item?.index ?? -1;
     const face = source?.font ?? T.ENGRAVING_DEFAULT_FACE;
     const mode = (entry.mode as "engrave" | "emboss" | "inlay") ?? "engrave";
     const surface = EDGE_LABEL[entry.edge] ?? entry.edge;
@@ -418,7 +524,14 @@ export function buildLettering(
       );
       addFinding(
         ctx,
-        skipFinding(`"${entry.fit.text || source?.text || ""}" was not cut`, entry.fit.reason),
+        tooSmallFinding(
+          params,
+          `"${entry.fit.text || source?.text || ""}" was not cut`,
+          entry.fit.reason,
+          entry.fit,
+          sourceIndex,
+          (sizeMm) => edgeCutsAt(edgeParams, edges, tokens, rotationDeg, entry.index, sizeMm),
+        ),
       );
       continue;
     }
@@ -437,12 +550,14 @@ export function buildLettering(
       fit: entry.fit,
       depthMm: entry.depth_mm,
       face: "top",
+      sourceIndex,
+      verifySize: (sizeMm) => edgeCutsAt(edgeParams, edges, tokens, rotationDeg, entry.index, sizeMm),
     });
   }
 
   // --- the underside lines ---------------------------------------------
   const undersideFits: T.TextFit[] = [];
-  for (const engraving of underside) {
+  for (const { engraving } of underside) {
     const face = engraving.font ?? T.ENGRAVING_DEFAULT_FACE;
     const text = expand_tokens(engraving.text, tokens);
     undersideFits.push(
@@ -465,7 +580,7 @@ export function buildLettering(
       : 0;
   const placements = undersideColumn(ctx, undersideFits, reserved);
   for (let i = 0; i < underside.length; i += 1) {
-    const engraving = underside[i];
+    const { engraving, index: sourceIndex } = underside[i];
     const fit = undersideFits[i];
     const mode = (engraving.mode ?? "engrave") as "engrave" | "emboss" | "inlay";
     const depth = engraving.depth_mm ?? T.ENGRAVING_DEFAULT_DEPTH_MM;
@@ -482,7 +597,31 @@ export function buildLettering(
     }
     if (reason !== null) {
       ctx.resolvedText.push(resolved(id, fit, surface, mode, "skipped", depth, reason));
-      addFinding(ctx, skipFinding(`"${fit.text}" was not cut on the underside`, reason));
+      addFinding(
+        ctx,
+        fit.refused
+          ? tooSmallFinding(
+              params,
+              `"${fit.text}" was not cut on the underside`,
+              reason,
+              fit,
+              sourceIndex,
+              (sizeMm) =>
+                !T.fit_text(
+                  fit.face,
+                  fit.text,
+                  sizeMm,
+                  T.underside_mark_available_mm(params),
+                  sizeMm * 2,
+                  params,
+                  "underside engraving",
+                  mode,
+                ).refused,
+            )
+          : // An embossed underside line and a pocket the base cannot carry are
+            // not size problems, and no size cures them.
+            skipFinding(`"${fit.text}" was not cut on the underside`, reason),
+      );
       continue;
     }
     const asset = loadedGlyphFace(fit.face);
@@ -500,6 +639,18 @@ export function buildLettering(
       fit,
       depthMm: depth,
       face: "bottom",
+      sourceIndex,
+      verifySize: (sizeMm) =>
+        !T.fit_text(
+          fit.face,
+          fit.text,
+          sizeMm,
+          T.underside_mark_available_mm(params),
+          sizeMm * 2,
+          params,
+          "underside engraving",
+          mode,
+        ).refused,
     });
   }
 
@@ -526,7 +677,17 @@ export function buildLettering(
       ctx.resolvedText.push(
         resolved(piece.id, piece.fit, piece.surface, piece.mode, "skipped", piece.depthMm, reason),
       );
-      addFinding(ctx, skipFinding(`"${piece.fit.text}" was not cut`, reason));
+      addFinding(
+        ctx,
+        tooSmallFinding(
+          params,
+          `"${piece.fit.text}" was not cut`,
+          reason,
+          piece.fit,
+          piece.sourceIndex,
+          piece.verifySize,
+        ),
+      );
       ctx.arena.drop(repaired.section);
       continue;
     }
@@ -540,7 +701,17 @@ export function buildLettering(
       ctx.resolvedText.push(
         resolved(piece.id, piece.fit, piece.surface, piece.mode, "skipped", piece.depthMm, reason),
       );
-      addFinding(ctx, skipFinding(`"${piece.fit.text}" was not cut`, reason));
+      addFinding(
+        ctx,
+        tooSmallFinding(
+          params,
+          `"${piece.fit.text}" was not cut`,
+          reason,
+          piece.fit,
+          piece.sourceIndex,
+          piece.verifySize,
+        ),
+      );
       ctx.arena.drop(repaired.section);
       continue;
     }

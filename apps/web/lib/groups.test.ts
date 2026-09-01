@@ -43,7 +43,7 @@ afterEach(() => {
 });
 
 describe("the group table", () => {
-  it("names the nine groups the panel is built from", () => {
+  it("names the ten groups the panel is built from", () => {
     expect(GROUP_IDS).toEqual([
       "location",
       "scale",
@@ -53,6 +53,7 @@ describe("the group table", () => {
       "terrain",
       "frame",
       "colour",
+      "printer",
       "output",
     ]);
   });
@@ -64,7 +65,7 @@ describe("the group table", () => {
     }
   });
 
-  it("starts with the two personalisation groups and terrain collapsed", () => {
+  it("starts with the three personalisation groups and terrain collapsed", () => {
     const collapsed = defaultCollapsed();
     expect(collapsed).toEqual({
       location: false,
@@ -75,6 +76,7 @@ describe("the group table", () => {
       terrain: true,
       frame: true,
       colour: true,
+      printer: true,
       output: false,
     });
   });

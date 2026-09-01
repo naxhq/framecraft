@@ -1353,11 +1353,24 @@ def validate(
     manifold: Any = None,
     slices: int = MIN_WALL_SLICES,
     self_intersection_sample: bool = True,
+    max_height_mm: float | None = None,
 ) -> ValidationReport:
-    """Run every 04 stage 4 validator.  All must pass for a job to be ``done``."""
+    """Run every 04 stage 4 validator.  All must pass for a job to be ``done``.
+
+    ``max_height_mm`` is the Z ceiling the bounding-box row judges against, and
+    it defaults to 04's own :data:`MAX_HEIGHT_MM`.  It exists because the
+    ceiling is a property of the PRINTER, not of the product: a P1S has 250 mm
+    of gantry and an A1 mini 180, and a bake made for one of them is not
+    unprintable because 04's reference figure is 60 (DECISIONS ``[V3-P4-E9]``).
+    ``app/cli.py`` reads the resolved number out of the bake sidecar's
+    ``max_height_mm`` when the file has one, so a taller bake validates against
+    the printer it was made for and everything without a sidecar keeps the
+    figure it has always been judged against.
+    """
     checks: list[Check] = []
 
     plate_mm = float(params.plate_mm)
+    ceiling_mm = MAX_HEIGHT_MM if max_height_mm is None else float(max_height_mm)
     # 04's ``2 * nozzle``, from the shared transform math rather than spelled
     # out here, so the gate can never measure against a different wall than the
     # one Stage 1 repaired to or the preview HUD advertised (DECISIONS [V2-P1]).
@@ -1453,20 +1466,20 @@ def validate(
     # ---- bounding box ---------------------------------------------------
     extents = mesh.extents.astype(float)
     limit = plate_mm + PLATE_TOLERANCE_MM
-    bbox_ok = bool(extents[0] <= limit and extents[1] <= limit and extents[2] < MAX_HEIGHT_MM)
+    bbox_ok = bool(extents[0] <= limit and extents[1] <= limit and extents[2] < ceiling_mm)
     checks.append(
         Check(
             name="bounding_box",
             passed=bbox_ok,
             value=f"{extents[0]:.3f} x {extents[1]:.3f} x {extents[2]:.3f} mm",
-            threshold=f"x,y <= {limit:.2f} mm; z < {MAX_HEIGHT_MM:.0f} mm",
+            threshold=f"x,y <= {limit:.2f} mm; z < {ceiling_mm:.0f} mm",
             message=(
                 "fits the selected plate"
                 if bbox_ok
                 else (
-                    f"model is {extents[2]:.1f} mm tall, over the {MAX_HEIGHT_MM:.0f} mm limit; "
+                    f"model is {extents[2]:.1f} mm tall, over the {ceiling_mm:.0f} mm limit; "
                     "lower the building height multipliers"
-                    if extents[2] >= MAX_HEIGHT_MM
+                    if extents[2] >= ceiling_mm
                     else f"footprint {extents[0]:.2f} x {extents[1]:.2f} mm does not fit a "
                     f"{plate_mm:.0f} mm plate"
                 )

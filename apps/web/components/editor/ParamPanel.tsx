@@ -12,6 +12,7 @@ import {
   type GroupId,
 } from "@/lib/groups";
 import { HERO_CAP, effectiveHeroIds } from "@/lib/heroes";
+import { PRINTER_PROFILES, isPrinterProfileId } from "@/lib/printers";
 import { useEditorStore } from "@/store/editor";
 import CollapsibleGroup from "./CollapsibleGroup";
 import OutputPanel from "./OutputPanel";
@@ -20,6 +21,7 @@ import ColourGroup from "./groups/ColourGroup";
 import FrameTextGroup from "./groups/FrameTextGroup";
 import HeightsGroup from "./groups/HeightsGroup";
 import LocationGroup from "./groups/LocationGroup";
+import PrinterGroup from "./groups/PrinterGroup";
 import ScaleSizeGroup from "./groups/ScaleSizeGroup";
 import SurfaceGroup from "./groups/SurfaceGroup";
 import TerrainGroup from "./groups/TerrainGroup";
@@ -52,6 +54,7 @@ const BODIES: Record<Exclude<GroupId, "output">, () => ReactNode> = {
   terrain: TerrainGroup,
   frame: FrameTextGroup,
   colour: ColourGroup,
+  printer: PrinterGroup,
 };
 
 export function ParamPanel() {
@@ -70,6 +73,8 @@ export function ParamPanel() {
   );
   const colorMode = useEditorStore((state) => state.params.color_mode ?? "single");
   const terrainOn = useEditorStore((state) => state.params.terrain?.enabled ?? false);
+  const printerProfile = useEditorStore((state) => state.params.printer_profile ?? "custom");
+  const tilingOn = useEditorStore((state) => state.params.tiling?.enabled ?? false);
 
   // Server-rendered as the defaults, then reconciled with localStorage after
   // mount. Reading storage during render would mismatch the HTML Next sent.
@@ -94,6 +99,11 @@ export function ParamPanel() {
         : null,
     colour: colorMode === "parts" ? "7 parts" : null,
     terrain: terrainOn ? "on" : null,
+    printer: tilingOn
+      ? "tiled"
+      : isPrinterProfileId(printerProfile) && printerProfile !== "custom"
+        ? PRINTER_PROFILES[printerProfile].label
+        : null,
   };
 
   const outputGroup = GROUPS[GROUPS.length - 1];

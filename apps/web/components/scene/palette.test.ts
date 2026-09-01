@@ -40,6 +40,7 @@ const TOKENS: Record<string, Record<string, string>> = {
     "--fc-preview-pocket": "#7c7668",
     "--fc-preview-sky": "#ffffff",
     "--fc-preview-bounce": "#445566",
+    "--fc-preview-tile-line": "#c2661a",
   },
   dark: {
     "--fc-preview-bg": "#0e0d0b",
@@ -59,6 +60,7 @@ const TOKENS: Record<string, Record<string, string>> = {
     "--fc-preview-pocket": "#211f1a",
     "--fc-preview-sky": "#dfe6ee",
     "--fc-preview-bounce": "#232a33",
+    "--fc-preview-tile-line": "#e08a3e",
   },
 };
 

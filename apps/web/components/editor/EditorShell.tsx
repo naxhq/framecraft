@@ -45,9 +45,10 @@ export function EditorShell() {
    * Read through a ref rather than a dependency so the listener is attached
    * once and never re-bound mid-keystroke.
    */
-  const overlayRef = useRef({ sheet: false, drawer: false });
+  const overlayRef = useRef({ sheet: false, drawer: false, issues: false });
   const adjustmentsOpen = useEditorStore((state) => state.adjustmentsOpen);
-  overlayRef.current = { sheet: shortcutsOpen, drawer: adjustmentsOpen };
+  const issuesOpen = useEditorStore((state) => state.issuesOpen);
+  overlayRef.current = { sheet: shortcutsOpen, drawer: adjustmentsOpen, issues: issuesOpen };
 
   const dispatchShortcut = useCallback((event: KeyboardEvent) => {
     const action = shortcutFor({
@@ -61,18 +62,19 @@ export function EditorShell() {
     if (action === null) return;
 
     const state = useEditorStore.getState();
-    const { sheet, drawer } = overlayRef.current;
+    const { sheet, drawer, issues } = overlayRef.current;
 
     // Escape always gets through, and closes what is open, outermost last.
     if (action === "dismiss") {
       if (drawer) state.setAdjustmentsOpen(false);
+      if (issues) state.setIssuesOpen(false);
       if (sheet) setShortcutsOpen(false);
       return;
     }
     // Nothing else acts while an overlay is up. `help` included: the sheet is
     // already open, and re-opening it would be a no-op that hides the fact
     // that the key did nothing.
-    if (sheet || drawer) return;
+    if (sheet || drawer || issues) return;
 
     switch (action) {
       case "generate": {

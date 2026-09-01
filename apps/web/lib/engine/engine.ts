@@ -47,6 +47,7 @@ import type {
   ResolvedLine,
 } from "./types";
 import { REGION_NAMES } from "./types";
+import { auditPrintability } from "./audit/rules";
 import { samplerFromGrid } from "./terrain/heightfield";
 import { buildSurfaceRegions } from "./solid/areas";
 import { buildPlate, carveBase, cutterTopMm } from "./solid/base";
@@ -81,7 +82,8 @@ import { measureMinWall, regionBounds, triangleCount } from "./solid/measure";
 import { buildOrnaments } from "./solid/ornaments";
 import { repairBuildings } from "./solid/repair";
 import { reportRoadModeConflict } from "./solid/roads";
-import { validate, type BuiltRegion } from "./solid/validate";
+import { buildTiles, tileGridSpec, type TileSource } from "./solid/tiling";
+import { islandReport, validate, type BuiltRegion } from "./solid/validate";
 
 /** How far the assembly may sit off z = 0 before it is nudged back, mm. */
 const SIT_EPS_MM = 1e-9;
@@ -361,6 +363,19 @@ export async function bake(
             countBodies(cleanAssembly, UNION_DEBRIS_MM3).real,
           );
 
+    // --- islands and tiles ----------------------------------------------
+    // Both read the CLEANED assembly: the debris the union leaves at a seam is
+    // not an island, and a tile must not be cut from a solid that carries any.
+    const islands = islandReport(ctx, cleanAssembly, built);
+    const sources: TileSource[] = built.map((region) => ({
+      region: region.mesh.region,
+      solid: region.solid,
+      slot: region.mesh.slot,
+      colorHex: region.mesh.colorHex,
+    }));
+    const tiles = buildTiles(ctx, sources, cleanAssembly);
+    const grid = tileGridSpec(input.params);
+
     const regions = built.map((region) => region.mesh);
     const bounds = regionBounds(regions);
     const stats: EngineStats = {
@@ -383,15 +398,31 @@ export async function bake(
       ...(bridges.length === 0
         ? {}
         : { bridges: bridges.reduce((total, b) => total + b.ways, 0) }),
+      ...(grid === null
+        ? {}
+        : { tiles: tiles.length, tileCols: grid.cols, tileRows: grid.rows }),
     };
 
     return {
       regions,
       merged,
       stats,
-      findings: ctx.findings,
+      // The bake's own findings plus every rule that can be answered from the
+      // finished meshes, in one ordered list (`audit/rules.ts`).
+      findings: auditPrintability({
+        params: input.params,
+        scene: input.scene,
+        radiusM: ctx.radiusM,
+        regions,
+        merged,
+        stats,
+        built: ctx.findings,
+        islands,
+        ...(tiles.length === 0 ? {} : { tiles }),
+      }),
       resolvedText: ctx.resolvedText,
       params: resolveParamsEcho(input.params, ctx.resolvedText),
+      ...(tiles.length === 0 ? {} : { tiles }),
     };
   } finally {
     arena.dispose();

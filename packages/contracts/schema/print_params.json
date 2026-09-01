@@ -313,7 +313,7 @@
       "properties": {
         "plate_x_mm": { "type": "number", "minimum": 100, "maximum": 400, "default": 256 },
         "plate_y_mm": { "type": "number", "minimum": 100, "maximum": 400, "default": 256 },
-        "max_height_mm": { "type": "number", "minimum": 20, "maximum": 500, "default": 250 },
+        "max_height_mm": { "type": "number", "minimum": 20, "maximum": 500, "default": 60 },
         "nozzle_mm": { "type": "number", "minimum": 0.2, "maximum": 1.0, "default": 0.4 },
         "slots": { "type": "integer", "minimum": 1, "maximum": 16, "default": 4, "description": "AMS/MMU filament slot count." },
         "change_gcode": { "type": "string", "default": "M600", "description": "G-code inserted at each filament change, single-nozzle colour-change exports only." }
@@ -625,7 +625,7 @@
     },
     "custom_profile": {
       "$ref": "#/$defs/CustomProfile",
-      "default": { "plate_x_mm": 256, "plate_y_mm": 256, "max_height_mm": 250, "nozzle_mm": 0.4, "slots": 4, "change_gcode": "M600" },
+      "default": { "plate_x_mm": 256, "plate_y_mm": 256, "max_height_mm": 60, "nozzle_mm": 0.4, "slots": 4, "change_gcode": "M600" },
       "description": "schema_version 3. Printer geometry used when printer_profile is \"custom\"."
     },
     "export_target": {

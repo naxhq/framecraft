@@ -203,6 +203,45 @@ export const PRINTER_PROFILES: Readonly<Record<PrinterProfileId, PrinterProfile>
   },
 };
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+export interface ProfileApplyPatch {
+  printer_profile: PrinterProfileId;
+  plate_mm?: number;
+  nozzle_mm?: number;
+}
+
+/**
+ * What selecting `id` in the PRINTER group writes onto PrintParams: the
+ * profile id itself, plus -- for every NAMED printer, never for `custom`
+ * ([V3-P4-U]) -- its plate and nozzle, clamped into `plate_mm`/`nozzle_mm`'s
+ * own `PARAM_RANGES`, not the profile's own numbers, which can exceed it (the
+ * H2S's 340 x 320 mm bed against a 256 mm `plate_mm` ceiling).
+ *
+ * The plate written is the SMALLER of the profile's two bed dimensions:
+ * `plate_mm` prints a square, and a square that fits a non-square bed cannot
+ * exceed its short side. Selecting `custom` writes only the id -- `plate_mm`
+ * and `nozzle_mm` stay whatever they already were ("switching back to Custom
+ * restores nothing silently"). This only ever runs on the selection CHANGE
+ * itself; the user can still move `plate_mm`/`nozzle_mm` afterwards and
+ * nothing here fights them back.
+ */
+export function profileApplyPatch(
+  id: PrinterProfileId,
+  ranges: {
+    plate_mm: { min: number; max: number };
+    nozzle_mm: { min: number; max: number };
+  },
+): ProfileApplyPatch {
+  if (id === "custom") return { printer_profile: id };
+  const profile = PRINTER_PROFILES[id];
+  const plate = clamp(Math.min(profile.plateXMm, profile.plateYMm), ranges.plate_mm.min, ranges.plate_mm.max);
+  const nozzle = clamp(profile.nozzleMm, ranges.nozzle_mm.min, ranges.nozzle_mm.max);
+  return { printer_profile: id, plate_mm: plate, nozzle_mm: nozzle };
+}
+
 export function isPrinterProfileId(value: unknown): value is PrinterProfileId {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(PRINTER_PROFILES, value);
 }
