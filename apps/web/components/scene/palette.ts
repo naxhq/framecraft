@@ -122,6 +122,51 @@ export function readPreviewPalette(theme: string): PreviewPalette {
 }
 
 /**
+ * The four viewport-only slots `colour.preview_theme` controls
+ * (`app/globals.css`'s `[data-fc-viewport-theme]` rules), independent of the
+ * app's own light/dark theme (v3 phase 5, `[V3-P5-C]`).
+ */
+export type ViewportPalette = Pick<PreviewPalette, "background" | "sky" | "bounce" | "grid">;
+
+const VIEWPORT_TOKENS: Record<keyof ViewportPalette, string> = {
+  background: "--fc-viewport-bg",
+  sky: "--fc-viewport-sky",
+  bounce: "--fc-viewport-bounce",
+  grid: "--fc-viewport-grid",
+};
+
+/**
+ * Read the viewport-theme tokens off `element` (the canvas wrapper carrying
+ * `data-fc-viewport-theme`), falling back to `themed`'s own values for any
+ * token not yet resolvable (before mount, or in a test DOM with no
+ * stylesheet). Never cached: unlike `readPreviewPalette`, this reads a
+ * specific ELEMENT rather than the document, and there are only ever two
+ * elements' worth of values to read (light/dark), cheap enough to read fresh
+ * on every theme flip.
+ */
+export function readViewportPalette(
+  element: Element | null,
+  themed: PreviewPalette,
+): ViewportPalette {
+  const fallback: ViewportPalette = {
+    background: themed.background,
+    sky: themed.sky,
+    bounce: themed.bounce,
+    grid: themed.grid,
+  };
+  if (element === null || typeof window === "undefined") return fallback;
+  const styles = window.getComputedStyle(element);
+  const out = { ...fallback };
+  for (const [slot, variable] of Object.entries(VIEWPORT_TOKENS) as Array<
+    [keyof ViewportPalette, string]
+  >) {
+    const value = styles.getPropertyValue(variable).trim();
+    if (value) out[slot] = value;
+  }
+  return out;
+}
+
+/**
  * The palette the canvas should paint with: the user's filament colours in
  * `parts` mode, the themed preview tokens otherwise.
  *

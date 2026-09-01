@@ -5,7 +5,14 @@
 
 import type { PrintParams, SceneGraph } from "../contracts";
 
-export const REGION_NAMES = [
+/**
+ * The regions the CONTRACT can colour: one `colour.region_slots` /
+ * `region_colors` key each, plus `easel`, which borrows `base`.
+ *
+ * This list is what a colour panel lists before the first bake. It is NOT the
+ * full set of names a `RegionMesh` can carry: see {@link DERIVED_REGION_NAMES}.
+ */
+export const COLOURABLE_REGION_NAMES = [
   "base",
   "frame",
   "matting",
@@ -20,7 +27,60 @@ export const REGION_NAMES = [
   "easel",
 ] as const;
 
+/**
+ * Regions the BAKE derives, which exist only when a feature is switched on
+ * (v3 phase 5, DECISIONS `[V3-P5-F7]`).
+ *
+ * * `cleat` - the wall-side wedge of a French cleat mount (`hanger: "cleat"`),
+ *   a separate printable part. It borrows `base`'s slot and colour, exactly as
+ *   `easel` does.
+ * * `buildings_band_N` - band N of a height gradient
+ *   (`colour.gradient.enabled`). Band 1 keeps the name `buildings`, so the
+ *   names start at 2. Each band takes `colour.gradient.slots[N-1]` and a colour
+ *   interpolated between the buildings colour and the hero colour.
+ *
+ * A consumer that renders region names should treat an unknown name as
+ * "borrows the colour it was given": every one of these carries a resolved
+ * `slot` and `colorHex` on its `RegionMesh` like any other region.
+ */
+export const DERIVED_REGION_NAMES = [
+  "cleat",
+  "buildings_band_2",
+  "buildings_band_3",
+  "buildings_band_4",
+  "buildings_band_5",
+  "buildings_band_6",
+  "buildings_band_7",
+  "buildings_band_8",
+] as const;
+
+export const REGION_NAMES = [
+  ...COLOURABLE_REGION_NAMES,
+  ...DERIVED_REGION_NAMES,
+] as const;
+
+export type ColourableRegionName = (typeof COLOURABLE_REGION_NAMES)[number];
+export type DerivedRegionName = (typeof DERIVED_REGION_NAMES)[number];
 export type RegionName = (typeof REGION_NAMES)[number];
+
+/** Most gradient bands the buildings can be split into (`[V3-P5-F7]`). */
+export const GRADIENT_MAX_BANDS = 8;
+
+/** Region name for gradient band `index` (1-based); band 1 is `buildings`. */
+export function bandRegionName(index: number): RegionName {
+  if (index <= 1) return "buildings";
+  const name = `buildings_band_${index}`;
+  return (DERIVED_REGION_NAMES as readonly string[]).includes(name)
+    ? (name as RegionName)
+    : "buildings";
+}
+
+/** The 1-based gradient band a region name carries, or null. */
+export function bandIndexOf(region: RegionName): number | null {
+  if (region === "buildings") return 1;
+  const match = /^buildings_band_(\d+)$/.exec(region);
+  return match === null ? null : Number(match[1]);
+}
 
 /** Axis-aligned bounds in engine millimetres. */
 export interface Bbox3 {
@@ -118,6 +178,11 @@ export interface EngineStats {
   tiles?: number;
   tileCols?: number;
   tileRows?: number;
+  /**
+   * v3 phase 5. Height-gradient bands the buildings were split into, absent
+   * when `colour.gradient` is off (one band is not a gradient).
+   */
+  gradientBands?: number;
 }
 
 export interface TileResult {
@@ -253,6 +318,41 @@ export interface EngineInput {
   attribution?: { underside: string; frameWall: string; microtext: string };
 }
 
+/**
+ * One building's tint, when `colour.tint.enabled` (v3 phase 5).
+ *
+ * Data only: the PRINT path ignores it entirely, because a tint is a shade of
+ * one filament and a printer has no way to lay it down. It exists for the
+ * preview and for `export/obj.ts`, which turns it into per-building materials.
+ * `centroidMm` is the building solid's plan centroid in the engine frame, which
+ * is how a consumer matches a tint to a body of the `buildings` mesh without
+ * the engine having to emit one mesh per building.
+ */
+export interface BuildingTint {
+  /** SceneGraph building id, or `block-<n>` for a merged block with no single owner. */
+  id: string;
+  colorHex: string;
+  centroidMm: [number, number];
+}
+
+/**
+ * One height-gradient band, when `colour.gradient.enabled` (v3 phase 5).
+ *
+ * The bands are EQUAL COUNT, not equal height: `topRangeMm` is what the band
+ * actually covers, measured from the buildings this scene has. A preview that
+ * wants to colour a building the way the bake will can either read the band
+ * REGIONS (which carry the geometry) or match a height against these ranges.
+ */
+export interface BuildingBandSummary {
+  region: RegionName;
+  slot: number;
+  colorHex: string;
+  /** Printed roof heights in this band, mm: [lowest, highest]. */
+  topRangeMm: [number, number];
+  /** Building solids in this band. */
+  buildings: number;
+}
+
 export interface EngineResult {
   regions: RegionMesh[];
   /**
@@ -274,6 +374,17 @@ export interface EngineResult {
   findings: AuditFinding[];
   resolvedText: ResolvedLine[];
   tiles?: TileResult[];
+  /**
+   * Per-building tints, present only when `colour.tint.enabled` (phase 5).
+   * Absent, not empty, when the switch is off, so an existing consumer sees
+   * exactly what it saw before.
+   */
+  buildingTints?: BuildingTint[];
+  /**
+   * The height-gradient bands, present only when the gradient is on and split
+   * more than one way. Absent otherwise, so nothing existing changes.
+   */
+  buildingBands?: BuildingBandSummary[];
   /** Echo of the params the meshes were built from. */
   params: PrintParams;
 }

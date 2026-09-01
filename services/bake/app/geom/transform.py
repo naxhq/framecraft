@@ -985,6 +985,17 @@ MAGNET_D_MM = 6.1
 MAGNET_DEPTH_MM = 3.1
 MAGNET_INSET_MM = 12.0
 
+#: French cleat mount (v3 ``hanger: "cleat"``): a slot across the upper third of
+#: the underside whose south wall rises at 45 degrees, so the wall-side wedge
+#: hooks under it and the slot prints with no support.  The browser engine
+#: builds it (``lib/engine/solid/hangers.ts``); this service carries the depth
+#: so both sides charge the base plate the same amount ([V3-P5-F6]).
+CLEAT_SLOT_DEPTH_MM = 2.5
+
+#: Easel foot (v3 ``hanger: "easel"``): a flat leg stored in a shallow well in
+#: the underside.  The well is the deeper of its two pockets.
+EASEL_WELL_DEPTH_MM = 2.5
+
 #: Which edges read which way for a viewer facing the hung frame: top and
 #: bottom upright, the left edge bottom-to-top, the right edge top-to-bottom.
 EDGE_ROTATION_DEG: Dict[str, float] = {
@@ -1744,6 +1755,14 @@ def hanger_min_base_mm(hanger: str) -> float:
         return KEYHOLE_DEPTH_MM + HANGER_MIN_ROOF_MM
     if hanger == "magnets":
         return MAGNET_DEPTH_MM + HANGER_MIN_ROOF_MM
+    # v3: the cleat slot and the easel well are pockets cut from below like the
+    # two above, so both are charged the same way - their own depth plus a roof
+    # ([V3-P5-F6]).  The geometry is the browser engine's; the arithmetic is
+    # shared, because the editor blocks a bake on this number.
+    if hanger == "cleat":
+        return CLEAT_SLOT_DEPTH_MM + HANGER_MIN_ROOF_MM
+    if hanger == "easel":
+        return EASEL_WELL_DEPTH_MM + HANGER_MIN_ROOF_MM
     return 0.0
 
 
@@ -1825,6 +1844,10 @@ def underside_pocket_depth_mm(params: ParamsLike, kind: str) -> float:
         return KEYHOLE_DEPTH_MM
     if kind == "magnets":
         return MAGNET_DEPTH_MM
+    if kind == "cleat":
+        return CLEAT_SLOT_DEPTH_MM
+    if kind == "easel":
+        return EASEL_WELL_DEPTH_MM
     raise ValueError("unknown underside pocket: " + repr(kind))
 
 
@@ -1835,7 +1858,7 @@ def underside_pockets(params: ParamsLike) -> List[str]:
     if mark is not None and bool(getattr(mark, "enabled", False)):
         out.append("mark")
     hanger = str(getattr(params, "hanger", None) or "none")
-    if hanger in ("keyhole", "magnets"):
+    if hanger in ("keyhole", "magnets", "cleat", "easel"):
         out.append(hanger)
     return out
 

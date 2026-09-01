@@ -140,6 +140,15 @@ export interface BuildingSolid {
   heroId: string | null;
   /** Footprints this solid swallowed (1 for an unmerged block). */
   members: number;
+  /**
+   * A stable name for this solid: the SceneGraph id of the footprint that set
+   * its height, or `block-<n>` for a closing artefact that has no contributor.
+   * It is what a per-building tint is seeded with (`[V3-P5-F8]`), so it has to
+   * be the same from one bake to the next for the same scene.
+   */
+  id: string;
+  /** Plan centroid of that footprint, print mm. */
+  centroidMm: [number, number];
 }
 
 export interface RepairedBuildings {
@@ -915,12 +924,15 @@ export function repairBuildings(
     if (owned.length === 0) {
       // A closing artefact with no contributor. Keeping it at the smallest
       // printable height beats leaving a hole in the middle of a block.
+      const box = boundsOfContours(polygons[c]);
       solids.push({
         section: components[c],
         height: { height_m: 0, is_tall: false, is_hero: false },
         standsOn: null,
         heroId: null,
         members: 0,
+        id: `block-${c}`,
+        centroidMm: [(box.minX + box.maxX) / 2, (box.minY + box.maxY) / 2],
       });
       continue;
     }
@@ -943,12 +955,15 @@ export function repairBuildings(
       is_tall: footprints[contributing[winner]].height.is_tall,
       is_hero: blockHero !== null && heroTrueHeight,
     };
+    const winnerFoot = footprints[contributing[winner]];
     solids.push({
       section: components[c],
       height: block,
       standsOn: null,
       heroId: blockHero,
       members: owned.length,
+      id: winnerFoot.sourceId,
+      centroidMm: winnerFoot.centroid,
     });
 
     const blockTop = T.building_top_mm_for(block, params, scale, block.is_hero);
@@ -1001,6 +1016,8 @@ export function repairBuildings(
               standsOn: block,
               heroId,
               members: 1,
+              id: foot.sourceId,
+              centroidMm: foot.centroid,
             });
           } else if (!result.heroBuried.includes(heroId)) {
             result.heroBuried.push(heroId);
@@ -1019,6 +1036,8 @@ export function repairBuildings(
             standsOn: block,
             heroId: null,
             members: 1,
+            id: foot.sourceId,
+            centroidMm: foot.centroid,
           });
         }
       }

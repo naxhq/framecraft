@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { DEFAULT_PRINT_PARAMS, PARAM_LIMITS, PARAM_RANGES } from "@/lib/contracts";
-import type { NorthArrow, ScaleBar, UndersideMark } from "@/lib/contracts";
+import type { FrameStyle, HangerMagnet, NorthArrow, ScaleBar, UndersideMark } from "@/lib/contracts";
 import type { EngineBuilding } from "@/lib/engine/osm/types";
 import { heroTokenInfo } from "@/lib/heroes";
 import { textParamsKey } from "@/lib/previewText";
@@ -37,6 +37,87 @@ const HANGERS = [
   { value: "none" as const, label: "None" },
   { value: "keyhole" as const, label: "Keyhole slot" },
   { value: "magnets" as const, label: "Magnet pockets" },
+  { value: "cleat" as const, label: "French cleat" },
+  { value: "easel" as const, label: "Easel foot" },
+];
+
+/**
+ * Every `frame_style.profile` option, a one-line description, and a tiny
+ * 24 px cross-section glyph -- a side-on slice through the lip, base at the
+ * bottom, frame material hatched with straight strokes so the shape reads
+ * even at icon size. Every path is `currentColor`: no colour value lives
+ * here, only geometry, so the swatch scan in `design-tokens.test.ts` (which
+ * only walks `components/**`/`app/**` for a raw hex, not for an SVG path)
+ * has nothing to flag and the icon still re-themes with the panel text
+ * colour in light and dark.
+ */
+const FRAME_PROFILES: ReadonlyArray<{
+  value: NonNullable<FrameStyle["profile"]>;
+  label: string;
+  hint: string;
+  path: string;
+}> = [
+  {
+    value: "plain",
+    label: "Plain",
+    hint: "A flat-topped lip, square inside and out.",
+    path: "M2 20h20 M2 20V9h20v11",
+  },
+  {
+    value: "chamfer",
+    label: "Chamfer",
+    hint: "The inner top edge is cut back at an angle.",
+    path: "M2 20h20 M2 20V9h20v6l-5 5",
+  },
+  {
+    value: "stepped",
+    label: "Stepped",
+    hint: "The lip steps down once toward the plate.",
+    path: "M2 20h20 M2 20V9h13v5h7v6",
+  },
+  {
+    value: "bevel_in",
+    label: "Bevel in",
+    hint: "The top slopes down toward the picture, like a mount board.",
+    path: "M2 20h20 M2 20V9h20v3l-14 8",
+  },
+  {
+    value: "bullnose",
+    label: "Bullnose",
+    hint: "A rounded, quarter-round top edge.",
+    path: "M2 20h20 M2 20V9h14a6 6 0 0 1-6 6v5",
+  },
+  {
+    value: "ogee",
+    label: "Ogee",
+    hint: "An S-curved moulding profile, classic picture-frame shape.",
+    path: "M2 20h20 M2 20V9h14c0 3 -4 2 -4 5s4 2 4 6",
+  },
+  {
+    value: "floating",
+    label: "Floating",
+    hint: "The frame sits apart from the base with a visible gap (pairs with the shadow gap below).",
+    path: "M2 20h6V9h14v6h-6v5",
+  },
+];
+
+const CORNER_STYLES = [
+  { value: "square" as const, label: "Square" },
+  { value: "mitred" as const, label: "Mitred" },
+  { value: "rounded" as const, label: "Rounded" },
+];
+
+const SEPARATE_MOUNTS = [
+  { value: "snap" as const, label: "Snap-fit" },
+  { value: "magnet" as const, label: "Magnet" },
+];
+
+const TEXTURE_PATTERNS = [
+  { value: "none" as const, label: "None" },
+  { value: "brush" as const, label: "Brushed" },
+  { value: "knurl" as const, label: "Knurled" },
+  { value: "hatch" as const, label: "Hatched" },
+  { value: "dots" as const, label: "Dotted" },
 ];
 
 /* The generated defaults, which are the all-defaults instance of each nested
@@ -45,6 +126,8 @@ const HANGERS = [
 const DEFAULT_NORTH_ARROW: NorthArrow = DEFAULT_PRINT_PARAMS.north_arrow ?? {};
 const DEFAULT_SCALE_BAR: ScaleBar = DEFAULT_PRINT_PARAMS.scale_bar ?? {};
 const DEFAULT_UNDERSIDE: UndersideMark = DEFAULT_PRINT_PARAMS.underside_mark ?? {};
+const DEFAULT_FRAME_STYLE: FrameStyle = DEFAULT_PRINT_PARAMS.frame_style ?? {};
+const DEFAULT_HANGER_MAGNET: HangerMagnet = DEFAULT_PRINT_PARAMS.hanger_magnet ?? {};
 
 /**
  * The border and everything written on it: lettering, a north arrow, a scale
@@ -79,6 +162,13 @@ export function FrameTextGroup() {
   const northArrow = params.north_arrow ?? DEFAULT_NORTH_ARROW;
   const scaleBar = params.scale_bar ?? DEFAULT_SCALE_BAR;
   const underside = params.underside_mark ?? DEFAULT_UNDERSIDE;
+  const frameStyle = params.frame_style ?? DEFAULT_FRAME_STYLE;
+  const shadowGap = frameStyle.shadow_gap ?? DEFAULT_FRAME_STYLE.shadow_gap ?? {};
+  const matting = frameStyle.matting ?? DEFAULT_FRAME_STYLE.matting ?? {};
+  const separate = frameStyle.separate ?? DEFAULT_FRAME_STYLE.separate ?? {};
+  const texture = frameStyle.texture ?? DEFAULT_FRAME_STYLE.texture ?? {};
+  const hangerMagnet = params.hanger_magnet ?? DEFAULT_HANGER_MAGNET;
+  const magnetInUse = params.hanger === "magnets" || separate.mount === "magnet";
 
   /**
    * What `{hero}` says right now: the effective count (manual plus, once
@@ -174,6 +264,223 @@ export function FrameTextGroup() {
         onChange={(value) => setParam("frame", value)}
         hint="A 6 mm border standing 2 mm proud of the base. It costs 12 mm of plate, so the city inside gets smaller."
       />
+
+      <Field
+        label="Frame profile"
+        hint="Every profile costs the same plate footprint as the plain lip; only the cross-section changes. A profile the engine has not built yet still previews as the plain lip and the Issues badge says so."
+      >
+        <div className="grid grid-cols-2 gap-1.5" data-testid="frame-profile-options" role="radiogroup" aria-label="Frame profile">
+          {FRAME_PROFILES.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              data-testid={`frame-profile-${option.value}`}
+              role="radio"
+              aria-checked={(frameStyle.profile ?? "plain") === option.value}
+              title={option.hint}
+              disabled={!params.frame}
+              onClick={() => setNested("frame_style", { profile: option.value })}
+              className={`flex items-center gap-2 rounded-milled border px-2 py-1.5 text-left text-2xs transition-colors disabled:opacity-45 ${
+                (frameStyle.profile ?? "plain") === option.value
+                  ? "border-primary bg-primary/10 text-ink"
+                  : "border-control bg-plate-raised text-ink-muted hover:border-ink-faint"
+              }`}
+            >
+              <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" className="shrink-0">
+                <path
+                  d={option.path}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              {option.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-3 space-y-3">
+          <SelectField
+            id="frame_style_corner"
+            label="Corners"
+            value={frameStyle.corner ?? "square"}
+            options={CORNER_STYLES}
+            disabled={!params.frame}
+            onChange={(value) => setNested("frame_style", { corner: value })}
+          />
+          {(frameStyle.corner ?? "square") !== "square" ? (
+            <Slider
+              id="frame_style_corner_radius_mm"
+              label="Corner radius"
+              min={PARAM_RANGES.frame_style.corner_radius_mm.min}
+              max={PARAM_RANGES.frame_style.corner_radius_mm.max}
+              step={0.5}
+              value={frameStyle.corner_radius_mm ?? PARAM_RANGES.frame_style.corner_radius_mm.default}
+              display={`${(frameStyle.corner_radius_mm ?? PARAM_RANGES.frame_style.corner_radius_mm.default).toFixed(1)} mm`}
+              disabled={!params.frame}
+              onChange={(value) => setNested("frame_style", { corner_radius_mm: value })}
+            />
+          ) : null}
+          <Slider
+            id="frame_style_lip_depth_mm"
+            label="Lip depth"
+            min={PARAM_RANGES.frame_style.lip_depth_mm.min}
+            max={PARAM_RANGES.frame_style.lip_depth_mm.max}
+            step={0.1}
+            value={frameStyle.lip_depth_mm ?? PARAM_RANGES.frame_style.lip_depth_mm.default}
+            display={`${(frameStyle.lip_depth_mm ?? PARAM_RANGES.frame_style.lip_depth_mm.default).toFixed(1)} mm`}
+            disabled={!params.frame}
+            hint="How far the lip's own moulding cuts into its 6 mm width."
+            onChange={(value) => setNested("frame_style", { lip_depth_mm: value })}
+          />
+        </div>
+      </Field>
+
+      <Field label="Shadow gap" hint="A recessed groove between the frame and the base, as if the frame floats above the plate.">
+        <Toggle
+          id="frame_style_shadow_gap_enabled"
+          label="Add a shadow gap"
+          checked={shadowGap.enabled ?? false}
+          disabled={!params.frame}
+          onChange={(value) => setNested("frame_style", { shadow_gap: { ...shadowGap, enabled: value } })}
+        />
+        {shadowGap.enabled ? (
+          <div className="mt-3 space-y-3">
+            <Slider
+              id="frame_style_shadow_gap_width_mm"
+              label="Width"
+              min={PARAM_RANGES.frame_style.shadow_gap.width_mm.min}
+              max={PARAM_RANGES.frame_style.shadow_gap.width_mm.max}
+              step={0.1}
+              value={shadowGap.width_mm ?? PARAM_RANGES.frame_style.shadow_gap.width_mm.default}
+              display={`${(shadowGap.width_mm ?? PARAM_RANGES.frame_style.shadow_gap.width_mm.default).toFixed(1)} mm`}
+              disabled={!params.frame}
+              onChange={(value) => setNested("frame_style", { shadow_gap: { ...shadowGap, width_mm: value } })}
+            />
+            <Slider
+              id="frame_style_shadow_gap_depth_mm"
+              label="Depth"
+              min={PARAM_RANGES.frame_style.shadow_gap.depth_mm.min}
+              max={PARAM_RANGES.frame_style.shadow_gap.depth_mm.max}
+              step={0.1}
+              value={shadowGap.depth_mm ?? PARAM_RANGES.frame_style.shadow_gap.depth_mm.default}
+              display={`${(shadowGap.depth_mm ?? PARAM_RANGES.frame_style.shadow_gap.depth_mm.default).toFixed(1)} mm`}
+              disabled={!params.frame}
+              onChange={(value) => setNested("frame_style", { shadow_gap: { ...shadowGap, depth_mm: value } })}
+            />
+          </div>
+        ) : null}
+      </Field>
+
+      <Field label="Matting" hint="A recessed board between the frame and the city, like the mat around a photograph.">
+        <Toggle
+          id="frame_style_matting_enabled"
+          label="Add matting"
+          checked={matting.enabled ?? false}
+          disabled={!params.frame}
+          onChange={(value) => setNested("frame_style", { matting: { ...matting, enabled: value } })}
+        />
+        {matting.enabled ? (
+          <div className="mt-3 space-y-3">
+            <Slider
+              id="frame_style_matting_width_mm"
+              label="Width"
+              min={PARAM_RANGES.frame_style.matting.width_mm.min}
+              max={PARAM_RANGES.frame_style.matting.width_mm.max}
+              step={0.5}
+              value={matting.width_mm ?? PARAM_RANGES.frame_style.matting.width_mm.default}
+              display={`${(matting.width_mm ?? PARAM_RANGES.frame_style.matting.width_mm.default).toFixed(1)} mm`}
+              disabled={!params.frame}
+              hint="Plate the city loses to the matting, on top of what the frame itself already costs."
+              onChange={(value) => setNested("frame_style", { matting: { ...matting, width_mm: value } })}
+            />
+            <Slider
+              id="frame_style_matting_proud_mm"
+              label="Standing proud"
+              min={PARAM_RANGES.frame_style.matting.proud_mm.min}
+              max={PARAM_RANGES.frame_style.matting.proud_mm.max}
+              step={0.1}
+              value={matting.proud_mm ?? PARAM_RANGES.frame_style.matting.proud_mm.default}
+              display={`${(matting.proud_mm ?? PARAM_RANGES.frame_style.matting.proud_mm.default).toFixed(1)} mm`}
+              disabled={!params.frame}
+              onChange={(value) => setNested("frame_style", { matting: { ...matting, proud_mm: value } })}
+            />
+          </div>
+        ) : null}
+      </Field>
+
+      <Field label="Separate frame part" hint="Prints the frame as its own piece from the base, so each can be a different filament without a colour change.">
+        <Toggle
+          id="frame_style_separate_enabled"
+          label="Print the frame separately"
+          checked={separate.enabled ?? false}
+          disabled={!params.frame}
+          onChange={(value) => setNested("frame_style", { separate: { ...separate, enabled: value } })}
+        />
+        {separate.enabled ? (
+          <div className="mt-3 space-y-3">
+            <SelectField
+              id="frame_style_separate_mount"
+              label="Mount"
+              value={separate.mount ?? "snap"}
+              options={SEPARATE_MOUNTS}
+              disabled={!params.frame}
+              onChange={(value) => setNested("frame_style", { separate: { ...separate, mount: value } })}
+            />
+            <Slider
+              id="frame_style_separate_tolerance_mm"
+              label="Fit tolerance"
+              min={PARAM_RANGES.frame_style.separate.tolerance_mm.min}
+              max={PARAM_RANGES.frame_style.separate.tolerance_mm.max}
+              step={0.05}
+              value={separate.tolerance_mm ?? PARAM_RANGES.frame_style.separate.tolerance_mm.default}
+              display={`${(separate.tolerance_mm ?? PARAM_RANGES.frame_style.separate.tolerance_mm.default).toFixed(2)} mm`}
+              disabled={!params.frame}
+              hint="Extra clearance between the two parts. Widen it if the frame prints too tight to seat."
+              onChange={(value) => setNested("frame_style", { separate: { ...separate, tolerance_mm: value } })}
+            />
+          </div>
+        ) : null}
+      </Field>
+
+      <Field label="Face texture" hint="A relief pattern cut into the frame's visible front face.">
+        <SelectField
+          id="frame_style_texture_pattern"
+          label="Pattern"
+          value={texture.pattern ?? "none"}
+          options={TEXTURE_PATTERNS}
+          disabled={!params.frame}
+          onChange={(value) => setNested("frame_style", { texture: { ...texture, pattern: value } })}
+        />
+        {(texture.pattern ?? "none") !== "none" ? (
+          <div className="mt-3 space-y-3">
+            <Slider
+              id="frame_style_texture_scale_mm"
+              label="Pattern scale"
+              min={PARAM_RANGES.frame_style.texture.scale_mm.min}
+              max={PARAM_RANGES.frame_style.texture.scale_mm.max}
+              step={0.1}
+              value={texture.scale_mm ?? PARAM_RANGES.frame_style.texture.scale_mm.default}
+              display={`${(texture.scale_mm ?? PARAM_RANGES.frame_style.texture.scale_mm.default).toFixed(1)} mm`}
+              disabled={!params.frame}
+              onChange={(value) => setNested("frame_style", { texture: { ...texture, scale_mm: value } })}
+            />
+            <Slider
+              id="frame_style_texture_depth_mm"
+              label="Pattern depth"
+              min={PARAM_RANGES.frame_style.texture.depth_mm.min}
+              max={PARAM_RANGES.frame_style.texture.depth_mm.max}
+              step={0.05}
+              value={texture.depth_mm ?? PARAM_RANGES.frame_style.texture.depth_mm.default}
+              display={`${(texture.depth_mm ?? PARAM_RANGES.frame_style.texture.depth_mm.default).toFixed(2)} mm`}
+              disabled={!params.frame}
+              onChange={(value) => setNested("frame_style", { texture: { ...texture, depth_mm: value } })}
+            />
+          </div>
+        ) : null}
+      </Field>
 
       <Field
         label="Lettering"
@@ -317,14 +624,50 @@ export function FrameTextGroup() {
         ) : null}
       </Field>
 
-      <SelectField
-        id="hanger"
-        label="Hanger"
-        value={params.hanger ?? "none"}
-        options={HANGERS}
-        onChange={(value) => setParam("hanger", value)}
-        hint="A fitting added to the back so the plate can go on a wall."
-      />
+      <Field label="Hanger" hint="A fitting added to the back so the plate can go on a wall or an easel.">
+        <SelectField
+          id="hanger"
+          label="Fitting"
+          value={params.hanger ?? "none"}
+          options={HANGERS}
+          onChange={(value) => setParam("hanger", value)}
+        />
+        {magnetInUse ? (
+          <div className="mt-3 space-y-3" data-testid="hanger-magnet-dims">
+            <Slider
+              id="hanger_magnet_diameter_mm"
+              label="Magnet diameter"
+              min={PARAM_RANGES.hanger_magnet.diameter_mm.min}
+              max={PARAM_RANGES.hanger_magnet.diameter_mm.max}
+              step={0.5}
+              value={hangerMagnet.diameter_mm ?? PARAM_RANGES.hanger_magnet.diameter_mm.default}
+              display={`${(hangerMagnet.diameter_mm ?? PARAM_RANGES.hanger_magnet.diameter_mm.default).toFixed(1)} mm`}
+              onChange={(value) => setNested("hanger_magnet", { diameter_mm: value })}
+            />
+            <Slider
+              id="hanger_magnet_thickness_mm"
+              label="Magnet thickness"
+              min={PARAM_RANGES.hanger_magnet.thickness_mm.min}
+              max={PARAM_RANGES.hanger_magnet.thickness_mm.max}
+              step={0.5}
+              value={hangerMagnet.thickness_mm ?? PARAM_RANGES.hanger_magnet.thickness_mm.default}
+              display={`${(hangerMagnet.thickness_mm ?? PARAM_RANGES.hanger_magnet.thickness_mm.default).toFixed(1)} mm`}
+              onChange={(value) => setNested("hanger_magnet", { thickness_mm: value })}
+            />
+            <Slider
+              id="hanger_magnet_count"
+              label="Magnet count"
+              min={PARAM_RANGES.hanger_magnet.count.min}
+              max={PARAM_RANGES.hanger_magnet.count.max}
+              step={1}
+              value={hangerMagnet.count ?? PARAM_RANGES.hanger_magnet.count.default}
+              display={String(hangerMagnet.count ?? PARAM_RANGES.hanger_magnet.count.default)}
+              hint="Shared by the magnet hanger and a separate frame's magnet mount -- one pocket size either way."
+              onChange={(value) => setNested("hanger_magnet", { count: value })}
+            />
+          </div>
+        ) : null}
+      </Field>
     </>
   );
 }

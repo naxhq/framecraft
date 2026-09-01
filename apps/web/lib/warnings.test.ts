@@ -23,6 +23,7 @@ import {
   letteringWarnings,
   predictedTopMm,
   sceneWarnings,
+  tintPreviewOnlyWarning,
   warningDeps,
 } from "./warnings";
 
@@ -598,5 +599,26 @@ describe("letteringWarnings", () => {
     for (const warning of letteringWarnings(params, noCity)) {
       expect(warning.level).not.toBe("block");
     }
+  });
+});
+
+describe("tintPreviewOnlyWarning", () => {
+  it("is empty when tint is off, whatever the export target", () => {
+    const params = p({ colour: { tint: { enabled: false } }, export_target: "stl" });
+    expect(tintPreviewOnlyWarning(params)).toEqual([]);
+  });
+
+  it("is empty for obj, the one target that carries per-instance colour", () => {
+    const params = p({ colour: { tint: { enabled: true } }, export_target: "obj" });
+    expect(tintPreviewOnlyWarning(params)).toEqual([]);
+  });
+
+  it("is one info-level entry, naming the active export target, for every other target", () => {
+    const params = p({ colour: { tint: { enabled: true } }, export_target: "bambu-3mf" });
+    const warnings = tintPreviewOnlyWarning(params);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].level).toBe("info");
+    expect(warnings[0].id).toBe("tint-preview-only");
+    expect(warnings[0].message).toContain("bambu-3mf");
   });
 });

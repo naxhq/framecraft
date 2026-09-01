@@ -427,3 +427,32 @@ input[type="color"]:disabled {
     transition-duration: 0.01ms !important;
   }
 }
+
+/*
+ * The viewport-only preview theme (v3 phase 5, `[V3-P5-C]`): `colour.
+ * preview_theme` switches ONLY the 3D canvas background and the hemisphere
+ * light's sky/ground colours, independent of the app's own light/dark theme
+ * (the `.dark` class on <html>, above). Scoped to a `data-fc-viewport-theme`
+ * attribute on the canvas wrapper rather than to `.dark`/`:root` -- the app
+ * theme and the preview theme are two different switches (`ThemeToggle` vs
+ * the small corner toggle in `CityPreview`), and giving the preview its own
+ * selector is what keeps them independent. The four values are the SAME
+ * numbers `--fc-preview-bg/sky/bounce/grid` already carry above; this is not
+ * a new palette, only a second way to select between the two that already
+ * exist, so the "exported colours never change" rule holds trivially: no
+ * exporter reads `colour.preview_theme`, and this block only ever feeds
+ * `<color attach="background">` and `<hemisphereLight>` in CityPreview.tsx.
+ */
+[data-fc-viewport-theme="light"] {
+  --fc-viewport-bg: #e5e0d4;
+  --fc-viewport-sky: #ffffff;
+  --fc-viewport-bounce: #445566;
+  --fc-viewport-grid: #c6bfae;
+}
+
+[data-fc-viewport-theme="dark"] {
+  --fc-viewport-bg: #0e0d0b;
+  --fc-viewport-sky: #dfe6ee;
+  --fc-viewport-bounce: #232a33;
+  --fc-viewport-grid: #2a2721;
+}

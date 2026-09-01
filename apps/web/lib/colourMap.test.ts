@@ -13,6 +13,8 @@ import {
   slotColourConflicts,
   type ColourRow,
 } from "./colourMap";
+import { regionColor, regionSlot } from "./engine/solid/context";
+import { COLOURABLE_REGION_NAMES } from "./engine/types";
 
 describe("colourRows", () => {
   it("without a bake result, lists every region name the contract can colour, easel excluded", () => {
@@ -428,5 +430,35 @@ describe("notServedSentence", () => {
       ],
     });
     expect(sentence).toBe("Every region prints in its own colour.");
+  });
+});
+
+describe("preview-theme isolation (colour.preview_theme never reaches an exported colour)", () => {
+  // `colour.preview_theme` switches the 3D viewport's OWN background/ground
+  // shading only (v3 phase 5, `[V3-P5-C]`, `components/scene/palette.ts`'s
+  // `readViewportPalette`); it must never move a region's resolved slot or
+  // colour, which is the ONLY thing an exporter (or `colourRows`, which feeds
+  // the COLOUR panel) ever reads off `params.colour`. `regionSlot`/
+  // `regionColor` (`lib/engine/solid/context.ts`) are the single choke point
+  // every one of those paths resolves through, so proving THEY ignore it is
+  // sufficient for all of them.
+  const base = defaultPrintParams();
+  const dark = { ...base, colour: { ...base.colour, preview_theme: "dark" as const } };
+  const light = { ...base, colour: { ...base.colour, preview_theme: "light" as const } };
+
+  it("regionColor is identical for every colourable region across both preview themes", () => {
+    for (const region of COLOURABLE_REGION_NAMES) {
+      expect(regionColor(dark, region)).toBe(regionColor(light, region));
+    }
+  });
+
+  it("regionSlot is identical for every colourable region across both preview themes", () => {
+    for (const region of COLOURABLE_REGION_NAMES) {
+      expect(regionSlot(dark, region)).toBe(regionSlot(light, region));
+    }
+  });
+
+  it("colourRows (what the COLOUR panel and the exporters' pre-bake fallback both read) is identical across themes", () => {
+    expect(colourRows(dark, null)).toEqual(colourRows(light, null));
   });
 });

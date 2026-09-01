@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Grid, OrbitControls } from "@react-three/drei";
 import { Canvas, useThree } from "@react-three/fiber";
 import type { PerspectiveCamera } from "three";
@@ -47,6 +47,7 @@ import {
   textTokenContext,
   type PreviewTextModel,
 } from "@/lib/previewText";
+import { buildingTintMap } from "@/lib/tint";
 import * as T from "@/lib/transform";
 import {
   heightCeilingMm,
@@ -54,6 +55,7 @@ import {
   predictedTopDeps,
   predictedTopMm,
   sceneWarnings,
+  tintPreviewOnlyWarning,
   warningDeps,
 } from "@/lib/warnings";
 import { useEditorStore } from "@/store/editor";
@@ -64,7 +66,7 @@ import RegionMeshes from "./RegionMeshes";
 import RoadRibbons from "./RoadRibbons";
 import TileGrid from "./TileGrid";
 import TreeInstances from "./TreeInstances";
-import { paletteFor, readPreviewPalette, type PreviewPalette } from "./palette";
+import { paletteFor, readPreviewPalette, readViewportPalette, type PreviewPalette } from "./palette";
 
 /**
  * The live 3D preview.
@@ -256,6 +258,7 @@ export function CityPreview() {
   const rotationDeg = useEditorStore((state) => state.location.rotation_deg);
   const setRadius = useEditorStore((state) => state.setRadius);
   const setParam = useEditorStore((state) => state.setParam);
+  const setNested = useEditorStore((state) => state.setNested);
   const generate = useEditorStore((state) => state.generate);
 
   /**
@@ -271,7 +274,32 @@ export function CityPreview() {
   // is a real argument -- it keys the palette cache -- so this memo needs no
   // dependency exemption.
   const themed = useMemo(() => readPreviewPalette(theme), [theme]);
-  const colours = paletteFor(params, themed, params.part_colors);
+  const partsColours = paletteFor(params, themed, params.part_colors);
+
+  /**
+   * `colour.preview_theme`: a SEPARATE switch from the app's own `theme`
+   * above, scoped to the canvas wrapper's own `data-fc-viewport-theme`
+   * attribute (`app/globals.css`) rather than to `.dark` on `<html>`, so
+   * flipping it never touches the panels around the viewport. Read via an
+   * effect (not a memo) because the value lives on a DOM node this component
+   * itself renders -- the attribute has to be committed before the computed
+   * style reflects it. `[V3-P5-C]`.
+   */
+  const previewTheme: "dark" | "light" = params.colour?.preview_theme ?? "dark";
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const [viewportPalette, setViewportPalette] = useState(() =>
+    readViewportPalette(null, themed),
+  );
+  useEffect(() => {
+    setViewportPalette(readViewportPalette(viewportRef.current, themed));
+  }, [previewTheme, themed]);
+  const colours: PreviewPalette = {
+    ...partsColours,
+    background: viewportPalette.background,
+    sky: viewportPalette.sky,
+    bounce: viewportPalette.bounce,
+    grid: viewportPalette.grid,
+  };
 
   const scale = useMemo(
     () =>
@@ -414,9 +442,10 @@ export function CityPreview() {
       // the exact token, and one info-level entry when the frame is off with
       // lettering configured for it.
       ...letteringWarnings(params, textTokenContext(graph, params, today)),
+      ...tintPreviewOnlyWarning(params),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [...warningDeps(graph, params), textParamsKey(params), today],
+    [...warningDeps(graph, params), textParamsKey(params), today, params.colour?.tint?.enabled, params.export_target],
   );
 
   /**
@@ -509,6 +538,25 @@ export function CityPreview() {
   */
   const heroColour = T.hero_own_color(params) ? colours.hero : colours.heroPick;
 
+  /**
+   * Per-building tint (v3 phase 5, `[V3-P5-C]`): the live engine's own
+   * `EngineResult.buildingTints` when a fresh one carries any (real geometry,
+   * so it wins), `lib/tint.ts`'s deterministic client-side draw otherwise --
+   * the fast instanced preview shows a tint immediately on toggling it, with
+   * no bake to wait for, and swaps to the engine's own numbers the moment one
+   * lands. `null` (not an empty Map) when tint is off, so `InstancedBuildings`
+   * never spends a pass building `Color`s it will not use.
+   */
+  const tintColors = useMemo(() => {
+    const fromEngine = engineResult?.buildingTints;
+    if (fromEngine && fromEngine.length > 0) {
+      return new Map(fromEngine.map((tint) => [tint.id, tint.colorHex]));
+    }
+    if (!params.colour?.tint?.enabled) return null;
+    const ids = layout.buildings.map((building) => building.id);
+    return new Map(Object.entries(buildingTintMap(ids, colours.building, params.colour.tint)));
+  }, [engineResult?.buildingTints, params.colour?.tint, layout.buildings, colours.building]);
+
   // --- the keyboard path to a hero (lib/heroCursor.ts) --------------------
   const [cursorId, setCursorId] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
@@ -535,6 +583,7 @@ export function CityPreview() {
 
   return (
     <div
+      ref={viewportRef}
       className="relative h-full w-full"
       /*
         What is actually drawn on the frame and the underside, so an e2e can see
@@ -543,6 +592,9 @@ export function CityPreview() {
         bake will not cut and this does not draw -- leaves it unchanged.
       */
       data-preview-text-count={textModel.shapeCount}
+      // `colour.preview_theme` scope (`app/globals.css`), read back by the
+      // `readViewportPalette` effect above once this attribute is committed.
+      data-fc-viewport-theme={previewTheme}
     >
       {/*
         The viewport is a focus stop with its own key handling: Tab reaches it,
@@ -637,6 +689,7 @@ export function CityPreview() {
               toggleHero(id);
             }}
             hidden={Boolean(freshEngineResult)}
+            tintColors={tintColors}
           />
           {!freshEngineResult ? (
             <TreeInstances trees={trees} baseTopMm={baseTop} color={colours.tree} />
@@ -679,6 +732,28 @@ export function CityPreview() {
         />
         <OrbitControls makeDefault enableDamping dampingFactor={0.1} />
       </Canvas>
+
+      {/*
+        The preview theme toggle: the viewport's OWN light/dark switch,
+        independent of the app theme (`ThemeToggle` in the header). Docked
+        top-right so it never collides with the adjustments/issues badges at
+        top-left. It writes `colour.preview_theme` only -- an exported file's
+        bytes never depend on it (`preview.test.ts`'s isolation test).
+      */}
+      <div className="pointer-events-none absolute right-3 top-3">
+        <button
+          type="button"
+          data-testid="preview-theme-toggle"
+          aria-label={`Switch preview to ${previewTheme === "dark" ? "light" : "dark"}`}
+          title={`Preview theme: ${previewTheme}`}
+          onClick={() =>
+            setNested("colour", { preview_theme: previewTheme === "dark" ? "light" : "dark" })
+          }
+          className="pointer-events-auto rounded-milled border border-control bg-plate/95 px-2 py-1 text-2xs text-ink shadow-raised transition-colors hover:border-ink-faint"
+        >
+          {previewTheme === "dark" ? "Dark viewport" : "Light viewport"}
+        </button>
+      </div>
 
       {/* The chip docks top-left, over the model's own empty corner. */}
       <div className="pointer-events-none absolute left-3 top-3 flex flex-col items-start gap-2">

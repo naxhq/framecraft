@@ -18,6 +18,7 @@ import type {
   Severity,
   TerrainSampler,
 } from "../types";
+import { bandIndexOf } from "../types";
 import type { Arena, ManifoldToplevel } from "./manifold";
 
 /**
@@ -146,7 +147,11 @@ export function makeContext(init: ContextInit): BakeContext {
   const radiusM = T.radius_m_from_bounds(scene.bounds);
   const scale = T.scale_mm_per_m(params, radiusM);
   const plateHalfMm = T.plate_extents_mm(params).max_x;
-  const cropHalfMm = T.content_extents_mm(params).max_x;
+  // v3 phase 5: a shadow gap and a matting border both live between the lip and
+  // the city, so the city gives way to them. Zero at the defaults, so a default
+  // bake's crop is exactly the number it always was (`[V3-P5-F2]`).
+  const cropHalfMm =
+    T.content_extents_mm(params).max_x - T.frame_content_inset_mm(params);
   return {
     wasm: init.wasm,
     arena: init.arena,
@@ -195,15 +200,31 @@ export function finding(
 // Colour
 // ---------------------------------------------------------------------------
 
+/**
+ * The contract key a region reads its slot and colour from.
+ *
+ * `easel` and `cleat` are mount hardware with no entry of their own: they print
+ * in the base filament unless the user says otherwise. A gradient band reads
+ * `buildings`, and then the band overrides both (see below).
+ */
+function colourKey(region: RegionName): string {
+  if (region === "easel" || region === "cleat") return "base";
+  if (bandIndexOf(region) !== null) return "buildings";
+  return region;
+}
+
 /** Filament slot for a region, from `params.colour.region_slots`. */
 export function regionSlot(params: PrintParams, region: RegionName): number {
+  const band = bandIndexOf(region);
+  if (band !== null && params.colour?.gradient?.enabled === true) {
+    const slots = params.colour.gradient.slots ?? [];
+    const slot = slots[band - 1];
+    if (typeof slot === "number" && slot > 0) return Math.round(slot);
+  }
   const slots = params.colour?.region_slots;
   if (slots === undefined) return region === "base" ? 1 : 2;
   const table = slots as Record<string, number | undefined>;
-  // `easel` has no slot of its own in the contract: it is part of the mount, so
-  // it prints in the base filament unless the user says otherwise.
-  const key = region === "easel" ? "base" : region;
-  return table[key] ?? table.base ?? 1;
+  return table[colourKey(region)] ?? table.base ?? 1;
 }
 
 /** Filament colour for a region, from `params.colour.region_colors`. */
@@ -211,8 +232,35 @@ export function regionColor(params: PrintParams, region: RegionName): string {
   const colors = params.colour?.region_colors;
   if (colors === undefined) return "#D8D3C6";
   const table = colors as Record<string, string | undefined>;
-  const key = region === "easel" ? "base" : region;
-  return table[key] ?? table.base ?? "#D8D3C6";
+  const own = table[colourKey(region)] ?? table.base ?? "#D8D3C6";
+  const band = bandIndexOf(region);
+  if (band === null || params.colour?.gradient?.enabled !== true) return own;
+  // A band with no colour of its own is interpolated between the buildings
+  // colour and the hero colour, so a two-band gradient reads as a ramp rather
+  // than as two arbitrary filaments (`[V3-P5-F7]`).
+  const bands = Math.max(1, (params.colour.gradient.slots ?? []).length);
+  if (bands < 2) return own;
+  const top = table.hero_building ?? own;
+  return mixHex(own, top, (band - 1) / (bands - 1));
+}
+
+/** Linear blend of two `#RRGGBB` colours, `t` from 0 (a) to 1 (b). */
+export function mixHex(a: string, b: string, t: number): string {
+  const parse = (hex: string): [number, number, number] | null => {
+    const match = /^#?([0-9a-f]{6})/i.exec(hex.trim());
+    if (match === null) return null;
+    const value = parseInt(match[1], 16);
+    return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+  };
+  const from = parse(a);
+  const to = parse(b);
+  if (from === null || to === null) return a;
+  const clamped = Math.min(1, Math.max(0, t));
+  const channel = (i: number): string => {
+    const value = Math.round(from[i] + (to[i] - from[i]) * clamped);
+    return Math.min(255, Math.max(0, value)).toString(16).padStart(2, "0");
+  };
+  return `#${channel(0)}${channel(1)}${channel(2)}`.toUpperCase();
 }
 
 // ---------------------------------------------------------------------------

@@ -56,6 +56,27 @@ export const REPAIR_AREA_MM2 = 1e-7;
  */
 export const WELD_EPSILON_MM = 1e-6;
 
+/**
+ * The weld ladder, mm: each rung is tried from the ORIGINAL mesh, coarsest
+ * last, and the first that clears every degenerate face wins.
+ *
+ * The reference implementation welds on a ladder too (`assemble.WELD_DIGITS`,
+ * "starts at six decimals"), and for the same reason: a boolean between two
+ * arc-approximated outlines can leave a triangle whose three vertices are tens
+ * of nanometres apart, which is real geometry to a 1 nm weld and nothing at all
+ * to a printer. Measured on the phase 5 chamfer + rounded-corner bake: one
+ * triangle of 1.3e-10 mm^2 whose longest edge is 3.8e-5 mm, at the frame's
+ * rounded inner corner, which 1e-6 cannot touch and 1e-4 removes exactly
+ * (`[V3-P5-F1]`).
+ *
+ * The coarsest rung is 0.1 micrometres: a hundredth of the 3MF's own written
+ * precision and four orders of magnitude under the print grid, so nothing a
+ * printer or a file can tell apart is merged. Every rung is still subject to
+ * the same acceptance test - closed, oriented, same volume - so a weld that
+ * would open a hole is thrown away whatever its epsilon.
+ */
+export const WELD_LADDER_MM = [WELD_EPSILON_MM, 1e-5, 1e-4];
+
 /** How many split-and-remeasure rounds the needle repair runs. */
 export const REPAIR_ROUNDS = 4;
 
@@ -381,30 +402,55 @@ export function cleanMesh(
   let welded = 0;
   let split = 0;
 
-  const first = weld(input, epsilon);
-  if (first.welded > 0) {
-    const open = openEdges(first.mesh);
-    const degenerate = degenerateFaces(first.mesh, threshold);
-    if (acceptable(first.mesh, open, degenerate)) {
-      best = first.mesh;
-      bestDegenerate = degenerate;
-      bestOpen = open;
-      welded = first.welded;
-    }
-  }
+  // A caller that names an epsilon gets exactly that one; otherwise the ladder,
+  // stopping at the first rung that clears every degenerate face. Each rung
+  // starts from the INPUT, so a coarse weld is never applied on top of a fine
+  // one and the accepted mesh is always one weld away from what the kernel
+  // produced.
+  const ladder = options.epsilonMm === undefined ? WELD_LADDER_MM : [epsilon];
+  for (const rung of ladder) {
+    let candidate = input;
+    let candidateDegenerate = beforeDegenerate;
+    let candidateOpen = beforeOpen;
+    let candidateWelded = 0;
+    let candidateSplit = 0;
 
-  // Every pass is a transaction: a pass that leaves the mesh no better, or
-  // leaves a hole in it, is thrown away and the last good mesh is kept.
-  for (let pass = 0; pass < REPAIR_ROUNDS && bestDegenerate > 0; pass += 1) {
-    const attempt = splitNeedles(best, threshold);
-    if (attempt.split === 0) break;
-    const open = openEdges(attempt.mesh);
-    const degenerate = degenerateFaces(attempt.mesh, threshold);
-    if (degenerate >= bestDegenerate || !acceptable(attempt.mesh, open, degenerate)) break;
-    best = attempt.mesh;
-    bestDegenerate = degenerate;
-    bestOpen = open;
-    split += attempt.split;
+    const first = weld(input, rung);
+    if (first.welded > 0) {
+      const open = openEdges(first.mesh);
+      const degenerate = degenerateFaces(first.mesh, threshold);
+      if (acceptable(first.mesh, open, degenerate)) {
+        candidate = first.mesh;
+        candidateDegenerate = degenerate;
+        candidateOpen = open;
+        candidateWelded = first.welded;
+      }
+    }
+
+    // Every pass is a transaction: a pass that leaves the mesh no better, or
+    // leaves a hole in it, is thrown away and the last good mesh is kept.
+    for (let pass = 0; pass < REPAIR_ROUNDS && candidateDegenerate > 0; pass += 1) {
+      const attempt = splitNeedles(candidate, threshold);
+      if (attempt.split === 0) break;
+      const open = openEdges(attempt.mesh);
+      const degenerate = degenerateFaces(attempt.mesh, threshold);
+      if (degenerate >= candidateDegenerate || !acceptable(attempt.mesh, open, degenerate)) {
+        break;
+      }
+      candidate = attempt.mesh;
+      candidateDegenerate = degenerate;
+      candidateOpen = open;
+      candidateSplit += attempt.split;
+    }
+
+    if (candidateDegenerate < bestDegenerate) {
+      best = candidate;
+      bestDegenerate = candidateDegenerate;
+      bestOpen = candidateOpen;
+      welded = candidateWelded;
+      split = candidateSplit;
+    }
+    if (bestDegenerate === 0) break;
   }
 
   return {

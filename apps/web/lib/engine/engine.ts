@@ -64,7 +64,16 @@ import type { BakeContext } from "./solid/context";
 import type { Drape } from "./solid/drape";
 import { LOW_RELIEF_MM, drapeSolid, makeDrape } from "./solid/drape";
 import { buildTrees } from "./solid/trees";
-import { buildFrameLip, reportUnbuiltFrameStyle } from "./solid/frame";
+import {
+  buildFrameLip,
+  buildFrameMating,
+  buildFrameTexture,
+  buildMatting,
+  buildShadowGap,
+  reportNarrowTextBand,
+  reportUnbuiltFrameStyle,
+} from "./solid/frame";
+import { buildHangers } from "./solid/hangers";
 import { buildLettering, loadFaces } from "./solid/lettering";
 import {
   Arena,
@@ -156,7 +165,7 @@ export async function bake(
     const surfaces = buildSurfaceRegions(ctx, repaired.footprint);
 
     const buildings = buildBuildings(ctx, repaired, drape);
-    if (buildings.buildings !== null) solids.set("buildings", buildings.buildings);
+    for (const band of buildings.bands) solids.set(band.region, band.solid);
     if (buildings.hero !== null) solids.set("hero_building", buildings.hero);
 
     // --- bridges and trees ----------------------------------------------
@@ -183,16 +192,40 @@ export async function bake(
     );
     const lettering = buildLettering(ctx, tokens, input.rotationDeg ?? 0);
     const ornaments = buildOrnaments(ctx, lettering.layout);
+    reportNarrowTextBand(
+      ctx,
+      lettering.frameCut.length +
+        lettering.frameAdd.length +
+        lettering.inlayCut.length +
+        ornaments.frameCut.length >
+        0,
+    );
+    // The cleat and the easel: a pocket in the underside AND a separate
+    // printable piece that prints inside it (`solid/hangers.ts`).
+    const hangers = buildHangers(ctx);
+    for (const part of hangers.parts) solids.set(part.region, part.solid);
     const inlay = batchedUnion(wasm, arena, lettering.inlay);
     if (inlay !== null) solids.set("lettering", inlay);
 
+    // --- the frame's own neighbourhood ------------------------------------
+    // Built before the plate is carved: the shadow gap and the magnet pockets
+    // are cutters INTO the plate, and the snap ridge is material ON it.
+    const shadowGap = buildShadowGap(ctx);
+    const matting = buildMatting(ctx);
+    const mating = buildFrameMating(ctx);
+    const frameTexture = buildFrameTexture(ctx, lettering.layout);
+
     // --- the plate, carved by everything --------------------------------
     const plate = buildPlate(ctx);
-    const carved = carveBase(ctx, plate, [
+    const withRidge = batchedUnion(wasm, arena, [plate, ...mating.baseAdd]) ?? plate;
+    const carved = carveBase(ctx, withRidge, [
       ...buildings.socket,
       ...surfaces.map((s) => s.cutter),
       ...lettering.baseCut,
       ...ornaments.baseCut,
+      ...hangers.baseCut,
+      ...mating.baseCut,
+      shadowGap,
     ]);
     // Carve flat, then drape. `warp(plate - cutters)` and
     // `warp(plate) - warp(cutters)` are the same set because the drape is a
@@ -213,9 +246,12 @@ export async function bake(
         ...lettering.frameCut,
         ...lettering.inlayCut,
         ...ornaments.frameCut,
+        ...mating.frameCut,
+        frameTexture,
       ]);
       solids.set("frame", frame);
     }
+    if (matting !== null) solids.set("matting", matting);
 
     // --- the single welded solid ----------------------------------------
     //
@@ -253,11 +289,18 @@ export async function bake(
     // of the cutters below ever touches them (an underside mark and a keyhole
     // are at z ~ 0, the grooves are the surface layers' own pockets which gave
     // way to the building footprint, and the frame cuts are on the lip).
-    const assemblyPlate = drape === null ? plate : buildPlate(ctx);
+    const assemblyPlate =
+      drape === null
+        ? withRidge
+        : (batchedUnion(wasm, arena, [buildPlate(ctx), ...mating.baseAdd]) ?? buildPlate(ctx));
     const additive: Manifold[] = [assemblyPlate];
+    // A SEPARATE frame is unioned in like any other body and stays a body of
+    // its own: `frameBottomMm` lifts it clear of the plate by the mount's
+    // tolerance, so the union cannot weld the two (`[V3-P5-F4]`).
     if (raisedFrame !== null) additive.push(raisedFrame);
+    if (matting !== null) additive.push(matting);
     const rigid: Manifold[] = [];
-    if (buildings.buildings !== null) rigid.push(buildings.buildings);
+    for (const band of buildings.bands) rigid.push(band.solid);
     if (buildings.hero !== null) rigid.push(buildings.hero);
     // A deck stands in the air and a tree stands ON the surface, so neither may
     // be cut by a groove in it: a tree beside a kerb had its base carved into a
@@ -267,6 +310,9 @@ export async function bake(
     const standing: Manifold[] = [];
     for (const bridge of bridges) standing.push(bridge.solid);
     if (trees.solid !== null) standing.push(trees.solid);
+    // A printed-in-place mount part sits INSIDE the pocket the cutters above
+    // just made, so it joins after the subtraction, like a tree does.
+    for (const part of hangers.parts) standing.push(part.solid);
     const grooves: Manifold[] = [];
     for (const surface of surfaces) {
       if (surface.placement.topMm > ctx.baseTopMm) {
@@ -299,6 +345,11 @@ export async function bake(
             ...ornaments.frameCut,
             ...lettering.baseCut,
             ...ornaments.baseCut,
+            ...hangers.baseCut,
+            ...mating.frameCut,
+            ...mating.baseCut,
+            shadowGap,
+            frameTexture,
           ]);
     // A flat scene with nothing standing on it takes `batchedUnion`'s
     // single-input path, which hands `carvedAssembly` straight back: the bake
@@ -401,6 +452,7 @@ export async function bake(
       ...(grid === null
         ? {}
         : { tiles: tiles.length, tileCols: grid.cols, tileRows: grid.rows }),
+      ...(buildings.bands.length > 1 ? { gradientBands: buildings.bands.length } : {}),
     };
 
     return {
@@ -423,6 +475,18 @@ export async function bake(
       resolvedText: ctx.resolvedText,
       params: resolveParamsEcho(input.params, ctx.resolvedText),
       ...(tiles.length === 0 ? {} : { tiles }),
+      ...(buildings.tints.length === 0 ? {} : { buildingTints: buildings.tints }),
+      ...(buildings.bands.length > 1
+        ? {
+            buildingBands: buildings.bands.map((band) => ({
+              region: band.region,
+              slot: regionSlot(input.params, band.region),
+              colorHex: regionColor(input.params, band.region),
+              topRangeMm: band.topRangeMm,
+              buildings: band.count,
+            })),
+          }
+        : {}),
     };
   } finally {
     arena.dispose();

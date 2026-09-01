@@ -24,16 +24,39 @@
  */
 
 import * as T from "../../transform";
+import type { BuildingTint, RegionName } from "../types";
+import { GRADIENT_MAX_BANDS, bandRegionName } from "../types";
 import type { BakeContext } from "./context";
+import { addFinding, finding, regionColor } from "./context";
 import type { Drape } from "./drape";
 import { drapeLiftMm } from "./drape";
 import type { BuildingSolid, RepairedBuildings } from "./repair";
 import type { Manifold } from "./manifold";
 import { batchedUnion, extrudeSection } from "./manifold";
+import { buildingTints } from "./tint";
+
+/** One band of the height gradient, or the whole buildings region. */
+export interface BuildingBand {
+  region: RegionName;
+  solid: Manifold;
+  /** Printed roof heights this band covers, mm (inclusive of both ends). */
+  topRangeMm: [number, number];
+  count: number;
+}
 
 export interface BuiltBuildings {
-  /** Every non-hero building, as one solid with many bodies. */
+  /**
+   * Every non-hero building, as one solid with many bodies.
+   *
+   * With a height gradient on this is BAND 1 and the rest are in {@link bands};
+   * with it off it is all of them and `bands` has this one entry. A caller that
+   * wants every building solid should read `bands`.
+   */
   buildings: Manifold | null;
+  /** The buildings region, split by height when `colour.gradient.enabled`. */
+  bands: BuildingBand[];
+  /** Per-building tints when `colour.tint.enabled`, else an empty list. */
+  tints: BuildingTint[];
   /** Every hero the user picked that produced a solid of its own. */
   hero: Manifold | null;
   /**
@@ -106,7 +129,7 @@ export function buildBuildings(
   drape: Drape | null = null,
 ): BuiltBuildings {
   const { wasm, arena } = ctx;
-  const plain: Manifold[] = [];
+  const plain: Array<{ solid: Manifold; topMm: number; source: BuildingSolid }> = [];
   const heroes: Manifold[] = [];
   // A stacked tower has to rise from the roof of the block it stands on, and
   // that block was lifted by ITS OWN lowest ground, which is at or below the
@@ -133,10 +156,99 @@ export function buildBuildings(
       }
     }
     if (solid.heroId !== null) heroes.push(placed);
-    else plain.push(placed);
+    else plain.push({ solid: placed, topMm: z1, source: solid });
   }
 
-  const buildings = batchedUnion(wasm, arena, plain);
+  const bands = splitIntoBands(ctx, plain);
   const hero = batchedUnion(wasm, arena, heroes);
-  return { buildings, hero, socket: [], count: plain.length + heroes.length };
+  return {
+    buildings: bands[0]?.solid ?? null,
+    bands,
+    tints: buildingTints(
+      ctx.params,
+      regionColor(ctx.params, "buildings"),
+      plain.map((item) => ({ id: item.source.id, centroidMm: item.source.centroidMm })),
+    ),
+    hero,
+    socket: [],
+    count: plain.length + heroes.length,
+  };
+}
+
+/**
+ * The buildings region, split into one band per `colour.gradient.slots` entry.
+ *
+ * EQUAL COUNT, not equal height: the band boundaries come from the building
+ * height DISTRIBUTION, so each band holds the same number of buildings and
+ * every band is populated. Equal-height bands on a real city put nine tenths of
+ * the plate in the bottom band and one tower in the top one, which is a
+ * gradient nobody can see (`[V3-P5-F7]`).
+ *
+ * Band 1 keeps the region name `buildings`, so a single-band gradient and no
+ * gradient at all produce exactly the same regions.
+ */
+function splitIntoBands(
+  ctx: BakeContext,
+  plain: ReadonlyArray<{ solid: Manifold; topMm: number }>,
+): BuildingBand[] {
+  const { wasm, arena, params } = ctx;
+  const whole = (): BuildingBand[] => {
+    const solid = batchedUnion(wasm, arena, plain.map((item) => item.solid));
+    if (solid === null) return [];
+    const tops = plain.map((item) => item.topMm);
+    return [
+      {
+        region: "buildings",
+        solid,
+        topRangeMm: [Math.min(...tops), Math.max(...tops)],
+        count: plain.length,
+      },
+    ];
+  };
+  if (plain.length === 0) return [];
+  const gradient = params.colour?.gradient;
+  if (gradient?.enabled !== true) return whole();
+  const asked = Math.max(1, (gradient.slots ?? []).length);
+  const bands = Math.min(asked, GRADIENT_MAX_BANDS, plain.length);
+  if (asked > GRADIENT_MAX_BANDS) {
+    addFinding(
+      ctx,
+      finding(
+        "gradient-bands-capped",
+        "warning",
+        `The height gradient was built with ${GRADIENT_MAX_BANDS} bands, not ${asked}`,
+        `A band is a filament slot and a region of its own; ${GRADIENT_MAX_BANDS} is the cap ` +
+          "this engine emits. The extra slots were ignored.",
+        "buildings",
+      ),
+    );
+  }
+  if (bands <= 1) return whole();
+
+  const order = plain
+    .map((item, index) => index)
+    .sort((a, b) =>
+      plain[a].topMm === plain[b].topMm ? a - b : plain[a].topMm - plain[b].topMm,
+    );
+  const out: BuildingBand[] = [];
+  for (let band = 0; band < bands; band += 1) {
+    const from = Math.floor((band * order.length) / bands);
+    const to = Math.floor(((band + 1) * order.length) / bands);
+    const members = order.slice(from, to);
+    if (members.length === 0) continue;
+    const solid = batchedUnion(
+      wasm,
+      arena,
+      members.map((index) => plain[index].solid),
+    );
+    if (solid === null) continue;
+    const tops = members.map((index) => plain[index].topMm);
+    out.push({
+      region: bandRegionName(band + 1),
+      solid,
+      topRangeMm: [Math.min(...tops), Math.max(...tops)],
+      count: members.length,
+    });
+  }
+  return out;
 }

@@ -68,6 +68,7 @@ export function InstancedBuildings({
   cursorId,
   onPick,
   hidden = false,
+  tintColors = null,
 }: {
   buildings: PreviewBuilding[];
   params: PrintParams;
@@ -79,6 +80,15 @@ export function InstancedBuildings({
   /** The building the keyboard cursor is on, or null. */
   cursorId: string | null;
   onPick: (id: string) => void;
+  /**
+   * Per-building tint (`colour.tint`, v3 phase 5, `[V3-P5-C]`): building id ->
+   * `#RRGGBB`. From the live engine's own `EngineResult.buildingTints` when
+   * one is fresh, `lib/tint.ts`'s deterministic fallback otherwise -- either
+   * way this is the ONLY place a tint is painted before a hero/cursor colour
+   * takes over, so the two can never disagree about which building is which
+   * colour. `null`/absent when tint is off: every instance stays `color`.
+   */
+  tintColors?: ReadonlyMap<string, string> | null;
   /**
    * Fully transparent, but still mounted and still raycast against.
    *
@@ -121,6 +131,11 @@ export function InstancedBuildings({
     matrixDeps(buildings, scale, params),
   );
 
+  // Tint colours are per-building and change with `tintColors` identity
+  // (a fresh map every recompute); reused across instances within one pass
+  // rather than allocated per-building.
+  const tintScratch = useMemo(() => new Color(), []);
+
   useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
@@ -132,19 +147,17 @@ export function InstancedBuildings({
       heroIds,
     );
     for (let i = 0; i < buildings.length; i += 1) {
-      // The cursor wins over the hero colour: "where I am" has to be findable
-      // even when it lands on a building that is already picked. The status
-      // line next to the viewport is what says which of the two it is.
+      // Priority: the keyboard cursor ("where I am") over a hero pick over a
+      // tint over the plain colour -- a tinted hero or cursor building would
+      // stop being findable at a glance, which matters more than the tint.
+      const tinted = tintColors?.get(buildings[i].id);
+      const base = tinted ? tintScratch.set(tinted) : colours.normal;
       const colour =
-        buildings[i].id === cursorId
-          ? colours.cursor
-          : flags[i]
-            ? colours.hero
-            : colours.normal;
+        buildings[i].id === cursorId ? colours.cursor : flags[i] ? colours.hero : base;
       mesh.setColorAt(i, colour);
     }
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  }, [buildings, colours, color, heroColor, cursorColor, heroIds, cursorId]);
+  }, [buildings, colours, color, heroColor, cursorColor, heroIds, cursorId, tintColors, tintScratch]);
 
   useEffect(() => {
     return () => {

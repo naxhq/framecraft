@@ -27,6 +27,7 @@ import type { EngineBuilding } from "./engine/osm/types";
 import { effectiveHeroHeightKey, effectiveHeroIds } from "./heroes";
 import { resolveProfile } from "./printers";
 import { resolvedOutputLines } from "./resolvedOutput";
+import { tintIsPreviewOnly } from "./tint";
 import type { TokenContext } from "./tokens";
 import * as T from "./transform";
 
@@ -293,6 +294,27 @@ export function sceneWarnings(
   }
 
   return warnings;
+}
+
+/**
+ * One info-level entry when `colour.tint` is on and the active
+ * `export_target` cannot express it (every target except `obj`, v3 phase 5,
+ * `[V3-P5-C]`, `lib/tint.ts:tintIsPreviewOnly`). Graph-independent (unlike
+ * `sceneWarnings`): whether a tint reaches the print is a fact about
+ * `params` alone, so this shows up even before a scene has loaded.
+ */
+export function tintPreviewOnlyWarning(params: PrintParams): SceneWarning[] {
+  if (!tintIsPreviewOnly(params.colour, params.export_target)) return [];
+  return [
+    {
+      id: "tint-preview-only",
+      level: "info",
+      message:
+        "Building tint affects the preview and the OBJ export only. " +
+        `The active export target (${params.export_target ?? "bambu-3mf"}) ` +
+        "prints every building in its region's own filament colour.",
+    },
+  ];
 }
 
 /**

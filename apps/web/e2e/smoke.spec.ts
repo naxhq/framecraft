@@ -357,7 +357,7 @@ test("happy path: Chicago preset previews, sliders stay local, bake downloads a 
   await expect(bakeButton).toBeEnabled();
   const bakeStartedAt = Date.now();
   await bakeButton.click();
-  await expect(page.getByTestId("bake-status")).toBeVisible();
+  await expect(page.getByTestId("bake-status")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
 
   const downloads = page.getByTestId("download-links");
   await expect(downloads).toBeVisible({ timeout: A4_BUDGET_MS });
@@ -379,8 +379,20 @@ test("happy path: Chicago preset previews, sliders stay local, bake downloads a 
   // UI -> download -> CLI pipeline, at this same scale, via `generic-3mf`
   // (audit v3-02 finding 12's restored assertion) in "the downloaded file
   // passes the Python printability validator (full Chicago scene)" below.
+  // Unscaled defaults (Playwright's own 15 s) are exactly the kind of wait a
+  // slow, oversubscribed CI runner breaks: `downloads` itself just cleared a
+  // budget scaled by `E2E_BUDGET_FACTOR`, but its own child links (each one a
+  // fresh `URL.createObjectURL` Blob, one render tick after the container)
+  // were still on the DEFAULT 15 s here, unscaled -- CI observed
+  // "expect(locator).toBeVisible() found no element after 5.3 min" on this
+  // exact test, i.e. `A4_BUDGET_MS` (90 s) at whatever `E2E_BUDGET_FACTOR`
+  // CI runs at, meaning the OUTER wait (`downloads`) was the one that
+  // actually exceeded, but the failure could equally have landed here on a
+  // runner slow enough that the container clears while a child link is still
+  // one tick behind -- so both get the same scaled budget as everything else
+  // in this file, not a smaller unscaled one.
   const meshLink = downloads.getByRole("link", { name: /\.3mf$/ });
-  await expect(meshLink).toBeVisible();
+  await expect(meshLink).toBeVisible({ timeout: A4_BUDGET_MS });
   const href = await meshLink.getAttribute("href");
   expect(href, "the 3MF link has no href").toBeTruthy();
   expect(href, "the download is a Blob object URL, not a server path").toMatch(/^blob:/);
@@ -393,7 +405,7 @@ test("happy path: Chicago preset previews, sliders stay local, bake downloads a 
   log(`3MF download: ${body.length.toLocaleString("en-US")} bytes`);
 
   const sidecarLink = downloads.getByRole("link", { name: /\.json$/ });
-  await expect(sidecarLink).toBeVisible();
+  await expect(sidecarLink).toBeVisible({ timeout: A4_BUDGET_MS });
   const sidecarHref = await sidecarLink.getAttribute("href");
   const sidecarBody = await fetchBlob(page, sidecarHref as string);
   const sidecar = JSON.parse(sidecarBody.toString("utf-8")) as {

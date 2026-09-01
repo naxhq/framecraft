@@ -15,7 +15,7 @@
 import type { PrintParams } from "./contracts";
 import { regionColor, regionSlot } from "./engine/solid/context";
 import type { RegionSeparability } from "./engine/export/colorchange";
-import { REGION_NAMES, type EngineResult, type RegionName } from "./engine/types";
+import { COLOURABLE_REGION_NAMES, REGION_NAMES, type EngineResult, type RegionName } from "./engine/types";
 
 export interface ColourRow {
   region: RegionName;
@@ -40,7 +40,13 @@ export function colourRows(params: PrintParams, result: EngineResult | null): Co
       colorHex: region.colorHex,
     }));
   }
-  return REGION_NAMES.filter((region) => region !== "easel").map((region) => ({
+  // Only the CONTRACT's own region names before a bake -- not
+  // `REGION_NAMES`, which also carries the derived, feature-gated regions
+  // (`cleat`, `buildings_band_2..8`, `[V3-P5-F7]`): those exist only once an
+  // actual bake produced them (cleat hanger on, gradient on), and listing
+  // eight phantom band rows before the user has ever enabled a gradient
+  // would be a row the panel cannot back up with a real slot/colour choice.
+  return COLOURABLE_REGION_NAMES.filter((region) => region !== "easel").map((region) => ({
     region,
     slot: regionSlot(params, region),
     colorHex: regionColor(params, region),

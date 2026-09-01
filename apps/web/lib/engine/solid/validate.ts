@@ -39,6 +39,7 @@ import { resolveProfile } from "../../printers";
 import type { IslandReport } from "../audit/rules";
 import type { AuditFinding, RegionMesh, RegionName } from "../types";
 import { finding, type BakeContext } from "./context";
+import { frameIsSeparate } from "./frame";
 import type { Manifold } from "./manifold";
 import { DEBRIS_MM3, UNION_DEBRIS_MM3 } from "./manifold";
 import type { MinWallReport } from "./measure";
@@ -81,6 +82,35 @@ export function maxHeightMm(ctx: BakeContext): number {
 }
 
 /**
+ * Bodies this parameter set is SUPPOSED to come out as, and what each is.
+ *
+ * One, plus one for every part that is deliberately not welded to the plate
+ * (`[V3-P5-F4]`). This is not a weakened check and it is not a tolerance: the
+ * count is derived from the parameters, each extra body is named, and a body
+ * that is not one of them is still a `floating-island` error with its volume in
+ * it. A bake with a separate frame and no easel that came out as three pieces
+ * fails exactly as it did before.
+ *
+ * The reference validator in `services/bake` knows nothing about this: it reads
+ * a FILE, and a file with a separate frame in it genuinely has two bodies, so
+ * its `bodies` row reports 2 for such a bake. That is the documented exception,
+ * recorded in `docs/handoff/v3-05-frame.md` with the row it prints.
+ */
+export function expectedBodies(ctx: BakeContext): Array<{ region: RegionName; why: string }> {
+  const out: Array<{ region: RegionName; why: string }> = [];
+  if (frameIsSeparate(ctx)) {
+    out.push({ region: "frame", why: "the frame is a separate part" });
+  }
+  const hanger = ctx.params.hanger ?? "none";
+  if (hanger === "cleat") {
+    out.push({ region: "cleat", why: "the cleat wedge prints inside its own slot" });
+  } else if (hanger === "easel") {
+    out.push({ region: "easel", why: "the easel leg prints inside its own well" });
+  }
+  return out;
+}
+
+/**
  * The most islands worth attributing to a region.
  *
  * Each attribution is an intersection against every region solid, so a model
@@ -114,10 +144,19 @@ export function islandReport(
       if (body.volume() > main.volume()) main = body;
     }
     const loose = real.filter((body) => body !== main);
+    // A part this parameter set MEANT to leave loose is not an island. Each
+    // expected region may excuse ONE body, and only if a body really does
+    // belong to it, so a second loose piece of the same region is still
+    // reported (`[V3-P5-F4]`).
+    const excused = new Set(expectedBodies(ctx).map((item) => item.region));
     const groups = new Map<RegionName | null, { count: number; volume: number; floating: boolean }>();
     loose.forEach((body, index) => {
       const region =
         index < MAX_ATTRIBUTED_ISLANDS ? attributeIsland(ctx, body, regions) : null;
+      if (region !== null && excused.has(region)) {
+        excused.delete(region);
+        return;
+      }
       const entry = groups.get(region) ?? { count: 0, volume: 0, floating: true };
       entry.count += 1;
       entry.volume += body.volume();

@@ -197,7 +197,9 @@ export type NestedParamKey =
   | "heights"
   | "height_exaggeration"
   | "hero_auto"
-  | "tiling";
+  | "tiling"
+  | "frame_style"
+  | "hanger_magnet";
 
 export interface EditorState {
   location: LocationState;

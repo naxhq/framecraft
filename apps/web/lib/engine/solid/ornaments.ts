@@ -226,19 +226,9 @@ export function buildOrnaments(
       if (section !== null) arena.drop(section);
       if (solid !== null) out.baseCut.push(solid);
     }
-  } else if (hanger === "cleat" || hanger === "easel") {
-    addFinding(
-      ctx,
-      finding(
-        "hanger-refused",
-        "warning",
-        `The ${hanger} mount was not built`,
-        `This engine cuts the keyhole and magnet hangers. The ${hanger} mount is built ` +
-          "by the frame and mount work and is not in this bake.",
-        "base",
-      ),
-    );
   }
+  // `cleat` and `easel` are `solid/hangers.ts`: each is a pocket AND a separate
+  // printable piece, so neither fits the pocket-only shape of this loop.
 
   if (keep !== null) arena.drop(keep);
   return out;

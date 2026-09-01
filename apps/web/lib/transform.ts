@@ -937,6 +937,84 @@ export const MAGNET_DEPTH_MM = 3.1;
 export const MAGNET_INSET_MM = 12.0;
 
 /**
+ * French cleat mount (v3, `hanger: "cleat"`), print mm.
+ *
+ * A slot across the upper third of the underside whose south wall rises at 45
+ * degrees, so the wall-side wedge hooks under it and so the slot itself prints
+ * with no support: every layer of the sloping wall overhangs the one below it
+ * by exactly one layer height. `CLEAT_SLOT_DEPTH_MM` is what
+ * {@link hanger_min_base_mm} charges the base for.
+ */
+export const CLEAT_SLOT_DEPTH_MM = 2.5;
+export const CLEAT_SLOT_W_MM = 10.0;
+/** Fraction of the plate half-height the slot's centre sits at (the upper third). */
+export const CLEAT_SLOT_Y_FRACTION = 0.5;
+/**
+ * Fraction of the plate width the slot spans: all of it.
+ *
+ * The slot is UNDERCUT - that is what makes it a cleat - so a wedge printed
+ * inside it can only leave sideways. A slot that stopped short of both edges
+ * would trap its own wedge for ever (`[V3-P5-F6]`).
+ */
+export const CLEAT_SLOT_SPAN_FRACTION = 1.0;
+/** Screw clearance holes through the wall-side wedge, mm. */
+export const CLEAT_SCREW_D_MM = 3.5;
+
+/**
+ * Easel foot (v3, `hanger: "easel"`), print mm.
+ *
+ * A flat leg that lives in a shallow well in the underside and plugs into a
+ * socket at the north end of that well to prop the plate up on a desk. The
+ * well is the deeper of the two pockets, so it is what the base is charged for.
+ */
+export const EASEL_WELL_DEPTH_MM = 2.5;
+export const EASEL_LEG_T_MM = 2.0;
+export const EASEL_LEG_LEN_FRACTION = 0.45;
+export const EASEL_LEG_W_MM = 14.0;
+export const EASEL_TENON_W_MM = 6.0;
+export const EASEL_TENON_LEN_MM = 4.0;
+
+/**
+ * Clearance between a printed-in-place part and the pocket it prints in, mm.
+ *
+ * The cleat wedge and the easel leg are separate BODIES printed inside their
+ * own pocket in the underside (`solid/hangers.ts`), so the model still sits at
+ * z = 0 and still fits the plate. One layer of air on every face is what stops
+ * the two fusing.
+ */
+export const LOOSE_PART_CLEARANCE_MM = 0.2;
+
+// ---------------------------------------------------------------------------
+// Frame styling (v3 `frame_style`)
+// ---------------------------------------------------------------------------
+
+/**
+ * How much of the city square the frame styling takes, print mm.
+ *
+ * A shadow gap is a channel between the lip's inner edge and the city, and
+ * matting is a raised band in the same place, so both push the crop inward: the
+ * city must not run under either of them. TS only, deliberately - the reference
+ * service does not build v3 frame styling, and `content_extents_mm` itself is
+ * untouched so the TS/Python parity fixture keeps meaning what it meant
+ * (DECISIONS `[V3-P5-F2]`).
+ */
+export function frame_content_inset_mm(params: ParamsLike): number {
+  if (!params.frame) return 0.0;
+  const style = params.frame_style;
+  if (style === undefined) return 0.0;
+  let inset = 0.0;
+  if (style.shadow_gap?.enabled === true) inset += style.shadow_gap.width_mm ?? 1.0;
+  else if ((style.profile ?? "plain") === "floating") inset += FLOATING_GAP_MM;
+  if (style.matting?.enabled === true) inset += style.matting.width_mm ?? 6.0;
+  return inset;
+}
+
+/** Width of the recessed band a `floating` frame reads across, mm. */
+export const FLOATING_GAP_MM = 2.0;
+/** Depth of that band when no shadow gap gives one, mm. */
+export const FLOATING_GAP_DEPTH_MM = 1.0;
+
+/**
  * Which edges read which way for a viewer facing the hung frame: top and bottom
  * upright, the left edge bottom-to-top, the right edge top-to-bottom.
  */
@@ -1628,6 +1706,10 @@ export function scale_bar_thickness_mm(params: ParamsLike): number {
 export function hanger_min_base_mm(hanger: string): number {
   if (hanger === "keyhole") return KEYHOLE_DEPTH_MM + HANGER_MIN_ROOF_MM;
   if (hanger === "magnets") return MAGNET_DEPTH_MM + HANGER_MIN_ROOF_MM;
+  // v3: both mounts are pockets cut from below like the two above, so both are
+  // charged the same way - their own depth plus a roof (`[V3-P5-F6]`).
+  if (hanger === "cleat") return CLEAT_SLOT_DEPTH_MM + HANGER_MIN_ROOF_MM;
+  if (hanger === "easel") return EASEL_WELL_DEPTH_MM + HANGER_MIN_ROOF_MM;
   return 0.0;
 }
 
@@ -1696,6 +1778,8 @@ export function underside_pocket_depth_mm(params: ParamsLike, kind: string): num
   if (kind === "mark") return UNDERSIDE_MARK_DEPTH_MM;
   if (kind === "keyhole") return KEYHOLE_DEPTH_MM;
   if (kind === "magnets") return MAGNET_DEPTH_MM;
+  if (kind === "cleat") return CLEAT_SLOT_DEPTH_MM;
+  if (kind === "easel") return EASEL_WELL_DEPTH_MM;
   throw new Error(`unknown underside pocket: ${kind}`);
 }
 
@@ -1705,6 +1789,9 @@ export function underside_pockets(params: ParamsLike): string[] {
   if (params.underside_mark?.enabled) out.push("mark");
   const hanger = params.hanger ?? "none";
   if (hanger === "keyhole" || hanger === "magnets") out.push(hanger);
+  // v3: the cleat slot and the easel well are underside pockets too, so the
+  // underside band and every check built on it see them (`[V3-P5-F6]`).
+  if (hanger === "cleat" || hanger === "easel") out.push(hanger);
   return out;
 }
 

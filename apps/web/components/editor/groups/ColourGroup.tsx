@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
+
 import {
   alignConflictsPatch,
   colourRows,
@@ -9,12 +11,25 @@ import {
   printedColors,
   slotColourConflicts,
 } from "@/lib/colourMap";
+import { contrastIssueSentence, contrastIssues } from "@/lib/contrastCheck";
 import { DEFAULT_PRINT_PARAMS, PARAM_RANGES } from "@/lib/contracts";
 import type { PartColors, RegionColors, RegionSlots } from "@/lib/contracts";
-import type { RegionName } from "@/lib/engine/types";
+import { GRADIENT_MAX_BANDS, bandRegionName, type RegionName } from "@/lib/engine/types";
+import {
+  BUILTIN_PALETTES,
+  CUSTOM_PALETTE_ID,
+  customPaletteId,
+  loadCustomPalettes,
+  matchesPalette,
+  paletteApplyPatch,
+  savedAsPalette,
+  saveCustomPalettes,
+  type SavedPalette,
+} from "@/lib/palettes";
 import { resolveProfile } from "@/lib/printers";
+import { boundGradientSlots, tintIsPreviewOnly } from "@/lib/tint";
 import { useEditorStore } from "@/store/editor";
-import { ColorField, Field, Note, SelectField, Segmented } from "../Controls";
+import { ColorField, Field, Note, SelectField, Segmented, Slider, TextField, Toggle } from "../Controls";
 
 const COLOR_MODES = [
   { value: "single" as const, label: "one filament" },
@@ -52,7 +67,16 @@ const PARTS: ReadonlyArray<{ key: keyof PartColors; label: string }> = [
 const DEFAULT_PART_COLORS = DEFAULT_PRINT_PARAMS.part_colors as PartColors;
 const DEFAULT_REGION_SLOTS = DEFAULT_PRINT_PARAMS.colour?.region_slots as RegionSlots;
 const DEFAULT_REGION_COLORS = DEFAULT_PRINT_PARAMS.colour?.region_colors as RegionColors;
+const DEFAULT_TINT = DEFAULT_PRINT_PARAMS.colour!.tint!;
+const DEFAULT_GRADIENT = DEFAULT_PRINT_PARAMS.colour!.gradient!;
 
+/**
+ * Every region name a `RegionMesh` can carry, including the derived,
+ * feature-gated ones (`cleat`, `buildings_band_2..8`, `[V3-P5-F7]`). A `Record`
+ * so TypeScript holds this list to being exhaustive whenever `RegionName`
+ * grows -- the compiler is the reminder to add a label here, not a runtime
+ * fallback that would silently print the raw region id.
+ */
 const REGION_LABELS: Record<RegionName, string> = {
   base: "Base",
   frame: "Frame",
@@ -66,6 +90,14 @@ const REGION_LABELS: Record<RegionName, string> = {
   lettering: "Lettering",
   attribution: "Attribution",
   easel: "Easel",
+  cleat: "Cleat mount",
+  buildings_band_2: "Buildings, band 2",
+  buildings_band_3: "Buildings, band 3",
+  buildings_band_4: "Buildings, band 4",
+  buildings_band_5: "Buildings, band 5",
+  buildings_band_6: "Buildings, band 6",
+  buildings_band_7: "Buildings, band 7",
+  buildings_band_8: "Buildings, band 8",
 };
 
 const SLOT_MAX: number = PARAM_RANGES.colour.region_slots.base.max;
@@ -83,7 +115,8 @@ const SLOT_OPTIONS = Array.from({ length: SLOT_MAX }, (_, i) => {
  * `regionSlot`/`regionColor` -- the one function every one of those reads,
  * so they can never disagree). One row per region the current bake produced,
  * or every colourable region name before the first one has (`lib/colourMap.ts:
- * colourRows`).
+ * colourRows`), plus the palette picker, per-building tint and the
+ * height-gradient controls (v3 phase 5, `[V3-P5-C]`).
  */
 export function ColourGroup() {
   const params = useEditorStore((state) => state.params);
@@ -96,11 +129,6 @@ export function ColourGroup() {
   const single = mode === "single";
   const heroes = params.hero_building_ids ?? [];
 
-  /**
-   * Rewrite the whole palette, never one key in place. The cast is honest:
-   * every one of the seven required keys is present in the spread, which is
-   * what `PartColors` demands.
-   */
   const setPart = (key: keyof PartColors, value: string): void => {
     setNested("part_colors", { ...colours, [key]: value } as PartColors);
   };
@@ -113,7 +141,15 @@ export function ColourGroup() {
     setNested("colour", { region_slots: { ...slots, [region]: value } as RegionSlots });
   };
   const setColor = (region: RegionName, value: string): void => {
-    setNested("colour", { region_colors: { ...regionColors, [region]: value } as RegionColors });
+    const nextColors = { ...regionColors, [region]: value } as RegionColors;
+    // Editing any single swatch by hand is what flips the picker to "custom"
+    // -- a palette id left pointing at a table the user has since diverged
+    // from would relabel their own choice with someone else's name.
+    const stillMatches = BUILTIN_PALETTES.some((p) => p.id === params.colour?.palette && matchesPalette(p, nextColors));
+    setNested("colour", {
+      region_colors: nextColors,
+      palette: stillMatches ? params.colour?.palette : CUSTOM_PALETTE_ID,
+    });
   };
 
   const profile = resolveProfile(params);
@@ -129,11 +165,6 @@ export function ColourGroup() {
     });
   };
 
-  // Audit v3-02 finding 4: two regions sharing a slot but carrying different
-  // `region_colors` disagree with the exporter, which resolves one colour per
-  // SLOT (`export/common.ts:slotColors`, "first region in REGION_NAMES order
-  // wins"), silently. `printed` is what each row's swatch actually prints as;
-  // `conflicts` is what the warning below names.
   const printed = printedColors(rows);
   const conflicts = slotColourConflicts(rows);
 
@@ -141,6 +172,64 @@ export function ColourGroup() {
     const patch = alignConflictsPatch(conflicts);
     if (Object.keys(patch).length === 0) return;
     setNested("colour", { region_colors: { ...regionColors, ...patch } as RegionColors });
+  };
+
+  const contrastProblems = useMemo(() => contrastIssues(rows), [rows]);
+
+  // --- palettes ------------------------------------------------------------
+  const activePaletteId = params.colour?.palette ?? "default";
+  const [customPalettes, setCustomPalettes] = useState<SavedPalette[]>([]);
+  const [saveName, setSaveName] = useState("");
+  useEffect(() => {
+    setCustomPalettes(loadCustomPalettes());
+  }, []);
+
+  const applyPalette = (palette: (typeof BUILTIN_PALETTES)[number]): void => {
+    setNested("colour", paletteApplyPatch(palette, slots));
+  };
+
+  const saveCurrentAsPalette = (): void => {
+    const name = saveName.trim();
+    if (name === "") return;
+    const id = customPaletteId(name, customPalettes);
+    const saved: SavedPalette = {
+      id,
+      name,
+      region_colors: regionColors,
+      savedAt: new Date().toISOString(),
+    };
+    const next = [...customPalettes, saved];
+    setCustomPalettes(next);
+    saveCustomPalettes(next);
+    setNested("colour", { palette: id });
+    setSaveName("");
+  };
+
+  const deleteCustomPalette = (id: string): void => {
+    const next = customPalettes.filter((p) => p.id !== id);
+    setCustomPalettes(next);
+    saveCustomPalettes(next);
+    if (activePaletteId === id) setNested("colour", { palette: CUSTOM_PALETTE_ID });
+  };
+
+  // --- tint ------------------------------------------------------------------
+  const tint = params.colour?.tint ?? DEFAULT_TINT;
+  const tintPreviewOnly = tintIsPreviewOnly(params.colour, params.export_target);
+
+  // --- gradient ----------------------------------------------------------
+  const gradient = params.colour?.gradient ?? DEFAULT_GRADIENT;
+  const boundedBands = boundGradientSlots(gradient.slots ?? [], profile.slots);
+  const maxBands = Math.min(GRADIENT_MAX_BANDS, profile.slots);
+
+  const setGradientBandCount = (count: number): void => {
+    const current = gradient.slots ?? [];
+    const next = Array.from({ length: count }, (_, i) => current[i] ?? Math.min(profile.slots, i + 1));
+    setNested("colour", { gradient: { ...gradient, slots: next } });
+  };
+  const setGradientBandSlot = (index: number, value: number): void => {
+    const next = [...(gradient.slots ?? [])];
+    next[index] = value;
+    setNested("colour", { gradient: { ...gradient, slots: next } });
   };
 
   return (
@@ -193,6 +282,93 @@ export function ColourGroup() {
           to matter.
         </Note>
       ) : null}
+
+      <Field
+        label="Palette"
+        hint="Applying a palette sets every region's colour and slot in one step. The active colours travel in a shared link (region_colors), not the palette name -- share it and the recipient sees the same colours even if they never load this palette."
+      >
+        <div className="space-y-2">
+          <div className="grid grid-cols-2 gap-1.5" data-testid="palette-builtin-list">
+            {BUILTIN_PALETTES.map((palette) => (
+              <button
+                key={palette.id}
+                type="button"
+                data-testid={`palette-apply-${palette.id}`}
+                onClick={() => applyPalette(palette)}
+                aria-pressed={activePaletteId === palette.id}
+                title={palette.description}
+                className={`flex items-center gap-1.5 rounded-milled border px-2 py-1.5 text-left text-2xs transition-colors ${
+                  activePaletteId === palette.id
+                    ? "border-primary bg-primary/10 text-ink"
+                    : "border-control bg-plate-raised text-ink-muted hover:border-ink-faint"
+                }`}
+              >
+                <span className="flex shrink-0 overflow-hidden rounded-[2px] border border-control-strong">
+                  {[palette.region_colors.base, palette.region_colors.buildings, palette.region_colors.roads, palette.region_colors.water].map(
+                    (hex, i) => (
+                      <span key={i} className="h-3.5 w-2" style={{ backgroundColor: hex }} />
+                    ),
+                  )}
+                </span>
+                {palette.label}
+              </button>
+            ))}
+          </div>
+
+          {activePaletteId === CUSTOM_PALETTE_ID ? (
+            <Note testId="palette-custom-note">Custom: a region colour was edited by hand.</Note>
+          ) : null}
+
+          {customPalettes.length > 0 ? (
+            <div className="space-y-1" data-testid="palette-custom-list">
+              {customPalettes.map((saved) => (
+                <div
+                  key={saved.id}
+                  className="flex items-center justify-between gap-2 rounded-milled border border-line bg-plate-sunken px-2 py-1"
+                >
+                  <button
+                    type="button"
+                    data-testid={`palette-apply-${saved.id}`}
+                    onClick={() => applyPalette(savedAsPalette(saved))}
+                    aria-pressed={activePaletteId === saved.id}
+                    className="min-w-0 flex-1 truncate text-left text-2xs text-ink"
+                  >
+                    {saved.name}
+                  </button>
+                  <button
+                    type="button"
+                    data-testid={`palette-delete-${saved.id}`}
+                    aria-label={`Delete palette ${saved.name}`}
+                    onClick={() => deleteCustomPalette(saved.id)}
+                    className="text-2xs text-ink-faint hover:text-danger"
+                  >
+                    Delete
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="flex items-center gap-1.5">
+            <TextField
+              id="palette-save-name"
+              label="Save current colours as"
+              value={saveName}
+              placeholder="My palette"
+              onChange={setSaveName}
+            />
+            <button
+              type="button"
+              data-testid="palette-save"
+              disabled={saveName.trim() === ""}
+              onClick={saveCurrentAsPalette}
+              className="mt-6 shrink-0 rounded-milled border border-control bg-plate-raised px-2 py-1.5 text-2xs font-medium text-ink transition-colors hover:border-ink-faint disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      </Field>
 
       <Field
         label="Filament slots"
@@ -250,6 +426,18 @@ export function ColourGroup() {
         </div>
       </Field>
 
+      {contrastProblems.length > 0 ? (
+        <Note tone="warn" testId="colour-contrast-warning">
+          <span className="block space-y-0.5">
+            {contrastProblems.map((issue) => (
+              <span key={`${issue.regionA}-${issue.regionB}`} className="block">
+                {contrastIssueSentence(issue, (region) => REGION_LABELS[region])}
+              </span>
+            ))}
+          </span>
+        </Note>
+      ) : null}
+
       {conflicts.length > 0 ? (
         <Note tone="warn" testId="colour-slot-conflicts">
           <span className="block space-y-0.5">
@@ -288,6 +476,114 @@ export function ColourGroup() {
           </button>
         </Note>
       ) : null}
+
+      <Field
+        label="Building tint"
+        hint="A small random colour shift per building, so a block of identical footprints does not read as one slab."
+      >
+        <Toggle
+          id="colour_tint_enabled"
+          label="Vary building colour"
+          checked={tint.enabled ?? false}
+          onChange={(value) => setNested("colour", { tint: { ...tint, enabled: value } })}
+        />
+        {tint.enabled ? (
+          <div className="mt-3 space-y-3">
+            <Slider
+              id="colour_tint_hue"
+              label="Hue range"
+              min={PARAM_RANGES.colour.tint.hue_range_deg.min}
+              max={PARAM_RANGES.colour.tint.hue_range_deg.max}
+              step={1}
+              value={tint.hue_range_deg ?? PARAM_RANGES.colour.tint.hue_range_deg.default}
+              display={`± ${(tint.hue_range_deg ?? PARAM_RANGES.colour.tint.hue_range_deg.default).toFixed(0)}°`}
+              onChange={(value) => setNested("colour", { tint: { ...tint, hue_range_deg: value } })}
+            />
+            <Slider
+              id="colour_tint_lightness"
+              label="Lightness range"
+              min={PARAM_RANGES.colour.tint.lightness_range.min}
+              max={PARAM_RANGES.colour.tint.lightness_range.max}
+              step={0.01}
+              value={tint.lightness_range ?? PARAM_RANGES.colour.tint.lightness_range.default}
+              display={`± ${Math.round((tint.lightness_range ?? PARAM_RANGES.colour.tint.lightness_range.default) * 100)}%`}
+              onChange={(value) => setNested("colour", { tint: { ...tint, lightness_range: value } })}
+            />
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-2xs text-ink-faint" data-testid="colour-tint-seed">
+                Seed {tint.seed ?? DEFAULT_TINT.seed}
+              </span>
+              <button
+                type="button"
+                data-testid="colour-tint-reroll"
+                onClick={() => setNested("colour", { tint: { ...tint, seed: Math.floor(Math.random() * 1_000_000) } })}
+                className="rounded-milled border border-control bg-plate-raised px-2 py-1 text-2xs font-medium text-ink transition-colors hover:border-ink-faint"
+              >
+                Reroll
+              </button>
+            </div>
+            {tintPreviewOnly ? (
+              <Note tone="info" testId="colour-tint-preview-only-note">
+                Building tint affects the preview and the OBJ export only. No printer
+                profile can change filament colour per building, so the active export
+                target ({params.export_target ?? "bambu-3mf"}) prints every building in
+                its region&apos;s own slot colour.
+              </Note>
+            ) : null}
+          </div>
+        ) : null}
+      </Field>
+
+      <Field
+        label="Height gradient"
+        hint="Bands the buildings by height, tallest in one filament, shortest in another. Bounded by the active printer profile's own filament count."
+      >
+        <Toggle
+          id="colour_gradient_enabled"
+          label="Band buildings by height"
+          checked={gradient.enabled ?? false}
+          onChange={(value) => setNested("colour", { gradient: { ...gradient, enabled: value } })}
+        />
+        {gradient.enabled ? (
+          <div className="mt-3 space-y-2">
+            <Slider
+              id="colour_gradient_bands"
+              label="Bands"
+              min={1}
+              max={maxBands}
+              step={1}
+              value={boundedBands.length}
+              display={String(boundedBands.length)}
+              onChange={(value) => setGradientBandCount(value)}
+            />
+            <div className="space-y-1" data-testid="colour-gradient-bands">
+              {boundedBands.map((slot, index) => (
+                <div
+                  key={index}
+                  className="flex items-center justify-between gap-2 rounded-milled border border-line bg-plate-sunken px-2 py-1"
+                >
+                  <span className="text-2xs text-ink">
+                    {REGION_LABELS[bandRegionName(index + 1)]}
+                  </span>
+                  <select
+                    aria-label={`Band ${index + 1} filament slot`}
+                    data-testid={`colour-gradient-band-slot-${index}`}
+                    value={String(slot)}
+                    onChange={(event) => setGradientBandSlot(index, Number(event.target.value))}
+                    className="rounded-milled border border-control bg-plate-raised px-1.5 py-1 text-2xs text-ink"
+                  >
+                    {SLOT_OPTIONS.slice(0, profile.slots).map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </Field>
     </>
   );
 }
