@@ -1,5 +1,5 @@
 /**
- * The seven control groups of the parameter panel, and the persistence of
+ * The nine control groups of the parameter panel, and the persistence of
  * which ones are collapsed.
  *
  * Keeping the group table here rather than inside the panel means the e2e and
@@ -22,7 +22,9 @@ export type GroupId =
   | "location"
   | "scale"
   | "buildings"
+  | "heights"
   | "surface"
+  | "terrain"
   | "frame"
   | "colour"
   | "output";
@@ -65,10 +67,22 @@ export const GROUPS: readonly GroupSpec[] = [
     collapsedByDefault: false,
   },
   {
+    id: "heights",
+    title: "Heights",
+    summary: "How a missing OSM height is guessed, and how much taller the model reads.",
+    collapsedByDefault: false,
+  },
+  {
     id: "surface",
     title: "Surface",
-    summary: "Roads, water, planting and terrain on the plate.",
+    summary: "Roads, water and planting on the plate.",
     collapsedByDefault: false,
+  },
+  {
+    id: "terrain",
+    title: "Terrain",
+    summary: "Real ground elevation, draped under the model.",
+    collapsedByDefault: true,
   },
   {
     id: "frame",

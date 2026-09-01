@@ -20,6 +20,8 @@ import { basename, dirname, extname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { defaultPrintParams, type PrintParams, type SceneGraph } from "../lib/contracts";
+import { sceneFromOverpass } from "../lib/engine/osm/scene";
+import type { TerrainGrid } from "../lib/engine/types";
 import { buildSidecarJson, sanitizeStem } from "../lib/engine/export/common";
 import { EXPORT_TARGETS, exportForTarget, isExportTarget, type ExportTarget } from "../lib/engine/export/index";
 import { CREDITS_TEXT } from "../lib/engine/export/stl";
@@ -27,16 +29,29 @@ import type { EngineInput, EngineResult } from "../lib/engine/types";
 import { resolveProfile } from "../lib/printers";
 
 interface Args {
-  scene: string;
+  scene: string | null;
+  overpass: string | null;
   params: string;
   target: ExportTarget | null;
   out: string;
   title: string | null;
+  terrain: string | null;
+  radiusM: number;
+  rotationDeg: number;
 }
 
 const USAGE =
-  "usage: bake-cli --scene <scene.json> --params <print-params.json> [--target <export_target>] --out <file> [--title <text>]\n" +
-  `  targets: ${EXPORT_TARGETS.join(", ")}`;
+  "usage: bake-cli (--scene <scene.json> | --overpass <overpass.json>) --params <print-params.json>\n" +
+  "                [--target <export_target>] [--terrain <grid.json|demo|demo:<relief_m>>]\n" +
+  "                [--radius <m>] [--rotation <deg>] --out <file> [--title <text>]\n" +
+  `  targets: ${EXPORT_TARGETS.join(", ")}\n` +
+  "  --overpass ingests a raw Overpass response through lib/engine/osm, which is the\n" +
+  "             scene the app itself bakes: it carries the rail layer and the\n" +
+  "             bridge/layer tags that a SceneGraph from the Python service does not.\n" +
+  "  --terrain  a TerrainGrid JSON, or `demo` / `demo:<relief_m>` for a synthetic\n" +
+  "             west-to-east ramp over the crop (default 60 m of relief), so a DRAPED\n" +
+  "             bake can be put through `make validate` without a network fetch.\n" +
+  "  --radius   ground radius in metres for --overpass (default 900).";
 
 function parseArgs(argv: string[]): Args {
   const values = new Map<string, string>();
@@ -52,22 +67,86 @@ function parseArgs(argv: string[]): Args {
     values.set(key.slice(2), value);
     i += 1;
   }
-  const scene = values.get("scene");
+  const scene = values.get("scene") ?? null;
+  const overpass = values.get("overpass") ?? null;
   const params = values.get("params");
   const out = values.get("out");
-  if (!scene || !params || !out) {
+  if ((scene === null) === (overpass === null) || !params || !out) {
     throw new Error(USAGE);
   }
   const target = values.get("target") ?? null;
   if (target !== null && !isExportTarget(target)) {
     throw new Error(`unknown --target ${target}\n${USAGE}`);
   }
-  return { scene, params, target, out, title: values.get("title") ?? null };
+  const radius = Number(values.get("radius") ?? 900);
+  const rotation = Number(values.get("rotation") ?? 0);
+  if (!Number.isFinite(radius) || radius <= 0) throw new Error(`--radius must be positive\n${USAGE}`);
+  if (!Number.isFinite(rotation)) throw new Error(`--rotation must be a number\n${USAGE}`);
+  return {
+    scene,
+    overpass,
+    params,
+    target,
+    out,
+    title: values.get("title") ?? null,
+    terrain: values.get("terrain") ?? null,
+    radiusM: radius,
+    rotationDeg: rotation,
+  };
+}
+
+/**
+ * The terrain grid for `--terrain`, or null.
+ *
+ * `demo` builds a synthetic west-to-east ramp over the crop rather than
+ * fetching DEM tiles: the point of the flag is to put a DRAPED model through
+ * the reference validator reproducibly, and a bake whose geometry depends on
+ * what a remote elevation service served that minute is not reproducible. A
+ * real `TerrainGrid` JSON (what `fetchTerrainGrid` returns, `elevations` as a
+ * plain array) is accepted too, for checking a specific place.
+ */
+function loadTerrain(spec: string | null, radiusM: number): TerrainGrid | null {
+  if (spec === null) return null;
+  if (spec === "demo" || spec.startsWith("demo:")) {
+    const reliefM = spec === "demo" ? 60 : Number(spec.slice(5));
+    if (!Number.isFinite(reliefM) || reliefM <= 0) {
+      throw new Error(`--terrain ${spec}: the relief must be a positive number of metres`);
+    }
+    const cellM = Math.max(1, (2 * radiusM) / 128);
+    const cols = Math.floor((2 * radiusM) / cellM) + 2;
+    const elevations = new Float32Array(cols * cols);
+    for (let r = 0; r < cols; r += 1) {
+      for (let c = 0; c < cols; c += 1) elevations[r * cols + c] = (reliefM * c) / (cols - 1);
+    }
+    return {
+      originEastM: -radiusM,
+      originNorthM: -radiusM,
+      cellM,
+      cols,
+      rows: cols,
+      elevations,
+      rangeM: reliefM,
+      source: `synthetic ramp, ${reliefM} m of relief`,
+    };
+  }
+  const raw = readJson<Omit<TerrainGrid, "elevations"> & { elevations: number[] | Float32Array }>(
+    resolve(spec),
+  );
+  return { ...raw, elevations: Float32Array.from(raw.elevations) };
 }
 
 function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, "utf8")) as T;
 }
+
+/**
+ * Where `--overpass` says the crop is centred, when nothing else does.
+ *
+ * A raw Overpass response carries no centre of its own - the centre is part of
+ * the REQUEST - and the committed fixture is the Chicago Loop, which is also
+ * every other Chicago artefact's centre (`fixtures/chicago-scene.json`).
+ */
+const DEMO_CENTER = { lat: 41.8827, lon: -87.6233 };
 
 /** The engine's entry point, whichever name lib/engine/engine.ts exports it under. */
 type EngineRunner = (input: EngineInput) => Promise<EngineResult> | EngineResult;
@@ -124,12 +203,25 @@ function sidecar(args: Args, result: EngineResult, files: Array<{ name: string; 
 async function main(): Promise<void> {
   const started = Date.now();
   const args = parseArgs(process.argv.slice(2));
-  const scene = readJson<SceneGraph>(resolve(args.scene));
   const params: PrintParams = { ...defaultPrintParams(), ...readJson<Partial<PrintParams>>(resolve(args.params)) };
+  const scene: SceneGraph =
+    args.scene !== null
+      ? readJson<SceneGraph>(resolve(args.scene))
+      : sceneFromOverpass(
+          readJson<Parameters<typeof sceneFromOverpass>[0]>(resolve(args.overpass as string)),
+          {
+            lat: DEMO_CENTER.lat,
+            lon: DEMO_CENTER.lon,
+            radius_m: args.radiusM,
+            rotation_deg: args.rotationDeg,
+          },
+          params,
+        );
+  const terrain = loadTerrain(args.terrain, args.radiusM);
   const target: ExportTarget = args.target ?? params.export_target ?? "bambu-3mf";
 
   const run = await loadEngine();
-  const result = await run({ scene, params });
+  const result = await run({ scene, params, terrain, rotationDeg: args.rotationDeg });
 
   const outPath = resolve(args.out);
   const outDir = dirname(outPath);

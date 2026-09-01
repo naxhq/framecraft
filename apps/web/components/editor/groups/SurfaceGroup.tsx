@@ -60,18 +60,6 @@ export function SurfaceGroup() {
         onChange={(value) => setParam("trees", value)}
         hint="Cones on the green areas, three times as tall as they are wide, capped at 2000. Trees too small to print are dropped."
       />
-
-      <Slider
-        id="terrain_exaggeration"
-        label="Terrain exaggeration"
-        min={PARAM_RANGES.terrain_exaggeration.min * 100}
-        max={PARAM_RANGES.terrain_exaggeration.max * 100}
-        step={PERCENT_STEP}
-        value={percent("terrain_exaggeration")}
-        display={`${percent("terrain_exaggeration")} %`}
-        onChange={(value) => setParam("terrain_exaggeration", value / 100)}
-        hint="Terrain is flat in this build: the elevation fetcher is behind a feature flag, so this travels through the pipeline but changes nothing yet."
-      />
     </>
   );
 }

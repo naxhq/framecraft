@@ -102,7 +102,7 @@ type FieldSpec =
   | { kind: "enum"; values: readonly string[] }
   | { kind: "object"; fields: Record<string, FieldSpec> }
   | { kind: "array"; maxItems: number; item: FieldSpec }
-  | { kind: "literal"; value: number };
+  | { kind: "literal"; values: readonly number[] };
 
 const EDGES = ["top", "bottom", "left", "right"] as const;
 /** `Engraving.edge` alone also allows "underside" ([V3-P1]); ScaleBar's does not. */
@@ -426,7 +426,13 @@ const HANGER_MAGNET_SPEC: FieldSpec = {
  * which is what catches a renamed or removed variant.
  */
 export const PRINT_PARAM_SPEC: Record<string, FieldSpec> = {
-  schema_version: { kind: "literal", value: 2 },
+  // Audit v3-02 finding 11: the frozen contract's `schema_version` is
+  // `2 | 3` (not required, `contracts.ts:385`'s default is 3), so a share
+  // link honestly carrying either value is legal on the wire -- a literal
+  // pinned to 2 alone refused a link naming the CURRENT default and, read
+  // the other way, would have accepted a link naming a version this build
+  // does not really default to without saying so.
+  schema_version: { kind: "literal", values: [2, 3] },
   plate_mm: bounded(PARAM_RANGES.plate_mm),
   base_thickness_mm: bounded(PARAM_RANGES.base_thickness_mm),
   nozzle_mm: bounded(PARAM_RANGES.nozzle_mm),
@@ -540,7 +546,9 @@ function fail(message: string): never {
 function validate(value: unknown, spec: FieldSpec, path: string): unknown {
   switch (spec.kind) {
     case "literal":
-      if (value !== spec.value) fail(`${path} must be ${String(spec.value)}`);
+      if (!spec.values.includes(value as number)) {
+        fail(`${path} must be ${spec.values.map(String).join(" or ")}`);
+      }
       return value;
     case "number": {
       if (typeof value !== "number" || !Number.isFinite(value)) {

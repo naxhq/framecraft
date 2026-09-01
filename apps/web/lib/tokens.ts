@@ -19,11 +19,19 @@
  *   `store/editor.ts`) and hands the resolved string in on `TokenContext`. An
  *   unresolved field is `""`, exactly like an unset `city` always was, never a
  *   guess synthesised here.
- * - `{hero}` is the COUNT of selected hero buildings, not a building's real
- *   name: `SceneGraph.Building` (the frozen contract) carries no `name` field,
- *   so there is nothing honest to print in its place. Empty when no hero is
- *   selected, exactly like every other token that has nothing to say
- *   (DECISIONS [V3-P1]).
+ * - `{hero}` prefers the OSM `name` of the top-scoring picked hero building
+ *   (`lib/heroes.ts:heroTokenInfo`, phase 3 `hero_auto`), falling back to the
+ *   COUNT of selected hero buildings when there is no hero picked or the top
+ *   one has no name. This is TS-only, on the caller's `hero_name` field:
+ *   `SceneGraph.Building` (the frozen contract) carries no `name`, so
+ *   `services/bake/app/geom/tokens.py`'s mirror still has nothing to resolve
+ *   past `hero_count` and is unchanged (DECISIONS [V3-P3-U]) - every
+ *   engraving reaching `POST /bake` is already fully resolved client-side
+ *   (see the rule above), so the Python formatter's own count-only behaviour
+ *   is never actually exercised in production and stays pinned by the
+ *   existing fixture cases, none of which set `hero_name`. Empty when there
+ *   is no hero and no count either, exactly like every other token that has
+ *   nothing to say (DECISIONS [V3-P1]).
  * - An unknown `{token}` is left exactly as written - it is far likelier to be
  *   a deliberate brace in someone's text than a typo we should silently eat.
  * - Every number is formatted by hand (`fixed`, `group_thousands`,
@@ -77,8 +85,10 @@ export interface TokenContext {
   state?: string;
   neighbourhood?: string;
   author?: string;
-  /** How many hero buildings are selected. `{hero}` formats this, not a name. */
+  /** How many hero buildings are selected; `{hero}`'s fallback when there is no name to print. */
   hero_count?: number;
+  /** The top picked hero's OSM name, when it has one. `{hero}` prefers this over `hero_count`. */
+  hero_name?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -210,13 +220,17 @@ export function format_author(ctx: TokenContext): string {
 }
 
 /**
- * `3` - how many hero buildings are selected, or `""` when none are.
+ * The top picked hero's OSM name when it has one; otherwise `3` - how many
+ * hero buildings are selected; otherwise `""`.
  *
- * Not a building's name: see the module docstring for why. `group_thousands`
- * is harmless overkill at the twelve-hero cap and keeps this formatter the
- * same shape as `format_buildings`.
+ * See the module docstring for why the name only ever comes from the caller's
+ * `hero_name` and never from a lookup in here. `group_thousands` is harmless
+ * overkill at the twelve-hero cap and keeps the count branch the same shape as
+ * `format_buildings`.
  */
 export function format_hero(ctx: TokenContext): string {
+  const name = ctx.hero_name?.trim();
+  if (name) return name;
   const count = Math.trunc(ctx.hero_count ?? 0);
   return count > 0 ? group_thousands(count) : "";
 }

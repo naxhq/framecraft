@@ -1,6 +1,7 @@
 "use client";
 
 import { BAKE_STALE_NOTE } from "@/lib/bake";
+import type { EngineSceneGraph } from "@/lib/engine/osm/types";
 import { useEditorStore } from "@/store/editor";
 import { Note } from "./Controls";
 
@@ -28,6 +29,7 @@ const INFILL_FACTOR = 0.35;
  */
 export function StatsCard() {
   const engine = useEditorStore((state) => state.engine);
+  const graph = useEditorStore((state) => state.scene.graph);
   const result = engine.result;
 
   if (engine.status === "error" && engine.error) {
@@ -53,7 +55,18 @@ export function StatsCard() {
   );
   const minWallMm = result.stats.measuredMinWallMm ?? result.stats.minWallMm;
 
-  const rows: Array<[string, string]> = [
+  // Phase 3 HEIGHTS: how many buildings got no usable OSM height at all and
+  // fell back to `heights.unknown_default_m` (`repair.ts`'s own definition of
+  // `heightFallbacks`, `height_source === "default"`). The tag/levels/default
+  // split is a cheap read off the already-fetched SceneGraph -- no extra pass
+  // over the buildings -- so it rides along as a native tooltip rather than a
+  // second row.
+  const fallbackCounts = (graph as EngineSceneGraph | null)?.stats.height_fallback_counts;
+  const fallbackTooltip = fallbackCounts
+    ? `${fallbackCounts.tag} from an explicit height tag, ${fallbackCounts.levels} from a level count, ${fallbackCounts.default} guessed entirely`
+    : undefined;
+
+  const rows: Array<[string, string, string?]> = [
     ["Triangles", result.stats.triangles.toLocaleString("en-US")],
     ["Volume", `${Math.round(volumeMm3).toLocaleString("en-US")} mm³`],
     [
@@ -64,6 +77,13 @@ export function StatsCard() {
     ["Manifold", isManifold ? "yes" : "no"],
     ["Min wall", `${minWallMm.toFixed(2)} mm`],
   ];
+  if (result.stats.heightFallbacks > 0) {
+    rows.push([
+      "Height fallbacks",
+      `${result.stats.heightFallbacks.toLocaleString("en-US")} building${result.stats.heightFallbacks === 1 ? "" : "s"}`,
+      fallbackTooltip,
+    ]);
+  }
 
   return (
     <div
@@ -82,10 +102,12 @@ export function StatsCard() {
         </div>
       ) : null}
       <dl className="space-y-1 text-2xs">
-        {rows.map(([label, value]) => (
+        {rows.map(([label, value, tooltip]) => (
           <div key={label} className="flex justify-between gap-3">
             <dt className="text-ink-faint">{label}</dt>
             <dd
+              title={tooltip}
+              data-testid={label === "Height fallbacks" ? "stats-height-fallbacks" : undefined}
               className={
                 label === "Manifold" && !isManifold ? "font-medium text-danger" : "text-ink"
               }

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
+import type { EngineBuilding } from "@/lib/engine/osm/types";
 import {
   GROUPS,
   defaultCollapsed,
@@ -10,16 +11,18 @@ import {
   type CollapsedGroups,
   type GroupId,
 } from "@/lib/groups";
-import { HERO_CAP } from "@/lib/heroes";
+import { HERO_CAP, effectiveHeroIds } from "@/lib/heroes";
 import { useEditorStore } from "@/store/editor";
 import CollapsibleGroup from "./CollapsibleGroup";
 import OutputPanel from "./OutputPanel";
 import BuildingsGroup from "./groups/BuildingsGroup";
 import ColourGroup from "./groups/ColourGroup";
 import FrameTextGroup from "./groups/FrameTextGroup";
+import HeightsGroup from "./groups/HeightsGroup";
 import LocationGroup from "./groups/LocationGroup";
 import ScaleSizeGroup from "./groups/ScaleSizeGroup";
 import SurfaceGroup from "./groups/SurfaceGroup";
+import TerrainGroup from "./groups/TerrainGroup";
 
 /**
  * The parameter panel: every control in 01's editor table plus schema_version
@@ -44,20 +47,29 @@ const BODIES: Record<Exclude<GroupId, "output">, () => ReactNode> = {
   location: LocationGroup,
   scale: ScaleSizeGroup,
   buildings: BuildingsGroup,
+  heights: HeightsGroup,
   surface: SurfaceGroup,
+  terrain: TerrainGroup,
   frame: FrameTextGroup,
   colour: ColourGroup,
 };
 
 export function ParamPanel() {
   const resetParams = useEditorStore((state) => state.resetParams);
-  const heroCount = useEditorStore(
-    (state) => (state.params.hero_building_ids ?? []).length,
+  // Manual picks plus, once `hero_auto` is on, the auto-promoted ones -- the
+  // same set that actually bakes (`store/editor.ts:currentHeroIds`), so the
+  // badge never undercounts against what the HEROES section itself lists.
+  const heroCount = useEditorStore((state) =>
+    effectiveHeroIds(
+      state.scene.graph ? (state.scene.graph.buildings as EngineBuilding[]) : undefined,
+      state.params,
+    ).length,
   );
   const engravingCount = useEditorStore(
     (state) => (state.params.engravings ?? []).length,
   );
   const colorMode = useEditorStore((state) => state.params.color_mode ?? "single");
+  const terrainOn = useEditorStore((state) => state.params.terrain?.enabled ?? false);
 
   // Server-rendered as the defaults, then reconciled with localStorage after
   // mount. Reading storage during render would mismatch the HTML Next sent.
@@ -81,6 +93,7 @@ export function ParamPanel() {
         ? `${engravingCount} ${engravingCount === 1 ? "line" : "lines"}`
         : null,
     colour: colorMode === "parts" ? "7 parts" : null,
+    terrain: terrainOn ? "on" : null,
   };
 
   const outputGroup = GROUPS[GROUPS.length - 1];

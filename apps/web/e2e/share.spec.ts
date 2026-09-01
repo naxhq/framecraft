@@ -67,13 +67,27 @@ test("a copied link restores the whole editor in a fresh browser", async ({
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("hero-item")).toHaveCount(1);
-  // The id only: the list also shows the building's height, and a browser that
-  // has not generated the scene yet has no heights to show. The ID is the thing
-  // the link actually carries.
-  const heroId = (
-    ((await page.getByTestId("hero-item").first().textContent()) ?? "").trim().split(/\s/)[0]
-  );
+  // The id: what the share LINK actually carries (`PrintParams.hero_building_ids`
+  // is a bare array of OSM way ids, [V3-P1]). The row's own TEXT is not where
+  // to read it from any more -- since phase 3's hero auto-detect, a resolved
+  // scene shows the building's real OSM name there instead
+  // (`lib/heroes.ts:heroDisplayName`), which this row already has, having
+  // generated its scene above. The Remove button's `aria-label` still spells
+  // the id out verbatim regardless (`BuildingsGroup.tsx`), so read it from
+  // there.
+  const heroLabel = (await page.getByTestId("hero-item").first().textContent()) ?? "";
+  log(`hero label with a resolved scene: ${heroLabel.trim()}`);
+  const removeLabel = await page
+    .getByTestId("hero-item")
+    .first()
+    .locator("button")
+    .getAttribute("aria-label");
+  const heroId = (removeLabel ?? "").replace("Remove hero building ", "").trim();
   expect(heroId).toMatch(/^\w+/);
+  // The resolved name really is a name, not the bare id showing through
+  // because nothing resolved -- otherwise the "after restore, before
+  // Generate" check below (which asserts the id) would pass vacuously.
+  expect(heroLabel).not.toContain(heroId);
 
   // ---- 2. copy the link -------------------------------------------------
   const copy = page.getByTestId("copy-link-button");
@@ -101,7 +115,12 @@ test("a copied link restores the whole editor in a fresh browser", async ({
     await expect(other.getByTestId("plate_mm-value")).toHaveText("200 mm");
     await expect(other.getByTestId("radius_m-value")).toHaveText("900 m");
     await expect(other.getByTestId("group-buildings-toggle")).toContainText("1/12 heroes");
+    // Before Generate there is no scene to resolve a NAME from at all (step 4
+    // below asserts that restoring a link never fetches on its own), so the
+    // honest, stable thing the row can show is the id the link carries --
+    // never the misleading "unnamed building" a bare lookup-miss would claim.
     await expect(other.getByTestId("hero-item").first()).toContainText(heroId);
+    await expect(other.getByTestId("hero-item").first()).not.toContainText("unnamed building");
 
     // A fresh context has fresh localStorage, so the two personalisation groups
     // are collapsed again and have to be opened to read their controls.
@@ -131,6 +150,14 @@ test("a copied link restores the whole editor in a fresh browser", async ({
       timeout: WARMUP_BUDGET_MS,
     });
     expect(ingestFetches(otherCalls)).toBe(1);
+
+    // Now that a scene exists, the SAME hero re-resolves to the SAME name
+    // Generate showed in the original context -- the restored id round-tripped
+    // to a real building, not an id nothing in the re-ingested scene answers to.
+    const restoredHeroLabel = (await other.getByTestId("hero-item").first().textContent()) ?? "";
+    log(`hero label after restore + Generate: ${restoredHeroLabel.trim()}`);
+    expect(restoredHeroLabel).not.toContain("unnamed building");
+    expect(restoredHeroLabel.trim()).toBe(heroLabel.trim());
 
     const viewport = other.locator("[data-preview-text-count]");
     await expect

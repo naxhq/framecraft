@@ -4,11 +4,18 @@
  *
  * `bake()` is `04_PRINTABILITY_SPEC.md` end to end, with one structural change
  * from the reference implementation in `services/bake`: the output is not one
- * welded solid but one solid per colourable region, and those regions PARTITION
- * the model. They touch on shared faces, never overlap, and their union is a
- * single connected body - which is what lets the same geometry drive the
- * preview, the filament mapper and every exporter without any of them
- * disagreeing.
+ * welded solid but one solid per colourable region. Those regions are separate
+ * watertight BODIES that INTERPENETRATE at every seam by `PART_OVERLAP_MM`
+ * (0.2 mm, the reference's own figure) - they are NOT a flush partition, which
+ * was the first design and which the reference validator rejected, because two
+ * colour parts meeting on an exactly coincident face leave the slicer to
+ * arbitrate the seam and leave the boolean a plane of zero-area triangles
+ * (DECISIONS `[V3-P2-E2]`). Every one of those extras lies inside material
+ * `EngineResult.merged` already has, so the union of the regions IS that
+ * solid - which is what lets the same geometry drive the preview, the filament
+ * mapper and every exporter without any of them disagreeing. Per-region volumes
+ * are reported AS BUILT and therefore double-count the overlap; any total or
+ * estimate must read `merged.volumeMm3`.
  *
  * Order of work, and why:
  *
@@ -16,10 +23,12 @@
  *    minimum-feature repair is what makes a printed city come out as mush.
  * 2. Buildings, then the four surface layers in precedence order, so a road
  *    never tunnels through a building and water always wins a river bank.
- * 3. Lettering and ornaments, which are cutters into the frame and the base and
+ * 3. Bridges and trees, which stand ON those layers rather than in them.
+ * 4. Lettering and ornaments, which are cutters into the frame and the base and
  *    therefore have to exist before either is finished.
- * 4. The plate, carved by every cutter at once.
- * 5. Measure, validate, convert to meshes.
+ * 5. The plate, carved by every cutter at once.
+ * 6. The welded assembly, draped as one solid if this bake has terrain.
+ * 7. Measure, validate, convert to meshes.
  *
  * Every WASM handle lives in one `Arena` that is disposed in a `finally`, so a
  * failed bake leaks nothing.
@@ -38,8 +47,10 @@ import type {
   ResolvedLine,
 } from "./types";
 import { REGION_NAMES } from "./types";
+import { samplerFromGrid } from "./terrain/heightfield";
 import { buildSurfaceRegions } from "./solid/areas";
 import { buildPlate, carveBase, cutterTopMm } from "./solid/base";
+import { buildBridges } from "./solid/bridges";
 import { buildBuildings } from "./solid/buildings";
 import {
   addFinding,
@@ -49,6 +60,9 @@ import {
   regionSlot,
 } from "./solid/context";
 import type { BakeContext } from "./solid/context";
+import type { Drape } from "./solid/drape";
+import { LOW_RELIEF_MM, drapeSolid, makeDrape } from "./solid/drape";
+import { buildTrees } from "./solid/trees";
 import { buildFrameLip, reportUnbuiltFrameStyle } from "./solid/frame";
 import { buildLettering, loadFaces } from "./solid/lettering";
 import {
@@ -76,13 +90,13 @@ export interface BakeOptions {
   /**
    * Called with the finished region solids while they are still alive.
    *
-   * The seam the partition test measures through. A `RegionMesh` is a float32
-   * rendering of a solid manifold3d built in double, so two regions that share
-   * a face exactly can appear to interpenetrate by a 15 nanometre band once
-   * they have been re-imported from their meshes - a real property of the
-   * exported files, and the wrong thing to measure when the question is whether
-   * the ENGINE partitioned the model. Nothing but a test should use this: the
-   * handles are freed as soon as it returns.
+   * The seam the interpenetration test measures through. The regions overlap
+   * each other by `PART_OVERLAP_MM` on purpose, and the test's job is to check
+   * that the overlap is the DELIBERATE one and that the union of the regions is
+   * still exactly `merged` - which has to be asked of the solids, not of the
+   * meshes: a `RegionMesh` is a rounded rendering of a solid manifold3d built
+   * in double, so re-importing one moves every seam by a rounding step. Nothing
+   * but a test should use this: the handles are freed as soon as it returns.
    */
   onSolids?: (regions: readonly BuiltRegion[]) => void;
 }
@@ -110,10 +124,16 @@ export async function bake(
       arena,
       scene: input.scene,
       params: input.params,
-      terrain: input.terrain ?? null,
+      terrain: samplerFromGrid(input.terrain),
     });
     reportUnbuiltFrameStyle(ctx);
     reportRoadModeConflict(ctx);
+
+    // The displacement field, or null for a flat bake. EVERY terrain decision
+    // in the pipeline reads this one object, so the base, the layers, the
+    // bridges and the trees cannot end up on four different surfaces.
+    const drape = makeDrape(ctx);
+    reportRelief(ctx, drape);
 
     const solids = new Map<RegionName, Manifold>();
 
@@ -127,12 +147,31 @@ export async function bake(
     // which layers it borders so its pocket can reach into them
     // (`areas.collaredPocket`), and the layers need the building footprint to
     // give way to.
+    // Built FLAT and kept flat until the welded assembly has been put together
+    // out of them: the assembly is draped as ONE solid (see below), so the
+    // region solids can only be draped after it, and `drapeSolid` consumes what
+    // it is given.
     const surfaces = buildSurfaceRegions(ctx, repaired.footprint);
-    for (const surface of surfaces) solids.set(surface.region, surface.solid);
 
-    const buildings = buildBuildings(ctx, repaired);
+    const buildings = buildBuildings(ctx, repaired, drape);
     if (buildings.buildings !== null) solids.set("buildings", buildings.buildings);
     if (buildings.hero !== null) solids.set("hero_building", buildings.hero);
+
+    // --- bridges and trees ----------------------------------------------
+    // Both join a region that already exists rather than making one of their
+    // own: a deck prints in its own road's filament, a tree in the parkland's.
+    const bridges = buildBridges(ctx, repaired.footprint, drape);
+    // A tree gives way to the buildings and to every surface layer that is not
+    // parkland: 04's "does not intersect a building or road footprint", with
+    // parks left out of it because parkland is where trees belong.
+    const trees = buildTrees(
+      ctx,
+      [
+        repaired.footprint,
+        ...surfaces.filter((s) => s.region !== "parks").map((s) => s.section),
+      ],
+      drape,
+    );
 
     // --- text and ornaments ---------------------------------------------
     const tokens = textTokenContext(
@@ -147,12 +186,17 @@ export async function bake(
 
     // --- the plate, carved by everything --------------------------------
     const plate = buildPlate(ctx);
-    const base = carveBase(ctx, plate, [
+    const carved = carveBase(ctx, plate, [
       ...buildings.socket,
       ...surfaces.map((s) => s.cutter),
       ...lettering.baseCut,
       ...ornaments.baseCut,
     ]);
+    // Carve flat, then drape. `warp(plate - cutters)` and
+    // `warp(plate) - warp(cutters)` are the same set because the drape is a
+    // bijection of space, so this is exactly the model a draped carve would
+    // give, for one refinement instead of one per cutter.
+    const base = drape === null ? carved : (drapeSolid(ctx, drape, carved) ?? carved);
     solids.set("base", base);
 
     // --- the frame ------------------------------------------------------
@@ -186,10 +230,41 @@ export async function bake(
     // fills exactly the pocket it carved, so carving and refilling is the same
     // as never carving below the groove), 4 000 triangles lighter, and it
     // cleans to zero degenerate faces.
-    const additive: Manifold[] = [plate];
+    //
+    // `carved` was consumed by the drape (and `plate` with it when the scene
+    // had no cutters at all), so the assembly gets its own plate rather than a
+    // handle the arena has already freed.
+    //
+    // THE ASSEMBLY IS ASSEMBLED FLAT AND DRAPED AS ONE SOLID. It has to be. A
+    // warp is evaluated per vertex and interpolated linearly across each
+    // triangle, so two solids warped separately agree only to the chord error
+    // of their own tessellations - and the plate's top and a groove's floor are
+    // 0.2 mm apart, which is inside that error wherever the field is steep.
+    // Draping the plate and the grooves separately left ten fragments of
+    // hillside floating over the Chicago plate, all of them in the plan taper
+    // at the crop edge, where the field is steepest. Warping the finished flat
+    // assembly instead makes the two surfaces vertices of ONE mesh, and they
+    // cannot disagree (`[V3-P3-G7]`).
+    //
+    // The buildings, the decks and the trees are rigidly placed rather than
+    // warped, so they are unioned in AFTER the warp. That is the same set: none
+    // of the cutters below ever touches them (an underside mark and a keyhole
+    // are at z ~ 0, the grooves are the surface layers' own pockets which gave
+    // way to the building footprint, and the frame cuts are on the lip).
+    const assemblyPlate = drape === null ? plate : buildPlate(ctx);
+    const additive: Manifold[] = [assemblyPlate];
     if (raisedFrame !== null) additive.push(raisedFrame);
-    if (buildings.buildings !== null) additive.push(buildings.buildings);
-    if (buildings.hero !== null) additive.push(buildings.hero);
+    const rigid: Manifold[] = [];
+    if (buildings.buildings !== null) rigid.push(buildings.buildings);
+    if (buildings.hero !== null) rigid.push(buildings.hero);
+    // A deck stands in the air and a tree stands ON the surface, so neither may
+    // be cut by a groove in it: a tree beside a kerb had its base carved into a
+    // 0.49 mm crescent by the road's own recess before these two moved to the
+    // far side of the subtraction. They join the assembly last, whatever their
+    // region's placement is.
+    const standing: Manifold[] = [];
+    for (const bridge of bridges) standing.push(bridge.solid);
+    if (trees.solid !== null) standing.push(trees.solid);
     const grooves: Manifold[] = [];
     for (const surface of surfaces) {
       if (surface.placement.topMm > ctx.baseTopMm) {
@@ -211,9 +286,9 @@ export async function bake(
       // A region flush with the base top (`proud_mm = 0`) is invisible in a
       // single-colour model: it is level with the surface it sits in.
     }
-    const raised = batchedUnion(wasm, arena, additive);
+    const raised = batchedUnion(wasm, arena, [...additive, ...(drape === null ? rigid : [])]);
     // An inlay is flush too, so its pocket and its plug cancel; neither is here.
-    const assembly =
+    const carvedAssembly =
       raised === null
         ? null
         : subtractSolids(wasm, arena, raised, [
@@ -223,6 +298,40 @@ export async function bake(
             ...lettering.baseCut,
             ...ornaments.baseCut,
           ]);
+    // A flat scene with nothing standing on it takes `batchedUnion`'s
+    // single-input path, which hands `carvedAssembly` straight back: the bake
+    // that has no terrain, no bridge and no tree is byte-identical to the one
+    // this branch replaced.
+    const assembly =
+      carvedAssembly === null
+        ? null
+        : batchedUnion(wasm, arena, [
+            drape === null
+              ? carvedAssembly
+              : (drapeSolid(ctx, drape, carvedAssembly) ?? carvedAssembly),
+            ...(drape === null ? [] : rigid),
+            ...standing,
+          ]);
+
+    // --- the surface regions, now that the assembly has its flat copies ---
+    // Each is warped on its own, which is safe here in a way it was not for the
+    // assembly: a region overlaps the base by `PART_OVERLAP_MM` LATERALLY as
+    // well as vertically, so the two stay welded through any tessellation
+    // disagreement smaller than the region's own depth, where the assembly's
+    // plate and its grooves had only 0.2 mm of vertical clearance between them.
+    for (const surface of surfaces) {
+      const draped = drapeSolid(ctx, drape, surface.solid);
+      if (draped !== null) surface.solid = draped;
+      solids.set(surface.region, surface.solid);
+    }
+    for (const bridge of bridges) {
+      const joined = batchedUnion(wasm, arena, [solids.get(bridge.region) ?? null, bridge.solid]);
+      if (joined !== null) solids.set(bridge.region, joined);
+    }
+    if (trees.solid !== null) {
+      const joined = batchedUnion(wasm, arena, [solids.get("parks") ?? null, trees.solid]);
+      if (joined !== null) solids.set("parks", joined);
+    }
 
     // --- sanitation, sit at zero, meshes --------------------------------
     const built = finishRegions(ctx, solids);
@@ -231,7 +340,7 @@ export async function bake(
       ctx,
       built,
       assembly,
-      minWall ?? { measuredMm: null, atZMm: null, slices: 0 },
+      minWall ?? { measuredMm: null, atZMm: null, slices: 0, thinRegions: 0 },
     )) {
       addFinding(ctx, item);
     }
@@ -267,6 +376,13 @@ export async function bake(
       depthMm: bounds === null ? 0 : bounds.max[1] - bounds.min[1],
       heightMm: bounds === null ? 0 : bounds.max[2] - bounds.min[2],
       elapsedMs: performance.now() - started,
+      ...(drape === null ? {} : { terrainReliefMm: drape.reliefMm }),
+      ...(trees.kept > 0 || trees.dropped > 0 || trees.blocked > 0
+        ? { trees: trees.kept, treesDropped: trees.dropped + trees.blocked }
+        : {}),
+      ...(bridges.length === 0
+        ? {}
+        : { bridges: bridges.reduce((total, b) => total + b.ways, 0) }),
     };
 
     return {
@@ -385,6 +501,35 @@ function colourTwin(params: EngineInput["params"], region: RegionName): RegionNa
   return region;
 }
 
+/**
+ * Say so when the hillside is there but too small to see.
+ *
+ * A DEM fetch that worked, a switch that is on, and a model that looks exactly
+ * as flat as it did before is the one terrain outcome a user cannot diagnose
+ * from the preview, because the difference is under the width of a printed
+ * layer. The number in the message is what makes it actionable: it is the
+ * relief AFTER `terrain_exaggeration`, so "raise the exaggeration" is visibly
+ * the remedy.
+ */
+function reportRelief(ctx: BakeContext, drape: Drape | null): void {
+  if (drape === null || drape.reliefMm >= LOW_RELIEF_MM) return;
+  addFinding(ctx, {
+    id: "terrain-low-relief",
+    severity: "info",
+    title: "Terrain will be barely visible",
+    detail:
+      `The ground rises ${drape.reliefMm.toFixed(2)} mm across the whole plate at this ` +
+      `scale, against ${LOW_RELIEF_MM.toFixed(1)} mm for two printed layers. It is in the ` +
+      "model, but it will read as flat.",
+    region: "base",
+    fix: {
+      label: "Double the terrain exaggeration",
+      safe: true,
+      patch: { terrain_exaggeration: Math.min(3, ctx.params.terrain_exaggeration * 2) },
+    },
+  });
+}
+
 /** Report the heroes the repair could not honour, one finding each. */
 function reportHeroes(
   ctx: BakeContext,
@@ -393,8 +538,21 @@ function reportHeroes(
   dropped: readonly string[],
 ): void {
   if (unknown.length > 0) {
-    ctx.warnings.push(
-      `${unknown.length} hero building id(s) are not in this scene: ${unknown.join(", ")}`,
+    // A FINDING, not a string on a channel nobody reads. This used to go to
+    // `ctx.warnings`, which `EngineResult` has no field for, so a share link
+    // carrying hero ids from another city produced a model with no hero and
+    // nothing anywhere - UI, sidecar or CLI - saying why (v3-02 audit,
+    // MAJOR 2). The dead channel is gone; there is nowhere left to push one.
+    addFinding(
+      ctx,
+      finding(
+        "hero-unknown",
+        "warning",
+        `${unknown.length} hero building id(s) are not in this scene`,
+        "They were ignored. A share link or a saved project can carry ids from " +
+          `another location, or from before this area was re-fetched: ${unknown.join(", ")}.`,
+        "hero_building",
+      ),
     );
   }
   if (buried.length > 0) {

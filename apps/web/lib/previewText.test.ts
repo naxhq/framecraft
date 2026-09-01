@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { defaultPrintParams } from "./contracts";
-import type { PrintParams } from "./contracts";
+import type { PrintParams, SceneGraph } from "./contracts";
 import monoGlyphs from "./fonts/mono.glyphs.json";
 import sansGlyphs from "./fonts/sans.glyphs.json";
 import serifGlyphs from "./fonts/serif.glyphs.json";
@@ -642,6 +642,7 @@ describe("textParamsKey and facesNeeded", () => {
       // {hero} counts them, {country}/{state}/{neighbourhood}/{author} read
       // `place` (DECISIONS [V3-P1]).
       ["hero_building_ids", ["w1"]],
+      ["hero_auto", { enabled: true, count: 5 }],
       ["place", { country: "US" }],
       ["engravings", [{ edge: "top", text: "X" }]],
       ["north_arrow", { enabled: true }],
@@ -836,5 +837,48 @@ describe("textTokenContext", () => {
     expect(ctx.neighbourhood).toBe("The Loop");
     expect(ctx.author).toBe("Vahid Alizadeh");
     expect(ctx.hero_count).toBe(3);
+  });
+
+  it("{hero} resolves to the top hero's OSM name when the scene has one", () => {
+    // Not typed as `SceneGraph` directly: the buildings below carry `name`,
+    // which is `EngineBuilding`'s addition (`lib/engine/osm/types.ts`), not
+    // the frozen contract's own `Building`, and `textTokenContext` accepts a
+    // plain `SceneGraph` since that additive field is read through a
+    // structural cast at the call site, exactly as `lib/previewText.ts`
+    // itself does off `state.scene.graph`.
+    const graph = {
+      bounds: { min_x: -900, min_y: -900, max_x: 900, max_y: 900 },
+      center: { lat: 41.8827, lon: -87.6233 },
+      buildings: [
+        {
+          id: "tall",
+          ring: [[-5, -5], [5, -5], [5, 5], [-5, 5]],
+          holes: [],
+          height_m: 300,
+          height_source: "tag" as const,
+          min_height_m: 0,
+          is_tall: true,
+          name: "Willis Tower",
+        },
+        {
+          id: "short",
+          ring: [[-5, -5], [5, -5], [5, 5], [-5, 5]],
+          holes: [],
+          height_m: 10,
+          height_source: "tag" as const,
+          min_height_m: 0,
+          is_tall: false,
+        },
+      ],
+      roads: [],
+      water: [],
+      green: [],
+      trees: [],
+      stats: { building_count: 2, coverage: "good" as const, height_tag_ratio: 1.0 },
+    };
+    const params = withText({ hero_building_ids: [], hero_auto: { enabled: true, count: 1 } });
+    const ctx = textTokenContext(graph as unknown as SceneGraph, params, "2026-08-30");
+    expect(ctx.hero_name).toBe("Willis Tower");
+    expect(ctx.hero_count).toBe(1);
   });
 });

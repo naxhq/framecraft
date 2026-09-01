@@ -214,12 +214,14 @@ jobs:
         working-directory: apps/web
         env:
           E2E_BUDGET_FACTOR: "3"
-          # Must NOT be a truthy value: overpass.is_offline() only checks
-          # 1/true/yes/on, and A2 (a real pin in Lake Michigan) plus the
-          # rotation-nudge and advisor-radius touches on the Chicago preset
-          # need real Overpass reachability, exactly like a native `make
-          # gate` run does (see docs/handoff/v3-00-ci.md for what could not
-          # be pre-cached and why, and RUNBOOK.md section 5).
+          # Left empty (overpass.is_offline() only treats 1/true/yes/on as
+          # set) so this job runs the same way a native `make gate` does. It
+          # is not a network dependency: every current spec routes
+          # **/api/interpreter to a committed fixture - A2 (the pin in Lake
+          # Michigan) through mockEmptyOverpass, the rotation-nudge and
+          # advisor-radius touches through the Chicago mock - so no spec
+          # reaches Overpass (v3-02 audit finding 13; see
+          # docs/handoff/v3-00-ci.md and RUNBOOK.md section 5).
           FRAMECRAFT_OFFLINE: ""
         run: npm run test:e2e
 

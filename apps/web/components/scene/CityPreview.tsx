@@ -16,10 +16,11 @@ import {
   type AdvisorTone,
 } from "@/lib/advisor";
 import type { PrintParams, SceneGraph } from "@/lib/contracts";
+import type { EngineBuilding } from "@/lib/engine/osm/types";
 import type { AuditFinding } from "@/lib/engine/types";
 import { freshEngineResult as engineFresh } from "@/lib/enginePreview";
 import { loadGlyphFace, loadedGlyphFace } from "@/lib/fontGlyphs";
-import { heroCapMessage } from "@/lib/heroes";
+import { autoHeroIds, heroCandidates, heroCapMessage } from "@/lib/heroes";
 import {
   cursorLabel,
   cursorOrder,
@@ -474,7 +475,21 @@ export function CityPreview() {
   // `lib/enginePreview.ts:freshEngineResult`'s own docstring for what "fresh"
   // means and why a stale result is never shown here.
   const freshEngineResult = engineFresh({ status: engineStatus, result: engineResult, stale: engineStale });
-  const heroIds = params.hero_building_ids ?? NO_HEROES;
+  // Manual picks plus, once `hero_auto` is on, the auto-promoted ones -- the
+  // same effective set `store/editor.ts:currentHeroIds` bakes with, so the
+  // preview highlight and the keyboard cursor's "hero" announcement never
+  // disagree with what a click on Bake would actually produce. Deps are
+  // primitives/identity-stable references only (`graph`, the hero arrays),
+  // never `params` itself or `params.hero_auto` -- `setParam` rebuilds
+  // `params` by spread on every write, and this scores every building.
+  const manualHeroIds = params.hero_building_ids ?? NO_HEROES;
+  const heroAutoEnabled = params.hero_auto?.enabled ?? false;
+  const heroAutoCount = params.hero_auto?.count ?? 0;
+  const heroIds = useMemo(() => {
+    if (!heroAutoEnabled || !graph) return manualHeroIds;
+    const candidates = heroCandidates(graph.buildings as EngineBuilding[]);
+    return autoHeroIds(candidates, manualHeroIds, heroAutoCount);
+  }, [graph, manualHeroIds, heroAutoEnabled, heroAutoCount]);
   /*
     A hero takes the printed hero filament only in a mode that actually gives it
     one. In `true_height` the pick is still shown -- it has to be, or a click

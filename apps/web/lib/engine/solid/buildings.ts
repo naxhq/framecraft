@@ -16,10 +16,17 @@
  * * **A stack starts exactly on its block.** 04 starts a preserved tower
  *   0.2 mm inside the block below it; two regions may not overlap, so a hero
  *   tower starts on its block's roof plane instead.
+ *
+ * On a hillside a building is TRANSLATED, not draped: it keeps a flat roof and
+ * plumb walls and is lifted by the LOWEST terrain under its own footprint, so
+ * it is buried in the slope on its high side rather than floating over the low
+ * one (`solid/drape.ts`, `[V3-P3-G3]`).
  */
 
 import * as T from "../../transform";
 import type { BakeContext } from "./context";
+import type { Drape } from "./drape";
+import { drapeLiftMm } from "./drape";
 import type { BuildingSolid, RepairedBuildings } from "./repair";
 import type { Manifold } from "./manifold";
 import { batchedUnion, extrudeSection } from "./manifold";
@@ -49,17 +56,30 @@ export function skirtMm(ctx: BakeContext): number {
   return Math.max(0, Math.min(asked, ctx.baseTopMm / 2));
 }
 
-/** Z one repaired footprint is extruded between, mm. */
+/**
+ * Z one repaired footprint is extruded between, mm.
+ *
+ * Through `building_top_mm_exaggerated`, so `height_exaggeration` reaches the
+ * printed roof and nothing else: it is applied to the GROUND height, before the
+ * print scale and before the 0.6 mm clamp, and at the defaults that function IS
+ * `building_top_mm_for` (`[V3-P3-G5]`). A stacked tower reads its block's top
+ * through the same function, so the two still meet exactly.
+ */
 export function buildingSpanMm(
   ctx: BakeContext,
   solid: BuildingSolid,
 ): [number, number] {
   const { params, scale } = ctx;
-  const top = T.building_top_mm_for(solid.height, params, scale, solid.height.is_hero);
+  const top = T.building_top_mm_exaggerated(
+    solid.height,
+    params,
+    scale,
+    solid.height.is_hero,
+  );
   if (solid.standsOn === null) {
     return [ctx.baseTopMm - skirtMm(ctx), top];
   }
-  const blockTop = T.building_top_mm_for(
+  const blockTop = T.building_top_mm_exaggerated(
     solid.standsOn,
     params,
     scale,
@@ -83,10 +103,16 @@ export function buildingSpanMm(
 export function buildBuildings(
   ctx: BakeContext,
   repaired: RepairedBuildings,
+  drape: Drape | null = null,
 ): BuiltBuildings {
   const { wasm, arena } = ctx;
   const plain: Manifold[] = [];
   const heroes: Manifold[] = [];
+  // A stacked tower has to rise from the roof of the block it stands on, and
+  // that block was lifted by ITS OWN lowest ground, which is at or below the
+  // tower's. Looking the lift up by the block rather than re-measuring it under
+  // the tower is what keeps the two touching on a slope.
+  const liftByBlock = new Map<BuildingSolid["height"], number>();
   for (const solid of repaired.solids) {
     const [z0, z1] = buildingSpanMm(ctx, solid);
     // The exact repaired footprint: a building's interpenetration with the
@@ -94,8 +120,20 @@ export function buildBuildings(
     // growing it would print every block wider than the repair drew it.
     const piece = extrudeSection(wasm, arena, solid.section, z0, z1);
     if (piece === null) continue;
-    if (solid.heroId !== null) heroes.push(piece);
-    else plain.push(piece);
+    let placed = piece;
+    if (drape !== null) {
+      const lift =
+        solid.standsOn === null
+          ? drapeLiftMm(drape, solid.section)
+          : (liftByBlock.get(solid.standsOn) ?? drapeLiftMm(drape, solid.section));
+      if (solid.standsOn === null) liftByBlock.set(solid.height, lift);
+      if (lift !== 0) {
+        placed = arena.keep(piece.translate([0, 0, lift]));
+        arena.drop(piece);
+      }
+    }
+    if (solid.heroId !== null) heroes.push(placed);
+    else plain.push(placed);
   }
 
   const buildings = batchedUnion(wasm, arena, plain);

@@ -22,11 +22,16 @@ import { mockChicagoOverpass, mockEmptyOverpass, mockTinyLoopOverpass, watchOver
  *   A2  an empty Overpass response shows the low-coverage warning and blocks Bake
  *   A3  no fetch on a PrintParams slider, and no page reload
  *   A4  bake -> done -> a Blob download link in under 90 s
- *   A5  the downloaded file passes `python -m app.cli validate` (exit 0) --
- *       on a small scene: see the "known gap" note at the validator test
- *       below for why the Chicago-scale download in the happy path is only
- *       asserted to be a structurally valid 3MF, not run through the
- *       validator (DECISIONS.md [V3-P2-E4])
+ *   A5  the downloaded file passes `python -m app.cli validate` (exit 0),
+ *       proven twice: a small synthetic scene and, separately, the full
+ *       Chicago scene at real complexity (audit v3-02 finding 12's restored
+ *       assertion; DECISIONS.md [V3-P2-E4] records the min-wall gap that used
+ *       to make the Chicago-scale check unreliable as closed). The happy
+ *       path's own Chicago download stays a structural (zip-magic) check
+ *       only, because it exports the default `bambu-3mf`, a format the
+ *       reference validator's `trimesh`-based loader cannot read regardless
+ *       of geometry quality -- a permanent limitation, not the gap that
+ *       closed.
  */
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
@@ -363,15 +368,17 @@ test("happy path: Chicago preset previews, sliders stay local, bake downloads a 
 
   // ---- 9. the download link really is a well-formed 3MF (a real zip) ---
   //
-  // NOT run through `python -m app.cli validate` here: this is the full,
-  // real Chicago scene, and that specific combination currently fails the
-  // reference validator's `bodies`/`degenerate_faces`/`min_wall` checks --
-  // a measured, documented gap in `lib/engine/solid/**`, not this test's
-  // wiring (`make gate`'s own browser-engine step exercises exactly this
-  // combination and is expected red for the same reason; see DECISIONS.md
-  // [V3-P2-E4]). The dedicated "downloaded file passes the validator" test
-  // below proves the SAME download -> validate pipeline end to end on a
-  // scene of a size that does pass today.
+  // NOT run through `python -m app.cli validate` here: this download is the
+  // default `bambu-3mf` (a multi-part project), and the reference validator
+  // reads a single `3D/3dmodel.model` part via `trimesh`'s stock 3MF loader,
+  // which does not resolve Bambu's separate `3D/Objects/object_N.model`
+  // parts -- a permanent format mismatch, not a geometry gap. The full
+  // Chicago scene's GEOMETRY does now pass the validator cleanly
+  // (DECISIONS.md [V3-P2-E4]; the min-wall gap that used to make this
+  // unreliable is closed), proven end to end through the same
+  // UI -> download -> CLI pipeline, at this same scale, via `generic-3mf`
+  // (audit v3-02 finding 12's restored assertion) in "the downloaded file
+  // passes the Python printability validator (full Chicago scene)" below.
   const meshLink = downloads.getByRole("link", { name: /\.3mf$/ });
   await expect(meshLink).toBeVisible();
   const href = await meshLink.getAttribute("href");
@@ -511,6 +518,73 @@ test("the downloaded file passes the Python printability validator (small scene)
   expect(validate.status, validatorOutput).toBe(0);
   expect(validatorOutput).toContain("ALL CHECKS PASS");
   expect(validatorOutput).toContain("sidecar tiny-loop-e2e.json");
+});
+
+test("the downloaded file passes the Python printability validator (full Chicago scene)", async ({
+  page,
+}) => {
+  // Audit v3-02 finding 12: the happy path's own Chicago download is only
+  // checked for zip-magic ("PK"), citing a "measured, documented gap" that
+  // DECISIONS.md [V3-P2-E4] (the entry timestamped after the min-wall fix)
+  // records as CLOSED: `npm run bake:cli` on the full Chicago fixture passes
+  // `make validate` cleanly in BOTH `color_mode`s. This test is that
+  // restored assertion, run through the real UI -> download -> CLI pipeline
+  // the small-scene test above already proves, at full Chicago complexity
+  // (992 buildings) instead of the 30-building synthetic one -- the same
+  // combination `make gate`'s own browser-engine step exercises via
+  // `fixtures/print-params-parts.json`, so this is deliberate redundancy,
+  // not new coverage the gate lacks.
+  //
+  // `generic-3mf`, not the happy path's default `bambu-3mf`: the reference
+  // validator reads a single `3D/3dmodel.model` part via `trimesh`'s stock
+  // 3MF loader, which does not resolve Bambu's separate `3D/Objects/
+  // object_N.model` production-extension parts -- a permanent format
+  // mismatch, not something this closed gap affects (see the "Bambu Studio
+  // project export" test below for that structure's own, different checks).
+  await mockChicagoOverpass(page);
+  await page.goto("/");
+  await page.locator('[data-preset-id="chicago-loop"]').click();
+  await expect(page.getByTestId("preview-stats")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
+
+  await page.getByTestId("group-colour-toggle").click();
+  await page.locator("#color_mode").getByRole("radio", { name: "one per part" }).click();
+  await page.locator("#export_target").selectOption("generic-3mf");
+
+  const bakeButton = page.getByTestId("bake-button");
+  await expect(bakeButton).toBeEnabled();
+  const bakeStartedAt = Date.now();
+  await bakeButton.click();
+  const downloads = page.getByTestId("download-links");
+  await expect(downloads).toBeVisible({ timeout: A4_BUDGET_MS });
+  log(`Chicago parts bake -> done: ${((Date.now() - bakeStartedAt) / 1000).toFixed(1)} s`);
+
+  const meshLink = downloads.getByRole("link", { name: /\.3mf$/ });
+  const meshHref = await meshLink.getAttribute("href");
+  const meshBody = await fetchBlob(page, meshHref as string);
+
+  const sidecarLink = downloads.getByRole("link", { name: /\.json$/ });
+  const sidecarHref = await sidecarLink.getAttribute("href");
+  const sidecarBody = await fetchBlob(page, sidecarHref as string);
+
+  const outDir = path.join(REPO_ROOT, "artifacts", "e2e");
+  fs.mkdirSync(outDir, { recursive: true });
+  const outFile = path.join(outDir, "chicago-full-e2e.3mf");
+  const sidecarFile = path.join(outDir, "chicago-full-e2e.json");
+  fs.writeFileSync(outFile, meshBody);
+  fs.writeFileSync(sidecarFile, sidecarBody);
+
+  const validate = spawnSync(`uv run python -m app.cli validate "${outFile}"`, {
+    cwd: path.join(REPO_ROOT, "services", "bake"),
+    shell: true,
+    encoding: "utf-8",
+    env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+    timeout: 300_000,
+  });
+  const validatorOutput = `${validate.stdout ?? ""}${validate.stderr ?? ""}`;
+  log(`validator on the downloaded full-Chicago file:\n${validatorOutput}`);
+  expect(validate.status, validatorOutput).toBe(0);
+  expect(validatorOutput).toContain("ALL CHECKS PASS");
+  expect(validatorOutput).toContain("sidecar chicago-full-e2e.json");
 });
 
 // ==========================================================================

@@ -257,20 +257,32 @@ describe("previewDeps", () => {
    * phase by `v3-01-contracts`; ruling from the team lead recorded verbatim
    * in DECISIONS.md).
    *
-   * None of these fourteen groups is read by the CURRENT (pre-engine)
-   * preview: `docs/IMPLEMENTATION_PLAN.md`'s browser engine (phase 2 on) is
-   * what will actually drape terrain, cut region recesses, split tiles, style
-   * the frame profile and place a magnet hanger's pockets. Ten of them --
-   * `regions`, `colour`, `terrain`, `heights`, `bridges`,
-   * `height_exaggeration`, `hero_auto`, `tiling`, `frame_style`,
-   * `hanger_magnet` -- are the ones that WILL move real geometry once that
-   * engine reads them; `printer_profile`, `custom_profile` and
-   * `export_target` govern export only and never will. Both buckets rebuild
-   * NOTHING today, which is what this test asserts -- a real behaviour
-   * change, not a checklist -- so a read added later without a matching dep
-   * is caught here instead of silently over- or under-invalidating.
+   * Twelve of these thirteen groups are STILL not read by the CURRENT
+   * (client-side, instanced/flat-fill) fallback preview these `previewDeps`
+   * functions describe: the real browser engine
+   * (`lib/engine/solid/**`/`lib/transform.ts`, owned this phase by a parallel
+   * builder, not this file's) is what will actually drape terrain, cut region
+   * recesses, apply an exaggeration curve, split tiles, style the frame
+   * profile and place a magnet hanger's pockets -- and it already reruns on
+   * every one of these writes regardless (`store/editor.ts`'s
+   * `scheduleEngineJob` debounces a fresh WASM bake on EVERY `setParam` call,
+   * not a subset), so there is nothing to add there. `regions`, `colour`,
+   * `printer_profile`, `custom_profile`, `export_target`, `terrain`,
+   * `heights`, `bridges`, `height_exaggeration`, `tiling`, `frame_style` and
+   * `hanger_magnet` therefore still rebuild NOTHING in `previewDeps` today,
+   * which is what this test asserts -- a real behaviour change, not a
+   * checklist -- so a read added later without a matching dep is caught here
+   * instead of silently over- or under-invalidating.
    *
-   * `place` is deliberately NOT in this list: unlike the other thirteen, it
+   * `hero_auto` is the ONE exception, moved out of this bucket into its own
+   * test below: `lib/warnings.ts:predictedTopDeps` (which `previewDeps.height`
+   * IS) now composes `lib/heroes.ts:effectiveHeroHeightKey` -- the manual
+   * picks plus, once `hero_auto` is on, the auto-promoted ones -- so an
+   * auto-promoted hero raises the predicted top and moves `height` exactly
+   * like a manual pick already did (`warnings.test.ts` owns the arithmetic;
+   * this file only owns the dependency-list claim).
+   *
+   * `place` is deliberately NOT in this list either: unlike the rest, it
    * already IS live today, in `V2_TEXT_MOVES` above -- `{country}`,
    * `{state}`, `{neighbourhood}` and `{author}` are real engraving tokens
    * this phase wired up, not a future engine's job.
@@ -285,16 +297,55 @@ describe("previewDeps", () => {
     ["heights", { floor_height_m: 3.5 }],
     ["bridges", { enabled: false }],
     ["height_exaggeration", { multiplier: 1.5 }],
-    ["hero_auto", { enabled: true, count: 5 }],
     ["tiling", { enabled: true, cols: 2, rows: 2 }],
     ["frame_style", { profile: "chamfer", corner: "mitred" }],
     ["hanger_magnet", { diameter_mm: 8, thickness_mm: 3, count: 4 }],
   ];
 
-  it("rebuilds nothing for the v3 engine block: the engine that will read it has not landed yet", () => {
+  /** Kept out of `V3_ENGINE_MOVES` on purpose; still needed for coverage below. */
+  const HERO_AUTO_MOVE: [keyof PrintParams, PrintParams[keyof PrintParams]] = [
+    "hero_auto",
+    { enabled: true, count: 1 },
+  ];
+
+  it("rebuilds nothing for the rest of the v3 engine block: the geometry engine that will read it is a separate rebuild path", () => {
     for (const [key, value] of V3_ENGINE_MOVES) {
       expect(rebuiltBy(key, value as never), key).toEqual([]);
     }
+  });
+
+  it("rebuilds the predicted height when hero_auto promotes a real building", () => {
+    // A building has to exist for `hero_auto` to promote: the shared `GRAPH`
+    // fixture above has none, so this uses its own graph with one tall
+    // building, exactly the shape `warnings.test.ts`'s hero_auto describe
+    // block already exercises the arithmetic on.
+    const graph: SceneGraph = {
+      ...GRAPH,
+      buildings: [
+        {
+          id: "w200",
+          ring: [[0, 0], [30, 0], [30, 30], [0, 30]],
+          holes: [],
+          height_m: 200,
+          height_source: "tag",
+          min_height_m: 0,
+          is_tall: true,
+        },
+      ],
+    };
+    const params = { ...DEFAULT_PRINT_PARAMS, small_scale: 0.5, large_scale: 0.5 };
+    const before = previewDeps.height(graph, params);
+    const after = previewDeps.height(graph, { ...params, [HERO_AUTO_MOVE[0]]: HERO_AUTO_MOVE[1] });
+    expect(changed(before, after)).toBe(true);
+  });
+
+  it("hero_auto still rebuilds only the text layer on the shared empty-building GRAPH fixture, exactly like a manual hero move", () => {
+    // No building for it to promote, so `height` does not move (asserted
+    // above); `text` still does, same as `hero_building_ids` in
+    // `V2_TEXT_MOVES` -- `textParamsKey` embeds `hero_auto` itself
+    // (`lib/previewText.ts`) because `{hero}` can read it, whether or not
+    // this particular scene has anything for it to say.
+    expect(rebuiltBy(HERO_AUTO_MOVE[0], HERO_AUTO_MOVE[1] as never)).toEqual(["text"]);
   });
 
   it("covers every key of the frozen PrintParams contract", () => {
@@ -314,6 +365,7 @@ describe("previewDeps", () => {
       ...V2_PAINT_MOVES.map(([key]) => key),
       ...V2_TEXT_MOVES.map(([key]) => key),
       ...V3_ENGINE_MOVES.map(([key]) => key),
+      HERO_AUTO_MOVE[0],
     ]);
     expect([...covered].sort()).toEqual(Object.keys(DEFAULT_PRINT_PARAMS).sort());
   });

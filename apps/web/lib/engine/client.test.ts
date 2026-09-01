@@ -35,10 +35,26 @@ class MockWorker implements WorkerLike {
   }
 }
 
-function clientOverMockWorker(): { client: EngineClient; worker: MockWorker } {
-  const worker = new MockWorker();
-  const client = new EngineClient(createWorkerTransportForTest(worker));
-  return { client, worker };
+/**
+ * `EngineClient` now runs ingest and bake on two entirely separate transports
+ * (`[V3-P3-U]`: a bake worker with no yield points must never block an
+ * ingest message), so most tests here need a mock worker per kind. `worker`
+ * is kept as an alias for `ingestWorker` for the tests that only exercise
+ * ingest, so their assertions stay unchanged.
+ */
+function clientOverMockWorker(): {
+  client: EngineClient;
+  worker: MockWorker;
+  ingestWorker: MockWorker;
+  bakeWorker: MockWorker;
+} {
+  const ingestWorker = new MockWorker();
+  const bakeWorker = new MockWorker();
+  const client = new EngineClient({
+    ingest: createWorkerTransportForTest(ingestWorker),
+    bake: createWorkerTransportForTest(bakeWorker),
+  });
+  return { client, worker: ingestWorker, ingestWorker, bakeWorker };
 }
 
 const REQUEST = { lat: 41.8827, lon: -87.6233, radius_m: 900, rotation_deg: 0, preset_id: "chicago-loop" };
@@ -78,7 +94,7 @@ describe("EngineClient over a mock Worker (protocol wiring)", () => {
   });
 
   it("posts a bake message and resolves with the EngineResult the worker sends back", async () => {
-    const { client, worker } = clientOverMockWorker();
+    const { client, bakeWorker: worker } = clientOverMockWorker();
     const input: BakeWireInput = { scene: scene(), params: defaultPrintParams() };
     const pending = client.bake(input);
     expect(worker.sent).toHaveLength(1);
@@ -112,7 +128,7 @@ describe("EngineClient over a mock Worker (protocol wiring)", () => {
   });
 
   it("rejects a bake with a plain Error carrying the worker's message on bake-error", async () => {
-    const { client, worker } = clientOverMockWorker();
+    const { client, bakeWorker: worker } = clientOverMockWorker();
     const pending = client.bake({ scene: scene(), params: defaultPrintParams() });
     const id = (worker.sent[0] as { id: number }).id;
     worker.emit({ kind: "bake-error", id, message: "the scene has no extent" });
@@ -120,19 +136,19 @@ describe("EngineClient over a mock Worker (protocol wiring)", () => {
   });
 
   it("routes progress messages to the right job's onProgress callback only", async () => {
-    const { client, worker } = clientOverMockWorker();
+    const { client, ingestWorker, bakeWorker } = clientOverMockWorker();
     const messagesA: string[] = [];
     const messagesB: string[] = [];
     const pendingA = client.ingest(REQUEST, undefined, { onProgress: (m) => messagesA.push(m) });
-    const idA = (worker.sent[0] as { id: number }).id;
-    worker.emit({ kind: "ingest-progress", id: idA, message: "fetching A" });
-    worker.emit({ kind: "ingest-done", id: idA, ok: true, scene: scene() as never, fromCache: false });
+    const idA = (ingestWorker.sent[0] as { id: number }).id;
+    ingestWorker.emit({ kind: "ingest-progress", id: idA, message: "fetching A" });
+    ingestWorker.emit({ kind: "ingest-done", id: idA, ok: true, scene: scene() as never, fromCache: false });
     await pendingA;
 
     const pendingB = client.bake({ scene: scene(), params: defaultPrintParams() }, { onProgress: (m) => messagesB.push(m) });
-    const idB = (worker.sent[1] as { id: number }).id;
-    worker.emit({ kind: "bake-progress", id: idB, message: "baking B" });
-    worker.emit({ kind: "bake-error", id: idB, message: "stop" });
+    const idB = (bakeWorker.sent[0] as { id: number }).id;
+    bakeWorker.emit({ kind: "bake-progress", id: idB, message: "baking B" });
+    bakeWorker.emit({ kind: "bake-error", id: idB, message: "stop" });
     await pendingB.catch(() => undefined);
 
     expect(messagesA).toEqual(["fetching A"]);
@@ -171,7 +187,7 @@ describe("EngineClient over a mock Worker (protocol wiring)", () => {
   });
 
   it("superseding an in-flight bake rejects the old promise as cancelled and posts a cancel message", async () => {
-    const { client, worker } = clientOverMockWorker();
+    const { client, bakeWorker: worker } = clientOverMockWorker();
     const first = client.bake({ scene: scene(), params: defaultPrintParams() });
     const firstId = (worker.sent[0] as { id: number }).id;
     const second = client.bake({ scene: scene(), params: defaultPrintParams() });
@@ -184,41 +200,65 @@ describe("EngineClient over a mock Worker (protocol wiring)", () => {
     await expect(second).resolves.toMatchObject({ regions: [] });
   });
 
-  it("a worker onerror rejects every job in flight with a transport EngineClientError", async () => {
-    const { client, worker } = clientOverMockWorker();
+  it("an ingest worker onerror rejects only pending ingest jobs, never a bake in flight on the separate bake worker", async () => {
+    const { client, ingestWorker, bakeWorker } = clientOverMockWorker();
     const ingestPending = client.ingest(REQUEST);
     const bakePending = client.bake({ scene: scene(), params: defaultPrintParams() });
 
-    worker.fail("the worker script threw");
+    ingestWorker.fail("the ingest worker script threw");
 
     await expect(ingestPending).rejects.toMatchObject({ code: "transport" });
-    await expect(bakePending).rejects.toMatchObject({ code: "transport" });
+
+    // The bake is still alive on its own, unaffected worker.
+    const bakeId = (bakeWorker.sent[0] as { id: number }).id;
+    bakeWorker.emit({ kind: "bake-done", id: bakeId, result: { regions: [] } as never });
+    await expect(bakePending).resolves.toMatchObject({ regions: [] });
   });
 
-  it("dispose() rejects every pending job and terminates the worker", async () => {
-    const { client, worker } = clientOverMockWorker();
-    const pending = client.ingest(REQUEST);
+  it("a bake worker onerror rejects only pending bake jobs, never an ingest in flight on the separate ingest worker", async () => {
+    const { client, ingestWorker, bakeWorker } = clientOverMockWorker();
+    const ingestPending = client.ingest(REQUEST);
+    const bakePending = client.bake({ scene: scene(), params: defaultPrintParams() });
+
+    bakeWorker.fail("the bake worker script threw");
+
+    await expect(bakePending).rejects.toMatchObject({ code: "transport" });
+
+    const ingestId = (ingestWorker.sent[0] as { id: number }).id;
+    ingestWorker.emit({ kind: "ingest-done", id: ingestId, ok: true, scene: scene() as never, fromCache: false });
+    await expect(ingestPending).resolves.toMatchObject({ ok: true });
+  });
+
+  it("dispose() rejects every pending job and terminates both workers", async () => {
+    const { client, ingestWorker, bakeWorker } = clientOverMockWorker();
+    const ingestPending = client.ingest(REQUEST);
+    const bakePending = client.bake({ scene: scene(), params: defaultPrintParams() });
     client.dispose();
-    await expect(pending).rejects.toMatchObject({ code: "disposed" });
-    expect(worker.terminated).toBe(true);
+    await expect(ingestPending).rejects.toMatchObject({ code: "disposed" });
+    await expect(bakePending).rejects.toMatchObject({ code: "disposed" });
+    expect(ingestWorker.terminated).toBe(true);
+    expect(bakeWorker.terminated).toBe(true);
   });
 
   it("ingest/bake after dispose reject immediately without posting anything", async () => {
-    const { client, worker } = clientOverMockWorker();
+    const { client, ingestWorker, bakeWorker } = clientOverMockWorker();
     client.dispose();
-    const before = worker.sent.length;
+    const ingestBefore = ingestWorker.sent.length;
+    const bakeBefore = bakeWorker.sent.length;
     await expect(client.ingest(REQUEST)).rejects.toMatchObject({ code: "disposed" });
     await expect(client.bake({ scene: scene(), params: defaultPrintParams() })).rejects.toMatchObject({
       code: "disposed",
     });
-    expect(worker.sent.length).toBe(before);
+    expect(ingestWorker.sent.length).toBe(ingestBefore);
+    expect(bakeWorker.sent.length).toBe(bakeBefore);
   });
 
   it("dispose() a second time does nothing (idempotent, no double-terminate throw)", () => {
-    const { client, worker } = clientOverMockWorker();
+    const { client, ingestWorker, bakeWorker } = clientOverMockWorker();
     client.dispose();
     expect(() => client.dispose()).not.toThrow();
-    expect(worker.terminated).toBe(true);
+    expect(ingestWorker.terminated).toBe(true);
+    expect(bakeWorker.terminated).toBe(true);
   });
 });
 
@@ -246,6 +286,28 @@ describe("EngineClient's in-page fallback (no Worker: this is what vitest itself
       client.dispose();
     }
   });
+
+  it("a bake superseded while it is still queued is cancelled, and the newest one still resolves", async () => {
+    // Through the real inline transport, so `cancelJob`'s queue drop is
+    // reached the way a browser tab reaches it (v3-02 finding 7). That the
+    // dropped job never starts is asserted in protocol.test.ts, which can see
+    // the posts.
+    const client = createEngineClient();
+    try {
+      const tinyScene = scene({ buildings: [building("w1", [[0, 0], [12, 0], [12, 12], [0, 12]], 20)] });
+      const params = { ...defaultPrintParams(), frame: false, trees: false, water: false };
+      const running = client.bake({ scene: tinyScene, params });
+      const queued = client.bake({ scene: tinyScene, params });
+      const latest = client.bake({ scene: tinyScene, params });
+
+      await expect(running).rejects.toMatchObject({ code: "cancelled" });
+      await expect(queued).rejects.toMatchObject({ code: "cancelled" });
+      const result = await latest;
+      expect(result.regions.some((r) => r.region === "base")).toBe(true);
+    } finally {
+      client.dispose();
+    }
+  }, 30_000);
 
   it("really runs a bake end to end on a tiny synthetic scene", async () => {
     const client = createEngineClient();

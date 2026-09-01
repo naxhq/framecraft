@@ -42,6 +42,23 @@ PARITY_EXPECTED = FIXTURES / "parity-expected.json"
 #: tolerance; 9 decimals is far below it.
 ROUND = 9
 
+#: Ground heights the height-exaggeration parity block is sampled at, metres.
+#: Two below the reference, the reference itself, two above, and the Willis
+#: Tower, so the fixture pins both sides of the pivot and the far tail.
+HEIGHT_SAMPLES_M = [0.0, 3.0, 12.0, 50.0, 110.0, 442.0]
+
+#: ``(multiplier, curve)`` pairs the parity matrix walks.  The defaults, the
+#: two ends of each contract range, and a pair in the middle of both.
+HEIGHT_EXAGGERATION_MATRIX = [
+    (1.0, 0.0),
+    (0.25, 0.0),
+    (4.0, 0.0),
+    (1.0, 1.0),
+    (2.0, 0.35),
+    (0.25, 1.0),
+    (4.0, 1.0),
+]
+
 
 # --------------------------------------------------------------------------
 # 1. Unit tests against 04_PRINTABILITY_SPEC.md
@@ -569,11 +586,83 @@ def test_frame_and_plate_extents() -> None:
     assert T.frame_geometry_mm(params(frame=False)).enabled is False
 
 
-def test_terrain_is_flat_but_carried_through() -> None:
+def test_terrain_z_scale_is_the_exaggeration_and_nothing_else() -> None:
+    """v3: the DEM fetcher is live, so the parameter is too ([V3-P3-G1])."""
     for exaggeration in (0.0, 1.0, 3.0):
         p = params(terrain_exaggeration=exaggeration)
-        assert T.terrain_z_scale(p) == 1.0
+        assert T.terrain_z_scale(p) == exaggeration
+        # A sample at the grid minimum is always flush with the base top.
         assert T.terrain_z_mm(0.0, p, 0.1) == 0.0
+        # 40 m of relief at 0.1 mm/m is 4 mm before exaggeration.
+        assert T.terrain_z_mm(40.0, p, 0.1) == pytest.approx(4.0 * exaggeration)
+    # The default is unchanged, which is what keeps every committed number put.
+    assert T.terrain_z_scale(params()) == 1.0
+
+
+def test_exaggeration_is_linear_and_exact_at_curve_zero() -> None:
+    for multiplier in (0.25, 1.0, 2.5, 4.0):
+        for h in (0.5, 3.0, 12.0, 50.0, 110.0, 442.0):
+            assert T.exaggerated_height(h, multiplier, 0.0) == h * multiplier
+    # And the double default is a true identity, not an approximate one.
+    for h in (0.5, 3.0, 12.0, 50.0, 110.0, 442.0):
+        assert T.exaggerated_height_for(h, params()) == h
+
+
+def test_exaggeration_curve_is_monotonic_continuous_and_pivots_at_the_reference() -> None:
+    heights = [0.1 * i for i in range(1, 6000)]
+    for curve in (0.0, 0.25, 0.5, 0.75, 1.0):
+        for multiplier in (0.25, 1.0, 4.0):
+            values = [T.exaggerated_height(h, multiplier, curve) for h in heights]
+            assert all(b > a for a, b in zip(values, values[1:])), (curve, multiplier)
+            # Exact at the pivot for every curve: the curve redistributes, it
+            # does not resize the model.
+            assert T.exaggerated_height(
+                T.HEIGHT_EXAGGERATION_REF_M, multiplier, curve
+            ) == pytest.approx(multiplier * T.HEIGHT_EXAGGERATION_REF_M)
+            # Continuous into the origin.  A 0.4 power law is steep there - a
+            # nanometre of building still reads as 2.6 mm of ground at the
+            # strongest curve - so the limit is checked where it is a limit and
+            # not at an arbitrary small number.
+            assert T.exaggerated_height(1e-30, multiplier, curve) < 1e-6
+            assert T.exaggerated_height(0.0, multiplier, curve) == 0.0
+
+
+def test_a_curve_gives_short_buildings_proportionally_more() -> None:
+    short, tall = 6.0, 300.0
+    plain_ratio = T.exaggerated_height(short, 2.0, 0.0) / short
+    for curve in (0.25, 0.6, 1.0):
+        short_gain = T.exaggerated_height(short, 2.0, curve) / short
+        tall_gain = T.exaggerated_height(tall, 2.0, curve) / tall
+        assert short_gain > plain_ratio > tall_gain
+
+
+def test_real_world_equivalent_inverts_the_exaggeration() -> None:
+    for multiplier in (0.25, 1.0, 2.0, 4.0):
+        for curve in (0.0, 0.3, 1.0):
+            for h in (0.5, 3.0, 12.0, 50.0, 110.0, 442.0):
+                shown = T.exaggerated_height(h, multiplier, curve)
+                assert T.real_world_equivalent_m(shown, multiplier, curve) == pytest.approx(h)
+    assert T.real_world_equivalent_m(0.0, 2.0, 0.5) == 0.0
+    assert T.real_world_equivalent_m(10.0, 0.0, 0.5) == 0.0
+
+
+def test_exaggerated_building_top_is_the_plain_one_at_the_defaults() -> None:
+    p = params()
+    scale = T.scale_mm_per_m(p, 900.0)
+    for height, tall in ((0.0, False), (3.0, False), (44.0, True), (442.0, True)):
+        b = Bldg(height, tall)
+        for is_hero in (False, True):
+            assert T.building_top_mm_exaggerated(b, p, scale, is_hero) == (
+                T.building_top_mm_for(b, p, scale, is_hero)
+            )
+    # And it moves once the knob does, still through the 0.6 mm clamp.
+    loud = params(height_exaggeration={"multiplier": 2.0, "curve": 0.0})
+    assert T.building_top_mm_exaggerated(Bldg(44.0, True), loud, scale, False) == (
+        pytest.approx(T.base_top_mm(loud) + 44.0 * 2.0 * scale)
+    )
+    assert T.building_top_mm_exaggerated(Bldg(0.0, False), loud, scale, False) == (
+        pytest.approx(T.base_top_mm(loud) + T.MIN_BUILDING_HEIGHT_MM)
+    )
 
 
 def test_radius_from_bounds() -> None:
@@ -736,6 +825,46 @@ PARITY_CASES: List[Dict[str, Any]] = [
             "frame": True,
         },
     },
+    # v3 phase 3.  Case 1's plate, nozzle and frame ON PURPOSE: the terrain and
+    # height-exaggeration knobs are then the only difference, so every printed
+    # height that moves between case 1 and case 8 moved because of them.
+    {
+        "name": "terrain-and-height-exaggeration",
+        "params": {
+            "plate_mm": 180,
+            "base_thickness_mm": 3.0,
+            "nozzle_mm": 0.4,
+            "small_scale": 1.0,
+            "large_scale": 1.0,
+            "terrain_exaggeration": 2.0,
+            "road_mode": "engrave",
+            "road_scale": 1.0,
+            "trees": True,
+            "water": True,
+            "frame": True,
+            "height_exaggeration": {"multiplier": 2.0, "curve": 0.35},
+        },
+    },
+    {
+        # The far corner of both ranges, where a curve at full strength meets
+        # the smallest legal multiplier: the case most likely to expose a
+        # `Math.pow` / `**` disagreement, and the one that pins the 0.4 power.
+        "name": "height-exaggeration-full-curve",
+        "params": {
+            "plate_mm": 180,
+            "base_thickness_mm": 3.0,
+            "nozzle_mm": 0.4,
+            "small_scale": 1.0,
+            "large_scale": 1.5,
+            "terrain_exaggeration": 0.0,
+            "road_mode": "emboss",
+            "road_scale": 1.0,
+            "trees": True,
+            "water": True,
+            "frame": False,
+            "height_exaggeration": {"multiplier": 0.25, "curve": 1.0},
+        },
+    },
 ]
 
 
@@ -783,6 +912,12 @@ def build_case(scene: SceneGraph, case: Dict[str, Any]) -> Dict[str, Any]:
                 "is_hero": is_hero,
                 "height_scale_for": r(T.building_height_scale_for(b, p, is_hero)),
                 "top_mm_for": r(T.building_top_mm_for(b, p, scale, is_hero)),
+                # v3 height exaggeration.  Equal to `top_mm_for` in every case
+                # that leaves the knob alone, which is what makes it additive.
+                "exaggerated_height_m": r(T.exaggerated_height_for(b.height_m, p)),
+                "top_mm_exaggerated": r(
+                    T.building_top_mm_exaggerated(b, p, scale, is_hero)
+                ),
             }
         )
 
@@ -876,6 +1011,16 @@ def build_case(scene: SceneGraph, case: Dict[str, Any]) -> Dict[str, Any]:
         },
         "base_top_mm": r(T.base_top_mm(p)),
         "terrain_z_scale": r(T.terrain_z_scale(p)),
+        # v3: the DEM fetcher is live, so a sample above the grid minimum has
+        # to land on the same millimetre on both sides ([V3-P3-G1]).
+        "terrain_z_mm": [
+            r(T.terrain_z_mm(elevation, p, scale)) for elevation in (0.0, 12.5, 40.0)
+        ],
+        "height_exaggeration": {
+            "multiplier": r(T.height_exaggeration_multiplier(p)),
+            "curve": r(T.height_exaggeration_curve(p)),
+            "for_height_m": [r(T.exaggerated_height_for(h, p)) for h in HEIGHT_SAMPLES_M],
+        },
         "tree_min_radius_mm": r(T.tree_min_radius_mm(p)),
         "max_height_mm": r(T.MAX_HEIGHT_MM),
         "predicted_top_mm": r(T.predicted_top_mm(scene, p, radius_m)),
@@ -928,6 +1073,29 @@ def build_expected() -> Dict[str, Any]:
             "FRAMECRAFT_WRITE_PARITY=1 uv run pytest tests/test_transform.py"
         ),
         "scene": "fixtures/parity-scene.json",
+        # Params-independent, so it is pinned ONCE rather than repeated in
+        # every case: the exaggeration curve and its inverse walked over the
+        # whole legal (multiplier, curve) rectangle ([V3-P3-G5]).
+        "height_exaggeration_matrix": [
+            {
+                "multiplier": multiplier,
+                "curve": curve,
+                "h_ref_m": T.HEIGHT_EXAGGERATION_REF_M,
+                "heights_m": HEIGHT_SAMPLES_M,
+                "exaggerated_m": [
+                    r(T.exaggerated_height(h, multiplier, curve)) for h in HEIGHT_SAMPLES_M
+                ],
+                "round_trip_m": [
+                    r(
+                        T.real_world_equivalent_m(
+                            T.exaggerated_height(h, multiplier, curve), multiplier, curve
+                        )
+                    )
+                    for h in HEIGHT_SAMPLES_M
+                ],
+            }
+            for multiplier, curve in HEIGHT_EXAGGERATION_MATRIX
+        ],
         "cases": [build_case(scene, case) for case in PARITY_CASES],
     }
 
@@ -950,7 +1118,7 @@ def test_parity_expectation_is_not_vacuous() -> None:
     """Guard against an empty or degenerate fixture silently passing."""
     expected = json.loads(PARITY_EXPECTED.read_text(encoding="utf-8"))
     cases = expected["cases"]
-    assert len(cases) == 7
+    assert len(cases) == 9
     for case in cases:
         assert len(case["buildings"]) >= 20
         assert len(case["roads"]) >= 5
@@ -959,9 +1127,11 @@ def test_parity_expectation_is_not_vacuous() -> None:
     # case 1's plate and frame ON PURPOSE - the hero rule is the only thing that
     # moves in it - and the two advisor-sentence cases (6 and 7) share plate 100
     # with a 1.2 mm nozzle and differ only in the radius, so five distinct
-    # scales over seven cases is correct.
+    # scales over seven cases is correct.  Case 8 shares case 1's scale for the
+    # same reason case 4 does (only the v3 knobs move); case 9 turns the frame
+    # off, which is a sixth scale.
     scales = {c["scale_mm_per_m"] for c in cases}
-    assert len(scales) == 5
+    assert len(scales) == 6
     # The print-mm thresholds are 04's multiples of the nozzle, and the ground
     # thresholds are those divided by the scale.  Pinned in the fixture so the
     # TS mirror cannot quietly print one nozzle where 04 asks for two.
@@ -984,8 +1154,71 @@ def test_parity_expectation_is_not_vacuous() -> None:
     # The 60 mm guard must fire in one case and not in the others, or the TS
     # side could mirror a constant `false`.
     assert [c["model_too_tall"] for c in cases] == [
-        False, True, False, False, False, False, False
+        False, True, False, False, False, False, False, False, False
     ]
+
+    # --- v3 terrain and height exaggeration ------------------------------
+    # Six of the nine cases leave both knobs alone, and in those every v3 value
+    # must equal its v1 counterpart exactly - that is what makes this block
+    # additive ([V3-P3-G1], [V3-P3-G5]).
+    quiet = [c for c in cases if "height_exaggeration" not in c["params"]]
+    assert len(quiet) == 7
+    for case in quiet:
+        assert case["terrain_z_scale"] == case["params"]["terrain_exaggeration"]
+        assert case["height_exaggeration"] == {
+            "multiplier": 1.0,
+            "curve": 0.0,
+            "for_height_m": HEIGHT_SAMPLES_M,
+        }
+        for b in case["buildings"]:
+            assert b["top_mm_exaggerated"] == b["top_mm_for"]
+    # The terrain sample is always 0 at the grid minimum and scales linearly.
+    for case in cases:
+        zs = case["terrain_z_mm"]
+        assert zs[0] == 0.0
+        assert zs[2] == pytest.approx(
+            40.0 * case["scale_mm_per_m"] * case["terrain_z_scale"]
+        )
+    by_case = {c["name"]: c for c in cases}
+    loud = by_case["terrain-and-height-exaggeration"]
+    assert loud["terrain_z_scale"] == 2.0
+    assert loud["height_exaggeration"]["multiplier"] == 2.0
+    assert loud["height_exaggeration"]["curve"] == 0.35
+    # Curved, so a short building gains more than the multiplier and a tall one
+    # gains less: this is the whole point of the knob and a mirror that ignored
+    # the curve would return 2x for both.
+    assert loud["height_exaggeration"]["for_height_m"][1] > 2.0 * 3.0
+    assert loud["height_exaggeration"]["for_height_m"][5] < 2.0 * 442.0
+    assert loud["height_exaggeration"]["for_height_m"][3] == pytest.approx(100.0)
+    for b in loud["buildings"]:
+        if b["height_scale_for"] > 0 and b["exaggerated_height_m"] > 0:
+            assert b["top_mm_exaggerated"] > b["top_mm_for"]
+    flat = by_case["height-exaggeration-full-curve"]
+    assert flat["terrain_z_scale"] == 0.0
+    assert flat["terrain_z_mm"] == [0.0, 0.0, 0.0]
+    assert flat["height_exaggeration"]["curve"] == 1.0
+
+    # --- the params-independent exaggeration matrix ----------------------
+    matrix = expected["height_exaggeration_matrix"]
+    assert len(matrix) == len(HEIGHT_EXAGGERATION_MATRIX)
+    for row in matrix:
+        assert row["heights_m"] == HEIGHT_SAMPLES_M
+        assert row["h_ref_m"] == T.HEIGHT_EXAGGERATION_REF_M
+        # Strictly increasing in the height, for every legal pair.
+        values = row["exaggerated_m"]
+        assert all(b > a for a, b in zip(values[1:], values[2:]))
+        assert values[0] == 0.0
+        # Exact at the pivot.
+        assert values[3] == pytest.approx(row["multiplier"] * row["h_ref_m"])
+        # And the inverse really inverts.
+        for original, back in zip(row["heights_m"], row["round_trip_m"]):
+            assert back == pytest.approx(original, abs=1e-6)
+    linear = [row for row in matrix if row["curve"] == 0.0]
+    assert len(linear) == 3
+    for row in linear:
+        assert row["exaggerated_m"] == [
+            r(h * row["multiplier"]) for h in HEIGHT_SAMPLES_M
+        ]
 
     # --- v2 heroes ------------------------------------------------------
     # Three of the four cases pick no hero, and in those the hero-aware values

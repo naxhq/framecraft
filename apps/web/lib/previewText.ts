@@ -24,7 +24,9 @@
  */
 
 import type { PrintParams, SceneGraph } from "./contracts";
+import type { EngineBuilding } from "./engine/osm/types";
 import { loadedGlyphFace, type GlyphFace, type GlyphPart } from "./fontGlyphs";
+import { heroTokenInfo } from "./heroes";
 import type { PreviewArea } from "./preview";
 import type { TokenContext } from "./tokens";
 import * as T from "./transform";
@@ -402,6 +404,10 @@ export function textTokenContext(
   date: string,
 ): TokenContext {
   const radius_m = graph ? T.radius_m_from_bounds(graph.bounds) : 0;
+  // `graph.buildings` is structurally an `EngineBuilding[]` at runtime (the
+  // engine's `EngineSceneGraph` is a superset of the frozen `SceneGraph`
+  // contract this store field is typed as) -- see `lib/engine/osm/types.ts`.
+  const hero = heroTokenInfo(graph ? (graph.buildings as EngineBuilding[]) : undefined, params);
   return {
     lat: graph ? graph.center.lat : 0,
     lon: graph ? graph.center.lon : 0,
@@ -414,7 +420,8 @@ export function textTokenContext(
     state: params.place?.state ?? "",
     neighbourhood: params.place?.neighbourhood ?? "",
     author: params.place?.author ?? "",
-    hero_count: (params.hero_building_ids ?? []).length,
+    hero_count: hero.count,
+    hero_name: hero.name ?? undefined,
   };
 }
 
@@ -436,7 +443,8 @@ export function textParamsKey(params: PrintParams): string {
     params.nozzle_mm,
     params.city_label ?? "",
     params.place ?? null,
-    (params.hero_building_ids ?? []).length,
+    (params.hero_building_ids ?? []).join(","),
+    params.hero_auto ?? null,
     params.engravings ?? [],
     params.north_arrow ?? null,
     params.scale_bar ?? null,

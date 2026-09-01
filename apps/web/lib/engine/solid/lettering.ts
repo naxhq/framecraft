@@ -353,6 +353,33 @@ function undersideColumn(
  * `"skipped"` carrying the reason, plus an `AuditFinding` the Issues badge can
  * show. A caller that asked for six lines always gets six resolved lines back.
  */
+/**
+ * Surface what the shared layout adjusted, as findings.
+ *
+ * `transform.lettering_layout` returns human-readable strings for every
+ * adjustment it made on the caller's behalf: a size auto-fitted down to fit its
+ * edge, a scale bar rounded to a round number of metres. They used to be pushed
+ * to `ctx.warnings`, which `EngineResult` has no field for, so nothing that
+ * reads a bake ever saw them (v3-02 audit, MAJOR 2). They are informational -
+ * the line was still cut, and cut correctly - so they are one `info` finding
+ * carrying the layout's own wording rather than the engine's paraphrase of it.
+ */
+function reportLayoutWarnings(ctx: BakeContext, warnings: readonly string[]): void {
+  if (warnings.length === 0) return;
+  addFinding(
+    ctx,
+    finding(
+      "lettering-adjusted",
+      "info",
+      warnings.length === 1
+        ? "One engraving was adjusted to fit"
+        : `${warnings.length} engravings were adjusted to fit`,
+      warnings.join(" "),
+      "lettering",
+    ),
+  );
+}
+
 export function buildLettering(
   ctx: BakeContext,
   tokens: TokenContext,
@@ -364,7 +391,7 @@ export function buildLettering(
   // those; the underside lines are laid out below with the mark's own rule.
   const edgeParams: PrintParams = { ...params, engravings: edges };
   const layout = T.lettering_layout(edgeParams, tokens, rotationDeg);
-  for (const warning of layout.warnings) ctx.warnings.push(warning);
+  reportLayoutWarnings(ctx, layout.warnings);
 
   const out: LetteringGeometry = {
     frameCut: [],

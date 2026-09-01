@@ -416,6 +416,70 @@ describe("a hero counts at its hero height", () => {
 });
 
 // ==========================================================================
+// hero_auto: an auto-promoted building counts at its hero height too
+// (phase 3, `[V3-P3-U]`)
+// ==========================================================================
+
+describe("hero_auto counts an auto-promoted building at its hero height too", () => {
+  const graph = graphOf(40, 200);
+  /** Same fixture as the manual hero tests above: w200 is the one tall building. */
+  const halved = { small_scale: 0.5, large_scale: 0.5 };
+
+  it("raises the predicted top exactly like picking the same building by hand", () => {
+    const plain = predictedTopMm(graph, p(halved)) as number;
+    const auto = predictedTopMm(
+      graph,
+      p({ ...halved, hero_auto: { enabled: true, count: 1 } }),
+    ) as number;
+    const manual = predictedTopMm(
+      graph,
+      p({ ...halved, hero_building_ids: ["w200"] }),
+    ) as number;
+    expect(auto).toBeGreaterThan(plain);
+    expect(auto).toBeCloseTo(manual, 9);
+  });
+
+  it("is a no-op while the toggle is off, whatever the count says", () => {
+    const plain = predictedTopMm(graph, p(halved));
+    expect(
+      predictedTopMm(graph, p({ ...halved, hero_auto: { enabled: false, count: 5 } })),
+    ).toBe(plain);
+  });
+
+  it("never evicts a manual pick: the union still promotes w200 even when it is not the auto quota's own top pick", () => {
+    // count: 0 means the auto quota adds nothing, but the manual pick alone
+    // still raises the predicted top -- effectiveHeroIds must never drop it.
+    const plain = predictedTopMm(graph, p(halved)) as number;
+    const both = predictedTopMm(
+      graph,
+      p({ ...halved, hero_building_ids: ["w200"], hero_auto: { enabled: true, count: 0 } }),
+    ) as number;
+    expect(both).toBeGreaterThan(plain);
+  });
+
+  it("is named by warningDeps, as a string, exactly like a manual pick", () => {
+    const before = warningDeps(graph, p(halved));
+    const after = warningDeps(
+      graph,
+      p({ ...halved, hero_auto: { enabled: true, count: 1 } }),
+    );
+    expect(before.some((value, i) => !Object.is(value, after[i]))).toBe(true);
+    for (const value of after) {
+      if (value === graph) continue;
+      expect(typeof value).not.toBe("object");
+    }
+  });
+
+  it("does nothing on an empty scene: there is no building for it to promote", () => {
+    const empty: SceneGraph = { ...graph, buildings: [] };
+    const plain = predictedTopMm(empty, p(halved));
+    expect(
+      predictedTopMm(empty, p({ ...halved, hero_auto: { enabled: true, count: 5 } })),
+    ).toBe(plain);
+  });
+});
+
+// ==========================================================================
 // Lettering warnings ([V3-P1])
 // ==========================================================================
 

@@ -22,6 +22,17 @@
  * `rotation_deg` counts as a location change because the crop happens during
  * ingest (DECISIONS [P0]), so moving it marks the scene stale and the UI
  * re-generates when the slider is released.
+ *
+ * ONE deliberate exception to "only those four cause a network call" (phase
+ * 3, `[V3-P3-U]`): with `params.terrain.enabled`, a pin/radius/rotation move
+ * or a `terrain`/`terrain_exaggeration` write also schedules a debounced DEM
+ * tile fetch (`lib/engine/terrain/tiles.ts`, cached by
+ * `lib/terrainCache.ts`). This is a SEPARATE job from the Overpass ingest --
+ * it never calls `generate()`/`engineClient.ingest()` and cannot mark the
+ * scene stale -- so "terrain must not trigger an Overpass refetch" still
+ * holds; `store/editor.test.ts`'s "never makes a server call" sweep still
+ * passes because the fetch is timer-debounced and the test never advances
+ * real timers, exactly like the engine job's own debounce.
  */
 
 import { create } from "zustand";
@@ -38,14 +49,17 @@ import {
 import { DEFAULT_PRINT_PARAMS, defaultPrintParams } from "@/lib/contracts";
 import type { PrintParams, SceneGraph, SceneRequest } from "@/lib/contracts";
 import { createEngineClient, EngineClientError } from "@/lib/engine/client";
-import type { EngineResult } from "@/lib/engine/types";
+import type { EngineResult, TerrainGrid } from "@/lib/engine/types";
+import type { EngineBuilding } from "@/lib/engine/osm/types";
 import type { OverpassFetchError } from "@/lib/engine/osm/overpass";
 import type { ExportTarget } from "@/lib/engine/export";
+import { fetchTerrainGrid } from "@/lib/engine/terrain/tiles";
 import type { GeocodeResult } from "@/lib/geocode";
 import { RADIUS_MAX_M, RADIUS_MIN_M, snapRadius } from "@/lib/geo";
-import { toggleHeroId } from "@/lib/heroes";
+import { autoHeroIds, heroCandidates, toggleHeroId } from "@/lib/heroes";
 import { presetCityName } from "@/lib/presets";
 import { decodeShare, readShareParam } from "@/lib/share";
+import { terrainCache, terrainCacheKey } from "@/lib/terrainCache";
 import { bakeBlockReason } from "@/lib/warnings";
 
 export type Theme = "light" | "dark";
@@ -141,6 +155,30 @@ export function markEngineStale(previous: EngineJobState): EngineJobState {
 }
 
 /**
+ * The TERRAIN group's DEM fetch state (phase 3). `idle` covers both "terrain
+ * is off" and "nothing fetched yet"; the group tells the two apart by reading
+ * `params.terrain?.enabled` alongside this.
+ *
+ * `key` is the `terrainCacheKey` the current `grid`/`error` was fetched for,
+ * so a response that lands after the pin/radius/rotation/exaggeration/
+ * smoothing moved again can be told apart from one that still matches
+ * (`runTerrainJob`'s own guard re-derives the CURRENT key and compares).
+ */
+export interface TerrainState {
+  status: "idle" | "loading" | "ready" | "error";
+  grid: TerrainGrid | null;
+  error: string | null;
+  key: string | null;
+}
+
+export const initialTerrainState: TerrainState = {
+  status: "idle",
+  grid: null,
+  error: null,
+  key: null,
+};
+
+/**
  * The PrintParams fields that are objects rather than scalars. They must be
  * written immutably (a mutated nested object would keep the same identity and
  * a memo keyed on it would never notice), which is what `setNested` is for.
@@ -152,13 +190,19 @@ export type NestedParamKey =
   | "underside_mark"
   | "place"
   | "colour"
-  | "custom_profile";
+  | "custom_profile"
+  | "terrain"
+  | "heights"
+  | "height_exaggeration"
+  | "hero_auto";
 
 export interface EditorState {
   location: LocationState;
   params: PrintParams;
   scene: SceneState;
   engine: EngineJobState;
+  /** The TERRAIN group's DEM fetch state, independent of `engine` (phase 3). */
+  terrain: TerrainState;
   bake: BakeState;
   /** Where the Place name field's prefill comes from ([V3-P1]). */
   placeDetect: PlaceDetectState;
@@ -248,7 +292,7 @@ export interface EditorState {
   generate: () => Promise<void>;
   /** Reuses a fresh engine result, or runs one now, then exports it and offers the download. */
   requestBake: () => Promise<void>;
-  /** Drop any pending debounced engine job (component unmount, test cleanup). */
+  /** Drop any pending debounced engine job, and any pending terrain fetch (component unmount, test cleanup). */
   cancelEngineJob: () => void;
 }
 
@@ -318,6 +362,10 @@ const engineClient = createEngineClient();
 const ENGINE_DEBOUNCE_MS = 400;
 let engineDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** Same debounce window as the engine job, so a burst of terrain-affecting edits costs one fetch. */
+const TERRAIN_DEBOUNCE_MS = 400;
+let terrainDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
 type Get = () => EditorState;
 type Set = (
   partial: Partial<EditorState> | ((state: EditorState) => Partial<EditorState>),
@@ -327,6 +375,13 @@ function clearEngineDebounce(): void {
   if (engineDebounceTimer !== null) {
     clearTimeout(engineDebounceTimer);
     engineDebounceTimer = null;
+  }
+}
+
+function clearTerrainDebounce(): void {
+  if (terrainDebounceTimer !== null) {
+    clearTimeout(terrainDebounceTimer);
+    terrainDebounceTimer = null;
   }
 }
 
@@ -340,22 +395,39 @@ function scheduleEngineJob(get: Get, set: Set): void {
 }
 
 /**
+ * The manual hero picks plus, when `hero_auto.enabled`, the top-scoring
+ * auto-promoted buildings on top of them (`lib/heroes.ts`). Read by both the
+ * engine job (what actually bakes at hero height/colour) and by callers that
+ * want to know the CURRENT effective set without waiting for a bake, such as
+ * the HEROES panel.
+ */
+function currentHeroIds(scene: SceneState, params: PrintParams): string[] {
+  const manual = params.hero_building_ids ?? [];
+  if (!params.hero_auto?.enabled || !scene.graph) return [...manual];
+  const buildings = scene.graph.buildings as EngineBuilding[];
+  return autoHeroIds(heroCandidates(buildings), manual, params.hero_auto.count ?? 0);
+}
+
+/**
  * Run one engine job now (bypassing the debounce) and adopt its result.
  * Returns `null` when there is no scene to bake, the job was superseded by a
  * newer one (a normal outcome, not an error), or the bake failed.
  */
 async function runEngineJob(get: Get, set: Set): Promise<EngineResult | null> {
   clearEngineDebounce();
-  const { scene, params, location } = get();
+  const { scene, params, location, terrain } = get();
   if (!scene.graph) return null;
   set((state) => ({ engine: { ...state.engine, status: "computing", error: null } }));
   const today = new Date().toISOString().slice(0, 10);
+  const terrainGrid = params.terrain?.enabled ? terrain.grid : null;
   try {
     const result = await engineClient.bake({
       scene: scene.graph,
       params,
       rotationDeg: location.rotation_deg,
       date: today,
+      heroIds: currentHeroIds(scene, params),
+      terrain: terrainGrid,
     });
     set({ engine: { status: "ready", result, error: null, stale: false } });
     return result;
@@ -368,6 +440,81 @@ async function runEngineJob(get: Get, set: Set): Promise<EngineResult | null> {
   }
 }
 
+/**
+ * Debounce a fresh terrain fetch. A no-op while `params.terrain.enabled` is
+ * false -- called unconditionally from every location/terrain-param write, so
+ * the caller never has to remember to check the toggle itself.
+ */
+function scheduleTerrainJob(get: Get, set: Set): void {
+  clearTerrainDebounce();
+  terrainDebounceTimer = setTimeout(() => {
+    terrainDebounceTimer = null;
+    void runTerrainJob(get, set);
+  }, TERRAIN_DEBOUNCE_MS);
+}
+
+/**
+ * Fetch (or serve from cache) the `TerrainGrid` for the current pin, radius,
+ * rotation, exaggeration and smoothing. Fails soft: a rejected/`null` fetch
+ * leaves `terrain.grid` at `null` and records `terrain.error`, so the engine
+ * job bakes with `terrain: null` (flat) and the TERRAIN group shows the
+ * failure instead of silently pretending the toggle did nothing.
+ *
+ * Never touches `scene`/`engine.stale` for ingest purposes: this is a
+ * completely separate job from `generate()`, exactly like the brief requires
+ * ("terrain must not trigger an Overpass refetch"). It DOES reschedule the
+ * (WASM, not network) engine job once a grid lands, so the preview drapes it.
+ */
+async function runTerrainJob(get: Get, set: Set): Promise<void> {
+  clearTerrainDebounce();
+  const { location, params } = get();
+  if (!params.terrain?.enabled) {
+    set((state) =>
+      state.terrain.status === "idle" ? state : { terrain: { ...initialTerrainState } },
+    );
+    return;
+  }
+  const key = terrainCacheKey(location, params);
+  const cached = terrainCache.get(key);
+  if (cached !== undefined) {
+    set({ terrain: { status: "ready", grid: cached, error: null, key } });
+    scheduleEngineJob(get, set);
+    return;
+  }
+  set((state) => ({ terrain: { ...state.terrain, status: "loading", error: null } }));
+  try {
+    const grid = await fetchTerrainGrid(
+      {
+        lat: location.lat,
+        lon: location.lon,
+        radiusM: location.radius_m,
+        rotationDeg: location.rotation_deg,
+      },
+      params,
+    );
+    // A newer pin/radius/rotation/terrain-param write landed while this was
+    // in flight: drop the answer to a question nobody is asking any more.
+    if (terrainCacheKey(get().location, get().params) !== key) return;
+    if (grid === null) {
+      set({
+        terrain: {
+          status: "error",
+          grid: null,
+          error: "Could not fetch terrain for this location.",
+          key,
+        },
+      });
+      return;
+    }
+    terrainCache.set(key, grid);
+    set({ terrain: { status: "ready", grid, error: null, key } });
+    scheduleEngineJob(get, set);
+  } catch (error) {
+    if (terrainCacheKey(get().location, get().params) !== key) return;
+    set({ terrain: { status: "error", grid: null, error: errorMessage(error), key } });
+  }
+}
+
 export const useEditorStore = create<EditorState>()((set, get) => ({
   location: { ...INITIAL_LOCATION },
   // `defaultPrintParams()`, never a shallow spread: DEFAULT_PRINT_PARAMS is
@@ -376,6 +523,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   params: defaultPrintParams(),
   scene: { ...IDLE_SCENE },
   engine: { ...initialEngineState },
+  terrain: { ...initialTerrainState },
   bake: { ...initialBakeState },
   placeDetect: { ...IDLE_PLACE_DETECT },
   theme: "light",
@@ -384,7 +532,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   adjustmentsOpen: false,
   shareNotice: null,
 
-  setPin: (lat, lon) =>
+  setPin: (lat, lon) => {
     set((state) => {
       // A previously auto-filled label describes the OLD pin and would be
       // wrong for the new one; a user's own typed text survives the move
@@ -405,15 +553,19 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         },
         params: clearLabel ? { ...state.params, city_label: "" } : state.params,
       };
-    }),
+    });
+    scheduleTerrainJob(get, set);
+  },
 
-  setRadius: (radiusM) =>
+  setRadius: (radiusM) => {
     set((state) => ({
       location: { ...state.location, radius_m: snapRadius(radiusM) },
       scene: { ...state.scene, stale: true },
       engine: markEngineStale(state.engine),
       bake: markBakeStale(state.bake),
-    })),
+    }));
+    scheduleTerrainJob(get, set);
+  },
 
   setRotation: (deg) => {
     const normalised = Math.min(360, Math.max(0, Math.round(deg)));
@@ -423,9 +575,10 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       engine: markEngineStale(state.engine),
       bake: markBakeStale(state.bake),
     }));
+    scheduleTerrainJob(get, set);
   },
 
-  applyPreset: (preset) =>
+  applyPreset: (preset) => {
     set((state) => {
       // A preset resolves its city name from `lib/presets.ts` alone -- no
       // Nominatim round trip needed, since the place it names is already
@@ -453,7 +606,9 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         // Never overwrites a user's own typed Place name.
         params: overridden ? state.params : { ...state.params, city_label: cityName ?? "" },
       };
-    }),
+    });
+    scheduleTerrainJob(get, set);
+  },
 
   // A slider move is a pure state write. No fetch, and the SCENE is unaffected
   // by every one of these parameters -- but a fresh ENGINE RESULT and a
@@ -466,6 +621,11 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       bake: markBakeStale(state.bake),
     }));
     scheduleEngineJob(get, set);
+    // `terrain` (the on/off toggle and smoothing) and `terrain_exaggeration`
+    // are the only two PrintParams fields the TERRAIN fetch cache key reads
+    // (`lib/terrainCache.ts`); every other control still touches nothing but
+    // the debounced WASM engine job above.
+    if (key === "terrain" || key === "terrain_exaggeration") scheduleTerrainJob(get, set);
   },
 
   // Every nested write goes through `setParam` too, so bake staleness, the
@@ -490,6 +650,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       heroCapHit: false,
     }));
     scheduleEngineJob(get, set);
+    scheduleTerrainJob(get, set);
   },
 
   applyGeocodeResult: (lat, lon, result) => {
@@ -606,7 +767,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
    * `presetChosen` stays false even when the link names a preset: the chip may
    * only light up once something real backs it (`activePresetId`).
    */
-  applyShared: (request, params) =>
+  applyShared: (request, params) => {
     set((state) => ({
       location: {
         lat: request.lat,
@@ -619,6 +780,9 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       scene: { ...state.scene, stale: true },
       engine: markEngineStale(state.engine),
       bake: markBakeStale(state.bake),
+      // A cached grid is for the OLD pin/params; a link can name a different
+      // place and different terrain settings entirely.
+      terrain: { ...initialTerrainState },
       presetChosen: false,
       heroCapHit: false,
       shareNotice: null,
@@ -633,7 +797,9 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         detectedCity: null,
         overridden: (params.city_label ?? "") !== "",
       },
-    })),
+    }));
+    scheduleTerrainJob(get, set);
+  },
 
   loadShared: (search) => {
     const payload = readShareParam(search);
@@ -769,5 +935,6 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 
   cancelEngineJob: () => {
     clearEngineDebounce();
+    clearTerrainDebounce();
   },
 }));

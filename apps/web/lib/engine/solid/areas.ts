@@ -22,7 +22,7 @@
  */
 
 import type { BakeContext, Placement } from "./context";
-import { PART_OVERLAP_MM, POCKET_GROW_MM, placementOf } from "./context";
+import { PART_OVERLAP_MM, POCKET_GROW_MM, addFinding, placementOf } from "./context";
 import { cutterTopMm } from "./base";
 import type { Contour, CrossSection, Manifold } from "./manifold";
 import { extrudeSection, intersectSection, offsetSection } from "./manifold";
@@ -88,6 +88,50 @@ function layerContours(ctx: BakeContext, region: SurfaceName): Contour[] {
 }
 
 /**
+ * Say so when the plate could not hold the placement the parameters asked for.
+ *
+ * The schema allows `proud_mm` down to -2.0, and on the contract's own minimum
+ * 3 mm base that is deeper than a pocket may legally go: before this the
+ * extrusion came back empty, the region was dropped with a bare `continue`, and
+ * a user who asked for deep water got a model with no water in it and nothing
+ * anywhere saying why (v3-02 audit, MAJOR 3). The region is now built as deep
+ * as the plate allows and the difference is reported with both numbers and a
+ * safe one-click fix back to a depth this base can hold.
+ */
+function reportClampedPlacement(
+  ctx: BakeContext,
+  region: SurfaceName,
+  placement: Placement,
+): void {
+  if (!placement.clamped) return;
+  addFinding(ctx, {
+    id: "region-placement-clamped",
+    severity: "warning",
+    title: `The ${region} region does not fit this base`,
+    detail:
+      `It was asked for ${placement.depthMm.toFixed(2)} mm of depth at ` +
+      `${placement.proudMm.toFixed(2)} mm from the surface, which reaches past the ` +
+      `deepest pocket a ${ctx.baseTopMm.toFixed(1)} mm base can carry. It was built ` +
+      `${placement.builtDepthMm.toFixed(2)} mm thick at ` +
+      `${placement.builtProudMm.toFixed(2)} mm instead. Use a thicker base, or a ` +
+      "shallower offset.",
+    region,
+    fix: {
+      label: `Raise ${region} to a depth this base can hold`,
+      safe: true,
+      patch: {
+        regions: {
+          [region]: {
+            proud_mm: Number((placement.builtProudMm).toFixed(3)),
+            depth_mm: Number(placement.builtDepthMm.toFixed(3)),
+          },
+        },
+      },
+    },
+  });
+}
+
+/**
  * Build one surface region.
  *
  * `blockers` are the footprints that already own their ground. The layer is
@@ -105,6 +149,7 @@ export function buildSurfaceRegion(
   const contours = layerContours(ctx, region);
   if (contours.length === 0) return null;
   const placement = placementFor(ctx, region);
+  reportClampedPlacement(ctx, region, placement);
   const recessed = placement.topMm < ctx.baseTopMm;
   const clipHalfMm = recessed ? ctx.recessClipHalfMm : ctx.cropHalfMm;
 

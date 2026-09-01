@@ -15,6 +15,11 @@ set -u
 MAKE_BIN="${1:-make}"
 rc=0
 
+# `make gate` step 0 makes these, but this script has to stand on its own: run
+# straight from a clean checkout it used to die on the first redirect below
+# instead of baking anything (v3-02 audit finding 15).
+mkdir -p artifacts/logs
+
 echo "both files are baked and validated: fixtures/print-params-default.json"
 echo "(color_mode=single, the literal default) and print-params-parts.json"
 echo "(color_mode=parts). Single mode's 3MF is written from EngineResult.merged,"

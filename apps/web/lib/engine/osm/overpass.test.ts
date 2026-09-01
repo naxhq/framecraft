@@ -128,6 +128,39 @@ describe("fetchOverpass", () => {
     expect(call).toBe(3);
   });
 
+  it("fails over to the next mirror on a 403 or a 500, which are facts about the mirror", async () => {
+    for (const status of [403, 500, 502]) {
+      let call = 0;
+      const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+        call++;
+        if (call === 1) {
+          expect(url).toBe(DEFAULT_MIRRORS[0]);
+          return jsonResponse({}, status);
+        }
+        expect(url).toBe(DEFAULT_MIRRORS[1]);
+        return jsonResponse({ elements: [] });
+      });
+
+      const result = await fetchOverpass(CHICAGO_LOOP, { fetchImpl, cache: new MemoryOverpassCache(), sleep: noSleep });
+      expect(result.ok).toBe(true);
+      expect(call).toBe(2);
+    }
+  });
+
+  it("gives up at once on a 400 or a 422: the query, not the mirror, is what is wrong", async () => {
+    for (const status of [400, 422]) {
+      const fetchImpl = vi.fn(async () => jsonResponse({}, status));
+      const result = await fetchOverpass(CHICAGO_LOOP, { fetchImpl, cache: new MemoryOverpassCache(), sleep: noSleep });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.kind).toBe("bad-response");
+        expect(result.error.message).toContain(`HTTP ${status}`);
+        expect(result.error.mirrorsTried).toEqual([DEFAULT_MIRRORS[0]]);
+      }
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it("treats a 200 response with a runtime-error remark as a failure and retries", async () => {
     let call = 0;
     const fetchImpl = vi.fn(async () => {

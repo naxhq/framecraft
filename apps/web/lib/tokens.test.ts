@@ -173,6 +173,22 @@ describe("formatters", () => {
     expect(TK.format_hero(withPlace)).toBe("3");
   });
 
+  // --- phase 3: {hero} prefers a resolved building name over the count ----
+
+  it("prefers hero_name over hero_count when both are set", () => {
+    expect(TK.format_hero({ ...withPlace, hero_name: "Willis Tower" })).toBe("Willis Tower");
+  });
+
+  it("falls back to the count when hero_name is absent, empty or blank", () => {
+    expect(TK.format_hero({ ...withPlace, hero_name: undefined })).toBe("3");
+    expect(TK.format_hero({ ...withPlace, hero_name: "" })).toBe("3");
+    expect(TK.format_hero({ ...withPlace, hero_name: "   " })).toBe("3");
+  });
+
+  it("still returns empty with a name but no count and no selection at all", () => {
+    expect(TK.format_hero({ ...chicago, hero_name: undefined })).toBe("");
+  });
+
   it("expands the five new tokens in one mixed string", () => {
     expect(
       TK.expand_tokens(

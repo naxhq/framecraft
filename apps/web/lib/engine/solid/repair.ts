@@ -352,8 +352,14 @@ export function appendageWidthMm(section: CrossSection, minWall: number): number
  *
  * `null` means the whole component is narrower than `2 * radius` everywhere, so
  * there is no body to hang appendages off.
+ *
+ * Exported because the Stage 4 gate needs the same appendages the repair does:
+ * `measure.narrowestWidthMm` mirrors `thicken.narrowest_width`, which is the
+ * region's own inscribed width LOWERED by every appendage's, and the two must
+ * find the same wings or the repair and the gate disagree about what a wall is.
+ * The caller owns what comes back and must drop it.
  */
-function residueParts(
+export function residueParts(
   ctx: BakeContext,
   component: CrossSection,
   radius: number,

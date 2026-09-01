@@ -146,10 +146,11 @@ test:
 #      listening after it, fails the gate. "never leaves the stack up" is an
 #      assertion, not a hope - a survivor holds :8000/:3000 and makes the next
 #      `make up` a hard error (DECISIONS [P1-fix]).
-#   6. fixtures/ is CHECKED: the e2e drives one live Overpass query, which
-#      caches a `fixtures/<sha1>.json`; the specs prune it in `afterAll` and
-#      the gate fails if one survived (a 100 MB uncommittable file otherwise
-#      shows up in the next `git status`).
+#   6. fixtures/ is CHECKED: every current spec routes **/api/interpreter to a
+#      committed fixture, so the e2e reaches Overpass nowhere and should cache
+#      no `fixtures/<sha1>.json` at all. The guard stays because a new spec
+#      that forgets the mock would quietly start hitting the network and leave
+#      one behind (a 100 MB uncommittable file in the next `git status`).
 #
 # ZERO SKIPPED TESTS is a gate condition, in four independent places: the
 # static guard (step 1) catches a marker that was committed, the pytest summary
@@ -264,15 +265,15 @@ gate:
 				echo "      stop the survivor(s) before re-running (netstat -ano | grep LISTENING)" >&2; \
 				rc=1; \
 			fi; \
-			echo "== gate [8/8] fixtures/ is clean (the e2e pruned what it cached) =="; \
+			echo "== gate [8/8] fixtures/ is clean (no spec reached Overpass) =="; \
 			if command -v git >/dev/null 2>&1; then \
 				stray=$$(git status --porcelain -- fixtures/ 2>/dev/null | cut -c4- | tr -d '"' \
 					| grep -E '(^|/)[0-9a-f]{40}\.json$$' || true); \
 				if [ -n "$$stray" ]; then \
 					echo "gate: a non-preset Overpass fixture survived the e2e:" >&2; \
 					echo "$$stray" >&2; \
-					echo "      the suites prune them in afterAll; one left behind means a spec" >&2; \
-					echo "      aborted, or a new spec reaches Overpass without pruning." >&2; \
+					echo "      every spec mocks **/api/interpreter, so a file here means a" >&2; \
+					echo "      spec reached the network unmocked and did not prune it." >&2; \
 					rc=1; \
 				else \
 					echo "no stray sha1 fixture in fixtures/"; \

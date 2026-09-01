@@ -275,22 +275,137 @@ def thresholds_ground_m(params: ParamsLike, scale: float) -> Thresholds:
 def terrain_z_scale(params: ParamsLike) -> float:
     """Vertical scale applied to terrain elevation.
 
-    Terrain from DEM is out of scope for the MVP (01) and the heightmap is
-    flat, so this is 1.0 for every input.  ``params.terrain_exaggeration`` is
-    accepted and carried through both implementations identically so the
-    parameter, the code path and the parity test all exist the day the DEM
-    fetcher is switched on.
+    ``params.terrain_exaggeration`` (v1 field, range [0, 3], default 1.0),
+    and nothing else.  This is THE ONE PLACE the exaggeration is applied
+    ([V3-P3-G1]): the DEM grid the browser fetches stays in raw metres above
+    the tile minimum, so moving the slider re-bakes without re-fetching a
+    single tile, and no other module may multiply by it again.
+
+    Before v3 this returned 1.0 for every input because the MVP heightmap was
+    flat.  The DEM fetcher (``apps/web/lib/engine/terrain/tiles.ts``) is that
+    fetcher, so the parameter is now live.  The default is 1.0, so every
+    committed parity value is unchanged.
     """
-    float(params.terrain_exaggeration)
-    return 1.0
+    return float(params.terrain_exaggeration)
 
 
 def terrain_z_mm(elevation_m: float, params: ParamsLike, scale: float) -> float:
     """Print height of a terrain sample, in mm above the base top.
 
-    Always 0.0 in the MVP because the heightmap is flat (elevation_m is 0).
+    ``elevation_m`` is metres above the grid minimum, so this is 0.0 at the
+    lowest point of the crop and the base slab keeps its full thickness there.
     """
     return float(elevation_m) * scale * terrain_z_scale(params)
+
+
+# --------------------------------------------------------------------------
+# Height exaggeration (PrintParams v3 ``height_exaggeration``)
+#
+# A separate knob from ``small_scale`` / ``large_scale``: those two multiply a
+# building's height by its CLASS (tall or not), which is a step function at
+# 40 m and cannot make a two-storey street readable without turning a tower
+# into a spike.  This one is continuous in the height itself.
+# --------------------------------------------------------------------------
+
+
+#: Reference height the exaggeration curve pivots about, ground metres.  A
+#: building of exactly this height is multiplied by ``multiplier`` whatever the
+#: curve is, so the curve redistributes emphasis without changing the overall
+#: size of the model.  50 m is about fifteen storeys: above the street wall of
+#: every city this targets and well below its towers.
+HEIGHT_EXAGGERATION_REF_M = 50.0
+
+#: How hard ``curve = 1`` compresses.  The exponent is ``1 - curve * this``, so
+#: the strongest curve is a 0.4 power law: a 400 m tower gains 2.9x less than a
+#: 5 m shopfront does.  Bounded below 1 on purpose - at 1.0 the exponent would
+#: reach 0 and every building would print at exactly the reference height.
+HEIGHT_EXAGGERATION_CURVE_STRENGTH = 0.6
+
+
+def exaggerated_height(
+    h_m: float,
+    multiplier: float,
+    curve: float,
+    h_ref: float = HEIGHT_EXAGGERATION_REF_M,
+) -> float:
+    """A real building height in metres, exaggerated for printing.
+
+    ``curve = 0`` is the plain linear ``h * multiplier``, computed as exactly
+    that expression so a default-constructed PrintParams cannot move a single
+    bit of existing geometry.  ``curve`` in (0, 1] compresses the tall end:
+
+        h' = multiplier * h_ref * (h / h_ref) ** (1 - curve * 0.6)
+
+    which is continuous and strictly increasing in ``h`` for every legal
+    ``curve``, exact at ``h = h_ref`` for every curve, and gives short
+    buildings proportionally more than tall ones (the relative gain is
+    ``multiplier * (h / h_ref) ** (-0.6 * curve)``, which is above the
+    multiplier below the reference height and below it above).
+    """
+    height = float(h_m)
+    factor = float(multiplier)
+    bend = float(curve)
+    if height <= 0.0:
+        return 0.0
+    if bend <= 0.0 or h_ref <= 0.0:
+        return height * factor
+    exponent = 1.0 - bend * HEIGHT_EXAGGERATION_CURVE_STRENGTH
+    return factor * float(h_ref) * (height / float(h_ref)) ** exponent
+
+
+def real_world_equivalent_m(
+    h_m: float,
+    multiplier: float,
+    curve: float,
+    h_ref: float = HEIGHT_EXAGGERATION_REF_M,
+) -> float:
+    """The inverse of :func:`exaggerated_height`.
+
+    Given a height as the model SHOWS it (metres of unexaggerated building
+    that would print to the same roof), return the real-world height that
+    produced it, so the UI can write "at these settings a 25 m block reads as
+    a 40 m one" from measured numbers rather than from a second formula
+    ([V3-P3-G5]).  ``real_world_equivalent_m(exaggerated_height(h, m, c), m,
+    c) == h`` to within floating point for every legal ``m`` and ``c``.
+    """
+    height = float(h_m)
+    factor = float(multiplier)
+    bend = float(curve)
+    if height <= 0.0 or factor <= 0.0:
+        return 0.0
+    if bend <= 0.0 or h_ref <= 0.0:
+        return height / factor
+    exponent = 1.0 - bend * HEIGHT_EXAGGERATION_CURVE_STRENGTH
+    return float(h_ref) * (height / (factor * float(h_ref))) ** (1.0 / exponent)
+
+
+def height_exaggeration_multiplier(params: ParamsLike) -> float:
+    """``params.height_exaggeration.multiplier``, defaulting to 1.0."""
+    group = getattr(params, "height_exaggeration", None)
+    if group is None:
+        return 1.0
+    return float(getattr(group, "multiplier", 1.0))
+
+
+def height_exaggeration_curve(params: ParamsLike) -> float:
+    """``params.height_exaggeration.curve``, defaulting to 0.0 (linear)."""
+    group = getattr(params, "height_exaggeration", None)
+    if group is None:
+        return 0.0
+    return float(getattr(group, "curve", 0.0))
+
+
+def exaggerated_height_for(h_m: float, params: ParamsLike) -> float:
+    """:func:`exaggerated_height` with the parameters read off ``params``.
+
+    Short-circuits to the input at the v1/v2 defaults (1.0, 0.0) so nothing
+    downstream can drift by a rounding step while the feature is off.
+    """
+    factor = height_exaggeration_multiplier(params)
+    bend = height_exaggeration_curve(params)
+    if factor == 1.0 and bend <= 0.0:
+        return float(h_m)
+    return exaggerated_height(h_m, factor, bend)
 
 
 # --------------------------------------------------------------------------
@@ -447,6 +562,23 @@ def building_top_mm_for(
     raw = float(building.height_m) * scale * building_height_scale_for(
         building, params, is_hero
     )
+    return base_top_mm(params) + max(MIN_BUILDING_HEIGHT_MM, raw)
+
+
+def building_top_mm_exaggerated(
+    building: BuildingLike, params: ParamsLike, scale: float, is_hero: bool
+) -> float:
+    """:func:`building_top_mm_for` with ``height_exaggeration`` applied first.
+
+    The exaggeration is applied to the GROUND height, before the print scale
+    and before the 0.6 mm clamp, because it is a statement about the city and
+    not about the printer: a 3 m hut must still be raised to something the
+    nozzle can lay down after being exaggerated, not before ([V3-P3-G5]).  At
+    the defaults (multiplier 1.0, curve 0.0) :func:`exaggerated_height_for`
+    returns its input unchanged, so this IS ``building_top_mm_for``.
+    """
+    height = exaggerated_height_for(float(building.height_m), params)
+    raw = height * scale * building_height_scale_for(building, params, is_hero)
     return base_top_mm(params) + max(MIN_BUILDING_HEIGHT_MM, raw)
 
 

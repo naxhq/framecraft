@@ -23,7 +23,8 @@
  */
 
 import type { PrintParams, SceneGraph } from "./contracts";
-import { heroHeightKey } from "./heroes";
+import type { EngineBuilding } from "./engine/osm/types";
+import { effectiveHeroHeightKey, effectiveHeroIds } from "./heroes";
 import { resolvedOutputLines } from "./resolvedOutput";
 import type { TokenContext } from "./tokens";
 import * as T from "./transform";
@@ -42,6 +43,22 @@ export interface SceneWarning {
 }
 
 /**
+ * `params` with `hero_building_ids` widened to the EFFECTIVE hero set (manual
+ * plus, once `hero_auto` is on, the auto-promoted ones) when auto-detect is
+ * on; `params` itself, unchanged, otherwise.
+ *
+ * `transform.predicted_top_mm` (frozen to this phase's other builder) only
+ * ever reads `params.hero_building_ids`/`hero_mode`; this is how an
+ * auto-promoted hero's true-height boost reaches the 60 mm guard and the HUD
+ * without a change on that side of the file-ownership boundary.
+ */
+function effectiveParamsForHeight(graph: SceneGraph, params: PrintParams): PrintParams {
+  if (!params.hero_auto?.enabled) return params;
+  const ids = effectiveHeroIds(graph.buildings as EngineBuilding[], params);
+  return { ...params, hero_building_ids: ids };
+}
+
+/**
  * Height the finished print would reach, mm, or null when there is no scene.
  *
  * Straight from `transform.predicted_top_mm`, the function the bake's own guard
@@ -55,7 +72,7 @@ export function predictedTopMm(
   if (!graph) return null;
   const radius_m = T.radius_m_from_bounds(graph.bounds);
   if (!(radius_m > 0)) return null;
-  return T.predicted_top_mm(graph, params, radius_m);
+  return T.predicted_top_mm(graph, effectiveParamsForHeight(graph, params), radius_m);
 }
 
 /**
@@ -68,9 +85,10 @@ export function predictedTopMm(
  *
  * * `predicted_top_mm` (the 60 mm ceiling) -- the plate and the frame (they set
  *   the scale), the base thickness (the model starts on the base top), both
- *   height multipliers, the tree toggle, and -- since a hero is counted at its
- *   HERO height -- `heroHeightKey`, the string form of
- *   `transform.hero_height_ids`;
+ *   height multipliers, the tree toggle, and -- since a hero (manual or, once
+ *   `hero_auto` is on, auto-promoted) is counted at its HERO height --
+ *   `effectiveHeroHeightKey`, the string form of the EFFECTIVE id set over
+ *   `transform.hero_height_ids`'s own gate;
  * * `underside_min_base_mm` (the hanger floor) -- the base thickness again, the
  *   hanger, whether the underside mark is on, and `road_mode`/`water`, which
  *   BOTH move the minimum, because an engraved road or a lake takes material
@@ -108,6 +126,13 @@ export function warningDeps(
  * make picking a hanger re-run the building-height pass for nothing --
  * precisely the over-invalidation `previewDeps` exists to prevent
  * (`CityPreview.test.ts` asserts it, layer by layer).
+ *
+ * `effectiveHeroHeightKey` (not the manual-only `heroHeightKey`) is what makes
+ * `hero_auto` a REAL dependency here (phase 3, `[V3-P3-U]`): toggling it, or
+ * moving its count, changes this string exactly when the EFFECTIVE hero set
+ * (and therefore the predicted top) actually changes -- which needs a
+ * building for `hero_auto` to promote, so it is a no-op on an empty scene,
+ * same as every other hero move on one.
  */
 export function predictedTopDeps(
   graph: SceneGraph | null,
@@ -121,7 +146,7 @@ export function predictedTopDeps(
     params.small_scale,
     params.large_scale,
     params.trees,
-    heroHeightKey(params),
+    effectiveHeroHeightKey(graph ? (graph.buildings as EngineBuilding[]) : undefined, params),
   ];
 }
 

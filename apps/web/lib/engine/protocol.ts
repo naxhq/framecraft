@@ -22,8 +22,18 @@ import type { EngineInput, EngineResult } from "./types";
 // Messages
 // ---------------------------------------------------------------------------
 
-/** `EngineInput` minus `terrain`: a `TerrainSampler` carries a method and cannot cross a structured-clone boundary. Terrain is not wired into the UI yet (phase 3); the worker always bakes with `terrain: null`. */
-export type BakeWireInput = Omit<EngineInput, "terrain">;
+/**
+ * `EngineInput` as sent over the wire, unchanged.
+ *
+ * Phase 3: `EngineInput.terrain` is now a `TerrainGrid` (plain numbers plus a
+ * `Float32Array`), not a `TerrainSampler` -- a sampler carries a method and
+ * could never cross a structured-clone boundary, but a grid clones (and can be
+ * transferred) exactly like the `RegionMesh` buffers `runOneBake` already
+ * transfers back. `bake()` itself builds the sampler from the grid
+ * (`engine.ts:samplerFromGrid`), so nothing on this side of the boundary ever
+ * touches a function value.
+ */
+export type BakeWireInput = EngineInput;
 
 export interface IngestJobMessage {
   kind: "ingest";
@@ -163,9 +173,21 @@ export async function runIngestJob(msg: IngestJobMessage, post: Post): Promise<v
   }
 }
 
-/** Handle a `{kind:"cancel"}` message: abort the ingest fetch if it is still running. A `bake` job cannot be preempted mid-flight (see `runBakeJob`'s docstring), so a bake cancel is a documented no-op here; the client-side supersede is what actually protects the caller. */
+/**
+ * Handle a `{kind:"cancel"}` message.
+ *
+ * An ingest's fetch is aborted. A bake that is already RUNNING cannot be
+ * preempted mid-flight (see `runBakeJob`'s docstring) and the client-side
+ * supersede is what protects the caller there; but a bake still sitting in
+ * `queuedBake` has not started, and starting it after its own promise was
+ * rejected would spend a full Chicago-scale bake on a result that is dropped
+ * by id on arrival. So a cancel for the queued id drops it (v3-02 finding 7).
+ */
 export function cancelJob(msg: CancelMessage): void {
-  if (msg.jobKind !== "ingest") return;
+  if (msg.jobKind === "bake") {
+    if (queuedBake !== null && queuedBake.msg.id === msg.id) queuedBake = null;
+    return;
+  }
   ingestControllers.get(msg.id)?.abort();
 }
 
@@ -222,7 +244,7 @@ export async function runBakeJob(msg: BakeJobMessage, post: Post): Promise<void>
 async function runOneBake(msg: BakeJobMessage, post: Post): Promise<void> {
   post({ kind: "bake-progress", id: msg.id, message: "Baking..." });
   try {
-    const result = await bake({ ...msg.input, terrain: null });
+    const result = await bake(msg.input);
     const transfer: Transferable[] = [];
     for (const region of result.regions) {
       transfer.push(region.positions.buffer, region.indices.buffer);

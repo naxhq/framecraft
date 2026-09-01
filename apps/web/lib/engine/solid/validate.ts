@@ -13,8 +13,15 @@
  * | sits at zero | the assembly's minimum Z is 0 within 1 um |
  * | min wall | the morphological opening in `measure.ts` |
  * | degenerate faces | manifold3d's own epsilon-validity |
- * | - | no region overlaps another (they must partition the model) |
+ * | - | every region carries no body under the printable-speck floor |
  * | - | the whole thing is ONE connected body when the frame is on |
+ *
+ * The regions deliberately OVERLAP each other at every seam by 0.2 mm
+ * (`context.PART_OVERLAP_MM`, DECISIONS `[V3-P2-E2]`), so there is no
+ * partition check here and there must not be one. What replaced it is the
+ * connectivity check below and `engine.test.ts`'s own assertion that the union
+ * of the regions is exactly `merged`, which is the property the overlap exists
+ * to give.
  *
  * Nothing here throws. A failure is an `AuditFinding` with the measured number
  * in it, because the caller has to be able to show the user a model that is
@@ -22,6 +29,7 @@
  */
 
 import * as T from "../../transform";
+import type { PrintParams, SceneGraph } from "../../contracts";
 import type { AuditFinding, RegionMesh } from "../types";
 import { finding, type BakeContext } from "./context";
 import type { Manifold } from "./manifold";
@@ -190,21 +198,85 @@ export function validate(
   const required = T.min_wall_mm(ctx.params);
   if (minWall.measuredMm !== null && minWall.measuredMm < required) {
     const severe = minWall.measuredMm < MIN_WALL_FAIL_FACTOR * required;
+    const plate = biggerPlateMm(ctx.scene, ctx.params, ctx.radiusM);
+    // On a hillside the count and the remedy are both different. A horizontal
+    // slice cuts a sloped feature obliquely, so a groove wall that is a full
+    // wall thick measured across itself can present as a sliver in plan; the
+    // steeper the terrain the more of them there are, and the thing that
+    // actually helps is less relief, not a bigger plate (`[V3-P3-G16]`).
+    const hilly = ctx.terrain !== null;
+    const softer = Number((ctx.params.terrain_exaggeration / 2).toFixed(3));
+    const where =
+      minWall.thinRegions > 1
+        ? `${minWall.thinRegions} places are under it, the narrowest ` +
+          `${minWall.measuredMm.toFixed(3)} mm at z = ${(minWall.atZMm ?? 0).toFixed(2)} mm`
+        : `The narrowest wall measures ${minWall.measuredMm.toFixed(3)} mm at ` +
+          `z = ${(minWall.atZMm ?? 0).toFixed(2)} mm`;
+    const advice = hilly
+      ? " Terrain is on, and a level slice through a hillside cuts every groove and ridge " +
+        "at an angle, so they read narrower than they are built. Less exaggeration is the " +
+        "direct remedy; a bigger plate helps too."
+      : plate === null
+        ? " A bigger plate would print the same city larger; so would a smaller radius."
+        : "";
+    const fix =
+      hilly && softer > 0
+        ? {
+            label: `Halve the terrain exaggeration to ${softer}`,
+            safe: true,
+            patch: { terrain_exaggeration: softer },
+          }
+        : plate === null
+          ? null
+          : {
+              label: `Print it on a ${plate} mm plate`,
+              safe: false,
+              patch: { plate_mm: plate },
+            };
     out.push({
       id: "wall-too-thin",
       severity: severe ? "error" : "warning",
       title: "A wall is thinner than the nozzle can print",
       detail:
-        `The narrowest wall measures ${minWall.measuredMm.toFixed(3)} mm at ` +
-        `z = ${(minWall.atZMm ?? 0).toFixed(2)} mm, against ${required.toFixed(3)} mm for a ` +
-        `${ctx.params.nozzle_mm} mm nozzle.`,
-      fix: {
-        label: "Widen the crop so features print bigger",
-        safe: false,
-        patch: { nozzle_mm: Math.max(0.1, ctx.params.nozzle_mm / 2) },
-      },
+        `${where}, against ${required.toFixed(3)} mm for a ` +
+        `${ctx.params.nozzle_mm} mm nozzle.${advice}`,
+      ...(fix === null ? {} : { fix }),
     });
   }
 
   return out;
 }
+
+/**
+ * The plate that would print this city big enough, mm, or null.
+ *
+ * The fix for a thin wall is to make the MODEL bigger, not to tell the
+ * validator that the printer has a finer nozzle than it has. The previous patch
+ * here halved `nozzle_mm`, which changes nothing physical: it only halves the
+ * threshold this check compares against, so the warning goes away and the print
+ * still fails (v3-02 audit, MINOR 9). `nozzle_mm` describes the hardware and no
+ * automatic fix may ever write it.
+ *
+ * The answer comes from the shared advisor, which already solves for the
+ * smallest plate that brings the widened fraction back under its target, and
+ * falls back to one step up the plate range when the advisor has nothing to
+ * say. Null when the plate is already at the contract's maximum, in which case
+ * the finding carries the advice as prose instead of as a button, because a
+ * smaller radius is a change to the SceneRequest and not to PrintParams.
+ */
+export function biggerPlateMm(
+  scene: SceneGraph,
+  params: PrintParams,
+  radiusM: number,
+): number | null {
+  const recommended = T.recommend_plate_mm(scene, params, radiusM);
+  const candidate =
+    recommended !== null && recommended > params.plate_mm
+      ? recommended
+      : params.plate_mm + PLATE_STEP_MM;
+  const capped = Math.min(T.PLATE_MAX_MM, candidate);
+  return capped > params.plate_mm ? capped : null;
+}
+
+/** One step up the plate range when the advisor has no answer of its own, mm. */
+export const PLATE_STEP_MM = 20;

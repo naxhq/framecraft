@@ -1,5 +1,6 @@
 "use client";
 
+import { notServedSentence } from "@/lib/colourMap";
 import { EXPORT_TARGETS, EXPORT_TARGET_LABELS, type ExportTarget } from "@/lib/engine/export";
 import { useEditorStore } from "@/store/editor";
 
@@ -13,11 +14,16 @@ import { useEditorStore } from "@/store/editor";
  * per `packages/contracts/schema/print_params.json`.
  *
  * The single-nozzle colour-change target is explicitly labelled approximate:
- * it can only separate regions that do not share a Z band, and the report of
- * which ones do not (`lib/engine/export/colorchange.ts:planColorChanges`,
- * carried on `state.bake.plan` once that target has actually been baked)
- * is shown underneath so the limitation is visible before a print starts,
- * not discovered after.
+ * it can only separate regions that do not share a Z band, and which ones
+ * actually print in their own colour under the plan
+ * (`lib/engine/export/colorchange.ts:planColorChanges`'s `report[].served`,
+ * carried on `state.bake.plan` once that target has actually been baked, and
+ * summarised by `lib/colourMap.ts:notServedSentence`) is shown underneath so
+ * the limitation is visible before a print starts, not discovered after.
+ * `served` is the right question, not `separable`: a region can share Z
+ * layers with a neighbour (fail `separable`) and still get its own colour at
+ * the boundary (pass `served`), which the Chicago buildings do against the
+ * base (audit v3-02 finding 1's own follow-up note).
  */
 export function ExportMenu() {
   const target = useEditorStore((state) => state.params.export_target ?? "bambu-3mf");
@@ -57,10 +63,7 @@ export function ExportMenu() {
           className="max-w-[16rem] text-2xs leading-snug text-ink-faint"
         >
           Approximate: one nozzle, colour changes at the height bands the
-          geometry allows.{" "}
-          {plan.inseparable.length > 0
-            ? `${plan.inseparable.join(", ")} share layers with another region and print in whatever colour is loaded.`
-            : "Every region separates cleanly by height."}
+          geometry allows. {notServedSentence(plan)}
         </p>
       ) : null}
     </div>

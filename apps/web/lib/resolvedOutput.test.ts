@@ -152,4 +152,30 @@ describe("resolvedOutputLines", () => {
     expect(lines[0].emptyToken).toBeNull();
     expect(lines[0].reason).toBe("Line 1 has no text.");
   });
+
+  // --- phase 3: {hero} resolves to the top hero's name when there is one --
+
+  it("{hero} cuts the top hero's OSM name when the context carries one", () => {
+    const params = withParams({
+      frame: true,
+      engravings: [{ edge: "top", text: "{hero}" }],
+    });
+    const lines = resolvedOutputLines(params, { ...CTX, hero_name: "Willis Tower", hero_count: 1 });
+    expect(lines[0].status).toBe("cut");
+    expect(lines[0].text).toBe("Willis Tower");
+  });
+
+  it("{hero} falls back to the count with no name, and is empty with neither", () => {
+    const params = withParams({
+      frame: true,
+      engravings: [{ edge: "top", text: "{hero}" }],
+    });
+    const withCount = resolvedOutputLines(params, { ...CTX, hero_count: 3 });
+    expect(withCount[0].status).toBe("cut");
+    expect(withCount[0].text).toBe("3");
+
+    const withNeither = resolvedOutputLines(params, CTX);
+    expect(withNeither[0].status).toBe("skipped");
+    expect(withNeither[0].emptyToken).toBe("hero");
+  });
 });

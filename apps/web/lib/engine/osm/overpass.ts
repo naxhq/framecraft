@@ -87,6 +87,18 @@ export const USER_AGENT = "FrameCraft/0.1 (OSM-to-3D-print; browser engine)";
 const ATTEMPT_TIMEOUT_MS = 60_000;
 const BACKOFF_MS = [500, 1000, 2000];
 const RETRY_STATUSES = new Set([429, 503, 504]);
+
+/**
+ * Statuses that are a verdict on the QUERY, not on the mirror.
+ *
+ * Every mirror runs the same Overpass API against the same schema, so a
+ * malformed query (400) or one it will not process (422) comes back the same
+ * from all three; retrying it or failing over only multiplies one rejection
+ * into four. Everything else - a WAF's 403, a 500 or a 502 from an overloaded
+ * mirror, a network error, a timeout - says something about THIS endpoint, so
+ * the next attempt goes to the next mirror (v3-02 audit finding 6).
+ */
+const QUERY_FAULT_STATUSES = new Set([400, 422]);
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const CACHE_DB_NAME = "framecraft.overpass.v1";
 const CACHE_STORE = "responses";
@@ -324,6 +336,11 @@ export async function fetchOverpass(
         if (mirrorIndex < mirrors.length - 1) mirrorIndex++;
       } else {
         lastError = { kind: "bad-response", mirrorsTried: [...mirrorsTried], message: `HTTP ${response.status} from ${endpoint}` };
+        if (QUERY_FAULT_STATUSES.has(response.status)) {
+          // The query is what is wrong; no mirror and no wait will fix it.
+          return { ok: false, error: lastError };
+        }
+        if (mirrorIndex < mirrors.length - 1) mirrorIndex++;
       }
     } catch (err) {
       if (timeoutId !== undefined) clearTimeout(timeoutId);

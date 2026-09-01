@@ -223,17 +223,26 @@ export function thresholds_ground_m(params: ParamsLike, scale: number): Threshol
 /**
  * Vertical scale applied to terrain elevation.
  *
- * Terrain from DEM is out of scope for the MVP (01) and the heightmap is flat,
- * so this is 1.0 for every input. `terrain_exaggeration` is accepted and
- * carried through both implementations identically so the parameter, the code
- * path and the parity test all exist the day the DEM fetcher is switched on.
+ * `params.terrain_exaggeration` (v1 field, range [0, 3], default 1.0), and
+ * nothing else. This is THE ONE PLACE the exaggeration is applied
+ * (`[V3-P3-G1]`): the DEM grid `lib/engine/terrain/tiles.ts` fetches stays in
+ * raw metres above the tile minimum, so moving the slider re-bakes without
+ * re-fetching a single tile, and no other module may multiply by it again.
+ *
+ * Before v3 this returned 1.0 for every input because the MVP heightmap was
+ * flat. The DEM fetcher is now real, so the parameter is live. The default is
+ * 1.0, so every committed parity value is unchanged.
  */
 export function terrain_z_scale(params: ParamsLike): number {
-  void params.terrain_exaggeration;
-  return 1.0;
+  return params.terrain_exaggeration;
 }
 
-/** Print height of a terrain sample, mm above the base top. Always 0 in MVP. */
+/**
+ * Print height of a terrain sample, mm above the base top.
+ *
+ * `elevation_m` is metres above the grid minimum, so this is 0 at the lowest
+ * point of the crop and the base slab keeps its full thickness there.
+ */
 export function terrain_z_mm(
   elevation_m: number,
   params: ParamsLike,
@@ -241,6 +250,116 @@ export function terrain_z_mm(
 ): number {
   return elevation_m * scale * terrain_z_scale(params);
 }
+
+// ---------------------------------------------------------------------------
+// Height exaggeration (PrintParams v3 `height_exaggeration`)
+//
+// A separate knob from `small_scale` / `large_scale`: those two multiply a
+// building's height by its CLASS (tall or not), which is a step function at
+// 40 m and cannot make a two-storey street readable without turning a tower
+// into a spike. This one is continuous in the height itself.
+// ---------------------------------------------------------------------------
+
+/**
+ * Reference height the exaggeration curve pivots about, ground metres. A
+ * building of exactly this height is multiplied by `multiplier` whatever the
+ * curve is, so the curve redistributes emphasis without changing the overall
+ * size of the model. 50 m is about fifteen storeys: above the street wall of
+ * every city this targets and well below its towers.
+ */
+export const HEIGHT_EXAGGERATION_REF_M = 50.0;
+
+/**
+ * How hard `curve = 1` compresses. The exponent is `1 - curve * this`, so the
+ * strongest curve is a 0.4 power law: a 400 m tower gains 2.9x less than a 5 m
+ * shopfront does. Bounded below 1 on purpose - at 1.0 the exponent would reach
+ * 0 and every building would print at exactly the reference height.
+ */
+export const HEIGHT_EXAGGERATION_CURVE_STRENGTH = 0.6;
+
+/**
+ * A real building height in metres, exaggerated for printing.
+ *
+ * `curve = 0` is the plain linear `h * multiplier`, computed as exactly that
+ * expression so a default-constructed PrintParams cannot move a single bit of
+ * existing geometry. `curve` in (0, 1] compresses the tall end:
+ *
+ *     h' = multiplier * h_ref * (h / h_ref) ** (1 - curve * 0.6)
+ *
+ * which is continuous and strictly increasing in `h` for every legal `curve`,
+ * exact at `h = h_ref` for every curve, and gives short buildings
+ * proportionally more than tall ones (the relative gain is
+ * `multiplier * (h / h_ref) ** (-0.6 * curve)`, above the multiplier below the
+ * reference height and below it above).
+ */
+export function exaggerated_height(
+  h_m: number,
+  multiplier: number,
+  curve: number,
+  h_ref: number = HEIGHT_EXAGGERATION_REF_M,
+): number {
+  if (h_m <= 0.0) return 0.0;
+  if (curve <= 0.0 || h_ref <= 0.0) return h_m * multiplier;
+  const exponent = 1.0 - curve * HEIGHT_EXAGGERATION_CURVE_STRENGTH;
+  return multiplier * h_ref * Math.pow(h_m / h_ref, exponent);
+}
+
+/**
+ * The inverse of {@link exaggerated_height}.
+ *
+ * Given a height as the model SHOWS it (metres of unexaggerated building that
+ * would print to the same roof), return the real-world height that produced
+ * it, so the UI can write "at these settings a 25 m block reads as a 40 m one"
+ * from measured numbers rather than from a second formula (`[V3-P3-G5]`).
+ * `real_world_equivalent_m(exaggerated_height(h, m, c), m, c) === h` to within
+ * floating point for every legal `m` and `c`.
+ */
+export function real_world_equivalent_m(
+  h_m: number,
+  multiplier: number,
+  curve: number,
+  h_ref: number = HEIGHT_EXAGGERATION_REF_M,
+): number {
+  if (h_m <= 0.0 || multiplier <= 0.0) return 0.0;
+  if (curve <= 0.0 || h_ref <= 0.0) return h_m / multiplier;
+  const exponent = 1.0 - curve * HEIGHT_EXAGGERATION_CURVE_STRENGTH;
+  return h_ref * Math.pow(h_m / (multiplier * h_ref), 1.0 / exponent);
+}
+
+/** `params.height_exaggeration.multiplier`, defaulting to 1.0. */
+export function height_exaggeration_multiplier(params: ParamsLike): number {
+  return params.height_exaggeration?.multiplier ?? 1.0;
+}
+
+/** `params.height_exaggeration.curve`, defaulting to 0.0 (linear). */
+export function height_exaggeration_curve(params: ParamsLike): number {
+  return params.height_exaggeration?.curve ?? 0.0;
+}
+
+/**
+ * {@link exaggerated_height} with the parameters read off `params`.
+ *
+ * Short-circuits to the input at the v1/v2 defaults (1.0, 0.0) so nothing
+ * downstream can drift by a rounding step while the feature is off.
+ */
+export function exaggerated_height_for(h_m: number, params: ParamsLike): number {
+  const multiplier = height_exaggeration_multiplier(params);
+  const curve = height_exaggeration_curve(params);
+  if (multiplier === 1.0 && curve <= 0.0) return h_m;
+  return exaggerated_height(h_m, multiplier, curve);
+}
+
+/**
+ * camelCase aliases for the two helpers the UI calls directly.
+ *
+ * Every name in this file is snake_case so a reviewer can diff it against
+ * `transform.py` line by line, and that convention is not worth breaking for
+ * two functions. These aliases exist because the phase 3 brief names them in
+ * camelCase and a React component reads better with them (`[V3-P3-G5]`); they
+ * are the same function object, not a second implementation.
+ */
+export const exaggeratedHeight = exaggerated_height;
+export const realWorldEquivalentM = real_world_equivalent_m;
 
 // ---------------------------------------------------------------------------
 // Base plate and frame
@@ -402,6 +521,27 @@ export function building_top_mm_for(
 ): number {
   const raw =
     building.height_m * scale * building_height_scale_for(building, params, is_hero);
+  return base_top_mm(params) + Math.max(MIN_BUILDING_HEIGHT_MM, raw);
+}
+
+/**
+ * {@link building_top_mm_for} with `height_exaggeration` applied first.
+ *
+ * The exaggeration is applied to the GROUND height, before the print scale and
+ * before the 0.6 mm clamp, because it is a statement about the city and not
+ * about the printer: a 3 m hut must still be raised to something the nozzle
+ * can lay down after being exaggerated, not before (`[V3-P3-G5]`). At the
+ * defaults (multiplier 1.0, curve 0.0) `exaggerated_height_for` returns its
+ * input unchanged, so this IS `building_top_mm_for`.
+ */
+export function building_top_mm_exaggerated(
+  building: BuildingLike,
+  params: ParamsLike,
+  scale: number,
+  is_hero: boolean,
+): number {
+  const height = exaggerated_height_for(building.height_m, params);
+  const raw = height * scale * building_height_scale_for(building, params, is_hero);
   return base_top_mm(params) + Math.max(MIN_BUILDING_HEIGHT_MM, raw);
 }
 

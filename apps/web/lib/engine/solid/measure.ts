@@ -15,8 +15,15 @@
  * actually be asked to lay down.
  */
 
+import * as T from "../../transform";
 import type { BakeContext } from "./context";
-import { MIN_WALL_KEEP_FACTOR } from "./repair";
+import {
+  MIN_WALL_KEEP_FACTOR,
+  MIN_WALL_PROBE_FACTOR,
+  RESIDUE_AREA_RATIO,
+  hydraulicWidthMm,
+  residueParts,
+} from "./repair";
 import type { CrossSection, Manifold } from "./manifold";
 import { Arena, ROUND } from "./manifold";
 import type { RegionMesh } from "../types";
@@ -146,6 +153,51 @@ export function inscribedWidthMm(
 }
 
 /**
+ * The narrowest printable width anywhere in a slice region, print mm.
+ *
+ * `thicken.narrowest_width`, which is what the reference validator reports: the
+ * region's OWN inscribed width, lowered by the inscribed width of every
+ * appendage the `0.45 * min_wall` opening leaves behind.
+ *
+ * The difference from {@link inscribedWidthMm} alone is the whole reason the
+ * engine's gate and the reference validator disagreed on a draped model. The
+ * widest disc that fits somewhere in a region says nothing about a 0.14 mm wing
+ * hanging off it, and a FLAT bake never has one - Stage 1 strips or widens every
+ * thin appendage in 2D, so by the time a slice is taken there are none left. A
+ * DRAPED bake has them everywhere: the repair works on the flat footprint, and a
+ * horizontal cut through a hillside is an oblique cut through that footprint, so
+ * it produces wings the 2D repair never saw (`[V3-P3-G16]`).
+ *
+ * The cheap `4A/P` pre-filter goes in front of the residue machinery for the
+ * same reason `widenThinParts` uses it: a region with no thin limb has a
+ * hydraulic diameter well over a wall, and asking Clipper for its appendages
+ * costs four offsets that will find nothing.
+ */
+export function narrowestWidthMm(
+  ctx: BakeContext,
+  section: CrossSection,
+  maxMm: number,
+): number {
+  const minWall = ctx.thresholdsMm.minWall;
+  let width = inscribedWidthMm(section, maxMm);
+  if (!(minWall > 0) || width <= OPENING_RESOLUTION_MM) return width;
+  if (hydraulicWidthMm(section) >= 2 * minWall) return width;
+  const minDetail = ctx.thresholdsMm.minDetail;
+  const parts = residueParts(
+    ctx,
+    section,
+    MIN_WALL_PROBE_FACTOR * minWall,
+    RESIDUE_AREA_RATIO * minDetail * minDetail,
+  );
+  if (parts === null) return width;
+  for (const part of parts) {
+    width = Math.min(width, inscribedWidthMm(part, maxMm));
+    ctx.arena.drop(part);
+  }
+  return width;
+}
+
+/**
  * Does opening `section` by `width` keep enough of its area?
  *
  * Exposed on its own because the answer is worth having without the search
@@ -215,11 +267,82 @@ export function sliceHeights(ctx: BakeContext, topMm: number): number[] {
   return [...out].filter((z) => z > 0 && z < topMm).sort((a, b) => a - b);
 }
 
+/**
+ * Extra Z samples the DRAPED model needs, print mm. Empty for a flat bake.
+ *
+ * Every height above is a feature PLANE of the flat model: the mouth of a
+ * groove, the floor of a recess, just under the base top. Draping smears each
+ * of those planes over a band `reliefMm` tall, because the surface it belongs to
+ * now sits at a different height at every point of the plate. A fixed set of
+ * heights therefore samples each feature at one arbitrary point of its own
+ * range and misses the rest, which is exactly the gap the reference validator
+ * found and this measurement did not: the engine read 0.8 mm (saturated) on a
+ * 60 m-relief Chicago while the validator read 0.146 mm.
+ *
+ * So each flat height is walked across its own relief band. The count is capped
+ * because every slice is an erosion of a 40 000-vertex section, and the bands
+ * are shared: `MAX_DRAPED_SLICES` total, spread evenly over the union of the
+ * bands rather than per feature.
+ *
+ * This runs ONLY when a drape is active, so no flat bake samples a single extra
+ * height and the committed golden's numbers cannot move (`[V3-P3-G16]`).
+ */
+export function drapedSliceHeights(
+  ctx: BakeContext,
+  flat: readonly number[],
+  reliefMm: number,
+  topMm: number,
+): number[] {
+  if (!(reliefMm > 0) || flat.length === 0) return [];
+  const lowest = Math.min(...flat);
+  const highest = Math.min(topMm, Math.max(...flat) + reliefMm);
+  if (!(highest > lowest)) return [];
+  // A pitch fine enough to catch a feature that only presents thin over part of
+  // its band, floored so a huge relief does not ask for a thousand slices.
+  const wanted = Math.min(
+    MAX_DRAPED_SLICES,
+    Math.max(flat.length, Math.ceil((highest - lowest) / DRAPED_SLICE_PITCH_MM)),
+  );
+  const step = (highest - lowest) / wanted;
+  const out: number[] = [];
+  for (let i = 0; i <= wanted; i += 1) {
+    const z = lowest + i * step;
+    if (z > 0 && z < topMm) out.push(z);
+  }
+  return out;
+}
+
+/**
+ * Target pitch of the draped Z sweep, print mm.
+ *
+ * A quarter of the shallowest recess the contract allows (`depth_mm` floors at
+ * 0.2 mm), so no groove can pass between two samples unseen.
+ */
+export const DRAPED_SLICE_PITCH_MM = 0.05;
+
+/**
+ * Ceiling on the draped sweep's slice count.
+ *
+ * Each slice costs an erosion of the whole assembled section, so this is a time
+ * budget, not a resolution choice: 96 slices of the Chicago plate is about six
+ * seconds, which is a price worth paying on a bake the user asked to put a
+ * hillside under and never paid on one they did not.
+ */
+export const MAX_DRAPED_SLICES = 32;
+
 export interface MinWallReport {
   measuredMm: number | null;
   /** Z of the slice that produced the narrowest measurement. */
   atZMm: number | null;
   slices: number;
+  /**
+   * How many connected slice regions came out under the minimum wall.
+   *
+   * The narrowest number alone cannot tell "one sliver at the crop edge" from
+   * "every groove on the plate", and those want different advice. Counted the
+   * way the reference validator counts it: once per thin region per slice.
+   */
+  thinRegions: number;
 }
 
 /**
@@ -230,10 +353,25 @@ export interface MinWallReport {
  */
 export function measureMinWall(ctx: BakeContext, solid: Manifold): MinWallReport {
   const bbox = solid.boundingBox();
-  const heights = sliceHeights(ctx, bbox.max[2]);
+  const flat = sliceHeights(ctx, bbox.max[2]);
+  /** The printed relief, or null for a flat bake. Every terrain branch reads it. */
+  const draped =
+    ctx.terrain === null
+      ? null
+      : T.terrain_z_mm(ctx.terrain.rangeM, ctx.params, ctx.scale);
+  // A draped model needs the sweep as well as the planes: see
+  // `drapedSliceHeights`. `ctx.terrain` is null for every flat bake, so this is
+  // exactly `flat` there and no committed number can move.
+  const heights =
+    draped === null
+      ? flat
+      : [
+          ...new Set([...flat, ...drapedSliceHeights(ctx, flat, draped, bbox.max[2])]),
+        ].sort((a, b) => a - b);
   let narrowest: number | null = null;
   let atZ: number | null = null;
   let sampled = 0;
+  let thinRegions = 0;
   // Probed at HALF a wall, so "not thin" means a disc of a full minimum wall
   // fits - the same factor the repair keeps a region on
   // (`repair.MIN_WALL_KEEP_FACTOR`), so the gate and the repair cannot disagree
@@ -259,10 +397,18 @@ export function measureMinWall(ctx: BakeContext, solid: Manifold): MinWallReport
       // and only what does not is worth searching.
       components.push(...lean.decompose());
       for (const piece of components) {
-        const eroded = piece.offset(-probe, ROUND, 2, OPENING_SEGMENTS);
-        const thin = eroded.isEmpty();
-        eroded.delete();
-        if (!thin) continue;
+        // On a FLAT bake only a region that vanishes under the erosion probe is
+        // worth measuring: Stage 1 removed every thin appendage in 2D, so a
+        // region that holds a full disc holds it everywhere. A DRAPED bake is
+        // cut obliquely through those same footprints and grows wings the 2D
+        // repair never saw, so every persisting region is measured there, and
+        // measured by the appendage-aware rule (`[V3-P3-G16]`).
+        if (draped === null) {
+          const eroded = piece.offset(-probe, ROUND, 2, OPENING_SEGMENTS);
+          const thin = eroded.isEmpty();
+          eroded.delete();
+          if (!thin) continue;
+        }
         // A wall, or the top of a ridge? Only what survives one printed layer
         // upward is judged (`WALL_PERSIST_PER_NOZZLE`).
         if (!above.isEmpty()) {
@@ -271,7 +417,11 @@ export function measureMinWall(ctx: BakeContext, solid: Manifold): MinWallReport
           kept.delete();
           if (!survives) continue;
         }
-        const width = inscribedWidthMm(piece, ctx.thresholdsMm.minWall);
+        const width =
+          draped === null
+            ? inscribedWidthMm(piece, ctx.thresholdsMm.minWall)
+            : narrowestWidthMm(ctx, piece, ctx.thresholdsMm.minWall);
+        if (width < ctx.thresholdsMm.minWall) thinRegions += 1;
         if (narrowest === null || width < narrowest) {
           narrowest = width;
           atZ = z;
@@ -293,7 +443,7 @@ export function measureMinWall(ctx: BakeContext, solid: Manifold): MinWallReport
       above.delete();
     }
   }
-  return { measuredMm: narrowest, atZMm: atZ, slices: sampled };
+  return { measuredMm: narrowest, atZMm: atZ, slices: sampled, thinRegions };
 }
 
 /** Total triangles across every region. */

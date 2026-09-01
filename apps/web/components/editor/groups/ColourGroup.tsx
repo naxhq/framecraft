@@ -1,6 +1,14 @@
 "use client";
 
-import { colourRows, distinctSlots, exceedsProfileSlots, planMergeToSlots } from "@/lib/colourMap";
+import {
+  alignConflictsPatch,
+  colourRows,
+  distinctSlots,
+  exceedsProfileSlots,
+  planMergeToSlots,
+  printedColors,
+  slotColourConflicts,
+} from "@/lib/colourMap";
 import { DEFAULT_PRINT_PARAMS, PARAM_RANGES } from "@/lib/contracts";
 import type { PartColors, RegionColors, RegionSlots } from "@/lib/contracts";
 import type { RegionName } from "@/lib/engine/types";
@@ -129,6 +137,20 @@ export function ColourGroup() {
     });
   };
 
+  // Audit v3-02 finding 4: two regions sharing a slot but carrying different
+  // `region_colors` disagree with the exporter, which resolves one colour per
+  // SLOT (`export/common.ts:slotColors`, "first region in REGION_NAMES order
+  // wins"), silently. `printed` is what each row's swatch actually prints as;
+  // `conflicts` is what the warning below names.
+  const printed = printedColors(rows);
+  const conflicts = slotColourConflicts(rows);
+
+  const alignColours = (): void => {
+    const patch = alignConflictsPatch(conflicts);
+    if (Object.keys(patch).length === 0) return;
+    setNested("colour", { region_colors: { ...regionColors, ...patch } as RegionColors });
+  };
+
   return (
     <>
       <Segmented
@@ -185,42 +207,80 @@ export function ColourGroup() {
         hint="What the printed model, the Bambu project and the colour-change plan actually use: a slot and a colour per region. This is what the preview shows once a bake has run."
       >
         <div className="space-y-1.5" data-testid="colour-region-rows">
-          {rows.map((row) => (
-            <div
-              key={row.region}
-              data-testid={`colour-region-row-${row.region}`}
-              className="flex items-center justify-between gap-2 rounded-milled border border-line bg-plate-sunken px-2 py-1.5"
-            >
-              <span className="min-w-0 flex-1 truncate text-sm text-ink">
-                {REGION_LABELS[row.region]}
-              </span>
-              <select
-                id={`colour_slot_${row.region}`}
-                aria-label={`${REGION_LABELS[row.region]} filament slot`}
-                data-testid={`colour-slot-${row.region}`}
-                value={String(row.slot)}
-                onChange={(event) => setSlot(row.region, Number(event.target.value))}
-                className="rounded-milled border border-control bg-plate-raised px-1.5 py-1 text-2xs text-ink"
+          {rows.map((row) => {
+            const printedHex = printed.get(row.region) ?? row.colorHex;
+            const disagrees = printedHex.slice(0, 7).toLowerCase() !== row.colorHex.slice(0, 7).toLowerCase();
+            return (
+              <div
+                key={row.region}
+                data-testid={`colour-region-row-${row.region}`}
+                className="flex items-center justify-between gap-2 rounded-milled border border-line bg-plate-sunken px-2 py-1.5"
               >
-                {SLOT_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <input
-                id={`colour_color_${row.region}`}
-                type="color"
-                aria-label={`${REGION_LABELS[row.region]} colour`}
-                data-testid={`colour-color-${row.region}`}
-                value={row.colorHex.slice(0, 7)}
-                onChange={(event) => setColor(row.region, event.target.value)}
-                className="h-6 w-9 shrink-0"
-              />
-            </div>
-          ))}
+                <span className="min-w-0 flex-1 truncate text-sm text-ink">
+                  {REGION_LABELS[row.region]}
+                </span>
+                <select
+                  id={`colour_slot_${row.region}`}
+                  aria-label={`${REGION_LABELS[row.region]} filament slot`}
+                  data-testid={`colour-slot-${row.region}`}
+                  value={String(row.slot)}
+                  onChange={(event) => setSlot(row.region, Number(event.target.value))}
+                  className="rounded-milled border border-control bg-plate-raised px-1.5 py-1 text-2xs text-ink"
+                >
+                  {SLOT_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  id={`colour_color_${row.region}`}
+                  type="color"
+                  aria-label={`${REGION_LABELS[row.region]} colour`}
+                  data-testid={`colour-color-${row.region}`}
+                  value={row.colorHex.slice(0, 7)}
+                  onChange={(event) => setColor(row.region, event.target.value)}
+                  className="h-6 w-9 shrink-0"
+                />
+                {disagrees ? (
+                  <span
+                    role="img"
+                    data-testid={`colour-prints-as-${row.region}`}
+                    title={`Prints as ${printedHex.toUpperCase()}: another region sharing this slot wins`}
+                    aria-label={`${REGION_LABELS[row.region]} actually prints as ${printedHex.toUpperCase()}`}
+                    className="h-6 w-4 shrink-0 rounded-[2px] border border-control-strong"
+                    style={{ backgroundColor: printedHex }}
+                  />
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       </Field>
+
+      {conflicts.length > 0 ? (
+        <Note tone="warn" testId="colour-slot-conflicts">
+          <span className="block space-y-0.5">
+            {conflicts.map((conflict) => (
+              <span key={conflict.slot} className="block">
+                On slot {conflict.slot},{" "}
+                {conflict.losingRegions.map((region) => REGION_LABELS[region]).join(", ")}{" "}
+                {conflict.losingRegions.length === 1 ? "prints" : "print"} in{" "}
+                {REGION_LABELS[conflict.printedRegion]}&apos;s colour (
+                {conflict.printedColorHex.toUpperCase()}), not their own.
+              </span>
+            ))}
+          </span>{" "}
+          <button
+            type="button"
+            data-testid="align-slot-colours"
+            onClick={alignColours}
+            className="font-medium text-accent underline-offset-2 hover:underline"
+          >
+            Align colours to what will print
+          </button>
+        </Note>
+      ) : null}
 
       <SelectField
         id="printer_profile"

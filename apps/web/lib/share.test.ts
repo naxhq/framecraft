@@ -840,7 +840,20 @@ describe("a link is untrusted input", () => {
     );
     expect(outOfRange({ part_colors: { base: "red" } })).toContain("not in the form");
     expect(outOfRange({ trees: "yes" })).toContain("true/false");
-    expect(outOfRange({ schema_version: 3 })).toContain("must be 2");
+    // Audit v3-02 finding 11: the contract's own `schema_version` type is
+    // `2 | 3` (`contracts.ts`), so a value outside THAT pair is refused, not
+    // 3 itself -- 3 is the current default and a link naming it honestly
+    // must round-trip, which the next test asserts directly.
+    expect(outOfRange({ schema_version: 4 })).toContain("must be 2 or 3");
+    expect(outOfRange({ schema_version: 1 })).toContain("must be 2 or 3");
+  });
+
+  it("accepts either legal schema_version, including the current default", () => {
+    for (const version of [2, 3] as const) {
+      const decoded = decodeShare(payloadOf({ r: REQUEST, p: { schema_version: version } }));
+      expect(decoded.ok, String(version)).toBe(true);
+      if (decoded.ok) expect(decoded.params.schema_version).toBe(version);
+    }
   });
 
   it("refuses a setting this build has never heard of", () => {

@@ -1,5 +1,5 @@
 /**
- * The seven groups, and the persistence of which ones are collapsed.
+ * The nine groups, and the persistence of which ones are collapsed.
  *
  * The failure this file guards against is the one a `try { JSON.parse } catch`
  * usually still has: storage that is present but useless (a stray value, an old
@@ -43,12 +43,14 @@ afterEach(() => {
 });
 
 describe("the group table", () => {
-  it("names the seven groups the panel is built from", () => {
+  it("names the nine groups the panel is built from", () => {
     expect(GROUP_IDS).toEqual([
       "location",
       "scale",
       "buildings",
+      "heights",
       "surface",
+      "terrain",
       "frame",
       "colour",
       "output",
@@ -62,13 +64,15 @@ describe("the group table", () => {
     }
   });
 
-  it("starts with only the two personalisation groups collapsed", () => {
+  it("starts with the two personalisation groups and terrain collapsed", () => {
     const collapsed = defaultCollapsed();
     expect(collapsed).toEqual({
       location: false,
       scale: false,
       buildings: false,
+      heights: false,
       surface: false,
+      terrain: true,
       frame: true,
       colour: true,
       output: false,

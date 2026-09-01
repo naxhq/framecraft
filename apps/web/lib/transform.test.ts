@@ -40,6 +40,20 @@ interface ExpectedBuilding {
   is_hero: boolean;
   height_scale_for: number;
   top_mm_for: number;
+  /** v3: the ground height after `height_exaggeration`, metres. */
+  exaggerated_height_m: number;
+  /** v3: `top_mm_for` computed from that exaggerated height. */
+  top_mm_exaggerated: number;
+}
+
+/** v3: the exaggeration curve walked over the whole legal parameter rectangle. */
+interface ExpectedExaggerationRow {
+  multiplier: number;
+  curve: number;
+  h_ref_m: number;
+  heights_m: number[];
+  exaggerated_m: number[];
+  round_trip_m: number[];
 }
 
 interface ExpectedAdvisor {
@@ -91,6 +105,14 @@ interface ExpectedCase {
   thresholds_ground_m: { min_wall: number; min_gap: number; min_detail: number };
   base_top_mm: number;
   terrain_z_scale: number;
+  /** v3: `terrain_z_mm` at 0, 12.5 and 40 m above the grid minimum. */
+  terrain_z_mm: number[];
+  /** v3: the exaggeration read off these params, plus a sampled curve. */
+  height_exaggeration: {
+    multiplier: number;
+    curve: number;
+    for_height_m: number[];
+  };
   tree_min_radius_mm: number;
   max_height_mm: number;
   predicted_top_mm: number;
@@ -120,8 +142,15 @@ interface ExpectedCase {
 
 interface Expected {
   scene: string;
+  height_exaggeration_matrix: ExpectedExaggerationRow[];
   cases: ExpectedCase[];
 }
+
+/** The ground heights `height_exaggeration.for_height_m` is sampled at. */
+const HEIGHT_SAMPLES_M = [0.0, 3.0, 12.0, 50.0, 110.0, 442.0];
+
+/** The elevations `terrain_z_mm` is sampled at, metres above the grid minimum. */
+const TERRAIN_SAMPLES_M = [0.0, 12.5, 40.0];
 
 function loadJson<T>(relative: string): T {
   const url = new URL(`../../../fixtures/${relative}`, import.meta.url);
@@ -134,7 +163,7 @@ const expected = loadJson<Expected>("parity-expected.json");
 describe("fixtures", () => {
   it("point at the same scene and are non-trivial", () => {
     expect(expected.scene).toBe("fixtures/parity-scene.json");
-    expect(expected.cases).toHaveLength(7);
+    expect(expected.cases).toHaveLength(9);
     // The scene is 900 m of Chicago; the fifth case asks the advisor about a
     // 2 400 m crop of it, which is a parameter, not a property of the scene.
     // Cases 6 and 7 are the advisor's two remaining sentence shapes -- the
@@ -148,12 +177,16 @@ describe("fixtures", () => {
     // case 1's plate and frame ON PURPOSE -- the hero rule is the only thing that
     // moves in it -- and cases 6 and 7 share plate 100 with a 1.2 mm nozzle and
     // differ only in the radius, so five distinct scales over seven is correct.
-    expect(new Set(expected.cases.map((c) => c.scale_mm_per_m)).size).toBe(5);
+    // Case 8 shares case 1's scale for the same reason case 4 does (only the v3
+    // knobs move); case 9 turns the frame off, which is a sixth scale.
+    expect(new Set(expected.cases.map((c) => c.scale_mm_per_m)).size).toBe(6);
     // ... and the two bake-side rules mirrored here must actually fire in the
     // fixture, or this file could mirror a constant `false`.
     expect(expected.cases.map((c) => c.model_too_tall)).toEqual([
       false,
       true,
+      false,
+      false,
       false,
       false,
       false,
@@ -183,6 +216,56 @@ describe("fixtures", () => {
     ).toBe(true);
   });
 });
+
+describe.each(expected.height_exaggeration_matrix)(
+  "height exaggeration at multiplier $multiplier curve $curve",
+  (row) => {
+    it("matches the Python curve at every sampled height", () => {
+      expect(row.h_ref_m).toBe(T.HEIGHT_EXAGGERATION_REF_M);
+      expect(row.heights_m).toEqual(HEIGHT_SAMPLES_M);
+      row.heights_m.forEach((height, i) => {
+        // Ground metres, and the tallest sample is a 442 m tower at up to 4x,
+        // so this is compared relatively rather than through `groundEq` (which
+        // needs a case's scale, and this block has none).
+        const got = T.exaggerated_height(height, row.multiplier, row.curve);
+        expect(
+          Math.abs(got - row.exaggerated_m[i]),
+          `exaggerated_height(${height}): ${got} vs ${row.exaggerated_m[i]}`,
+        ).toBeLessThanOrEqual(1e-6 * Math.max(1, row.exaggerated_m[i]));
+      });
+    });
+
+    it("inverts through real_world_equivalent_m", () => {
+      row.heights_m.forEach((height, i) => {
+        const back = T.real_world_equivalent_m(
+          row.exaggerated_m[i],
+          row.multiplier,
+          row.curve,
+        );
+        expect(Math.abs(back - row.round_trip_m[i])).toBeLessThanOrEqual(
+          1e-6 * Math.max(1, height),
+        );
+        expect(Math.abs(back - height)).toBeLessThanOrEqual(1e-6 * Math.max(1, height));
+      });
+    });
+
+    it("is strictly increasing and exact at the reference height", () => {
+      const values = row.heights_m.map((h) =>
+        T.exaggerated_height(h, row.multiplier, row.curve),
+      );
+      for (let i = 1; i + 1 < values.length; i += 1) {
+        expect(values[i + 1]).toBeGreaterThan(values[i]);
+      }
+      expect(values[0]).toBe(0);
+      expect(
+        T.exaggerated_height(T.HEIGHT_EXAGGERATION_REF_M, row.multiplier, row.curve),
+      ).toBeCloseTo(row.multiplier * T.HEIGHT_EXAGGERATION_REF_M, 9);
+      // The camelCase aliases the UI imports are the same function, not a copy.
+      expect(T.exaggeratedHeight).toBe(T.exaggerated_height);
+      expect(T.realWorldEquivalentM).toBe(T.real_world_equivalent_m);
+    });
+  },
+);
 
 describe.each(expected.cases)("parity case $name", (expectedCase) => {
   const params = expectedCase.params;
@@ -285,6 +368,34 @@ describe.each(expected.cases)("parity case $name", (expectedCase) => {
     }
   });
 
+  it("agrees on the terrain vertical scale and the exaggeration curve", () => {
+    // v3: the DEM fetcher is live, so `terrain_exaggeration` is live too and
+    // the two implementations have to put a hill at the same height
+    // (`[V3-P3-G1]`). The preview draws this surface; the engine prints it.
+    expect(T.terrain_z_scale(params)).toBe(params.terrain_exaggeration);
+    TERRAIN_SAMPLES_M.forEach((elevation, i) => {
+      mmEq(
+        T.terrain_z_mm(elevation, params, scale),
+        expectedCase.terrain_z_mm[i],
+        `terrain_z_mm(${elevation})`,
+      );
+    });
+
+    expect(T.height_exaggeration_multiplier(params)).toBe(
+      expectedCase.height_exaggeration.multiplier,
+    );
+    expect(T.height_exaggeration_curve(params)).toBe(
+      expectedCase.height_exaggeration.curve,
+    );
+    HEIGHT_SAMPLES_M.forEach((height, i) => {
+      groundEq(
+        T.exaggerated_height_for(height, params),
+        expectedCase.height_exaggeration.for_height_m[i],
+        `exaggerated_height_for(${height})`,
+      );
+    });
+  });
+
   it("agrees on every building footprint metric and printed height", () => {
     expect(scene.buildings).toHaveLength(expectedCase.buildings.length);
     scene.buildings.forEach((building, i) => {
@@ -306,6 +417,19 @@ describe.each(expected.cases)("parity case $name", (expectedCase) => {
       expect(T.building_height_scale(building, params)).toBeCloseTo(want.height_scale, 9);
       mmEq(T.building_top_mm(building, params, scale), want.top_mm, `${want.id}.top_mm`);
       mmEq(T.building_bottom_mm(params), want.bottom_mm, `${want.id}.bottom_mm`);
+      // v3: the exaggerated height and the roof it produces. Equal to the two
+      // above in every case that leaves the knob alone (`[V3-P3-G5]`).
+      groundEq(
+        T.exaggerated_height_for(building.height_m, params),
+        want.exaggerated_height_m,
+        `${want.id}.exaggerated_height_m`,
+      );
+      const isHero = T.building_is_hero(building, params);
+      mmEq(
+        T.building_top_mm_exaggerated(building, params, scale, isHero),
+        want.top_mm_exaggerated,
+        `${want.id}.top_mm_exaggerated`,
+      );
     });
   });
 

@@ -35,24 +35,24 @@ export const LAYER_SEPARATION_MM = 0.02;
 /**
  * How far a POCKET is grown past the region that fills it, print mm.
  *
- * Strictly more than half of `LAYER_SEPARATION_MM`, and that is the whole
- * design. The layers are held 0.02 mm apart so no two of them ever share a
- * vertical face - a boolean across a coincident face leaves zero-area
- * triangles, 721 of them in the Chicago base before the separation went in.
- * But the strip of base that gap leaves BETWEEN TWO GROOVES is a free-standing
- * 0.02 mm wall, which is the narrowest thing on the plate.
+ * The surface layers ABUT: they tile the plate, and nothing holds them apart
+ * in plan (holding them apart leaves a free-standing rind of base between two
+ * grooves, which is the narrowest thing on the plate - see
+ * {@link LAYER_SEPARATION_MM}, which is used for Z only). Extruding two
+ * abutting pockets as they are therefore gives two COINCIDENT vertical faces,
+ * and a boolean across a coincident face leaves zero-area triangles: 721 of
+ * them in the Chicago base, 602 from the buildings/roads boundary alone.
  *
- * Growing each pocket by 0.012 mm resolves both at once: two pockets 0.02 mm
- * apart now overlap by 0.004 mm, so their union is one pocket and the wall
- * never exists, while the surfaces the kernel has to intersect are transversal
- * rather than coincident. Where the neighbour is a building or a flush park
- * the strip survives at 0.008 mm - and there it is harmless, because the wall
- * or the park stands right beside it and the two print as one mass.
+ * Growing every pocket by two micrometres makes neighbouring pockets OVERLAP
+ * instead, so every surface the kernel has to intersect is transversal. The
+ * cost is a two micrometre gap between a region's wall and the base around it,
+ * a hundredth of a layer height, filled by the first perimeter the slicer
+ * lays; the region still sits on the pocket's FLOOR, which is what welds it.
  *
- * The cost is an 0.012 mm gap between a region's wall and the base around it:
- * a fifth of a layer height, well under the tolerance of any printer this
- * targets. The region still sits on the pocket's floor, so it is welded to the
- * plate exactly as before.
+ * This is a different problem, at a different place, from the seam
+ * interpenetration of {@link PART_OVERLAP_MM}: the pockets carved into the
+ * base still tile it exactly, while the region SOLIDS are grown past their own
+ * pockets by a hundred times this. The two growths never interact.
  */
 export const POCKET_GROW_MM = 0.002;
 
@@ -122,7 +122,6 @@ export interface BakeContext {
   readonly recessClipHalfMm: number;
   readonly findings: AuditFinding[];
   readonly resolvedText: ResolvedLine[];
-  readonly warnings: string[];
 }
 
 export interface ContextInit {
@@ -168,7 +167,6 @@ export function makeContext(init: ContextInit): BakeContext {
     recessClipHalfMm: params.frame ? cropHalfMm : plateHalfMm + 4 * SIMPLIFY_EPS_MM,
     findings: [],
     resolvedText: [],
-    warnings: [],
   };
 }
 
@@ -223,14 +221,20 @@ export function regionColor(params: PrintParams, region: RegionName): string {
 
 /** Where a surface region sits relative to the base top, print mm. */
 export interface Placement {
-  /** Thickness of the region solid. */
+  /** Thickness the parameters ASKED for. */
   depthMm: number;
-  /** Offset of its TOP face from the base top; negative is recessed. */
+  /** Offset of the TOP face from the base top the parameters ASKED for. */
   proudMm: number;
   /** Z of the solid's underside. */
   bottomMm: number;
   /** Z of the solid's top face. */
   topMm: number;
+  /** Thickness actually built, `topMm - bottomMm`. */
+  builtDepthMm: number;
+  /** Offset actually built, `topMm - base_top`. */
+  builtProudMm: number;
+  /** True when the plate could not hold what the parameters asked for. */
+  clamped: boolean;
 }
 
 /**
@@ -244,13 +248,38 @@ export interface Placement {
 export const MAX_POCKET_FRACTION = 0.5;
 
 /**
- * Resolve one region's placement, clamped so it always welds and never punches
- * through the plate.
+ * Thinnest slab a surface region may be reduced to, print mm.
  *
- * The solid spans `[base_top + proud - depth, base_top + proud]`. Two clamps
- * apply: its underside never rises to the base top (or the region would float
- * on the surface with nothing holding it), and it never drops below half the
- * base thickness (or a groove would print with no floor under it).
+ * One layer at the commonest layer height, and the same number as
+ * {@link PART_OVERLAP_MM}. Below the contract's own defaults by a factor of two
+ * (the thinnest is `parks.depth_mm` at 0.4), so this clamp can never fire on a
+ * default-constructed PrintParams: it exists for the deep end of the schema's
+ * `proud_mm` range, not for ordinary use.
+ */
+export const MIN_REGION_DEPTH_MM = 0.2;
+
+/**
+ * Resolve one region's placement, clamped so it always welds, never punches
+ * through the plate, and is always a PART rather than nothing.
+ *
+ * The solid spans `[base_top + proud - depth, base_top + proud]`. Three clamps
+ * apply, in this order:
+ *
+ * 1. the underside never rises to the base top, or the region would float on
+ *    the surface with nothing holding it;
+ * 2. it never drops below half the base thickness, or a groove would print with
+ *    no floor under it;
+ * 3. the TOP is raised, if it has to be, so at least
+ *    {@link MIN_REGION_DEPTH_MM} of slab survives between the two.
+ *
+ * The third clamp is what the audit's MAJOR 3 was about. The schema allows
+ * `proud_mm` down to -2.0, and on a 3 mm base that put the requested top BELOW
+ * the deepest legal pocket floor: the extrusion came back with a non-positive
+ * height, `areas.ts` dropped the region on a bare `continue`, and a user who
+ * asked for deep water got a model with no water in it and no finding to say
+ * so. Now the deepest legal thing is built and `clamped` says the request was
+ * not honoured, so `buildSurfaceRegion` can name the region, the request and
+ * what it actually got.
  */
 export function placementOf(
   ctx: BakeContext,
@@ -260,7 +289,20 @@ export function placementOf(
   const baseTop = ctx.baseTopMm;
   const floor = baseTop * (1 - MAX_POCKET_FRACTION);
   const ceiling = baseTop - LAYER_SEPARATION_MM;
-  const top = baseTop + proudMm;
-  const bottom = Math.min(ceiling, Math.max(floor, top - depthMm));
-  return { depthMm, proudMm, bottomMm: bottom, topMm: top };
+  const asked = baseTop + proudMm;
+  const bottom = Math.min(ceiling, Math.max(floor, asked - depthMm));
+  const top = Math.max(asked, bottom + Math.min(MIN_REGION_DEPTH_MM, depthMm));
+  const builtDepth = top - bottom;
+  return {
+    depthMm,
+    proudMm,
+    bottomMm: bottom,
+    topMm: top,
+    builtDepthMm: builtDepth,
+    builtProudMm: top - baseTop,
+    // A tenth of the print grid: below this the difference is float noise from
+    // the clamp arithmetic, not a request the plate refused.
+    clamped:
+      Math.abs(builtDepth - depthMm) > 1e-6 || Math.abs(top - asked) > 1e-6,
+  };
 }

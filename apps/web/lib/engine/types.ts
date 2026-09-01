@@ -97,6 +97,20 @@ export interface EngineStats {
   depthMm: number;
   heightMm: number;
   elapsedMs: number;
+  /**
+   * v3 phase 3, all optional so every existing consumer stays valid.
+   *
+   * `terrainReliefMm` is the printed height of the hillside after
+   * `terrain_exaggeration`, absent when the bake is flat. The three counts are
+   * absent when the scene has nothing of that kind in it.
+   */
+  terrainReliefMm?: number;
+  /** Tree markers actually built. */
+  trees?: number;
+  /** Trees the printed-size floor removed. */
+  treesDropped?: number;
+  /** Elevated road and rail segments built as decks. */
+  bridges?: number;
 }
 
 export interface TileResult {
@@ -105,6 +119,25 @@ export interface TileResult {
   label: string;
   regions: RegionMesh[];
   bbox: Bbox3;
+}
+
+/**
+ * Structured-clone-friendly terrain heightfield in scene metres (ENU).
+ * The engine builds its sampler from this; the UI fetches DEM tiles into it.
+ * Grid row r, column c covers (originEastM + c*cellM, originNorthM + r*cellM);
+ * elevations are metres above the tile minimum, length = cols * rows.
+ */
+export interface TerrainGrid {
+  originEastM: number;
+  originNorthM: number;
+  cellM: number;
+  cols: number;
+  rows: number;
+  elevations: Float32Array;
+  /** max - min elevation across the grid, metres. */
+  rangeM: number;
+  /** Data source label for attribution and the hint UI. */
+  source: string;
 }
 
 /** Terrain sampler in scene metres (ENU); returns elevation in metres above the tile minimum. */
@@ -117,7 +150,7 @@ export interface EngineInput {
   scene: SceneGraph;
   /** Fully token-resolved params (see lib/bake.ts resolveParamsForBake). */
   params: PrintParams;
-  terrain?: TerrainSampler | null;
+  terrain?: TerrainGrid | null;
   /** Building ids promoted to heroes (manual plus auto). */
   heroIds?: string[];
   /**
@@ -137,11 +170,16 @@ export interface EngineResult {
   /**
    * Every region welded into one solid: what single-object formats write.
    *
-   * `regions` is a PARTITION - the pieces touch on shared faces and never
-   * overlap - so concatenating their triangles produces a mesh with interior
-   * walls and one body per region, which a slicer reads as a pile of shells
-   * rather than a model. This is the real boolean union: one body when the
-   * frame is on, with the buildings welded to the plate through their skirt.
+   * `regions` are separate watertight BODIES that interpenetrate at their seams
+   * by 0.2 mm (`solid/context.ts` `PART_OVERLAP_MM`, DECISIONS `[V3-P2-E2]`),
+   * so concatenating their triangles produces a mesh with interior walls and
+   * one body per region, which a slicer reads as a pile of shells rather than a
+   * model. This is the real boolean solid: one body when the frame is on, with
+   * the buildings welded to the plate through their skirt.
+   *
+   * It is also the ONLY volume a total, a filament estimate or a price may come
+   * from. Summing `RegionMesh.volumeMm3` double-counts every seam: +5.18 % on
+   * the Chicago plate.
    */
   merged: RegionMesh;
   stats: EngineStats;

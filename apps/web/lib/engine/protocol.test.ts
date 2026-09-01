@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { defaultPrintParams } from "../contracts";
 import { building, scene, square } from "./solid/fixture";
-import { resetBakeQueueForTest, runBakeJob, type BakeJobMessage, type Post } from "./protocol";
+import { cancelJob, resetBakeQueueForTest, runBakeJob, type BakeJobMessage, type Post } from "./protocol";
 import type { WorkerResponse } from "./protocol";
 
 function job(id: number): BakeJobMessage {
@@ -64,6 +64,32 @@ describe("runBakeJob: single-flight, latest-wins", () => {
     const kindsFor = (id: number) => posted.filter((m) => m.id === id).map((m) => m.kind);
     expect(kindsFor(1)).toEqual(["bake-progress", "bake-done"]);
     expect(kindsFor(3)).toEqual(["bake-progress", "bake-done"]);
+  });
+
+  it("a bake cancelled while it is still queued never starts, and cancelling the running one does not stop it", async () => {
+    resetBakeQueueForTest();
+    const posted: WorkerResponse[] = [];
+    const post: Post = (message) => posted.push(message);
+
+    const first = runBakeJob(job(1), post);
+    const second = runBakeJob(job(2), post); // queued behind job 1
+
+    // The client rejected job 2's promise (an unmount, or a dispose on the
+    // inline transport where terminate() is a no-op) and posted a cancel. Job
+    // 2 has not started, so it must never start (v3-02 finding 7).
+    cancelJob({ kind: "cancel", id: 2, jobKind: "bake" });
+    // Job 1 is already inside the kernel and cannot be preempted: cancelling
+    // it stays the documented no-op it has always been.
+    cancelJob({ kind: "cancel", id: 1, jobKind: "bake" });
+
+    await first;
+    await second;
+
+    // `runBakeJob` posts `bake-progress` synchronously before its first await,
+    // so if job 2 had been started from job 1's `finally` it would already be
+    // here.
+    expect(posted.map((m) => m.id)).not.toContain(2);
+    expect(posted.filter((m) => m.kind === "bake-done").map((m) => m.id)).toEqual([1]);
   });
 
   it("bakes requested one after another, each awaited, all run: coalescing never drops a request nothing superseded it", async () => {

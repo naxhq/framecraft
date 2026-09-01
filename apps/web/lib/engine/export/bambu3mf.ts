@@ -29,7 +29,7 @@
 
 import { resolveProfile, type PrinterProfile } from "../../printers";
 import type { EngineResult, ExportFile, RegionMesh } from "../types";
-import { customGcodePerLayerXml, CUSTOM_GCODE_PART, planColorChanges, type ColorChangePlan } from "./colorchange";
+import { constructionOverlapFor, customGcodePerLayerXml, CUSTOM_GCODE_PART, planColorChanges, type ColorChangePlan } from "./colorchange";
 import {
   ATTRIBUTION,
   LICENSE_LINE,
@@ -356,7 +356,11 @@ export function exportBambu3mf(result: EngineResult, options: Bambu3mfOptions = 
     throw new Error("a Bambu project needs at least one region with triangles");
   }
   const plan = singleNozzle
-    ? planColorChanges(placed.regions, { layerHeightMm: options.layerHeightMm, changeGcode: profile.changeGcode })
+    ? planColorChanges(placed.regions, {
+        layerHeightMm: options.layerHeightMm,
+        changeGcode: profile.changeGcode,
+        constructionOverlapMm: constructionOverlapFor(result.params),
+      })
     : null;
 
   const parts: BambuPart[] = placed.regions.map((region, index) => ({

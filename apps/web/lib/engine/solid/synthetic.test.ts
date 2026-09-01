@@ -11,8 +11,8 @@ import { describe, expect, it } from "vitest";
 
 import { defaultPrintParams, type PrintParams } from "../../contracts";
 import { bake } from "../engine";
-import type { EngineResult, RegionName, TerrainSampler } from "../types";
-import { building, scene, solidFromMesh, square, squareHole } from "./fixture";
+import type { EngineResult, RegionName } from "../types";
+import { building, hillGrid, scene, solidFromMesh, square, squareHole } from "./fixture";
 import { loadManifold, outstandingWasmObjects } from "./manifold";
 import * as T from "../../transform";
 
@@ -373,11 +373,8 @@ describe("hangers and underside text", () => {
 });
 
 describe("the terrain hook", () => {
-  it("lifts the plate top and says the rest is not draped yet", async () => {
-    const sampler: TerrainSampler = {
-      sampleM: (x, y) => 20 + 10 * Math.sin(x / 80) * Math.cos(y / 80),
-      rangeM: 20,
-    };
+  it("lifts the plate top, keeps the underside flat and stays one body", async () => {
+    const sampler = hillGrid(RADIUS_M);
     const flat = await bake({
       scene: scene({ radiusM: RADIUS_M }),
       params: defaultPrintParams(),
@@ -395,8 +392,22 @@ describe("the terrain hook", () => {
     expect(regionOf(hilly, "base")!.bbox.max[2]).toBeGreaterThan(
       regionOf(flat, "base")!.bbox.max[2],
     );
-    expect(hilly.findings.find((f) => f.id === "terrain-not-draped")).toBeDefined();
+    // The finding this used to raise said the layers were NOT draped. They are
+    // now, so it is gone; what is left is the plain fact that nothing errored.
+    expect(hilly.findings.find((f) => f.id === "terrain-not-draped")).toBeUndefined();
+    expect(hilly.findings.filter((f) => f.severity === "error")).toEqual([]);
     expect(regionOf(hilly, "base")!.bodies).toBe(1);
+    // Still sits on the bed: the drape's vertical ramp is zero at the chamfer,
+    // so the underside cannot move whatever the hillside does.
+    expect(regionOf(hilly, "base")!.bbox.min[2]).toBeCloseTo(0, 6);
+    // And the plate is still exactly the plate in X and Y: the plan taper takes
+    // the displacement to zero before it reaches the crop edge.
+    expect(regionOf(hilly, "base")!.bbox.max[0]).toBeCloseTo(
+      regionOf(flat, "base")!.bbox.max[0],
+      6,
+    );
+    expect(hilly.stats.terrainReliefMm).toBeGreaterThan(0);
+    expect(flat.stats.terrainReliefMm).toBeUndefined();
     expect(outstandingWasmObjects()).toBe(0);
   }, 120_000);
 });

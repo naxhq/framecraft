@@ -272,6 +272,39 @@ test("the v2 personalisation fields never trigger a fetch", async ({ page }) => 
 });
 
 // ==========================================================================
+// Slot colour conflicts (audit v3-02 MAJOR finding 4)
+// ==========================================================================
+
+test("a slot shared by regions of different colours warns, shows what will actually print, and aligns in one click", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("group-colour-toggle").click();
+
+  // The untouched default colour table already disagrees on slot 4 (roads,
+  // parks, rail, lettering and hero_building all share it with different
+  // `region_colors`).
+  const warning = page.getByTestId("colour-slot-conflicts");
+  await expect(warning).toBeVisible();
+  await expect(warning).toContainText("slot 4");
+
+  // Parks' own well disagrees with its "prints as" swatch.
+  const swatch = page.getByTestId("colour-prints-as-parks");
+  await expect(swatch).toBeVisible();
+  const printedTitle = (await swatch.getAttribute("title")) ?? "";
+  expect(printedTitle).toContain("Prints as #");
+  const ownValue = await page.locator("#colour_color_parks").inputValue();
+  log(`parks own colour: ${ownValue}; ${printedTitle}`);
+  expect(printedTitle.toLowerCase()).not.toContain(ownValue.toLowerCase());
+
+  // One click aligns every losing region to what will actually print --
+  // the warning clears once nothing disagrees any more.
+  await page.getByTestId("align-slot-colours").click();
+  await expect(warning).toHaveCount(0);
+  await expect(page.getByTestId("colour-prints-as-parks")).toHaveCount(0);
+});
+
+// ==========================================================================
 // Frame lettering in the preview
 // ==========================================================================
 
@@ -785,6 +818,67 @@ test("clicking a building in the preview picks it as a hero, and clicking it aga
   // ...and none of that triggered a fetch.
   await page.waitForTimeout(500);
   expect(calls.slice(before)).toEqual([]);
+});
+
+// ==========================================================================
+// Hero auto-detection (phase 3, docs/handoff/v3-03-ui.md)
+// ==========================================================================
+
+test("auto-detect promotes real, named landmarks on the Chicago fixture", async ({
+  page,
+}) => {
+  await generateChicago(page);
+
+  const buildingsToggle = page.getByTestId("group-buildings-toggle");
+  if ((await buildingsToggle.getAttribute("aria-expanded")) !== "true") {
+    await buildingsToggle.click();
+  }
+  await page.locator("#hero_auto_enabled").click();
+  await expect(page.locator("#hero_auto_enabled")).toHaveAttribute("aria-checked", "true");
+  // A generous quota: downtown Chicago carries plenty of named towers among
+  // its tallest and biggest-footprint buildings, but not every one of the
+  // very top few necessarily has an OSM `name` tag, so this widens the net
+  // rather than betting the test on exactly which one wins the score. Set
+  // AFTER enabling: the slider is disabled while auto-detect is off.
+  await setSlider(page, "hero_auto_count", 8);
+
+  const autoItems = page.getByTestId("hero-auto-item");
+  await expect(autoItems.first()).toBeVisible({ timeout: WARMUP_BUDGET_MS });
+  const names = await autoItems.allTextContents();
+  log(`auto-detected heroes: ${names.join(" | ")}`);
+  expect(names.length).toBeGreaterThan(0);
+  expect(names.some((text) => !text.includes("unnamed building"))).toBe(true);
+});
+
+test("{hero} resolves live in the frame-text editor once a hero is auto-detected", async ({
+  page,
+}) => {
+  await generateChicago(page);
+
+  const buildingsToggle = page.getByTestId("group-buildings-toggle");
+  if ((await buildingsToggle.getAttribute("aria-expanded")) !== "true") {
+    await buildingsToggle.click();
+  }
+  await page.locator("#hero_auto_enabled").click();
+  await expect(page.locator("#hero_auto_enabled")).toHaveAttribute("aria-checked", "true");
+
+  const frameToggle = page.getByTestId("group-frame-toggle");
+  if ((await frameToggle.getAttribute("aria-expanded")) !== "true") {
+    await frameToggle.click();
+  }
+  await page.getByTestId("engraving-add").click();
+  // The live "Cuts as:" preview (`EngravingsEditor.tsx`) is pure client-side
+  // token expansion (`FrameTextGroup`'s own `context`), independent of
+  // whether a fresh WASM bake has landed -- unlike the Resolved output panel,
+  // which can be reading the ENGINE's own (separately-owned) resolution by
+  // the time an assertion runs, this cannot race the debounced engine job.
+  await page.locator("#engraving_0_text").fill("{hero}");
+  const preview = page.getByTestId("engraving_0-preview");
+  await expect(preview).not.toContainText("{hero}");
+  await expect(preview).not.toContainText("nothing yet");
+  const cutsAs = ((await preview.textContent()) ?? "").trim();
+  log(`{hero} cuts as: ${cutsAs}`);
+  expect(cutsAs).not.toBe("Cuts as:");
 });
 
 // ==========================================================================

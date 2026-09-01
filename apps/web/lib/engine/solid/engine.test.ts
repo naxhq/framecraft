@@ -6,15 +6,21 @@
  * different parameter set says so and pays for its own bake.
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { defaultPrintParams, type PrintParams } from "../../contracts";
 import { bake } from "../engine";
+import { sceneFromOverpass } from "../osm/scene";
 import type { EngineResult } from "../types";
 import {
   PYTHON_REFERENCE_VOLUME_MM3,
   chicagoScene,
   overlapMm3,
+  rampGrid,
   solidFromMesh,
 } from "./fixture";
 import { loadManifold, outstandingWasmObjects } from "./manifold";
@@ -25,9 +31,20 @@ import * as T from "../../transform";
 /** The bake has to finish inside this, in Node, on a developer machine. */
 const TIME_BUDGET_MS = 15_000;
 
+/**
+ * The same budget for a DRAPED bake, in Node, on a developer machine.
+ *
+ * Draping refines the plate, the four surface layers and their grooves to
+ * `TERRAIN_CELL_MM` before warping them, which is real work on top of the flat
+ * bake rather than instead of it. Phase 3's own target is 6 s for the flat
+ * Chicago default; this is the hilly one and it gets the flat budget.
+ */
+const TERRAIN_TIME_BUDGET_MS = 15_000;
+
 /** How far the sum of the region volumes may sit from the Python reference. */
 const VOLUME_TOLERANCE = 0.05;
 
+const here = dirname(fileURLToPath(import.meta.url));
 const scene = chicagoScene();
 
 /** A mesh with its coordinates rounded the way `generic3mf` writes them. */
@@ -357,4 +374,173 @@ describe("chicago with lettering", () => {
     expect(after!.indices.length).toBeGreaterThan(before!.indices.length);
     expect(outstandingWasmObjects()).toBe(0);
   }, 180_000);
+});
+
+describe("chicago trees", () => {
+  it("drops all 5762 at plate 180 and prints them at plate 256", async () => {
+    // The Chicago Loop fixture carries 5 762 tree sites, every one of them
+    // 4.0 m across. At plate 180 the scale is 0.0933 mm/m, so a site prints at
+    // 0.373 mm against 04's 0.5 mm floor and none survive; at plate 256 it is
+    // 0.1356 mm/m and every one clears the floor, so `TREE_CAP` binds instead.
+    const small = await bake({ scene, params: defaultPrintParams(), date: "2026-08-30" });
+    expect(scene.trees).toHaveLength(5762);
+    expect(small.stats.trees ?? 0).toBe(0);
+    expect(small.stats.treesDropped).toBe(5762);
+    const dropped = small.findings.find((f) => f.id === "trees-too-small");
+    expect(dropped?.severity).toBe("info");
+    expect(dropped?.title).toContain("5762 of 5762");
+    // No trees means the parks region is exactly what it was without them.
+    expect(small.regions.find((r) => r.region === "parks")).toBeDefined();
+
+    const params: PrintParams = { ...defaultPrintParams(), plate_mm: 256 };
+    const big = await bake({ scene, params, date: "2026-08-30" });
+    expect(big.stats.trees ?? 0).toBeGreaterThan(0);
+    // The cap keeps the largest `TREE_CAP` of them; the rest of the 5 762 are
+    // reported as dropped, and some of the survivors then fall inside a
+    // building, road or water footprint and are reported as blocked.
+    expect(big.stats.trees!).toBeLessThanOrEqual(T.TREE_CAP);
+    expect(big.stats.trees! + big.stats.treesDropped!).toBe(5762);
+    const parks = big.regions.find((r) => r.region === "parks");
+    expect(parks).toBeDefined();
+    // Every marker is a separate body until the union with the base welds it.
+    expect(parks!.bodies).toBeGreaterThan(100);
+    expect(big.findings.filter((f) => f.severity === "error")).toEqual([]);
+    expect(big.merged.bodies).toBe(1);
+
+    console.info(
+      `[trees] plate 180: kept ${small.stats.trees ?? 0}, dropped ${small.stats.treesDropped}; ` +
+        `plate 256: kept ${big.stats.trees}, dropped ${big.stats.treesDropped}, ` +
+        `${big.stats.elapsedMs.toFixed(0)} ms`,
+    );
+    expect(outstandingWasmObjects()).toBe(0);
+  }, 300_000);
+});
+
+describe("chicago on a hillside", () => {
+  it("drapes every layer, stays printable and stays inside the time budget", async () => {
+    // 60 m of relief over the 1.8 km crop: the real range across the Loop is
+    // about 12 m, so this is five times the worst case the preset can produce.
+    const radiusM = T.radius_m_from_bounds(scene.bounds);
+    const grid = rampGrid(radiusM, 60, 30);
+    const started = Date.now();
+    const hilly = await bake({
+      scene,
+      params: defaultPrintParams(),
+      terrain: grid,
+      date: "2026-08-30",
+    });
+    const elapsed = Date.now() - started;
+
+    const flat = await bake({ scene, params: defaultPrintParams(), date: "2026-08-30" });
+    // The drape is a vertical shear, so it adds material and nothing else: the
+    // plate is exactly as wide and exactly as flat underneath as it was.
+    expect(hilly.merged.bbox.max[0]).toBeCloseTo(flat.merged.bbox.max[0], 6);
+    expect(hilly.merged.bbox.max[1]).toBeCloseTo(flat.merged.bbox.max[1], 6);
+    expect(hilly.merged.bbox.min[2]).toBeCloseTo(0, 6);
+    expect(hilly.merged.bbox.max[2]).toBeGreaterThan(flat.merged.bbox.max[2]);
+    expect(hilly.merged.volumeMm3).toBeGreaterThan(flat.merged.volumeMm3);
+    // Still one connected object with every region a valid solid.
+    expect(hilly.merged.bodies).toBe(1);
+
+    // ... and the engine is HONEST about what 60 m of relief costs. A level
+    // slice through a hillside cuts every groove and ridge at an angle, so some
+    // read narrower in plan than they are built, and the reference validator
+    // fails the file on it. The engine used to miss that entirely (it reported
+    // 0.8 mm, saturated) and now reports it with a count and a remedy that
+    // actually applies (`[V3-P3-G16]`). The finding is the REQUIRED behaviour
+    // here, not an accepted failure: a draped bake that reported nothing would
+    // be the bug.
+    const thin = hilly.findings.find((f) => f.id === "wall-too-thin");
+    expect(thin).toBeDefined();
+    expect(thin!.detail).toContain("Terrain is on");
+    expect(thin!.detail).toContain("places are under it");
+    expect(thin!.fix?.safe).toBe(true);
+    expect((thin!.fix?.patch as { terrain_exaggeration?: number }).terrain_exaggeration)
+      .toBeLessThan(hilly.params.terrain_exaggeration);
+    // Nothing else is wrong with it.
+    expect(hilly.findings.filter((f) => f.severity === "error").map((f) => f.id)).toEqual([
+      "wall-too-thin",
+    ]);
+    // The FLAT bake of the same scene reports none of it, which is what makes
+    // the sweep terrain-only.
+    expect(flat.findings.find((f) => f.id === "wall-too-thin")).toBeUndefined();
+    // Every draped region is still a solid manifold3d will take back, with no
+    // degenerate face and no open edge: the same three checks the reference
+    // validator runs on the written file, applied to the mesh that would be
+    // written. A warp that had folded a triangle would fail all three.
+    const wasm = await loadManifold();
+    for (const region of hilly.regions) {
+      expect(region.volumeMm3, region.region).toBeGreaterThan(0);
+      const solid = solidFromMesh(wasm, region);
+      try {
+        expect(solid.status(), region.region).toBe("NoError");
+        expect(degenerateFaces(region), region.region).toBe(0);
+        expect(openEdges(region), region.region).toBe(0);
+      } finally {
+        solid.delete();
+      }
+    }
+    expect(hilly.stats.terrainReliefMm).toBeCloseTo(
+      T.terrain_z_mm(grid.rangeM, hilly.params, T.scale_mm_per_m(hilly.params, radiusM)),
+      6,
+    );
+    expect(hilly.stats.triangles).toBeLessThan(2_000_000);
+    expect(outstandingWasmObjects()).toBe(0);
+
+    console.info(
+      `[terrain] chicago draped in ${elapsed} ms, ${hilly.stats.triangles} triangles ` +
+        `(flat ${flat.stats.triangles}), relief ${hilly.stats.terrainReliefMm?.toFixed(2)} mm, ` +
+        `height ${hilly.stats.heightMm.toFixed(2)} mm`,
+    );
+    expect(elapsed).toBeLessThan(TERRAIN_TIME_BUDGET_MS);
+  }, 600_000);
+});
+
+describe("chicago as the app ingests it", () => {
+  it("bakes the elevated network into one clean, connected model", async () => {
+    // The committed `fixtures/chicago-scene.json` comes from the Python
+    // service, which carries no `bridge`/`layer` tags and no rail layer, so it
+    // exercises none of phase 3's elevated geometry. The app bakes the scene
+    // its OWN ingest builds, and that one has 780 elevated ways in the Loop:
+    // every bridge defect this phase fixed was invisible on the committed
+    // fixture and obvious on this one (`[V3-P3-G13]`).
+    const raw = JSON.parse(
+      readFileSync(resolve(here, "../../../../../tests/fixtures/overpass-chicago-loop.json"), "utf8"),
+    ) as Parameters<typeof sceneFromOverpass>[0];
+    const params = defaultPrintParams();
+    const ingested = sceneFromOverpass(
+      raw,
+      { lat: 41.8827, lon: -87.6233, radius_m: 900, rotation_deg: 0 },
+      params,
+    );
+    const result = await bake({ scene: ingested, params, date: "2026-08-30" });
+
+    expect(result.stats.bridges ?? 0).toBeGreaterThan(500);
+    // One connected object, and every region a solid with no degenerate face
+    // and no open edge: the three checks the reference validator failed on
+    // before the deck was held clear of the buildings, the footing was turned
+    // 45 degrees off the street grid and its foot was moved off the grade
+    // roads' own underside.
+    expect(result.merged.bodies).toBe(1);
+    expect(degenerateFaces(result.merged)).toBe(0);
+    expect(openEdges(result.merged)).toBe(0);
+    for (const region of result.regions) {
+      expect(degenerateFaces(region), region.region).toBe(0);
+      expect(openEdges(region), region.region).toBe(0);
+      expect(region.volumeMm3, region.region).toBeGreaterThan(0);
+    }
+    // A deck that could not be grounded is DROPPED and counted, never shipped
+    // floating: at most a handful of the 780, and reported when there are any.
+    const loose = result.findings.find((f) => f.id === "bridge-unsupported");
+    if (loose !== undefined) {
+      expect(loose.severity).toBe("warning");
+      expect(loose.detail).toContain("left out");
+    }
+    expect(result.findings.filter((f) => f.severity === "error")).toEqual([]);
+    expect(outstandingWasmObjects()).toBe(0);
+    console.info(
+      `[ingest] ${result.stats.bridges} elevated ways, ${result.stats.triangles} triangles, ` +
+        `${result.merged.bodies} body, ${loose === undefined ? 0 : 1} unsupported finding`,
+    );
+  }, 300_000);
 });

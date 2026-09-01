@@ -5,6 +5,8 @@ import { useShallow } from "zustand/react/shallow";
 
 import { DEFAULT_PRINT_PARAMS, PARAM_LIMITS, PARAM_RANGES } from "@/lib/contracts";
 import type { NorthArrow, ScaleBar, UndersideMark } from "@/lib/contracts";
+import type { EngineBuilding } from "@/lib/engine/osm/types";
+import { heroTokenInfo } from "@/lib/heroes";
 import { textParamsKey } from "@/lib/previewText";
 import { resolve_text, type TokenContext } from "@/lib/tokens";
 import * as T from "@/lib/transform";
@@ -79,12 +81,25 @@ export function FrameTextGroup() {
   const underside = params.underside_mark ?? DEFAULT_UNDERSIDE;
 
   /**
+   * What `{hero}` says right now: the effective count (manual plus, once
+   * `hero_auto` is on, the auto-promoted ones) and the top one's name, if it
+   * has one (`lib/heroes.ts`, phase 3 `[V3-P3-U]`). `graph.buildings` is
+   * structurally an `EngineBuilding[]` at runtime -- see
+   * `lib/engine/osm/types.ts`.
+   */
+  const heroInfo = useMemo(
+    () => heroTokenInfo(graph ? (graph.buildings as EngineBuilding[]) : undefined, params),
+    // Same discipline as the context memo below: primitives/identity-stable
+    // references only, never `params` itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [graph, params.hero_building_ids, params.hero_auto?.enabled, params.hero_auto?.count],
+  );
+
+  /**
    * What the tokens say right now. The date is supplied by the caller and
    * never read inside the token table (DECISIONS [V2-P2]), so this is the one
    * place the clock is consulted.
    */
-  const heroCount = (params.hero_building_ids ?? []).length;
-
   const context: TokenContext = useMemo(
     () => {
       const sceneRadius = graph ? T.radius_m_from_bounds(graph.bounds) : radius_m;
@@ -100,7 +115,8 @@ export function FrameTextGroup() {
         state: params.place?.state ?? "",
         neighbourhood: params.place?.neighbourhood ?? "",
         author: params.place?.author ?? "",
-        hero_count: heroCount,
+        hero_count: heroInfo.count,
+        hero_name: heroInfo.name ?? undefined,
       };
     },
     // NEVER `params`: `store.setParam` rebuilds it by spread on every write, so
@@ -109,7 +125,7 @@ export function FrameTextGroup() {
     // `lettering_layout` below each time -- the exact trap `CityPreview`'s
     // `previewDeps` exists to avoid (audit v2-06 finding 7). These are all the
     // primitives the context actually reads: the scale is `usable_span_mm`,
-    // i.e. the plate and the frame; `place` and the hero count feed
+    // i.e. the plate and the frame; `place` and `heroInfo` feed
     // `{country}`/`{state}`/`{neighbourhood}`/`{author}`/`{hero}` ([V3-P1]).
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
@@ -125,7 +141,8 @@ export function FrameTextGroup() {
       params.place?.state,
       params.place?.neighbourhood,
       params.place?.author,
-      heroCount,
+      heroInfo.count,
+      heroInfo.name,
     ],
   );
 

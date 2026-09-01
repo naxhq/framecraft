@@ -14,6 +14,7 @@
 
 import type { PrintParams } from "./contracts";
 import { regionColor, regionSlot } from "./engine/solid/context";
+import type { RegionSeparability } from "./engine/export/colorchange";
 import { REGION_NAMES, type EngineResult, type RegionName } from "./engine/types";
 
 export interface ColourRow {
@@ -51,9 +52,111 @@ export function distinctSlots(rows: readonly ColourRow[]): number[] {
   return [...new Set(rows.map((row) => row.slot))].sort((a, b) => a - b);
 }
 
-/** True when `rows` uses more filament slots than the printer profile has. */
+/**
+ * True when `rows` addresses a slot NUMBER a profile does not have -- not
+ * merely more DISTINCT slots than the profile's count.
+ *
+ * Audit v3-02 finding 5: rows on slots {1,2,4,5} of a 4-slot profile have
+ * only 4 distinct values (`distinctSlots(rows).length === 4`), so a
+ * distinct-count comparison alone misses that slot 5 does not exist on a
+ * 4-slot AMS -- the export addresses it anyway (`export/common.ts:
+ * slotColors`'s own `maxSlot` reaches the highest slot NUMBER present, not
+ * the count of distinct ones).
+ */
 export function exceedsProfileSlots(rows: readonly ColourRow[], profileSlots: number): boolean {
-  return distinctSlots(rows).length > profileSlots;
+  if (distinctSlots(rows).length > profileSlots) return true;
+  return rows.some((row) => row.slot > profileSlots);
+}
+
+// ---------------------------------------------------------------------------
+// Slot colour conflicts (audit v3-02 finding 4)
+//
+// The Bambu/generic exporters resolve one filament colour per SLOT, from the
+// first region in REGION_NAMES order that uses it (`export/common.ts:
+// slotColors`); the preview paints each region with its OWN `colorHex`. With
+// the frozen defaults, roads/parks/rail/lettering/hero_building all share
+// slot 4 with four different colours, so the preview shows green parks and
+// gold lettering while the print makes them road-charcoal, silently. These
+// three functions mirror `slotColors`'s exact rule (same REGION_NAMES order,
+// same "first wins") so the panel's warning names the SAME colour the
+// exporter will actually write, never a second guess at it.
+// ---------------------------------------------------------------------------
+
+const REGION_ORDER = new Map<RegionName, number>(REGION_NAMES.map((name, index) => [name, index]));
+
+/** `rows`, sorted by REGION_NAMES order (ties keep their original relative order). */
+function byRegionNamesOrder(rows: readonly ColourRow[]): ColourRow[] {
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => {
+      const ra = REGION_ORDER.get(a.row.region) ?? REGION_NAMES.length;
+      const rb = REGION_ORDER.get(b.row.region) ?? REGION_NAMES.length;
+      return ra - rb || a.index - b.index;
+    })
+    .map(({ row }) => row);
+}
+
+/**
+ * The colour each region will actually PRINT: its slot's winner (the first
+ * region in REGION_NAMES order sharing that slot), exactly mirroring
+ * `export/common.ts:slotColors`. Equal to `row.colorHex` for a region that
+ * owns its slot alone, or that happens to be the winner.
+ */
+export function printedColors(rows: readonly ColourRow[]): Map<RegionName, string> {
+  const winnerBySlot = new Map<number, string>();
+  for (const row of byRegionNamesOrder(rows)) {
+    if (!winnerBySlot.has(row.slot)) winnerBySlot.set(row.slot, row.colorHex);
+  }
+  const out = new Map<RegionName, string>();
+  for (const row of rows) out.set(row.region, winnerBySlot.get(row.slot) ?? row.colorHex);
+  return out;
+}
+
+export interface SlotColourConflict {
+  slot: number;
+  /** The region whose colour wins on this slot. */
+  printedRegion: RegionName;
+  printedColorHex: string;
+  /** Every other region on this slot whose OWN colour differs from `printedColorHex`. */
+  losingRegions: RegionName[];
+}
+
+/** One entry per slot where two or more regions carry genuinely different colours, ascending by slot. */
+export function slotColourConflicts(rows: readonly ColourRow[]): SlotColourConflict[] {
+  const bySlot = new Map<number, ColourRow[]>();
+  for (const row of rows) {
+    const members = bySlot.get(row.slot) ?? [];
+    members.push(row);
+    bySlot.set(row.slot, members);
+  }
+  const conflicts: SlotColourConflict[] = [];
+  for (const [slot, members] of bySlot) {
+    if (new Set(members.map((member) => member.colorHex)).size <= 1) continue;
+    const [winner, ...rest] = byRegionNamesOrder(members);
+    const losingRegions = rest
+      .filter((member) => member.colorHex !== winner.colorHex)
+      .map((member) => member.region);
+    if (losingRegions.length === 0) continue;
+    conflicts.push({ slot, printedRegion: winner.region, printedColorHex: winner.colorHex, losingRegions });
+  }
+  return conflicts.sort((a, b) => a.slot - b.slot);
+}
+
+/**
+ * `colour.region_colors` overrides that align every losing region in
+ * `conflicts` onto its slot's printed colour, so the preview stops disagreeing
+ * with the print. One click, no `region_slots` change -- moving a region to
+ * its own slot is a bigger decision (it costs an AMS bay) than repainting the
+ * preview to tell the truth.
+ */
+export function alignConflictsPatch(
+  conflicts: readonly SlotColourConflict[],
+): Partial<Record<RegionName, string>> {
+  const patch: Partial<Record<RegionName, string>> = {};
+  for (const conflict of conflicts) {
+    for (const region of conflict.losingRegions) patch[region] = conflict.printedColorHex;
+  }
+  return patch;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,4 +301,38 @@ export function planMergeToSlots(rows: readonly ColourRow[], targetSlots: number
   });
 
   return { changed: true, regionSlots, regionColors };
+}
+
+// ---------------------------------------------------------------------------
+// Colour-change plan summary (ExportMenu.tsx)
+// ---------------------------------------------------------------------------
+
+/**
+ * The sentence `ExportMenu.tsx` shows under the single-nozzle colour-change
+ * target: which regions do NOT print in their own colour under a
+ * `ColorChangePlan`, and whose colour they print in instead.
+ *
+ * `report.filter((r) => !r.served)` is the list the sentence wants (audit
+ * v3-02 finding 1's follow-up note) -- `RegionSeparability.separable` is a
+ * STRICTER question ("does nothing on another slot share my layers at all")
+ * and a region can fail it while still being `served` (get its own colour at
+ * the boundary), the way the Chicago buildings do: buildings share the
+ * base's Z range through the 0.2 mm construction overlap and the skirt, so
+ * they are not `separable`, but the plan still gives them a change at the
+ * base top, so they ARE `served`. Using `separable`/`inseparable` here would
+ * wrongly say a served region prints in someone else's colour.
+ */
+export function notServedSentence(plan: { report: readonly RegionSeparability[] }): string {
+  const notServed = plan.report.filter((row) => !row.served);
+  if (notServed.length === 0) return "Every region prints in its own colour.";
+  return (
+    notServed
+      .map((row) => {
+        const other = row.lostTo[0] ?? row.conflicts[0];
+        return other
+          ? `${row.region} prints in the colour of ${other}`
+          : `${row.region} does not print in its own colour`;
+      })
+      .join("; ") + "."
+  );
 }
