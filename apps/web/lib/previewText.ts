@@ -4,7 +4,7 @@
  * Rules, the same three `lib/preview.ts` states for the city:
  *
  * 1. **No layout maths of its own.** Every size, anchor, rotation, refusal and
- *    warning comes from `transform.lettering_layout`, the mirror of the bake's
+ *    warning comes from `transform.lettering_layout`, the mirror of the build's
  *    `app/geom/transform.py`. This module turns those numbers into *shapes*
  *    -- glyph outlines, an arrowhead, a bar, a keyhole -- and nothing else. A
  *    string the editor shows on the bottom edge at 4.28 mm is cut on the bottom
@@ -18,7 +18,7 @@
  *    them through the identical earcut path and `previewText.test.ts` can check
  *    them in node.
  *
- * What the bake does that this cannot: it CUTS. An engraving here is a flat
+ * What the build does that this cannot: it CUTS. An engraving here is a flat
  * fill on the lip's top face, exactly as an engraved road is a flat fill on the
  * plate, and the approximation note in the viewport says so.
  */
@@ -57,7 +57,7 @@ export interface PreviewTextModel {
   /**
    * The shared math's own messages: auto-fitted sizes, dropped characters,
    * refusals, and the "the frame is off" line. Informational, verbatim -- these
-   * are the strings the bake reports for the same parameters.
+   * are the strings the build reports for the same parameters.
    */
   notices: string[];
   /** Rings actually drawn. The HUD publishes it so an e2e can see the text. */
@@ -184,7 +184,7 @@ function flatten(ring: Ring): number[] {
 // ---------------------------------------------------------------------------
 
 /**
- * The bake's `place()`: mirror in the LOCAL frame first, then rotate CCW by
+ * The build's `place()`: mirror in the LOCAL frame first, then rotate CCW by
  * `rotation_deg`, then translate to the anchor. Mirroring first is what makes
  * the underside mark read correctly once the plate is turned over.
  */
@@ -238,7 +238,7 @@ function partToArea(
  *
  * The advance widths come from `transform.font_metrics` (the same table the fit
  * was computed from) and never from the outline asset, so a glyph whose ink is
- * wider than its advance still advances by exactly what the bake advanced by.
+ * wider than its advance still advances by exactly what the build advanced by.
  */
 export function glyphAreas(
   asset: GlyphFace,
@@ -317,7 +317,7 @@ export function scaleBarAreas(layout: T.ScaleBarLayout): PreviewArea[] {
   return out;
 }
 
-/** Segments per full circle, matching the bake's `buffer(quad_segs=16)`. */
+/** Segments per full circle, matching the build's `buffer(quad_segs=16)`. */
 export const CIRCLE_SEGMENTS = 64;
 
 function circle(cx: number, cy: number, r: number): PreviewArea {
@@ -332,7 +332,7 @@ function circle(cx: number, cy: number, r: number): PreviewArea {
 /**
  * The keyhole hanger's footprint, in plate mm, as ONE closed outline.
  *
- * The bake unions a circle, a box and a second circle; the browser never runs a
+ * The build unions a circle, a box and a second circle; the browser never runs a
  * boolean, so the same shape is walked analytically instead: the long arc round
  * the bottom of the 8 mm entry, up the right side of the slot, over the slot's
  * rounded end, and down the left side. Exact up to the polygonal arcs -- the
@@ -345,8 +345,8 @@ function circle(cx: number, cy: number, r: number): PreviewArea {
  * `cos(angle) = half / radius` -- 60 degrees for a 4 mm slot in an 8 mm entry,
  * not 30. With `asin` the arc terminated at `(cx + 3.464, cy + 2)`, which is
  * not on the slot's side at all, and the segment to the cap was a slanted
- * chord: 0.93 mm of radial error against the bake's union, by two orders of
- * magnitude the largest preview-vs-bake error in the phase (audit v2-06
+ * chord: 0.93 mm of radial error against the build's union, by two orders of
+ * magnitude the largest preview-vs-build error in the phase (audit v2-06
  * finding 2).
  */
 export function keyholeArea(params: PrintParams): PreviewArea {
@@ -517,7 +517,7 @@ export function buildPreviewText(
   // it gates the arrow and the bar (`transform.north_arrow_layout` and
   // `scale_bar_layout` take `have_frame`; the engraving loop does not, because
   // the layout still has to MEASURE them to warn about them). With no frame
-  // there is nothing at `lip_top` for the bake's cutter to cut, which is what
+  // there is nothing at `lip_top` for the build's cutter to cut, which is what
   // its "the frame is off ... turn the frame on to print them" warning says --
   // so drawing the letters here would float them 2 mm above an empty plate.
   if (frame_available) {

@@ -7,7 +7,7 @@
  *
  * Which trees survive is NOT a rule this file invents. It is
  * `transform.select_tree_indices_for`, the same shared predicate the reference
- * bake and the preview already filter on, so a tree the preview draws is a tree
+ * build and the preview already filter on, so a tree the preview draws is a tree
  * the model has. That predicate is 04's 0.5 mm printed-radius floor raised to
  * whatever puts a full minimum wall across the flats of an eight-gon, and it is
  * capped at `TREE_CAP` keeping the largest.
@@ -23,7 +23,7 @@
  */
 
 import * as T from "../../transform";
-import type { BakeContext } from "./context";
+import type { BuildContext } from "./context";
 import { PART_OVERLAP_MM, addFinding, finding } from "./context";
 import type { Drape } from "./drape";
 import { drapeSurfaceMm } from "./drape";
@@ -66,7 +66,7 @@ export interface BuiltTrees {
  * flats of the eight-gon, the same argument `transform.tree_min_radius_mm`
  * makes for the cone's own base.
  */
-export function minTrunkRadiusMm(ctx: BakeContext): number {
+export function minTrunkRadiusMm(ctx: BuildContext): number {
   return ctx.thresholdsMm.minWall / (2 * Math.cos(Math.PI / T.TREE_SIDES));
 }
 
@@ -78,7 +78,7 @@ export function minTrunkRadiusMm(ctx: BakeContext): number {
  * dropped rather than left standing on a roof or in a river.
  */
 export function buildTrees(
-  ctx: BakeContext,
+  ctx: BuildContext,
   blockers: readonly (CrossSection | null)[],
   drape: Drape | null,
 ): BuiltTrees {
@@ -95,7 +95,7 @@ export function buildTrees(
 
   const index = new EdgeIndex(blockers);
   const { wasm, arena, scale } = ctx;
-  // A deeper skirt than a building's, and for a reason a flat bake never sees:
+  // A deeper skirt than a building's, and for a reason a flat build never sees:
   // a tree is placed rigidly, at the terrain height under its own centre, while
   // the surface it stands on is a warped mesh whose triangles interpolate the
   // same field. The two agree to the chord error of that mesh, so the tree has
@@ -178,7 +178,7 @@ export function buildTrees(
  * either registered by the caller or deleted by it.
  */
 function treePieces(
-  ctx: BakeContext,
+  ctx: BuildContext,
   radius: number,
   height: number,
   trunkFloorMm: number,
@@ -202,7 +202,7 @@ function treePieces(
 }
 
 /** One info finding for the whole layer, with the count, as the brief asks. */
-function reportDropped(ctx: BakeContext, dropped: number, total: number): void {
+function reportDropped(ctx: BuildContext, dropped: number, total: number): void {
   if (dropped <= 0) return;
   const floor = T.tree_min_radius_mm(ctx.params);
   addFinding(

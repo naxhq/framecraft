@@ -205,7 +205,7 @@ export interface Bambu3mfExport extends ExportFile {
   objectId: number;
   /** Every part id, plate by plate, in region order. */
   partIds: number[];
-  /** Plates in the project: 1 for an untiled bake, one per tile otherwise. */
+  /** Plates in the project: 1 for an untiled build, one per tile otherwise. */
   plates: number;
 }
 
@@ -217,7 +217,7 @@ export interface BambuPart {
 
 /**
  * One plate of the project: one ModelObject, built from one tile's regions (or
- * from the whole model when the bake was not tiled).
+ * from the whole model when the build was not tiled).
  */
 export interface BambuPlate {
   /** One-based plate number, and the object's backup id and sub-model file. */
@@ -478,7 +478,7 @@ export function bambuPlateJson(input: PlateJsonInput): string {
 /**
  * The regions that go on each plate.
  *
- * One plate for an untiled bake; one per tile otherwise, in the order the
+ * One plate for an untiled build; one per tile otherwise, in the order the
  * engine produced them (west to east, south to north). A tile with no geometry
  * is dropped rather than becoming an empty plate the slicer would complain
  * about.
@@ -505,7 +505,7 @@ export function exportBambu3mf(result: EngineResult, options: Bambu3mfOptions = 
 
   // The colour-change plan is a property of ONE printed object, so it is only
   // available for a single-plate project; `export/index.ts` routes a tiled
-  // colour-change bake to one file per tile instead.
+  // colour-change build to one file per tile instead.
   const plan =
     singleNozzle && groups.length === 1
       ? planColorChanges(placeInBuildSpace(groups[0].regions).regions, {

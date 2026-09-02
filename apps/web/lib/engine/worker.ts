@@ -4,7 +4,7 @@
  * this (`new Worker(new URL("./worker.ts", import.meta.url), {type:
  * "module"})`); nothing else imports it.
  *
- * Deliberately thin: every byte of actual logic (ingest, bake, cancellation)
+ * Deliberately thin: every byte of actual logic (ingest, build, cancellation)
  * lives in `protocol.ts` so the in-page fallback transport runs identically.
  * This file's only job is wiring `self.onmessage`/`self.postMessage` to it.
  *
@@ -17,7 +17,7 @@
 
 import { installWasmBasePathFetchShim } from "../basePath";
 import { perfDrainTimings, perfEnabled, perfMark, setPerfEnabled } from "../perf";
-import { cancelJob, runBakeJob, runIngestJob, type Post, type WorkerRequest, type WorkerResponse } from "./protocol";
+import { cancelJob, runBuildJob, runIngestJob, type Post, type WorkerRequest, type WorkerResponse } from "./protocol";
 
 // Under a sub-path deployment (NEXT_PUBLIC_BASE_PATH set) the manifold WASM
 // fetch needs its prefix; installed before any job can run. No-op otherwise.
@@ -41,7 +41,7 @@ const ctx = self as unknown as WorkerSelf;
 const post: Post = (message, transfer) => {
   if (
     perfEnabled() &&
-    (message.kind === "ingest-done" || message.kind === "bake-done" || message.kind === "bake-error")
+    (message.kind === "ingest-done" || message.kind === "build-done" || message.kind === "build-error")
   ) {
     perfMark("engine.post");
     message.timings = perfDrainTimings();
@@ -59,9 +59,9 @@ ctx.onmessage = (event) => {
       setPerfEnabled(msg.perf === true);
       void runIngestJob(msg, post);
       return;
-    case "bake":
+    case "build":
       setPerfEnabled(msg.perf === true);
-      void runBakeJob(msg, post);
+      void runBuildJob(msg, post);
       return;
     default: {
       const never: never = msg;

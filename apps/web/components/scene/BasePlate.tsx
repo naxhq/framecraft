@@ -8,7 +8,7 @@ import * as T from "@/lib/transform";
  * transform: the slab runs z = 0 .. `base_thickness_mm`, the lip is 6 mm wide
  * and rises 2 mm above the base top (04 stage 2.1 / 2.2).
  *
- * The 0.6 mm bottom chamfer that kills elephant foot is a bake-only detail: it
+ * The 0.6 mm bottom chamfer that kills elephant foot is a build-only detail: it
  * is invisible at preview scale and modelling it would cost a custom
  * geometry per frame.
  */

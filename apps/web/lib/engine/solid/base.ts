@@ -8,17 +8,17 @@
  * which is what makes the angle 45 degrees); the plate is centred on the
  * origin, so the uniform scale about the origin is exact.
  *
- * The plate is built FLAT whether or not this bake has terrain. Draping is a
+ * The plate is built FLAT whether or not this build has terrain. Draping is a
  * vertical shear applied to the finished solids (`solid/drape.ts`), and a shear
  * is a bijection of space, so `warp(plate - cutters) == warp(plate) -
  * warp(cutters)`: carving flat and draping afterwards gives exactly the model
  * that carving a draped plate with draped cutters would, for a fraction of the
  * work and with the seam geometry provably untouched. Nothing in this file
- * needs to know whether the bake is hilly.
+ * needs to know whether the build is hilly.
  */
 
 import * as T from "../../transform";
-import type { BakeContext } from "./context";
+import type { BuildContext } from "./context";
 import { CUTTER_OVERSHOOT_MM } from "./context";
 import type { Manifold } from "./manifold";
 import {
@@ -31,7 +31,7 @@ import {
 } from "./manifold";
 
 /** The uncarved plate. */
-export function buildPlate(ctx: BakeContext): Manifold {
+export function buildPlate(ctx: BuildContext): Manifold {
   const { wasm, arena } = ctx;
   const half = ctx.plateHalfMm;
   const thickness = ctx.baseTopMm;
@@ -75,7 +75,7 @@ export function buildPlate(ctx: BakeContext): Manifold {
  * the base still has (`context.PART_OVERLAP_MM`, DECISIONS `[V3-P2-E2]`).
  */
 export function carveBase(
-  ctx: BakeContext,
+  ctx: BuildContext,
   plate: Manifold,
   cutters: readonly (Manifold | null)[],
 ): Manifold {
@@ -83,6 +83,6 @@ export function carveBase(
 }
 
 /** Z a cutter reaches up to, mm. */
-export function cutterTopMm(ctx: BakeContext): number {
+export function cutterTopMm(ctx: BuildContext): number {
   return ctx.baseTopMm + CUTTER_OVERSHOOT_MM;
 }

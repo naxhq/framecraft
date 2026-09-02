@@ -9,8 +9,8 @@
  *
  * Since FrameCraft v3 E4 `fetch` is ONLY ever touched by the ingest job
  * (`generate()` -> `EngineClient.ingest()` -> Overpass) -- never by a
- * PrintParams write, and never by Bake, which runs the browser engine and
- * exports a Blob. Everywhere else in this file the scene/engine/bake state is
+ * PrintParams write, and never by Export, which runs the browser engine and
+ * exports a Blob. Everywhere else in this file the scene/engine/export state is
  * injected directly with `setState`, exactly as it was before, so the vast
  * majority of these tests still cost nothing to run: no WASM, no worker, no
  * network.
@@ -18,7 +18,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { bakeDone, bakeDownloadLinks, initialBakeState, runExport } from "@/lib/bake";
+import { exportDone, exportDownloadLinks, initialExportState, runExport } from "@/lib/exportFlow";
 import { DEFAULT_PRINT_PARAMS, defaultPrintParams } from "@/lib/contracts";
 import type { PrintParams, SceneGraph, SceneRequest } from "@/lib/contracts";
 import type { EngineResult, RegionMesh } from "@/lib/engine/types";
@@ -191,7 +191,7 @@ beforeEach(() => {
     params: defaultPrintParams(),
     scene: { status: "idle", graph: null, message: null, request: null, stale: false },
     engine: { ...initialEngineState },
-    bake: { ...initialBakeState },
+    exportState: { ...initialExportState },
     placeDetect: { ...IDLE_PLACE_DETECT },
     presetChosen: false,
   });
@@ -201,7 +201,7 @@ beforeEach(() => {
 
 afterEach(() => {
   // Drops any 400 ms debounced engine job `setParam`/`setNested` scheduled:
-  // without this, a real bake (WASM, off whatever `scene.graph`/`params` a
+  // without this, a real build (WASM, off whatever `scene.graph`/`params` a
   // LATER test happens to have set) can fire after this test already
   // returned, since these are real timers.
   useEditorStore.getState().cancelEngineJob();
@@ -619,11 +619,11 @@ describe("generate", () => {
 });
 
 // ==========================================================================
-// Bake staleness and the Bake action ([V3 E4]: the browser engine + export)
+// Export staleness and the Export action ([V3 E4]: the browser engine + export)
 // ==========================================================================
 
-/** Put the store in "Chicago is previewed, the engine is fresh and a bake of it just finished". */
-function withFinishedBake(): void {
+/** Put the store in "Chicago is previewed, the engine is fresh and an export of it just finished". */
+function withFinishedExport(): void {
   const graph = fixtureScene();
   const result = fakeEngineResult();
   const outcome = runExport(result, "stl", graph);
@@ -636,31 +636,31 @@ function withFinishedBake(): void {
       stale: false,
     },
     engine: { status: "ready", result, error: null, stale: false },
-    bake: bakeDone(initialBakeState, "stl", outcome, result.findings),
+    exportState: exportDone(initialExportState, "stl", outcome, result.findings),
   });
 }
 
-describe("bake staleness", () => {
+describe("export staleness", () => {
   it("starts current and keeps its download links", () => {
-    withFinishedBake();
-    const bake = useEditorStore.getState().bake;
-    expect(bake.phase).toBe("done");
-    expect(bake.stale).toBe(false);
-    expect(bakeDownloadLinks(bake)).toHaveLength(2); // the mesh file + the sidecar
+    withFinishedExport();
+    const exportState = useEditorStore.getState().exportState;
+    expect(exportState.phase).toBe("done");
+    expect(exportState.stale).toBe(false);
+    expect(exportDownloadLinks(exportState)).toHaveLength(2); // the mesh file + the sidecar
   });
 
   it("goes stale on EVERY PrintParams control, keeping the engine result", () => {
     for (const [key, value] of PARAM_MOVES) {
-      withFinishedBake();
+      withFinishedExport();
       useEditorStore.getState().setParam(key, value as never);
       const state = useEditorStore.getState();
-      expect(state.bake.stale, `${key} left the bake looking current`).toBe(true);
+      expect(state.exportState.stale, `${key} left the export looking current`).toBe(true);
       expect(state.engine.stale, `${key} left the engine result looking current`).toBe(true);
-      // The result is KEPT (the stats card still shows the last real bake) but
+      // The result is KEPT (the stats card still shows the last real build) but
       // it may no longer be offered as a download.
       expect(state.engine.result).not.toBeNull();
-      expect(state.bake.phase).toBe("done");
-      expect(bakeDownloadLinks(state.bake)).toHaveLength(0);
+      expect(state.exportState.phase).toBe("done");
+      expect(exportDownloadLinks(state.exportState)).toHaveLength(0);
       useEditorStore.getState().cancelEngineJob();
     }
   });
@@ -684,9 +684,9 @@ describe("bake staleness", () => {
       ],
     ];
     for (const [name, act] of cases) {
-      withFinishedBake();
+      withFinishedExport();
       act();
-      expect(useEditorStore.getState().bake.stale, `${name} did not invalidate the bake`).toBe(
+      expect(useEditorStore.getState().exportState.stale, `${name} did not invalidate the export`).toBe(
         true,
       );
       expect(useEditorStore.getState().engine.stale, `${name} did not invalidate the engine result`).toBe(
@@ -696,25 +696,25 @@ describe("bake staleness", () => {
     }
   });
 
-  it("does not invalidate a bake that is still exporting", () => {
-    useEditorStore.setState({ bake: { ...initialBakeState, phase: "exporting" } });
+  it("does not invalidate an export that is still running", () => {
+    useEditorStore.setState({ exportState: { ...initialExportState, phase: "exporting" } });
     useEditorStore.getState().setParam("plate_mm", 256);
-    const bake = useEditorStore.getState().bake;
-    expect(bake.phase).toBe("exporting");
-    expect(bake.stale).toBe(false);
+    const exportState = useEditorStore.getState().exportState;
+    expect(exportState.phase).toBe("exporting");
+    expect(exportState.stale).toBe(false);
     useEditorStore.getState().cancelEngineJob();
   });
 
-  it("is cleared by the next bake", async () => {
-    withFinishedBake();
+  it("is cleared by the next export", async () => {
+    withFinishedExport();
     // A fresh, un-stale engine result already sits in the store (as it would
-    // once the debounced job actually landed), so `requestBake()` reuses it
-    // rather than running a real WASM bake here.
-    await useEditorStore.getState().requestBake();
+    // once the debounced job actually landed), so `requestExport()` reuses it
+    // rather than running a real WASM build here.
+    await useEditorStore.getState().requestExport();
     const state = useEditorStore.getState();
-    expect(state.bake.stale).toBe(false);
-    expect(state.bake.phase).toBe("done");
-    expect(state.bake.target).toBe("bambu-3mf"); // the contract default export_target
+    expect(state.exportState.stale).toBe(false);
+    expect(state.exportState.phase).toBe("done");
+    expect(state.exportState.target).toBe("bambu-3mf"); // the contract default export_target
   });
 });
 
@@ -776,8 +776,8 @@ describe("the active preset chip", () => {
   });
 });
 
-describe("bake gating", () => {
-  it("refuses to bake a scene with fewer than 20 buildings", async () => {
+describe("export gating", () => {
+  it("refuses to export a scene with fewer than 20 buildings", async () => {
     const sparse = fixtureScene();
     sparse.buildings = sparse.buildings.slice(0, 5);
     sparse.stats = { building_count: 5, coverage: "empty", height_tag_ratio: 0.5 };
@@ -791,12 +791,12 @@ describe("bake gating", () => {
       },
     });
 
-    await useEditorStore.getState().requestBake();
+    await useEditorStore.getState().requestExport();
 
     expect(fetchSpy).not.toHaveBeenCalled();
-    const bake = useEditorStore.getState().bake;
-    expect(bake.phase).toBe("failed");
-    expect(bake.error).toContain("enlarge the radius");
+    const exportState = useEditorStore.getState().exportState;
+    expect(exportState.phase).toBe("failed");
+    expect(exportState.error).toContain("enlarge the radius");
   });
 
   it("exports through the fresh engine result for a good scene, never a network call", async () => {
@@ -807,13 +807,13 @@ describe("bake gating", () => {
       engine: { status: "ready", result, error: null, stale: false },
     });
 
-    await useEditorStore.getState().requestBake();
+    await useEditorStore.getState().requestExport();
 
     expect(fetchSpy).not.toHaveBeenCalled();
     const state = useEditorStore.getState();
-    expect(state.bake.phase).toBe("done");
-    expect(state.bake.target).toBe("bambu-3mf");
-    expect(state.bake.files.length).toBeGreaterThan(0);
+    expect(state.exportState.phase).toBe("done");
+    expect(state.exportState.target).toBe("bambu-3mf");
+    expect(state.exportState.files.length).toBeGreaterThan(0);
   });
 });
 
@@ -868,10 +868,10 @@ describe("hero buildings", () => {
     expect(useEditorStore.getState().params.hero_building_ids).toEqual([]);
   });
 
-  it("retires a finished bake, because a hero changes the geometry", () => {
-    withFinishedBake();
+  it("retires a finished export, because a hero changes the geometry", () => {
+    withFinishedExport();
     useEditorStore.getState().toggleHero("w3");
-    expect(useEditorStore.getState().bake.stale).toBe(true);
+    expect(useEditorStore.getState().exportState.stale).toBe(true);
   });
 });
 
@@ -942,7 +942,7 @@ describe("setPrinterProfile", () => {
     useEditorStore.getState().cancelEngineJob();
   });
 
-  it("stales the engine and the bake, exactly like an ordinary setParam", () => {
+  it("stales the engine and the export, exactly like an ordinary setParam", () => {
     useEditorStore.setState({
       engine: { status: "ready", result: fakeEngineResult(), error: null, stale: false },
     });
@@ -964,10 +964,10 @@ describe("setPrinterProfile", () => {
 // ==========================================================================
 
 describe("applyFinding / applySafeFindingFixes", () => {
-  it("applies one finding's patch as one settings change and stales the engine/bake", () => {
+  it("applies one finding's patch as one settings change and stales the engine/export", () => {
     useEditorStore.setState({
       engine: { status: "ready", result: fakeEngineResult(), error: null, stale: false },
-      bake: { ...initialBakeState, phase: "done" },
+      exportState: { ...initialExportState, phase: "done" },
     });
     const outcome = useEditorStore.getState().applyFinding({
       id: "exceeds-height",
@@ -979,7 +979,7 @@ describe("applyFinding / applySafeFindingFixes", () => {
     expect(outcome.applied).toEqual(["exceeds-height"]);
     expect(useEditorStore.getState().params.large_scale).toBe(0.5);
     expect(useEditorStore.getState().engine.stale).toBe(true);
-    expect(useEditorStore.getState().bake.stale).toBe(true);
+    expect(useEditorStore.getState().exportState.stale).toBe(true);
     useEditorStore.getState().cancelEngineJob();
   });
 
@@ -1190,7 +1190,7 @@ describe("a shared link", () => {
 
   it("marks the scene stale and does NOT fetch", () => {
     // Opening a link in a background tab is not consent to a live Overpass
-    // query. Generate is the user's move, exactly as it is after a moved pin.
+    // query. Preview is the user's move, exactly as it is after a moved pin.
     useEditorStore.getState().loadShared(`?s=${shared()}`);
     expect(fetchSpy).not.toHaveBeenCalled();
     const state = useEditorStore.getState();
@@ -1199,11 +1199,11 @@ describe("a shared link", () => {
     expect(state.scene.status).toBe("idle");
   });
 
-  it("retires a finished bake, like every other parameter change", () => {
-    withFinishedBake();
+  it("retires a finished export, like every other parameter change", () => {
+    withFinishedExport();
     useEditorStore.getState().loadShared(`?s=${shared()}`);
-    expect(useEditorStore.getState().bake.stale).toBe(true);
-    expect(bakeDownloadLinks(useEditorStore.getState().bake)).toEqual([]);
+    expect(useEditorStore.getState().exportState.stale).toBe(true);
+    expect(exportDownloadLinks(useEditorStore.getState().exportState)).toEqual([]);
   });
 
   it("does not light a preset chip for a scene nobody has fetched", () => {
@@ -1283,7 +1283,7 @@ describe("the engine job debounce", () => {
   });
 
   it("cancelEngineJob drops a pending job without throwing", () => {
-    withFinishedBake();
+    withFinishedExport();
     useEditorStore.getState().setParam("plate_mm", 220);
     expect(() => useEditorStore.getState().cancelEngineJob()).not.toThrow();
     // Calling it again (nothing pending) is still a no-op, not an error.

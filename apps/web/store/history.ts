@@ -14,9 +14,9 @@
  * -- so one call in, one history entry out, with no special-casing here.
  *
  * `location`/`params` are the only slices recorded (`HistorySnapshot`);
- * `scene`, `engine`, `bake`, `placeDetect`, `terrain` and the transient UI
+ * `scene`, `engine`, `exportState`, `placeDetect`, `terrain` and the transient UI
  * flags are never diffed, which is what keeps a geocode result, a live engine
- * job or a bake's own progress out of the history the brief asks for.
+ * job or an export's own progress out of the history the brief asks for.
  *
  * Undo/redo write back through `store/editor.ts`'s own `applyHistorySnapshot`,
  * using the EXACT snapshot object already held in an entry (never a copy):

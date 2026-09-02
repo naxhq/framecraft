@@ -4,7 +4,7 @@
  *
  *   1:10,714   ·   34.7 mm tall   ·   0.80 mm min wall
  *
- * All three come from code that is shared with the bake, not from local
+ * All three come from code that is shared with the build, not from local
  * arithmetic: the ratio through `lib/tokens.ts` (the mirrored token table, so
  * the number in the HUD is the number engraved on the frame), the height
  * through `warnings.predictedTopMm` (which is `transform.predicted_top_mm`, the
@@ -27,7 +27,7 @@ export interface SpecReadout {
   label: string;
   value: string;
   testId: string;
-  /** `danger` past `warnings.heightCeilingMm`: the bake will refuse this model. */
+  /** `danger` past `warnings.heightCeilingMm`: the build will refuse this model. */
   tone: "normal" | "danger";
 }
 
@@ -55,7 +55,7 @@ export function scaleRatio(
  *
  * Deliberately three items: scale, height, wall. The building and tree counts
  * live in the second HUD line, and the full measured table stays in the
- * sidebar's Output group -- a predicted number and a baked number must never
+ * sidebar's Output group -- a predicted number and a built number must never
  * sit in the same table (DECISIONS [P5-web]).
  */
 export function specStrip(

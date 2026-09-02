@@ -22,7 +22,7 @@
  */
 
 import { perfSpan } from "../../perf";
-import type { BakeContext, Placement } from "./context";
+import type { BuildContext, Placement } from "./context";
 import {
   PART_OVERLAP_MM,
   POCKET_GROW_MM,
@@ -81,7 +81,7 @@ export const SURFACE_ORDER = ["water", "rail", "roads", "parks"] as const;
 export type SurfaceName = (typeof SURFACE_ORDER)[number];
 
 /** The contract's per-region placement, with the v1 defaults as the fallback. */
-export function placementFor(ctx: BakeContext, region: SurfaceName): Placement {
+export function placementFor(ctx: BuildContext, region: SurfaceName): Placement {
   const spec = ctx.params.regions?.[region];
   const fallback: Record<SurfaceName, [number, number]> = {
     water: [1.0, -0.5],
@@ -94,7 +94,7 @@ export function placementFor(ctx: BakeContext, region: SurfaceName): Placement {
 }
 
 /** Contours for one layer, print mm. */
-function layerContours(ctx: BakeContext, region: SurfaceName): Contour[] {
+function layerContours(ctx: BuildContext, region: SurfaceName): Contour[] {
   switch (region) {
     case "water":
       return ctx.params.water ? areaContours(ctx.scene.water, ctx.scale) : [];
@@ -119,7 +119,7 @@ function layerContours(ctx: BakeContext, region: SurfaceName): Contour[] {
  * safe one-click fix back to a depth this base can hold.
  */
 function reportClampedPlacement(
-  ctx: BakeContext,
+  ctx: BuildContext,
   region: SurfaceName,
   placement: Placement,
 ): void {
@@ -162,7 +162,7 @@ function reportClampedPlacement(
  * ever reaches past the printed edge.
  */
 export function buildSurfaceRegion(
-  ctx: BakeContext,
+  ctx: BuildContext,
   region: SurfaceName,
   blockers: readonly Blocker[],
 ): RepairedSurface | null {
@@ -214,7 +214,7 @@ export function buildSurfaceRegion(
  * polygon carrying the neighbour's whole boundary, and extruding it took the
  * plate from 0 zero-area faces to 10 467.
  */
-export function grownPocket(ctx: BakeContext, section: CrossSection): CrossSection {
+export function grownPocket(ctx: BuildContext, section: CrossSection): CrossSection {
   return offsetSection(ctx.arena, section, POCKET_GROW_MM) ?? section;
 }
 
@@ -229,7 +229,7 @@ export function grownPocket(ctx: BakeContext, section: CrossSection): CrossSecti
  * transversal. Both extras lie inside material the merged solid already has,
  * so the union of the regions is still exactly that solid.
  */
-export function fittedSolid(ctx: BakeContext, section: CrossSection): CrossSection {
+export function fittedSolid(ctx: BuildContext, section: CrossSection): CrossSection {
   const grown = offsetSection(ctx.arena, section, PART_OVERLAP_MM);
   if (grown === null || grown === section) return section;
   // Never past the printed edge, whatever the crop allowed.
@@ -241,7 +241,7 @@ export function fittedSolid(ctx: BakeContext, section: CrossSection): CrossSecti
 }
 
 /** Z a region solid starts at: `PART_OVERLAP_MM` into the base, never below it. */
-export function solidBottomMm(ctx: BakeContext, placement: Placement): number {
+export function solidBottomMm(ctx: BuildContext, placement: Placement): number {
   return Math.max(ctx.baseTopMm * 0.1, placement.bottomMm - PART_OVERLAP_MM);
 }
 
@@ -285,7 +285,7 @@ export const RIDGE_MERGE_PASSES = 4;
  * the plate over them. The frame-on case is written up for the team lead.
  */
 export function mergeRecessRidges(
-  ctx: BakeContext,
+  ctx: BuildContext,
   layers: readonly RepairedSurface[],
   buildingFootprint: CrossSection | null,
 ): void {
@@ -305,7 +305,7 @@ export function mergeRecessRidges(
 
 /** One `merge_recess_ridges` call: bridge `recesses`' bad complement into `sink`. */
 function mergeInto(
-  ctx: BakeContext,
+  ctx: BuildContext,
   sink: RepairedSurface,
   recesses: readonly RepairedSurface[],
   buildingFootprint: CrossSection | null,
@@ -381,7 +381,7 @@ function mergeInto(
 
 /** Does a building stand on this island? */
 function carriesBuilding(
-  ctx: BakeContext,
+  ctx: BuildContext,
   island: CrossSection,
   buildingFootprint: CrossSection | null,
 ): boolean {
@@ -394,7 +394,7 @@ function carriesBuilding(
 
 /** Grow `bad`, clip it to `clip`, and union it into `sink`. True when it took. */
 function bridgeInto(
-  ctx: BakeContext,
+  ctx: BuildContext,
   sink: RepairedSurface,
   bad: readonly CrossSection[],
   clip: CrossSection,
@@ -417,7 +417,7 @@ function bridgeInto(
 
 /** Adopt `next` as the sink's footprint, and rebuild the solid clipped to it. */
 function replaceSinkSection(
-  ctx: BakeContext,
+  ctx: BuildContext,
   sink: RepairedSurface,
   next: CrossSection,
 ): void {
@@ -438,7 +438,7 @@ function replaceSinkSection(
 
 /** Every surface region, in precedence order, each giving way to the last. */
 export function buildSurfaceRegions(
-  ctx: BakeContext,
+  ctx: BuildContext,
   buildingFootprint: CrossSection | null,
 ): SurfaceRegion[] {
   // Pass one: the repaired footprints. The layers tile the plate - nothing is

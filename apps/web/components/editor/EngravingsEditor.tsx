@@ -10,10 +10,10 @@ import { Note, SelectField, Slider, TextField } from "./Controls";
  * Up to eight lines of lettering cut into (or raised off) the frame.
  *
  * Every write replaces the whole array immutably, so the store's `setParam`
- * sees a new identity and bake staleness works exactly as it does for a slider.
+ * sees a new identity and build staleness works exactly as it does for a slider.
  *
  * The live line under each text field is the REAL expansion, through
- * `lib/tokens.ts` -- the mirrored table the bake uses (DECISIONS [V2-P2]) --
+ * `lib/tokens.ts` -- the mirrored table the build uses (DECISIONS [V2-P2]) --
  * so what the panel shows is what gets cut. `{scale}` deliberately stays
  * unexpanded until a scene has been generated: there is no honest ratio for a
  * model nobody has measured yet.
@@ -67,7 +67,7 @@ export function newEngraving(existing: readonly Engraving[]): Engraving {
 /**
  * The verdict for one line, in the interface's voice.
  *
- * Straight from `transform.fit_text`: the size the bake will cut at, or the
+ * Straight from `transform.fit_text`: the size the build will cut at, or the
  * refusal and the size that would work. It is stated HERE, next to the cap
  * height that caused it, as well as in the adjustments drawer -- the drawer is
  * a summary of everything, and this is the answer to the control the user has
@@ -278,7 +278,7 @@ export function EngravingsEditor({
 
       <Note testId="engraving-tokens">
         Tokens: {TOKENS.map((token) => `{${token}}`).join(" ")}. They expand when
-        the file is baked, and the line above each field shows what they say now.
+        the file is built, and the line above each field shows what they say now.
       </Note>
     </div>
   );

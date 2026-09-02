@@ -27,7 +27,7 @@ export interface PreviewPalette {
   hero: string;
   /**
    * A hero picked while `hero_mode` does not grant it its own colour. Painting
-   * it the filament orange in that mode would promise a colour the bake will
+   * it the filament orange in that mode would promise a colour the build will
    * not print (`transform.hero_own_color`).
    */
   heroPick: string;

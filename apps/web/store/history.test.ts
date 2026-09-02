@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_PRINT_PARAMS, defaultPrintParams } from "@/lib/contracts";
-import { initialBakeState } from "@/lib/bake";
+import { initialExportState } from "@/lib/exportFlow";
 import {
   IDLE_PLACE_DETECT,
   INITIAL_LOCATION,
@@ -35,7 +35,7 @@ function resetEditorStore(): void {
     params: defaultPrintParams(),
     scene: { status: "idle", graph: null, message: null, request: null, stale: false },
     engine: { ...initialEngineState },
-    bake: { ...initialBakeState },
+    exportState: { ...initialExportState },
     placeDetect: { ...IDLE_PLACE_DETECT },
     presetChosen: false,
   });
@@ -286,7 +286,7 @@ describe("initHistory: wired to the real editor store", () => {
     expect(useHistoryStore.getState().entries).toHaveLength(before + 1);
   });
 
-  it("transient state (scene status, engine status, bake) is never recorded", () => {
+  it("transient state (scene status, engine status, export) is never recorded", () => {
     initHistory();
     const before = useHistoryStore.getState().entries.length;
     useEditorStore.setState((state) => ({ scene: { ...state.scene, status: "loading" } }));

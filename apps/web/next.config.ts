@@ -35,7 +35,7 @@ const nextConfig: NextConfig = {
     // COMPILE around the `node:` URI scheme it does not otherwise handle
     // ("UnhandledSchemeError"). The server compilation (Next's SSR pass of
     // this "use client" module tree) keeps it: that target really does
-    // support `node:` imports, and it is what the reference `bake:cli` /
+    // support `node:` imports, and it is what the reference `export:cli` /
     // vitest paths already rely on working.
     if (!isServer) {
       config.plugins.push(new webpack.IgnorePlugin({ resourceRegExp: /^node:/ }));

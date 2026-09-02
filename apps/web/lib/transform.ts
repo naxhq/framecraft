@@ -31,7 +31,7 @@ import * as TOK from "./tokens";
 export const FRAME_WIDTH_MM = 6.0;
 /** Stage 2.2 border lip rise above the base top, mm. */
 export const FRAME_LIP_MM = 2.0;
-/** Stage 2.1 bottom outer edge chamfer (45 deg), mm. Bake only. */
+/** Stage 2.1 bottom outer edge chamfer (45 deg), mm. Build only. */
 export const CHAMFER_MM = 0.6;
 /** Stage 2.3 deliberate building/base overlap so the union is unambiguous, mm. */
 export const BUILDING_OVERLAP_MM = 0.2;
@@ -60,9 +60,9 @@ export const TREE_CAP = 2000;
  */
 export const TREE_SIDES = 8;
 /**
- * Stage 4 "Bounding box": Z must stay under this many millimetres. The bake
+ * Stage 4 "Bounding box": Z must stay under this many millimetres. The build
  * refuses a model at or above it before it builds anything (its
- * `ModelTooTallError`), so the editor disables Bake on the same number.
+ * `ModelTooTallError`), so the editor disables Build on the same number.
  */
 export const MAX_HEIGHT_MM = 60.0;
 /** 02: is_tall is height_m >= 40 and is computed once in the SceneGraph. */
@@ -84,7 +84,7 @@ export const HERO_MIN_HEIGHT_SCALE = 1.0;
 export const HERO_TRUE_HEIGHT_MODES = ["true_height", "both"] as const;
 /** `hero_mode` values that give a hero its own colour (i.e. its own 3MF part). */
 export const HERO_OWN_COLOR_MODES = ["own_color", "both"] as const;
-/** `color_mode` value that makes the bake write one 3MF object per layer. */
+/** `color_mode` value that makes the build write one 3MF object per layer. */
 export const COLOR_MODE_PARTS = "parts";
 
 // ---------------------------------------------------------------------------
@@ -94,7 +94,7 @@ export const COLOR_MODE_PARTS = "parts";
 export type ParamsLike = PrintParams;
 /**
  * `id` is OPTIONAL, and only the hero predicates read it: a carrier that has no
- * id (a merged block on the bake side, a two-field literal in a test) is still a
+ * id (a merged block on the build side, a two-field literal in a test) is still a
  * perfectly good BuildingLike, exactly as in `transform.py`.
  */
 export type BuildingLike = Pick<Building, "height_m" | "is_tall"> & {
@@ -186,7 +186,7 @@ export function radius_m_from_bounds(bounds: BoundsLike): number {
 /**
  * 04's `min_wall_mm = 2 * nozzle`: two perimeters, in PRINT mm.
  *
- * This is the number the bake's Stage 1 repair widens to, the number Stage 4
+ * This is the number the build's Stage 1 repair widens to, the number Stage 4
  * fails under nine tenths of, and the number the preview HUD divides by the
  * scale to say "widened to the X m minimum wall". It exists as a function
  * because `2 * nozzle` written out by hand in four places is four chances to
@@ -226,7 +226,7 @@ export function thresholds_ground_m(params: ParamsLike, scale: number): Threshol
  * `params.terrain_exaggeration` (v1 field, range [0, 3], default 1.0), and
  * nothing else. This is THE ONE PLACE the exaggeration is applied
  * (`[V3-P3-G1]`): the DEM grid `lib/engine/terrain/tiles.ts` fetches stays in
- * raw metres above the tile minimum, so moving the slider re-bakes without
+ * raw metres above the tile minimum, so moving the slider rebuilds without
  * re-fetching a single tile, and no other module may multiply by it again.
  *
  * Before v3 this returned 1.0 for every input because the MVP heightmap was
@@ -550,13 +550,13 @@ export function color_mode(params: ParamsLike): string {
   return params.color_mode ?? "single";
 }
 
-/** True when the bake writes one 3MF object per layer. */
+/** True when the build writes one 3MF object per layer. */
 export function parts_mode(params: ParamsLike): boolean {
   return color_mode(params) === COLOR_MODE_PARTS;
 }
 
 /**
- * Z the bake extrudes buildings FROM, mm: `base_top - 0.2`.
+ * Z the build extrudes buildings FROM, mm: `base_top - 0.2`.
  *
  * The 0.2 mm overlap makes the union with the base slab unambiguous. The
  * preview draws buildings from `base_top_mm` instead -- there is no union to
@@ -688,7 +688,7 @@ export function tree_radius_mm(tree: TreeLike, scale: number): number {
  * 04 stage 1, trees: only emit when the scaled radius reaches 0.5 mm.
  *
  * The "does not intersect a building or road footprint" half of 04's rule is a
- * 2D predicate the bake evaluates with shapely; the preview does not run it,
+ * 2D predicate the build evaluates with shapely; the preview does not run it,
  * which is one of the documented preview approximations.
  */
 export function tree_visible(tree: TreeLike, scale: number): boolean {
@@ -706,7 +706,7 @@ export function tree_visible(tree: TreeLike, scale: number): boolean {
  * 0.4 mm nozzle that is 0.433 mm, so 04's 0.5 mm still binds and nothing
  * changes.
  *
- * The preview applies it so it never draws a tree the bake drops.
+ * The preview applies it so it never draws a tree the build drops.
  */
 export function tree_min_radius_mm(params: ParamsLike): number {
   const by_nozzle = min_wall_mm(params) / (2.0 * Math.cos(Math.PI / TREE_SIDES));
@@ -714,7 +714,7 @@ export function tree_min_radius_mm(params: ParamsLike): number {
 }
 
 /**
- * `tree_visible` plus the nozzle-aware floor: the predicate the bake and the
+ * `tree_visible` plus the nozzle-aware floor: the predicate the build and the
  * preview both filter on. `tree_visible` keeps its two-argument signature (it is
  * 04's literal rule and the parity fixture pins it); this one adds the printer.
  */
@@ -806,16 +806,16 @@ export function building_footprint_metrics(
  *
  * Every term is one of the functions above, i.e. exactly what the preview draws
  * with, so this number is the height the user is looking at. It is an UPPER
- * bound on the baked height: stage 1 can lower a tower (a merged block takes the
+ * bound on the built height: stage 1 can lower a tower (a merged block takes the
  * area-weighted 80th percentile of the heights it swallowed) and can drop a
  * footprint entirely, but nothing in the pipeline makes a solid taller.
  *
  * Trees are counted with `tree_visible` rather than `tree_visible_for` on
  * purpose: the nozzle-aware floor only ever drops trees, so ignoring it keeps
- * the bound an upper bound, and the bake's own guard reads the same number.
+ * the bound an upper bound, and the build's own guard reads the same number.
  *
  * A hero building is counted at its HERO height (never below its true relative
- * height), because that is the height the bake will print and the height the
+ * height), because that is the height the build will print and the height the
  * preview draws; a hero can only ever raise this number, so it stays an upper
  * bound.
  */
@@ -844,7 +844,7 @@ export function predicted_top_mm(
   return top;
 }
 
-/** True when the bake will refuse this model on 04's 60 mm Z ceiling. */
+/** True when the build will refuse this model on 04's 60 mm Z ceiling. */
 export function model_too_tall(
   scene: SceneLike,
   params: ParamsLike,
@@ -861,7 +861,7 @@ export function model_too_tall(
 // printed object and the map scale does not touch its size. The only place the
 // map enters is the scale bar's LABEL.
 //
-// This is the layout the BAKE cuts from. The preview must draw text and
+// This is the layout the BUILD cuts from. The preview must draw text and
 // ornaments from these numbers, never from its own: a string the editor shows
 // on the bottom edge at 4.28 mm is cut on the bottom edge at 4.28 mm.
 // ===========================================================================
@@ -1050,7 +1050,7 @@ export interface GlyphMetric {
   right: number;
 }
 
-/** A generated `<face>.metrics.json`, byte-identical to the bake's copy. */
+/** A generated `<face>.metrics.json`, byte-identical to the build's copy. */
 export interface FaceMetrics {
   face: string;
   file: string;
@@ -1382,7 +1382,7 @@ export function text_min_size_mm(
  * The smallest size at which adjacent letters keep a nozzle between them.
  *
  * A WARNING, not a refusal: the space between two letters is a wedge, so the
- * pair touches over a fraction of a millimetre and stays legible, and the bake's
+ * pair touches over a fraction of a millimetre and stays legible, and the build's
  * ridge merge hands that sub-nozzle tip to the groove. The number comes from the
  * ink extents, i.e. from the closest approach of the two letters, and treats the
  * whole gap as if it were that narrow.
@@ -1700,7 +1700,7 @@ export function scale_bar_thickness_mm(params: ParamsLike): number {
 /**
  * Thinnest base plate that can carry this hanger, mm. A keyhole is 2 mm deep and
  * a magnet pocket 3.1 mm; both must leave `HANGER_MIN_ROOF_MM` of solid plate
- * above them or the pocket is a hole through the picture. The bake refuses such
+ * above them or the pocket is a hole through the picture. The build refuses such
  * a plate, and the editor predicts the refusal from this function.
  */
 export function hanger_min_base_mm(hanger: string): number {
@@ -1824,7 +1824,7 @@ export function underside_mark_available_mm(params: ParamsLike): number {
 /**
  * Where every piece of text and every ornament goes, and whether it prints.
  *
- * THE layout: the bake cuts from it and the preview draws from it. Token
+ * THE layout: the build cuts from it and the preview draws from it. Token
  * expansion happens here too (through the shared `tokens` pair), so both sides
  * also agree on the text itself. `rotation_deg` is the SceneRequest's rotation:
  * the model is turned counter-clockwise by it, so the north arrow is turned back
@@ -2179,7 +2179,7 @@ export function lettering_layout_json(
 //
 // One honest sentence about what this radius and this plate are doing to the
 // city, computed from the SAME predicates the preview already approximates the
-// bake with, so the advice cannot contradict the picture on the canvas.
+// build with, so the advice cannot contradict the picture on the canvas.
 // ===========================================================================
 
 /**
@@ -2273,7 +2273,7 @@ function building_counts(
  * How much of this city survives the minimum-feature repair, 0-100.
  *
  * Every count comes from the shared predicates the preview already draws with,
- * so the advisor agrees with the canvas by construction. The bake's Stage 1 does
+ * so the advisor agrees with the canvas by construction. The build's Stage 1 does
  * better than this -- it merges blocks rather than dropping them -- so the report
  * is an upper bound on the damage, which is the right side to err on.
  */

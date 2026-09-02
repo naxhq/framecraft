@@ -22,7 +22,7 @@ import { buildingInstanceMatrices, type PreviewBuilding } from "@/lib/preview";
  *
  * Picking a hero is a raycast against the same mesh: r3f hands back the
  * `instanceId`, which indexes `buildings` (NOT the SceneGraph -- the preview
- * has already dropped the footprints the bake drops), so the id comes out of
+ * has already dropped the footprints the build drops), so the id comes out of
  * the array rather than out of the index.
  *
  * The material colour is a neutral multiplier and every instance carries its

@@ -1,5 +1,5 @@
 /**
- * Writing a tiled bake: one Bambu project with one plate per tile, or a zip of
+ * Writing a tiled build: one Bambu project with one plate per tile, or a zip of
  * per-tile files for everything else.
  *
  * The plate positions are checked against Bambu Studio's own arithmetic
@@ -150,7 +150,7 @@ describe("a tiled Bambu project", () => {
   });
 });
 
-describe("a tiled bake for anything else", () => {
+describe("a tiled build for anything else", () => {
   it("writes a zip of per-tile files named by their grid reference", () => {
     const result = tiledResult();
     const output = exportForTarget(result, "generic-3mf", { stem: "city", created: CREATED });
@@ -190,7 +190,7 @@ describe("a tiled bake for anything else", () => {
     expect(unzipAll(output.files[0].bytes).size).toBe(5);
   });
 
-  it("sends a tiled colour-change bake to the zip: a plan is for one object", () => {
+  it("sends a tiled colour-change build to the zip: a plan is for one object", () => {
     const result = tiledResult(bambuParams());
     const output = exportForTarget(result, "color-change-3mf", { stem: "city", created: CREATED });
     expect(output.files[0].name).toBe("city-tiles.zip");
@@ -218,7 +218,7 @@ describe("one tile on its own", () => {
   });
 });
 
-describe("an untiled bake", () => {
+describe("an untiled build", () => {
   const plain = makeResult(sampleRegions(), bambuParams());
 
   it("is not treated as tiled, however the tiles field is set", () => {
@@ -238,7 +238,7 @@ describe("an untiled bake", () => {
     // The single-plate writer is pinned by its bytes: this hash is what the
     // COMMITTED writer produces for this fixture, checked by importing
     // `git show HEAD:...bambu3mf.ts` beside the current one and comparing the
-    // two outputs (they agree, on this fixture and on the real Chicago bake).
+    // two outputs (they agree, on this fixture and on the real Chicago build).
     //
     // It tracks the CONTRACT as well as the writer, because every 3MF carries
     // its PrintParams in the Description metadata: it moved once already, when

@@ -14,7 +14,7 @@ Turn any map location into a 3D-printable framed miniature city.
 ## Quick start
 
 **Web.** Open <https://naxhq.github.io/framecraft/>, search for a place or drop
-a pin, and press Bake. Download the file your slicer wants.
+a pin, press Preview, then Export. Download the model file your slicer wants.
 
 **Desktop.** Download the installer for your OS from the
 [latest release](https://github.com/naxhq/framecraft/releases/latest) and run
@@ -26,7 +26,7 @@ it. Same app, with save-to-folder and a larger memory budget.
 
 ## Features
 
-- **Bakes in your browser.** The whole solid pipeline runs client side on the
+- **Builds in your browser.** The whole solid pipeline runs client side on the
   manifold WASM boolean kernel in a Web Worker. The live preview and the
   exported file are the same meshes.
 - **Bambu Studio project export.** A project 3MF with every part assigned to a
@@ -38,7 +38,7 @@ it. Same app, with save-to-folder and a larger memory budget.
   select them; heroes get their own colour region and can feed the lettering.
 - **Printer profiles and a printability audit.** Eight named printers (Bambu
   H2S, P1S, X1C, A1, A1 mini, Prusa MK4, Prusa Mini, Ender 3) plus custom.
-  Every bake is audited (thin walls, plate and height limits, floating islands,
+  Every model is audited (thin walls, plate and height limits, floating islands,
   overhangs, slot overruns) with one-click safe fixes where one exists.
 - **Filament and time estimates.** Per-slot volume, grams, metres, layers, and
   a time figure with stated assumptions.
@@ -91,7 +91,7 @@ gate keeps the TypeScript and Python transform math in parity.
 
 Map data is (c) OpenStreetMap contributors, licensed under the
 [ODbL](https://opendatacommons.org/licenses/odbl/1-0/). Every model FrameCraft
-bakes carries engraved attribution marks and file metadata naming the source;
+builds carries engraved attribution marks and file metadata naming the source;
 when you share a photo or a print, credit "(c) OpenStreetMap contributors".
 Details, obligations, and what the marks do and do not achieve:
 [LICENSE_AND_ATTRIBUTION.md](LICENSE_AND_ATTRIBUTION.md).

@@ -9,7 +9,7 @@ import { mockChicagoOverpass, watchOverpass, type OverpassCall } from "./overpas
  * this app ever makes is the ingest fetch to an Overpass mirror
  * (`**\/api/interpreter`), routed to the committed Chicago Loop fixture by
  * `overpassMock.ts` so this suite runs fully offline and deterministically;
- * everything else (the bake, every export target, every PrintParams write)
+ * everything else (the export, every export target, every PrintParams write)
  * is client-side WASM and a Blob download, asserted with no network watcher
  * at all.
  *
@@ -261,7 +261,7 @@ test("the v2 personalisation fields never trigger a fetch", async ({ page }) => 
   await expect(page.locator("#hero_mode")).toHaveValue("true_height");
 
   // The remaining v2 writes that are neither text nor colour: the scale bar and
-  // the underside mark, both of which the bake reads and never causes a fetch.
+  // the underside mark, both of which the build reads and never causes a fetch.
   await page.locator("#scale_bar_enabled").click();
   await expect(page.locator("#scale_bar_edge")).toBeVisible();
   await page.locator("#underside_mark_enabled").click();
@@ -344,7 +344,7 @@ test("an engraving appears on the frame, and a refused one does not", async ({
   // wrong side of it the moment a stroke target or the bundled face moves.
   // Around 3 mm a 0.4 mm nozzle closes the counter of the `a` in "Chicago".
   // The panel says so, and the preview takes the letters back off the plate:
-  // showing text the bake will not cut is the divergence this whole phase
+  // showing text the build will not cut is the divergence this whole phase
   // exists to avoid.
   log(`the shared layout refuses a ${REFUSED_SIZE_MM.toFixed(1)} mm cap height`);
   await page.locator("#engraving_0_size_mm").fill(String(REFUSED_SIZE_MM));
@@ -391,10 +391,10 @@ test("an engraving appears on the frame, and a refused one does not", async ({
 });
 
 // ==========================================================================
-// The hanger floor: the editor predicts the bake's refusal
+// The hanger floor: the editor predicts the build's refusal
 // ==========================================================================
 
-test("a keyhole the base cannot carry disables Bake and names the minimum", async ({
+test("a keyhole the base cannot carry disables Export and names the minimum", async ({
   page,
 }) => {
   // `transform.underside_min_base_mm` is what the engine refuses on, and two
@@ -402,8 +402,8 @@ test("a keyhole the base cannot carry disables Bake and names the minimum", asyn
   // it. Both numbers below come from the shared math, not from this file.
   await generateChicago(page);
 
-  const bake = page.getByTestId("bake-button");
-  await expect(bake).toBeEnabled();
+  const exportButton = page.getByTestId("export-button");
+  await expect(exportButton).toBeEnabled();
   await expect(page.getByTestId("base_thickness_mm-value")).toHaveText("3.0 mm");
 
   const needed = T.underside_min_base_mm({
@@ -412,34 +412,34 @@ test("a keyhole the base cannot carry disables Bake and names the minimum", asyn
   });
   // 2.0 mm of pocket + 1.0 mm of plate over it + the 0.6 mm the DEFAULT
   // engraved roads take off the same plate from above. Not `hanger_min_base_mm`
-  // alone, which is 3.0 and would be a number the bake then refuses anyway.
+  // alone, which is 3.0 and would be a number the build then refuses anyway.
   expect(needed).toBeCloseTo(3.6, 9);
 
   await page.getByTestId("group-frame-toggle").click();
   await page.locator("#hanger").selectOption("keyhole");
 
-  await expect(page.getByTestId("bake-block-reason")).toContainText(
+  await expect(page.getByTestId("export-block-reason")).toContainText(
     `Keyhole hanger needs a base of at least ${needed.toFixed(1)} mm (now 3.0 mm)`,
   );
-  await expect(page.getByTestId("bake-block-reason")).toContainText(
+  await expect(page.getByTestId("export-block-reason")).toContainText(
     "raise the base thickness or choose no hanger",
   );
   await expect(page.getByTestId("warning-base-too-thin-for-underside")).toBeVisible();
-  await expect(bake).toBeDisabled();
+  await expect(exportButton).toBeDisabled();
 
   // Clicking it must do nothing either -- a disabled button is the UI, the
-  // store's own guard is the contract (`store.requestBake` re-checks): the
-  // bake state stays exactly `idle`, nothing starts exporting.
-  await bake.click({ force: true });
+  // store's own guard is the contract (`store.requestExport` re-checks): the
+  // export state stays exactly `idle`, nothing starts exporting.
+  await exportButton.click({ force: true });
   await page.waitForTimeout(500);
-  await expect(page.getByTestId("bake-status")).toHaveCount(0);
+  await expect(page.getByTestId("export-status")).toHaveCount(0);
 
-  // Raise the base past the minimum and Bake comes back.
+  // Raise the base past the minimum and Export comes back.
   await page.locator("#base_thickness_mm").fill("4");
   await expect(page.getByTestId("base_thickness_mm-value")).toHaveText("4.0 mm");
   await expect(page.getByTestId("warning-base-too-thin-for-underside")).toHaveCount(0);
-  await expect(page.getByTestId("bake-block-reason")).toHaveCount(0);
-  await expect(bake).toBeEnabled();
+  await expect(page.getByTestId("export-block-reason")).toHaveCount(0);
+  await expect(exportButton).toBeEnabled();
 });
 
 // ==========================================================================
@@ -613,12 +613,12 @@ test("keyboard: ? opens the sheet, letters are ignored while typing, R resets", 
 
   // Typing in a text field must not fire anything.
   const beforeTyping = calls.length;
-  const bakeStatus = page.getByTestId("bake-status");
+  const exportStatus = page.getByTestId("export-status");
   await page.locator("#city_label").fill("");
   await page.locator("#city_label").pressSequentially("Bergen");
   await expect(page.locator("#city_label")).toHaveValue("Bergen");
   await expect(page.getByTestId("shortcut-sheet")).toHaveCount(0);
-  await expect(bakeStatus).toHaveCount(0);
+  await expect(exportStatus).toHaveCount(0);
   await page.waitForTimeout(500);
   expect(calls.slice(beforeTyping)).toEqual([]);
 
@@ -636,12 +636,12 @@ test("keyboard: ? opens the sheet, letters are ignored while typing, R resets", 
   // precondition is asserted first: if the scene had gone stale, "G fetched"
   // would be correct behaviour and the request count would be the wrong thing
   // to blame.
-  await expect(page.getByTestId("generate-button")).toBeDisabled();
+  await expect(page.getByTestId("preview-button")).toBeDisabled();
   const beforeG = ingestFetches(calls);
   await page.keyboard.press("g");
   await page.waitForTimeout(800);
   expect(ingestFetches(calls) - beforeG).toBe(0);
-  await expect(page.getByTestId("generate-button")).toBeDisabled();
+  await expect(page.getByTestId("preview-button")).toBeDisabled();
 });
 
 test("the shortcut sheet is really modal: no letter reaches the editor behind it", async ({
@@ -655,8 +655,8 @@ test("the shortcut sheet is really modal: no letter reaches the editor behind it
   await expect(page.getByTestId("shortcut-sheet")).toBeVisible();
 
   const before = calls.length;
-  // B advertises "Bake the printable model" ON THIS SHEET; pressing it here
-  // used to start a real server bake behind the dialog. R used to reset every
+  // B advertises "Export the printable model file" ON THIS SHEET; pressing it here
+  // used to start a real export behind the dialog. R used to reset every
   // parameter, including up to eight engraving lines and twelve heroes.
   await page.keyboard.press("b");
   await page.keyboard.press("r");
@@ -664,7 +664,7 @@ test("the shortcut sheet is really modal: no letter reaches the editor behind it
   await page.waitForTimeout(800);
 
   await expect(page.getByTestId("shortcut-sheet")).toBeVisible();
-  await expect(page.getByTestId("bake-status")).toHaveCount(0);
+  await expect(page.getByTestId("export-status")).toHaveCount(0);
   expect(
     calls.slice(before),
     `a shortcut fired behind the modal: ${JSON.stringify(calls.slice(before))}`,
@@ -869,7 +869,7 @@ test("{hero} resolves live in the frame-text editor once a hero is auto-detected
   await page.getByTestId("engraving-add").click();
   // The live "Cuts as:" preview (`EngravingsEditor.tsx`) is pure client-side
   // token expansion (`FrameTextGroup`'s own `context`), independent of
-  // whether a fresh WASM bake has landed -- unlike the Resolved output panel,
+  // whether a fresh WASM build has landed -- unlike the Resolved output panel,
   // which can be reading the ENGINE's own (separately-owned) resolution by
   // the time an assertion runs, this cannot race the debounced engine job.
   await page.locator("#engraving_0_text").fill("{hero}");
@@ -973,13 +973,13 @@ test("the viewport says what to do before anything is generated", async ({ page 
   const empty = page.getByTestId("preview-empty");
   await expect(empty).toBeVisible();
   await expect(empty).toContainText("Choose a preset city");
-  await expect(empty).toContainText("Generate");
+  await expect(empty).toContainText("Preview");
   // The keyboard hints are on the empty state, where a first-time user is.
-  await expect(empty).toContainText("G generate");
+  await expect(empty).toContainText("G preview");
   await expect(page.getByTestId("preview-canvas")).toHaveCount(0);
 
-  // Generate is the primary action while there is no scene, and Bake explains
+  // Preview is the primary action while there is no scene, and Export explains
   // itself rather than sitting there dead.
-  await expect(page.getByTestId("generate-button")).toBeEnabled();
-  await expect(page.getByTestId("bake-button")).toBeDisabled();
+  await expect(page.getByTestId("preview-button")).toBeEnabled();
+  await expect(page.getByTestId("export-button")).toBeDisabled();
 });

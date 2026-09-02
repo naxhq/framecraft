@@ -1,29 +1,30 @@
 SHELL := sh
 .DEFAULT_GOAL := help
-.PHONY: help install contracts up dev down test gate gate-v2 bake-fixture validate refresh-fixtures clean
+.PHONY: help install contracts up dev down test gate gate-v2 export-fixture bake-fixture validate refresh-fixtures clean
 
 help:
 	@echo "FrameCraft make targets:"
 	@echo "  help              show this message (default)"
 	@echo "  install           uv sync (services/bake) + npm ci (apps/web) + playwright chromium"
 	@echo "  contracts         regenerate contracts.py and contracts.ts from packages/contracts/schema"
-	@echo "  up                start bake (:8000) and web (:3000); docker compose if available, else native"
+	@echo "  up                start the reference service (:8000) and web (:3000); docker compose if available, else native"
 	@echo "                    (FRAMECRAFT_WEB_MODE=prod serves the static export: next build + scripts/serve-static.mjs)"
 	@echo "  dev               native foreground dev, both services, Ctrl-C stops both"
 	@echo "  down              stop both services"
 	@echo "  test              pytest (services/bake) + vitest (apps/web)"
 	@echo "  gate              G4/G7: no-skip guard + pytest + lint + tsc + vitest + next build +"
-	@echo "                    browser-engine bake:cli -> validate + playwright (stack up/down);"
+	@echo "                    browser-engine export:cli -> validate + playwright (stack up/down);"
 	@echo "                    fails on ANY skipped or xfailed test"
-	@echo "  gate-v2           the v2 bake-side gates end to end: G8, G5 at plate 180 and 256,"
+	@echo "  gate-v2           the v2 geometry-side gates end to end: G8, G5 at plate 180 and 256,"
 	@echo "                    G6, COLOR=parts TEXT=all, and make validate on every .3mf and .stl"
-	@echo "  bake-fixture      bake the Chicago preset to artifacts/chicago.3mf"
+	@echo "  export-fixture    build and export the Chicago preset to artifacts/chicago.3mf"
 	@echo "                    (COLOR=parts -> artifacts/chicago-parts.3mf; PLATE=<100..256>"
 	@echo "                     -> artifacts/chicago-p<mm>.3mf; TEXT=all -> chicago-text.3mf"
 	@echo "                     with every frame ornament. All three compose.)"
+	@echo "  bake-fixture      deprecated alias for export-fixture"
 	@echo "  validate FILE=x   run the printability validator CLI on FILE (or: make validate x)"
 	@echo "  refresh-fixtures  re-fetch and re-cache the Overpass fixtures"
-	@echo "  clean             remove .next, baked artifacts, .run, and logs"
+	@echo "  clean             remove .next, exported artifacts, .run, and logs"
 
 install:
 	cd services/bake && uv sync
@@ -78,11 +79,11 @@ up:
 			start_native web 3000 apps/web npm run dev; \
 		fi; \
 	fi
-	@echo "waiting for bake and web to become healthy (up to 120s)..."; \
+	@echo "waiting for the reference service and web to become healthy (up to 120s)..."; \
 	i=0; \
 	while [ $$i -lt 120 ]; do \
 		if curl -sf http://localhost:8000/health >/dev/null 2>&1 && curl -sf http://localhost:3000 >/dev/null 2>&1; then \
-			echo "up: bake and web are healthy"; \
+			echo "up: the reference service and web are healthy"; \
 			exit 0; \
 		fi; \
 		i=$$((i+1)); \
@@ -229,7 +230,7 @@ gate:
 	rm -rf apps/web/.next; \
 	( cd apps/web && npm run build ) || { echo "gate: next build FAILED" >&2; rc=1; }; \
 	prerc=$$rc; \
-	echo "== gate [4/8] browser engine: bake:cli (Chicago fixture) -> make validate =="; \
+	echo "== gate [4/8] browser engine: export:cli (Chicago fixture) -> make validate =="; \
 	sh scripts/gate-web-engine.sh "$(MAKE)" || rc=1; \
 	if [ $$prerc -ne 0 ]; then \
 		echo "gate: skipping the Playwright suite after an earlier failure" >&2; \
@@ -290,13 +291,13 @@ gate:
 	if [ $$rc -eq 0 ]; then echo "GATE PASS"; else echo "GATE FAIL" >&2; fi; \
 	exit $$rc
 
-# The v2 bake-side gates, end to end, in one command. `make gate` is unchanged
+# The v2 geometry-side gates, end to end, in one command. `make gate` is unchanged
 # and still means G4/G7 (the test suites and the browser); this is the geometry
 # half, which needs several minutes of manifold3d and so is deliberately NOT
 # folded into it.
 #
 #   [1] G8  services/bake tests/test_v1_compat.py - a default-constructed v2
-#           PrintParams still bakes the committed v1 golden byte for byte.
+#           PrintParams still builds the committed v1 golden byte for byte.
 #           11 passed is ASSERTED, and so is "nothing skipped": checking only
 #           the exit code left a `skipif` here invisible (v2-07 audit, 8)
 #   [2] G5  COLOR=parts at the DEFAULT 180 mm plate -> 6 parts / 6 materials
@@ -329,11 +330,11 @@ gate-v2:
 		if [ $$vrc -ne 0 ]; then echo "gate-v2: $$label - make validate $$target FAILED" >&2; rc=1; fi; \
 		need "$$log" 'ALL CHECKS PASS' "$$@"; \
 	}; \
-	bake() { \
+	fixture() { \
 		label="$$1"; log="$$2"; shift 2; \
-		echo "-- $$label: make bake-fixture $$*"; \
-		if ! $(MAKE) bake-fixture "$$@" > "$$log" 2>&1; then \
-			echo "gate-v2: $$label - make bake-fixture $$* FAILED (see $$log)" >&2; \
+		echo "-- $$label: make export-fixture $$*"; \
+		if ! $(MAKE) export-fixture "$$@" > "$$log" 2>&1; then \
+			echo "gate-v2: $$label - make export-fixture $$* FAILED (see $$log)" >&2; \
 			tail -20 "$$log" >&2 || true; \
 			rc=1; return 1; \
 		fi; \
@@ -353,7 +354,7 @@ gate-v2:
 		rc=1; \
 	fi; \
 	echo; echo "== gate-v2 [2/5] G5 at the default 180 mm plate: 6 parts, 6 materials =="; \
-	if bake "G5/180" artifacts/logs/gate-v2-g5-180-bake.log COLOR=parts; then \
+	if fixture "G5/180" artifacts/logs/gate-v2-g5-180-export.log COLOR=parts; then \
 		check "G5/180" artifacts/chicago-parts.3mf artifacts/logs/gate-v2-g5-180.log \
 			'^parts +6:' '3mf_materials +PASS +6 entries' \
 			'3mf_components +PASS +6 components, 6 distinct' \
@@ -363,7 +364,7 @@ gate-v2:
 			'bodies +PASS +1 '; \
 	fi; \
 	echo; echo "== gate-v2 [3/5] G5 at PLATE=256: 7 parts, 7 materials =="; \
-	if bake "G5/256" artifacts/logs/gate-v2-g5-256-bake.log COLOR=parts PLATE=256; then \
+	if fixture "G5/256" artifacts/logs/gate-v2-g5-256-export.log COLOR=parts PLATE=256; then \
 		check "G5/256" artifacts/chicago-parts-p256.3mf artifacts/logs/gate-v2-g5-256.log \
 			'^parts +7:' '3mf_materials +PASS +7 entries' \
 			'3mf_components +PASS +7 components, 7 distinct' \
@@ -373,7 +374,7 @@ gate-v2:
 			'bodies +PASS +1 '; \
 	fi; \
 	echo; echo "== gate-v2 [4/5] G6 TEXT=all: every ornament, lettering + base_floor PASS =="; \
-	if bake "G6" artifacts/logs/gate-v2-g6-bake.log TEXT=all; then \
+	if fixture "G6" artifacts/logs/gate-v2-g6-export.log TEXT=all; then \
 		check "G6" artifacts/chicago-text.3mf artifacts/logs/gate-v2-g6.log \
 			'lettering +PASS +[1-9][0-9]* strokes of [1-9][0-9]* piece' 'base_floor +PASS' 'min_wall +PASS' \
 			'3mf_attribution +PASS'; \
@@ -381,7 +382,7 @@ gate-v2:
 			'bodies +PASS +1 ' 'lettering +PASS +[1-9][0-9]* strokes of [1-9][0-9]* piece' 'base_floor +PASS'; \
 	fi; \
 	echo; echo "== gate-v2 [5/5] COLOR=parts TEXT=all: the two composed =="; \
-	if bake "parts+text" artifacts/logs/gate-v2-parts-text-bake.log COLOR=parts TEXT=all; then \
+	if fixture "parts+text" artifacts/logs/gate-v2-parts-text-export.log COLOR=parts TEXT=all; then \
 		check "parts+text" artifacts/chicago-parts-text.3mf artifacts/logs/gate-v2-parts-text.log \
 			'^parts +[0-9]+:' 'lettering +PASS +[1-9][0-9]* strokes of [1-9][0-9]* piece' 'base_floor +PASS' \
 			'3mf_components +PASS' '3mf_materials +PASS' 'part_meshes +PASS'; \
@@ -392,7 +393,7 @@ gate-v2:
 	if [ $$rc -eq 0 ]; then echo "GATE-V2 PASS"; else echo "GATE-V2 FAIL" >&2; fi; \
 	exit $$rc
 
-# Bake the Chicago preset. Plain `make bake-fixture` is unchanged (single
+# Build and export the Chicago preset. Plain `make export-fixture` is unchanged (single
 # colour -> artifacts/chicago.3mf). Three optional overrides:
 #   COLOR=parts   one 3MF object per layer -> artifacts/chicago-parts.3mf
 #   PLATE=<mm>    plate size, 100..256 (the contract's own plate_mm range),
@@ -400,8 +401,8 @@ gate-v2:
 #                 a stem suffix like the other two: PLATE=256 writes
 #                 chicago-p256.3mf, COLOR=parts PLATE=256 chicago-parts-p256.3mf.
 #                 It used to change the PARAMETERS without changing the STEM, so
-#                 `make bake-fixture PLATE=256` overwrote the default artifact
-#                 with a 256 mm bake and the next `make validate
+#                 `make export-fixture PLATE=256` overwrote the default artifact
+#                 with a 256 mm build and the next `make validate
 #                 artifacts/chicago.3mf` judged that against its own 256 mm
 #                 sidecar and passed (v2-07 audit, finding 1).
 #   TEXT=all      every v2 frame ornament -> artifacts/chicago-text.3mf:
@@ -415,13 +416,13 @@ gate-v2:
 #                 the 6 mm lip, which is what exercises the fitting path.
 # COLOR and TEXT compose (COLOR=parts TEXT=all -> chicago-parts-text.3mf).
 # Everything ends up as a --params JSON object, so the sidecar records exactly
-# what was baked and `make validate` judges the file against those parameters.
-bake-fixture:
+# what was built and `make validate` judges the file against those parameters.
+export-fixture:
 	@stem=chicago; fields=""; \
 	case "$(COLOR)" in \
 		""|single) ;; \
 		parts) stem=chicago-parts; fields='"color_mode":"parts"' ;; \
-		*) echo "make bake-fixture: COLOR must be 'single' or 'parts' (got '$(COLOR)')" >&2; exit 2 ;; \
+		*) echo "make export-fixture: COLOR must be 'single' or 'parts' (got '$(COLOR)')" >&2; exit 2 ;; \
 	esac; \
 	case "$(TEXT)" in \
 		"") ;; \
@@ -439,16 +440,16 @@ bake-fixture:
 			fields="$$fields,\"hanger\":\"keyhole\""; \
 			fields="$$fields,\"underside_mark\":{\"enabled\":true,\"template\":\"{city} {scale} {date}\"}"; \
 			;; \
-		*) echo "make bake-fixture: TEXT must be 'all' (got '$(TEXT)')" >&2; exit 2 ;; \
+		*) echo "make export-fixture: TEXT must be 'all' (got '$(TEXT)')" >&2; exit 2 ;; \
 	esac; \
 	if [ -n "$(PLATE)" ]; then \
 		case "$(PLATE)" in \
-			*[!0-9.]*|*.*.*|.) echo "make bake-fixture: PLATE must be a number of millimetres (got '$(PLATE)')" >&2; exit 2 ;; \
+			*[!0-9.]*|*.*.*|.) echo "make export-fixture: PLATE must be a number of millimetres (got '$(PLATE)')" >&2; exit 2 ;; \
 		esac; \
 		if ! awk -v v="$(PLATE)" 'BEGIN{exit !(v+0 >= 100 && v+0 <= 256)}' </dev/null; then \
-			echo "make bake-fixture: PLATE must be between 100 and 256 mm (got '$(PLATE)')." >&2; \
+			echo "make export-fixture: PLATE must be between 100 and 256 mm (got '$(PLATE)')." >&2; \
 			echo "                   That is print_params.json's own plate_mm range; outside it" >&2; \
-			echo "                   the bake dies in a pydantic ValidationError minutes later." >&2; \
+			echo "                   the build dies in a pydantic ValidationError minutes later." >&2; \
 			exit 2; \
 		fi; \
 		stem="$$stem-p$$(echo "$(PLATE)" | tr . _)"; \
@@ -456,8 +457,14 @@ bake-fixture:
 		fields="$$fields\"plate_mm\":$(PLATE)"; \
 	fi; \
 	if [ -n "$$fields" ]; then set -- --params "{$$fields}"; else set --; fi; \
-	echo "baking chicago-loop -> artifacts/$$stem.3mf $$*"; \
+	echo "exporting chicago-loop -> artifacts/$$stem.3mf $$*"; \
 	cd services/bake && uv run python -m app.cli bake --preset chicago-loop --out "../../artifacts/$$stem.3mf" "$$@"
+
+# Deprecated alias, kept for muscle memory ([V3.1-O3]): it says the new name
+# and runs it, forwarding every override.
+bake-fixture:
+	@echo "bake-fixture is now export-fixture" >&2
+	@$(MAKE) export-fixture COLOR="$(COLOR)" TEXT="$(TEXT)" PLATE="$(PLATE)"
 
 validate:
 	@F="$(FILE)"; \

@@ -41,7 +41,7 @@ describe("DEFAULT_PRINT_PARAMS", () => {
 
   it("keeps every v1 field at its v1 default", () => {
     // A v1 client sent exactly these eleven keys and nothing else; they are
-    // what test_v1_compat.py proves still bakes the v1 geometry.
+    // what test_v1_compat.py proves still builds the v1 geometry.
     expect({
       plate_mm: DEFAULT_PRINT_PARAMS.plate_mm,
       base_thickness_mm: DEFAULT_PRINT_PARAMS.base_thickness_mm,
@@ -69,7 +69,7 @@ describe("DEFAULT_PRINT_PARAMS", () => {
     });
   });
 
-  it("starts every v2 feature switched off, so a default bake is a v1 bake", () => {
+  it("starts every v2 feature switched off, so a default build is a v1 build", () => {
     expect(DEFAULT_PRINT_PARAMS.color_mode).toBe("single");
     expect(DEFAULT_PRINT_PARAMS.city_label).toBe("");
     expect(DEFAULT_PRINT_PARAMS.engravings).toEqual([]);
@@ -80,7 +80,7 @@ describe("DEFAULT_PRINT_PARAMS", () => {
     expect(DEFAULT_PRINT_PARAMS.hero_building_ids).toEqual([]);
   });
 
-  it("starts every v3 engine feature switched off, so a default bake is still a v1 bake", () => {
+  it("starts every v3 engine feature switched off, so a default build is still a v1 build", () => {
     // bridges.enabled defaults true - it is a structural fallback (drape onto
     // abutments instead of the terrain) that only matters once terrain is on,
     // not a personalisation toggle, so it is not part of this "off" claim.

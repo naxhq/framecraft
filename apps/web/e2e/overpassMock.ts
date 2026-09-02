@@ -59,7 +59,7 @@ export async function mockChicagoOverpass(page: Page): Promise<void> {
 /**
  * Route every Overpass mirror call to a small (30-building) synthetic
  * response: comfortably clears 01/A2's 20-building minimum, and -- unlike the
- * full Chicago fixture -- bakes and validates cleanly end to end
+ * full Chicago fixture -- builds and validates cleanly end to end
  * (`docs/handoff/v3-02-integration.md`'s "known gap" is scale-specific to
  * Chicago's complexity, not this engine's architecture).
  */

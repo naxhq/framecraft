@@ -6,7 +6,7 @@ import { defineConfig, devices } from "@playwright/test";
  * Playwright config for the P5 gate (`make gate`).
  *
  * The specs under ./e2e drive the REAL stack -- no route mocking, no fixtures:
- * next on :3000 talking to the FastAPI bake service on :8000, which talks to
+ * next on :3000 talking to the FastAPI reference service (`services/bake`) on :8000, which talks to
  * the committed Overpass fixtures. That is the only way the smoke test can
  * prove 01's acceptance criteria end to end.
  *
@@ -75,12 +75,12 @@ const PROD_WEB = process.env.FRAMECRAFT_WEB_MODE === "prod";
 
 export default defineConfig({
   testDir: "./e2e",
-  // One stack, one browser: the specs share a live server and a bake queue.
+  // One stack, one browser: the specs share a live server and a build queue.
   fullyParallel: false,
   workers: 1,
   // A gate does not get to be flaky-tolerant: a retry would hide a real defect.
   retries: 0,
-  // A cold Chicago bake is ~11 s and 04/A4 allows 90 s; a rotation change at a
+  // A cold Chicago build is ~11 s and 04/A4 allows 90 s; a rotation change at a
   // non-preset angle is a live Overpass query on top of that.
   timeout: 300_000,
   expect: { timeout: 15_000 },

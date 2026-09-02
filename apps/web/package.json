@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "bake:cli": "vite-node scripts/bake-cli.ts --"
+    "export:cli": "vite-node scripts/export-cli.ts --",
+    "bake:cli": "npm run export:cli --"
   },
   "dependencies": {
     "@fontsource-variable/archivo": "5.3.0",

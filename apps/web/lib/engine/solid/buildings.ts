@@ -26,7 +26,7 @@
 import * as T from "../../transform";
 import type { BuildingTint, RegionName } from "../types";
 import { GRADIENT_MAX_BANDS, bandRegionName } from "../types";
-import type { BakeContext } from "./context";
+import type { BuildContext } from "./context";
 import { addFinding, finding, regionColor } from "./context";
 import type { Drape } from "./drape";
 import { drapeLiftMm } from "./drape";
@@ -74,7 +74,7 @@ export interface BuiltBuildings {
 }
 
 /** How far buildings reach into the base, mm, clamped to something printable. */
-export function skirtMm(ctx: BakeContext): number {
+export function skirtMm(ctx: BuildContext): number {
   const asked = ctx.params.regions?.building_skirt_mm ?? T.BUILDING_OVERLAP_MM;
   return Math.max(0, Math.min(asked, ctx.baseTopMm / 2));
 }
@@ -89,7 +89,7 @@ export function skirtMm(ctx: BakeContext): number {
  * through the same function, so the two still meet exactly.
  */
 export function buildingSpanMm(
-  ctx: BakeContext,
+  ctx: BuildContext,
   solid: BuildingSolid,
 ): [number, number] {
   const { params, scale } = ctx;
@@ -124,7 +124,7 @@ export function buildingSpanMm(
  * DECISIONS `[V3-P2-E2]`.
  */
 export function buildBuildings(
-  ctx: BakeContext,
+  ctx: BuildContext,
   repaired: RepairedBuildings,
   drape: Drape | null = null,
 ): BuiltBuildings {
@@ -188,7 +188,7 @@ export function buildBuildings(
  * gradient at all produce exactly the same regions.
  */
 function splitIntoBands(
-  ctx: BakeContext,
+  ctx: BuildContext,
   plain: ReadonlyArray<{ solid: Manifold; topMm: number }>,
 ): BuildingBand[] {
   const { wasm, arena, params } = ctx;

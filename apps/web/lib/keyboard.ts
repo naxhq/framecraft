@@ -1,12 +1,12 @@
 /**
  * The editor's keyboard map.
  *
- * G generate · B bake · R reset · ? shortcuts · Escape closes what is open.
+ * G preview · B export · R reset · ? shortcuts · Escape closes what is open.
  *
  * Two rules make this safe to hang off `window`:
  *
  *  1. **Never while typing.** `city_label`, the engraving texts and the hex
- *     fields are free text; "b" in "Berlin" must not start a bake. Anything
+ *     fields are free text; "b" in "Berlin" must not start an export. Anything
  *     that accepts text -- input, textarea, select, contenteditable -- swallows
  *     the shortcut.
  *  2. **Never a chord.** Ctrl/Alt/Meta combinations belong to the browser and
@@ -18,7 +18,7 @@
  * while G/B/R still work with a slider focused.
  */
 
-export type Shortcut = "generate" | "bake" | "reset" | "help" | "dismiss" | "undo" | "redo";
+export type Shortcut = "generate" | "export" | "reset" | "help" | "dismiss" | "undo" | "redo";
 
 /**
  * Rendered by the shortcut sheet, and the single source of the key map.
@@ -36,8 +36,8 @@ export interface ShortcutSpec {
 }
 
 export const SHORTCUTS: readonly ShortcutSpec[] = [
-  { action: "generate", keys: "G", description: "Generate the scene for this location" },
-  { action: "bake", keys: "B", description: "Bake the printable model" },
+  { action: "generate", keys: "G", description: "Preview this location" },
+  { action: "export", keys: "B", description: "Export the printable model file" },
   { action: "reset", keys: "R", description: "Reset every parameter to its default" },
   { action: "undo", keys: "Ctrl+Z", description: "Undo the last change (Cmd+Z on Mac)" },
   { action: "redo", keys: "Ctrl+Shift+Z", description: "Redo (Cmd+Shift+Z on Mac)" },
@@ -128,7 +128,7 @@ export function shortcutFor(event: KeyEventLike): Shortcut | null {
     case "g":
       return "generate";
     case "b":
-      return "bake";
+      return "export";
     case "r":
       return "reset";
     default:

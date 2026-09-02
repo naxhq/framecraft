@@ -20,9 +20,9 @@ the font software.
 
 ## Faces cut into the model
 
-Three more OFL faces are bundled with the bake service and are used for the
+Three more OFL faces are bundled with the reference service and are used for the
 *printed* lettering, not the UI. `apps/web/lib/fonts/<face>.glyphs.json` is
-their outlines, extracted so the preview can draw what the bake cuts — font
+their outlines, extracted so the preview can draw what the build cuts — font
 software, served to the browser, so their licences travel here too. The copies
 below are written by `services/bake/scripts/gen_font_assets.py` from the
 authoritative `services/bake/app/fonts/<face>/OFL.txt`; do not hand-edit them.

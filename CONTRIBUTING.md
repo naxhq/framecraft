@@ -22,8 +22,8 @@ Playwright Chromium build.
 make dev
 ```
 
-Web editor on `localhost:3000`, reference bake API on `localhost:8000`. Since
-v3 the web app is standalone: the whole bake pipeline runs in the browser, and
+Web editor on `localhost:3000`, the reference API on `localhost:8000`. Since
+v3 the web app is standalone: the whole build pipeline runs in the browser, and
 the Python service is only the reference implementation and validator. You can
 develop most features with `cd apps/web && npm run dev` alone.
 
@@ -35,7 +35,7 @@ make gate    # the full quality gate
 ```
 
 The gate is the bar for merging. It runs the static no-skip guard, pytest,
-a browser-engine bake checked by the Python reference validator,
+a browser-engine export checked by the Python reference validator,
 eslint, `tsc --noEmit`, vitest, `next build`, and the Playwright end-to-end
 suite, and it fails on any skipped, xfailed, or todo test: zero skips is
 enforced, not encouraged. Release builds are additionally cross-checked by the
@@ -47,7 +47,7 @@ independently of the TypeScript that wrote them.
 
 | Path | What it is |
 |---|---|
-| `apps/web/` | The Next.js editor. `lib/engine/` is the browser bake engine: OSM ingest, terrain, solids on manifold WASM, audit, exporters |
+| `apps/web/` | The Next.js editor. `lib/engine/` is the browser build engine: OSM ingest, terrain, solids on manifold WASM, audit, exporters |
 | `services/bake/` | Python reference implementation and CLI validator; mirrors the engine's transform math, pinned by a parity fixture |
 | `packages/contracts/` | JSON Schema source of truth for the wire shapes, plus the two generators |
 | `fixtures/` | Cached Overpass responses and golden outputs the tests pin against |

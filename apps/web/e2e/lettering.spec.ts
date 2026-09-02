@@ -6,7 +6,7 @@ import { mockChicagoOverpass } from "./overpassMock";
  * Phase 1: the lettering token fix ([V3-P1]).
  *
  * Chicago preset -> `{city}` on the top frame edge resolves to "Chicago" in
- * the preview AND in the baked sidecar, without the user ever typing
+ * the preview AND in the exported sidecar, without the user ever typing
  * anything. Clearing the Place name field warns with the specific empty
  * token; turning the frame off disables the lettering controls with the
  * required copy.
@@ -15,7 +15,7 @@ import { mockChicagoOverpass } from "./overpassMock";
  * the flow below never drops a custom pin (it stays on the Chicago preset,
  * which resolves its city name client-side, per `lib/presets.ts`), but the
  * mock is in place defensively so a future edit to this file cannot
- * accidentally add a live network dependency. Since v3 E4 the bake itself is
+ * accidentally add a live network dependency. Since v3 E4 the build itself is
  * a client-side WASM export, so the sidecar is fetched as a Blob object URL
  * from inside the page rather than over HTTP.
  */
@@ -60,7 +60,7 @@ async function openGroup(page: Page, id: string): Promise<void> {
   await expect(group).toHaveAttribute("data-collapsed", "false");
 }
 
-test("Chicago's {city} resolves in the preview, the Resolved output panel and the baked sidecar; an empty label warns; Frame off disables lettering", async ({
+test("Chicago's {city} resolves in the preview, the Resolved output panel and the exported sidecar; an empty label warns; Frame off disables lettering", async ({
   page,
 }) => {
   mockNominatim(page);
@@ -92,15 +92,15 @@ test("Chicago's {city} resolves in the preview, the Resolved output panel and th
   await expect(resolvedRow).toContainText("Chicago");
   await expect(resolvedRow).toContainText("Frame, top edge");
 
-  // ---- bake, and the sidecar carries the resolved text, not the token ---
+  // ---- export, and the sidecar carries the resolved text, not the token ---
   //
   // The prediction (`lib/resolvedOutput.ts`) already showed "cuts Chicago"
   // above; this proves the ENGINE resolved the same token the same way, by
   // reading its own real `resolvedText`/`print_params` off the exported
   // sidecar Blob -- the two truths the E4 brief asks to never disagree.
-  const bakeButton = page.getByTestId("bake-button");
-  await expect(bakeButton).toBeEnabled();
-  await bakeButton.click();
+  const exportButton = page.getByTestId("export-button");
+  await expect(exportButton).toBeEnabled();
+  await exportButton.click();
   const downloads = page.getByTestId("download-links");
   await expect(downloads).toBeVisible({ timeout: A4_BUDGET_MS });
   const sidecarLink = downloads.getByRole("link", { name: /\.json$/ });

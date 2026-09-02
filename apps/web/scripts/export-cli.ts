@@ -1,13 +1,13 @@
-// FrameCraft browser-engine bake, from the command line.
+// FrameCraft browser-engine build and export, from the command line.
 //
-//   npm run bake:cli -- --scene ../../fixtures/chicago-scene.json \
+//   npm run export:cli -- --scene ../../fixtures/chicago-scene.json \
 //       --params ../../fixtures/print-params-default.json \
 //       --target bambu-3mf --out ../../artifacts/chicago-web.3mf
 //
 // Runs the TypeScript engine (lib/engine/engine.ts) on a SceneGraph JSON and
 // a PrintParams JSON, then writes the export for `--target` (any
 // PrintParams.export_target value; defaults to the params' own export_target)
-// plus a `<stem>.json` sidecar shaped like the Python bake's, so
+// plus a `<stem>.json` sidecar shaped like the Python service's, so
 // `make validate FILE=<abs path>` can judge the file against it. CREDITS.txt
 // is written beside the output. Relative paths resolve from the working
 // directory.
@@ -80,7 +80,7 @@ function parseTiling(spec: string, base: PrintParams["tiling"]): PrintParams["ti
 }
 
 const USAGE =
-  "usage: bake-cli (--scene <scene.json> | --overpass <overpass.json>) --params <print-params.json>\n" +
+  "usage: export-cli (--scene <scene.json> | --overpass <overpass.json>) --params <print-params.json>\n" +
   "                [--target <export_target>] [--terrain <grid.json|demo|demo:<relief_m>>]\n" +
   "                [--radius <m>] [--rotation <deg>] [--tiling COLSxROWS[:joint[:tol]]]\n" +
   "                --out <file> [--title <text>]\n" +
@@ -89,11 +89,11 @@ const USAGE =
   "             `pin`, tolerance in mm. Writes the tiled export AND every tile as its\n" +
   "             own file with its own sidecar, so `make validate` can judge one tile.\n" +
   "  --overpass ingests a raw Overpass response through lib/engine/osm, which is the\n" +
-  "             scene the app itself bakes: it carries the rail layer and the\n" +
+  "             scene the app itself builds from: it carries the rail layer and the\n" +
   "             bridge/layer tags that a SceneGraph from the Python service does not.\n" +
   "  --terrain  a TerrainGrid JSON, or `demo` / `demo:<relief_m>` for a synthetic\n" +
   "             west-to-east ramp over the crop (default 60 m of relief), so a DRAPED\n" +
-  "             bake can be put through `make validate` without a network fetch.\n" +
+  "             build can be put through `make validate` without a network fetch.\n" +
   "  --radius   ground radius in metres for --overpass (default 900).";
 
 function parseArgs(argv: string[]): Args {
@@ -146,7 +146,7 @@ function parseArgs(argv: string[]): Args {
  *
  * `demo` builds a synthetic west-to-east ramp over the crop rather than
  * fetching DEM tiles: the point of the flag is to put a DRAPED model through
- * the reference validator reproducibly, and a bake whose geometry depends on
+ * the reference validator reproducibly, and a build whose geometry depends on
  * what a remote elevation service served that minute is not reproducible. A
  * real `TerrainGrid` JSON (what `fetchTerrainGrid` returns, `elevations` as a
  * plain array) is accepted too, for checking a specific place.
@@ -199,7 +199,7 @@ type EngineRunner = (input: EngineInput) => Promise<EngineResult> | EngineResult
 
 interface EngineModule {
   runEngine?: EngineRunner;
-  bake?: EngineRunner;
+  buildModel?: EngineRunner;
   buildEngineResult?: EngineRunner;
   default?: EngineRunner | { runEngine?: EngineRunner };
 }
@@ -219,17 +219,17 @@ async function loadEngine(): Promise<EngineRunner> {
     }
     const runner =
       mod.runEngine ??
-      mod.bake ??
+      mod.buildModel ??
       mod.buildEngineResult ??
       (typeof mod.default === "function" ? mod.default : mod.default?.runEngine);
     if (typeof runner === "function") {
       return runner;
     }
-    lastError = new Error(`${candidate} exports none of runEngine, bake, buildEngineResult or a default function`);
+    lastError = new Error(`${candidate} exports none of runEngine, buildModel, buildEngineResult or a default function`);
   }
   const reason = lastError instanceof Error ? lastError.message : String(lastError);
   throw new Error(
-    "the browser engine (apps/web/lib/engine/engine.ts) is not available yet, so nothing can be baked from the command line: " + reason,
+    "the browser engine (apps/web/lib/engine/engine.ts) is not available yet, so nothing can be built from the command line: " + reason,
   );
 }
 
@@ -298,7 +298,7 @@ async function main(): Promise<void> {
   for (const file of output.files) {
     // The first file takes the requested name; companions (MTL) keep their own,
     // and so does a file whose format is not the one `--out` named - a tiled
-    // bake writes a ZIP of per-tile files, and calling that `city.3mf` would be
+    // build writes a ZIP of per-tile files, and calling that `city.3mf` would be
     // a lie about what is in it.
     const path =
       file === output.files[0] && extname(file.name).toLowerCase() === outExtension

@@ -7,7 +7,7 @@ import PreviewPane from "@/components/scene/PreviewPane";
 import { scheduleReverseGeocode } from "@/lib/geocode";
 import { shortcutFor, type TargetLike } from "@/lib/keyboard";
 import { SHARE_PARAM } from "@/lib/share";
-import { bakeBlockReason } from "@/lib/warnings";
+import { exportBlockReason } from "@/lib/warnings";
 import { useEditorStore } from "@/store/editor";
 import { initHistory, redoHistory, undoHistory, useHistoryStore } from "@/store/history";
 import HistoryChip from "./HistoryChip";
@@ -40,8 +40,8 @@ export function EditorShell() {
    * The shortcut sheet is `aria-modal="true"`, which asserts the rest of the
    * page is inert. It was not: the listener below is on `window`, the dialog
    * panel is not a typing target, so with the sheet open -- the one surface
-   * that says "B — Bake the printable model" -- pressing B started a real
-   * server bake behind it and R silently reset every parameter, including up
+   * that says "B — Export the model file" -- pressing B started a real
+   * export behind it and R silently reset every parameter, including up
    * to eight engraving lines and twelve picked heroes, with no undo.
    *
    * Read through a ref rather than a dependency so the listener is attached
@@ -108,11 +108,11 @@ export function EditorShell() {
         void state.generate();
         return;
       }
-      case "bake": {
-        if (state.bake.phase === "exporting") return;
-        if (bakeBlockReason(state.scene.graph, state.params) !== null) return;
+      case "export": {
+        if (state.exportState.phase === "exporting") return;
+        if (exportBlockReason(state.scene.graph, state.params) !== null) return;
         event.preventDefault();
-        void state.requestBake();
+        void state.requestExport();
         return;
       }
       case "reset": {
@@ -140,7 +140,7 @@ export function EditorShell() {
    * Read once, after mount -- the payload cannot be read during render without
    * a hydration mismatch, and it must not be read on the server at all. It
    * restores the location and every PrintParams field and then stops: the scene
-   * is marked stale and Generate is the user's move, because generating is a
+   * is marked stale and Preview is the user's move, because previewing is a
    * live Overpass query and opening a link in a background tab is not consent
    * to one.
    */

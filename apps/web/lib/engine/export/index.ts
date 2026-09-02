@@ -56,10 +56,10 @@ export interface ExportOutput {
 }
 
 /**
- * Every file for one bake and one target.
+ * Every file for one build and one target.
  *
- * A TILED bake takes one of two routes. A Bambu project can carry many plates
- * in one file, so a tiled bake for a Bambu printer is one .3mf with one plate
+ * A TILED build takes one of two routes. A Bambu project can carry many plates
+ * in one file, so a tiled build for a Bambu printer is one .3mf with one plate
  * per tile; everything else - a third-party printer, a generic 3MF, an STL, a
  * colour-change project, which is a plan for ONE printed object - becomes a zip
  * of per-tile files named by their grid reference. `notes` says which happened,
@@ -68,7 +68,7 @@ export interface ExportOutput {
  */
 export function exportForTarget(result: EngineResult, target: ExportTarget, options: ExportForTargetOptions = {}): ExportOutput {
   // One perf row per exporter (`export.bambu-3mf`, `export.stl`, ...). A tiled
-  // bake recurses through here once per tile, so the row's count is the number
+  // build recurses through here once per tile, so the row's count is the number
   // of files this export actually wrote. No-op with perf mode off
   // (`lib/perf.ts`), which keeps `runExport` a pure function either way.
   return perfSpan(`export.${target}`, () => writeForTarget(result, target, options));

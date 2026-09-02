@@ -13,7 +13,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { defaultPrintParams, type PrintParams } from "../../contracts";
 import * as T from "../../transform";
-import { bake } from "../engine";
+import { buildModel } from "../engine";
 import type { EngineResult, RegionName } from "../types";
 import {
   area,
@@ -85,8 +85,8 @@ describe("the drape", () => {
       green: [area(square(0, 90, 60))],
       roads: [road("r1", [[-180, -90], [180, -90]], 20)],
     };
-    const flat = await bake({ scene: scene(parts), params: defaultPrintParams() });
-    const hilly = await bake({
+    const flat = await buildModel({ scene: scene(parts), params: defaultPrintParams() });
+    const hilly = await buildModel({
       scene: scene(parts),
       params: defaultPrintParams(),
       terrain: rampGrid(RADIUS_M, 20),
@@ -99,7 +99,7 @@ describe("the drape", () => {
     expect(west).not.toBeNull();
     expect(middle!).toBeGreaterThan(west!);
     expect(east!).toBeGreaterThan(middle!);
-    // ... and the flat bake does not.
+    // ... and the flat build does not.
     expect(heightAt(flat, mm(-150), mm(40))).toBeCloseTo(
       heightAt(flat, mm(150), mm(40))!,
       6,
@@ -124,7 +124,7 @@ describe("the drape", () => {
       water: [area(square(60, 0, 80))],
     };
     const params = defaultPrintParams();
-    const hilly = await bake({
+    const hilly = await buildModel({
       scene: scene(parts),
       params,
       terrain: rampGrid(RADIUS_M, 20),
@@ -166,7 +166,7 @@ describe("the drape", () => {
       buildings: [building("w1", square(0, 0, 120), 30)],
     };
     const params = defaultPrintParams();
-    const hilly = await bake({
+    const hilly = await buildModel({
       scene: scene(parts),
       params,
       terrain: rampGrid(RADIUS_M, 20),
@@ -177,7 +177,7 @@ describe("the drape", () => {
     const westRoof = regionHeightAt(hilly, "buildings", mm(-50), mm(0))!;
     const eastRoof = regionHeightAt(hilly, "buildings", mm(50), mm(0))!;
     expect(westRoof).toBeCloseTo(eastRoof, 3);
-    // It really did move: the roof is above where a flat bake would put it.
+    // It really did move: the roof is above where a flat build would put it.
     const flatTop = T.building_top_mm_for(
       { height_m: 30, is_tall: false },
       params,
@@ -194,7 +194,7 @@ describe("the drape", () => {
   }, 120_000);
 
   it("says so when the relief is too small to see", async () => {
-    const quiet = await bake({
+    const quiet = await buildModel({
       scene: scene({ radiusM: RADIUS_M }),
       params: defaultPrintParams(),
       // 1 m of relief at 0.42 mm/m is 0.42 mm, half a visible step.
@@ -205,7 +205,7 @@ describe("the drape", () => {
     expect(low?.severity).toBe("info");
     expect(quiet.stats.terrainReliefMm).toBeLessThan(LOW_RELIEF_MM);
 
-    const loud = await bake({
+    const loud = await buildModel({
       scene: scene({ radiusM: RADIUS_M }),
       params: defaultPrintParams(),
       terrain: rampGrid(RADIUS_M, 20),
@@ -216,12 +216,12 @@ describe("the drape", () => {
   }, 120_000);
 
   it("applies terrain_exaggeration exactly once", async () => {
-    const single = await bake({
+    const single = await buildModel({
       scene: scene({ radiusM: RADIUS_M }),
       params: defaultPrintParams(),
       terrain: rampGrid(RADIUS_M, 20),
     });
-    const doubled = await bake({
+    const doubled = await buildModel({
       scene: scene({ radiusM: RADIUS_M }),
       params: { ...defaultPrintParams(), terrain_exaggeration: 2 },
       terrain: rampGrid(RADIUS_M, 20),
@@ -243,7 +243,7 @@ describe("the drape", () => {
 
 describe("the rail region", () => {
   it("appears from the scene's rail layer at its own width and offset", async () => {
-    const withRail = await bake({
+    const withRail = await buildModel({
       scene: scene({
         radiusM: RADIUS_M,
         rail: [{ id: "rail1", path: [[-180, 60], [180, 60]], width_m: 6 }],
@@ -263,7 +263,7 @@ describe("the rail region", () => {
     expect(rail!.colorHex).toBe(params.colour?.region_colors?.rail ?? "#6B6B6B");
 
     // And a scene with no rail layer at all still has no rail region.
-    const without = await bake({
+    const without = await buildModel({
       scene: scene({ radiusM: RADIUS_M }),
       params: defaultPrintParams(),
     });
@@ -272,14 +272,14 @@ describe("the rail region", () => {
   }, 120_000);
 
   it("uses params.regions.rail.width_m when the way carries none", async () => {
-    const narrow = await bake({
+    const narrow = await buildModel({
       scene: scene({
         radiusM: RADIUS_M,
         rail: [{ id: "rail1", path: [[-180, 60], [180, 60]], width_m: 6 }],
       }),
       params: defaultPrintParams(),
     });
-    const wide = await bake({
+    const wide = await buildModel({
       scene: scene({
         radiusM: RADIUS_M,
         rail: [{ id: "rail1", path: [[-180, 60], [180, 60]], width_m: 20 }],
@@ -302,7 +302,7 @@ describe("bridges", () => {
 
   it("lifts a bridge above the water and leaves the water underneath", async () => {
     const params = defaultPrintParams();
-    const result = await bake({ scene: scene(crossing), params });
+    const result = await buildModel({ scene: scene(crossing), params });
     const clearance = params.bridges?.clearance_mm ?? 1.0;
 
     // Over the middle of the river the model's top is the deck, a clearance
@@ -337,7 +337,7 @@ describe("bridges", () => {
       ...defaultPrintParams(),
       bridges: { enabled: false, clearance_mm: 1.0, abutments: true },
     };
-    const result = await bake({ scene: scene(crossing), params });
+    const result = await buildModel({ scene: scene(crossing), params });
     expect(result.stats.bridges).toBeUndefined();
     // No deck: over the river the top of the model is the water surface, and
     // the road gave way to the water exactly as the precedence order says.
@@ -348,7 +348,7 @@ describe("bridges", () => {
 
   it("treats a positive OSM layer as a bridge, and follows the terrain", async () => {
     const params = defaultPrintParams();
-    const hilly = await bake({
+    const hilly = await buildModel({
       scene: scene({
         radiusM: RADIUS_M,
         roads: [road("r1", [[-180, 0], [180, 0]], 20, { layer: 1 })],
@@ -370,7 +370,7 @@ describe("bridges", () => {
       ...defaultPrintParams(),
       bridges: { enabled: true, clearance_mm: 1.0, abutments: false },
     };
-    const result = await bake({ scene: scene(crossing), params });
+    const result = await buildModel({ scene: scene(crossing), params });
     const warned = result.findings.find((f) => f.id === "bridge-unsupported");
     expect(warned).toBeDefined();
     expect(warned?.severity).toBe("warning");
@@ -390,7 +390,7 @@ describe("trees", () => {
       { x: 0, y: -60, radius_m: 4 },
       { x: 60, y: -60, radius_m: 4 },
     ];
-    const result = await bake({
+    const result = await buildModel({
       scene: scene({ radiusM: RADIUS_M, trees }),
       params: defaultPrintParams(),
     });
@@ -418,7 +418,7 @@ describe("trees", () => {
       y: -60,
       radius_m: 0.5,
     }));
-    const result = await bake({
+    const result = await buildModel({
       scene: scene({ radiusM: RADIUS_M, trees }),
       params: defaultPrintParams(),
     });
@@ -442,17 +442,17 @@ describe("trees", () => {
         { x: 120, y: 0, radius_m: 4 },
       ],
     };
-    const flat = await bake({ scene: scene(parts), params: defaultPrintParams() });
+    const flat = await buildModel({ scene: scene(parts), params: defaultPrintParams() });
     expect(flat.stats.trees).toBe(1);
     expect(flat.findings.find((f) => f.id === "trees-blocked")).toBeDefined();
 
-    const hilly = await bake({
+    const hilly = await buildModel({
       scene: scene(parts),
       params: defaultPrintParams(),
       terrain: rampGrid(RADIUS_M, 20),
     });
     // The surviving tree is east of centre, where the ramp is high, so its top
-    // is above where the flat bake put it.
+    // is above where the flat build put it.
     expect(regionOf(hilly, "parks")!.bbox.max[2]).toBeGreaterThan(
       regionOf(flat, "parks")!.bbox.max[2],
     );
@@ -461,7 +461,7 @@ describe("trees", () => {
 
   it("honours params.trees", async () => {
     const trees = [{ x: 0, y: -60, radius_m: 4 }];
-    const off = await bake({
+    const off = await buildModel({
       scene: scene({ radiusM: RADIUS_M, trees }),
       params: { ...defaultPrintParams(), trees: false },
     });
@@ -482,8 +482,8 @@ describe("height exaggeration", () => {
   };
 
   it("changes nothing at the defaults", async () => {
-    const plain = await bake({ scene: scene(parts), params: defaultPrintParams() });
-    const explicit = await bake({
+    const plain = await buildModel({ scene: scene(parts), params: defaultPrintParams() });
+    const explicit = await buildModel({
       scene: scene(parts),
       params: {
         ...defaultPrintParams(),
@@ -499,7 +499,7 @@ describe("height exaggeration", () => {
       ...defaultPrintParams(),
       height_exaggeration: { multiplier: 2.0, curve: 0.0 },
     };
-    const result = await bake({ scene: scene(parts), params });
+    const result = await buildModel({ scene: scene(parts), params });
     const shortTop = regionHeightAt(result, "buildings", mm(-90), 0)!;
     expect(shortTop).toBeCloseTo(
       T.building_top_mm_exaggerated({ height_m: 6, is_tall: false }, params, SCALE, false),
@@ -516,8 +516,8 @@ describe("height exaggeration", () => {
       ...defaultPrintParams(),
       height_exaggeration: { multiplier: 2.0, curve: 1.0 },
     };
-    const a = await bake({ scene: scene(parts), params: linear });
-    const b = await bake({ scene: scene(parts), params: curved });
+    const a = await buildModel({ scene: scene(parts), params: linear });
+    const b = await buildModel({ scene: scene(parts), params: curved });
     const shortA = regionHeightAt(a, "buildings", mm(-90), 0)!;
     const shortB = regionHeightAt(b, "buildings", mm(-90), 0)!;
     const tallA = regionHeightAt(a, "buildings", mm(90), 0)!;
@@ -537,7 +537,7 @@ describe("findings that used to vanish (v3-02 audit)", () => {
     // MAJOR 2. This used to be pushed to `ctx.warnings`, which `EngineResult`
     // has no field for, so a share link carrying hero ids from another city
     // produced a model with no hero and no explanation anywhere.
-    const result = await bake({
+    const result = await buildModel({
       scene: scene({
         radiusM: RADIUS_M,
         buildings: [building("w1", square(0, 0, 60), 30)],
@@ -550,7 +550,7 @@ describe("findings that used to vanish (v3-02 audit)", () => {
     expect(unknown?.detail).toContain("nonexistent-hero-id");
     expect(unknown?.region).toBe("hero_building");
     // A real id raises nothing.
-    const clean = await bake({
+    const clean = await buildModel({
       scene: scene({
         radiusM: RADIUS_M,
         buildings: [building("w1", square(0, 0, 60), 30)],
@@ -573,7 +573,7 @@ describe("findings that used to vanish (v3-02 audit)", () => {
         water: { depth_mm: 1.0, proud_mm: -2.0 },
       },
     };
-    const deep = await bake({ scene: scene(parts), params });
+    const deep = await buildModel({ scene: scene(parts), params });
     const water = regionOf(deep, "water");
     expect(water).toBeDefined();
     expect(water!.volumeMm3).toBeGreaterThan(0);
@@ -589,7 +589,7 @@ describe("findings that used to vanish (v3-02 audit)", () => {
     expect(water!.bbox.max[2]).toBeLessThan(T.base_top_mm(params) / 2 + 0.5);
 
     // The half-way case from the audit: a 1.0 mm depth clamped to a slab.
-    const middling = await bake({
+    const middling = await buildModel({
       scene: scene(parts),
       params: {
         ...params,
@@ -605,7 +605,7 @@ describe("findings that used to vanish (v3-02 audit)", () => {
     ).toBeDefined();
 
     // ... and the defaults never trip it.
-    const plain = await bake({ scene: scene(parts), params: defaultPrintParams() });
+    const plain = await buildModel({ scene: scene(parts), params: defaultPrintParams() });
     expect(plain.findings.find((f) => f.id === "region-placement-clamped")).toBeUndefined();
     expect(outstandingWasmObjects()).toBe(0);
   }, 180_000);
@@ -613,7 +613,7 @@ describe("findings that used to vanish (v3-02 audit)", () => {
   it("offers a bigger plate for a thin wall, never a smaller nozzle", () => {
     // MINOR 9. The old patch halved `nozzle_mm`, which changes nothing physical
     // and only relaxes the threshold the check compares against. Asserted on
-    // the fix helper itself rather than on a bake, because the repair is good
+    // the fix helper itself rather than on a build, because the repair is good
     // enough that manufacturing a thin wall to order is unreliable, and a
     // conditional assertion inside an `if (finding !== undefined)` would pass
     // vacuously the day the finding stopped firing.

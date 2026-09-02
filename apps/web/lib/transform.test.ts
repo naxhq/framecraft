@@ -180,7 +180,7 @@ describe("fixtures", () => {
     // Case 8 shares case 1's scale for the same reason case 4 does (only the v3
     // knobs move); case 9 turns the frame off, which is a sixth scale.
     expect(new Set(expected.cases.map((c) => c.scale_mm_per_m)).size).toBe(6);
-    // ... and the two bake-side rules mirrored here must actually fire in the
+    // ... and the two build-side rules mirrored here must actually fire in the
     // fixture, or this file could mirror a constant `false`.
     expect(expected.cases.map((c) => c.model_too_tall)).toEqual([
       false,
@@ -371,7 +371,7 @@ describe.each(expected.cases)("parity case $name", (expectedCase) => {
   it("agrees on the terrain vertical scale and the exaggeration curve", () => {
     // v3: the DEM fetcher is live, so `terrain_exaggeration` is live too and
     // the two implementations have to put a hill at the same height
-    // (`[V3-P3-G1]`). The preview draws this surface; the engine prints it.
+    // (`[V3-P3-G1]`). The preview draws this surface; the engine builds it.
     expect(T.terrain_z_scale(params)).toBe(params.terrain_exaggeration);
     TERRAIN_SAMPLES_M.forEach((elevation, i) => {
       mmEq(
@@ -560,7 +560,7 @@ describe.each(expected.cases)("parity case $name", (expectedCase) => {
     expect(T.recommend_radius_m(scene, params, radius_m)).toBe(want.recommend_radius_m);
     expect(T.recommend_plate_mm(scene, params, radius_m)).toBe(want.recommend_plate_mm);
     // The sentence is compared VERBATIM: it is user-facing text that the HUD and
-    // the bake's warnings both show, so a rounding difference is a bug.
+    // the build's warnings both show, so a rounding difference is a bug.
     expect(T.detail_recommendation(scene, params, radius_m)).toBe(want.recommendation);
   });
 });
@@ -775,7 +775,7 @@ describe("transform unit behaviour (mirrors test_transform.py)", () => {
       expect(T.hero_true_height(params)).toBe(height);
       expect(T.hero_own_color(params)).toBe(colour);
       // is_hero_id is mode-independent: "did the user pick it?", which is what
-      // the bake's Stage 1 block-merge exemption keys off.
+      // the build's Stage 1 block-merge exemption keys off.
       expect(T.is_hero_id("w1", params)).toBe(true);
       expect(T.is_hero_id("w9", params)).toBe(false);
       expect(T.hero_height_ids(params).size).toBe(height ? 2 : 0);

@@ -7,7 +7,7 @@ import { mockChicagoOverpass } from "./overpassMock";
  *
  * The unit tests pin the recording API; this pins the thing a unit test
  * cannot: that the marks are actually WIRED, in a real browser, across the two
- * realms the pipeline runs in. The engine bake and the OSM ingest happen inside
+ * realms the pipeline runs in. The engine build and the OSM ingest happen inside
  * Web Workers, and their timings only reach the page because `worker.ts` drains
  * them onto the job result and `client.ts` rebases and merges them. If any link
  * in that chain breaks, the HUD still renders and the console still prints --
@@ -20,7 +20,7 @@ import { mockChicagoOverpass } from "./overpassMock";
 
 const BUDGET_FACTOR = Number(process.env.E2E_BUDGET_FACTOR ?? 1) || 1;
 const PREVIEW_BUDGET_MS = 60_000 * BUDGET_FACTOR;
-const BAKE_BUDGET_MS = 90_000 * BUDGET_FACTOR;
+const BUILD_BUDGET_MS = 90_000 * BUDGET_FACTOR;
 
 interface HudRow {
   name: string;
@@ -61,7 +61,7 @@ test("the perf HUD does not exist without ?perf=1", async ({ page }) => {
   ).toBe(false);
 });
 
-test("?perf=1 times the Overpass round trip, the normalise, the solid bake and the export", async ({
+test("?perf=1 times the Overpass round trip, the normalise, the solid build and the export", async ({
   page,
 }) => {
   await mockChicagoOverpass(page);
@@ -73,23 +73,23 @@ test("?perf=1 times the Overpass round trip, the normalise, the solid bake and t
   // the report that answers "why is the first paint slow".
   await expect(page.getByTestId("perf-navigation")).toBeVisible();
 
-  // ---- a preview: ingest (worker) + engine bake (the other worker) --------
+  // ---- a preview: ingest (worker) + engine build (the other worker) --------
   await page.locator('[data-preset-id="chicago-loop"]').click();
   await expect(page.getByTestId("preview-stats")).toBeVisible({ timeout: PREVIEW_BUDGET_MS });
   const statsCard = page.getByTestId("stats-card");
-  await expect(statsCard).toContainText("Triangles", { timeout: BAKE_BUDGET_MS });
+  await expect(statsCard).toContainText("Triangles", { timeout: BUILD_BUDGET_MS });
 
   await expect
     .poll(async () => (await hudRows(page)).map((row) => row.name), {
-      timeout: BAKE_BUDGET_MS,
-      message: "the HUD never listed the ingest and bake rows",
+      timeout: BUILD_BUDGET_MS,
+      message: "the HUD never listed the ingest and build rows",
     })
-    .toEqual(expect.arrayContaining(["overpass.fetch", "osm.normalize", "engine.bake"]));
+    .toEqual(expect.arrayContaining(["overpass.fetch", "osm.normalize", "engine.build"]));
 
   const previewRows = await hudRows(page);
   log(previewRows.map((row) => `${row.name}=${row.ms.toFixed(1)}ms`).join(" "));
 
-  for (const name of ["overpass.fetch", "osm.normalize", "engine.bake"]) {
+  for (const name of ["overpass.fetch", "osm.normalize", "engine.build"]) {
     const row = rowNamed(previewRows, name);
     expect(row, `the HUD has no ${name} row`).toBeDefined();
     expect(row?.ms ?? 0, `${name} reported a non-positive duration`).toBeGreaterThan(0);
@@ -98,7 +98,7 @@ test("?perf=1 times the Overpass round trip, the normalise, the solid bake and t
     expect(row?.scope, `${name} was not recorded in the worker`).toBe("worker");
   }
 
-  // At least one named step of the solid pipeline, not just the bake total.
+  // At least one named step of the solid pipeline, not just the build total.
   const solidRows = previewRows.filter((row) => row.name.startsWith("solid."));
   expect(solidRows.length, "no solid pipeline steps were timed").toBeGreaterThan(0);
   for (const row of solidRows) expect(row.ms).toBeGreaterThanOrEqual(0);
@@ -116,14 +116,14 @@ test("?perf=1 times the Overpass round trip, the normalise, the solid bake and t
   expect(await resources.count(), "no resource rows in the HUD").toBeGreaterThan(0);
 
   // ---- an export ---------------------------------------------------------
-  const bakeButton = page.getByTestId("bake-button");
-  await expect(bakeButton).toBeEnabled({ timeout: BAKE_BUDGET_MS });
-  await bakeButton.click();
-  await expect(page.getByTestId("download-links")).toBeVisible({ timeout: BAKE_BUDGET_MS });
+  const exportButton = page.getByTestId("export-button");
+  await expect(exportButton).toBeEnabled({ timeout: BUILD_BUDGET_MS });
+  await exportButton.click();
+  await expect(page.getByTestId("download-links")).toBeVisible({ timeout: BUILD_BUDGET_MS });
 
   await expect
     .poll(async () => (await hudRows(page)).some((row) => row.name.startsWith("export.")), {
-      timeout: BAKE_BUDGET_MS,
+      timeout: BUILD_BUDGET_MS,
       message: "the HUD never listed an export row",
     })
     .toBe(true);
@@ -151,6 +151,6 @@ test("?perf=1 times the Overpass round trip, the normalise, the solid bake and t
   expect(clipboard).toContain("FrameCraft perf:");
   expect(clipboard).toContain("name\tscope\tcount\tms\tbytes");
   expect(clipboard).toContain("overpass.fetch");
-  expect(clipboard).toContain("engine.bake");
+  expect(clipboard).toContain("engine.build");
   expect(clipboard).toContain("export.run");
 });

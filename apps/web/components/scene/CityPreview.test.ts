@@ -116,7 +116,7 @@ describe("previewDeps", () => {
     expect(GEOMETRY(rebuiltBy("large_scale", 2.0))).toEqual([]);
     expect(GEOMETRY(rebuiltBy("base_thickness_mm", 8))).toEqual([]);
     expect(GEOMETRY(rebuiltBy("terrain_exaggeration", 3.0))).toEqual([]);
-    // ... but the predicted model top must follow them, or the Bake button
+    // ... but the predicted model top must follow them, or the Build button
     // would stay enabled past 04's 60 mm ceiling.
     expect(rebuiltBy("small_scale", 1.5)).toEqual(["height"]);
     expect(rebuiltBy("large_scale", 2.0)).toEqual(["height"]);
@@ -265,7 +265,7 @@ describe("previewDeps", () => {
    * recesses, apply an exaggeration curve, split tiles, style the frame
    * profile and place a magnet hanger's pockets -- and it already reruns on
    * every one of these writes regardless (`store/editor.ts`'s
-   * `scheduleEngineJob` debounces a fresh WASM bake on EVERY `setParam` call,
+   * `scheduleEngineJob` debounces a fresh WASM build on EVERY `setParam` call,
    * not a subset), so there is nothing to add there. `regions`, `colour`,
    * `printer_profile`, `custom_profile`, `export_target`, `terrain`,
    * `heights`, `bridges`, `height_exaggeration`, `tiling`, `frame_style` and

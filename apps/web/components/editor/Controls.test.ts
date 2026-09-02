@@ -190,7 +190,7 @@ describe("keyboard navigation through the Location sliders", () => {
     expect(useEditorStore.getState().location.radius_m).toBe(950);
     const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
     // The request body is now the Overpass QL query text (never a
-    // `POST /scene` JSON payload): the radius is baked into its bbox, not a
+    // `POST /scene` JSON payload): the radius is built into its bbox, not a
     // JSON field, so this asserts on the query text itself.
     expect(String(init.body)).toContain("[out:json]");
   });

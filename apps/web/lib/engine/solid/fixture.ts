@@ -24,7 +24,7 @@ export function chicagoScene(): SceneGraph {
   return JSON.parse(readFileSync(path, "utf8")) as SceneGraph;
 }
 
-/** The v1 golden bake's single-mode volume, mm^3, from `fixtures/v1-golden/`. */
+/** The v1 golden build's single-mode volume, mm^3, from `fixtures/v1-golden/`. */
 export const PYTHON_REFERENCE_VOLUME_MM3 = 167624.12441295458;
 
 /** Re-import an exported region. Throws if the mesh is not a valid solid. */

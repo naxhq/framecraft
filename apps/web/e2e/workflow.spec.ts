@@ -108,7 +108,7 @@ test("search picks a place, moves the pin and fills the place name", async ({ pa
 test("changing three settings and pressing Ctrl+Z twice reverts them, and the history chip follows", async ({
   page,
 }) => {
-  // Deliberately no preset click and no Generate here: clicking a preset
+  // Deliberately no preset click and no Preview here: clicking a preset
   // itself writes `city_label` (a real, one-entry history step of its own,
   // `applyPreset`), which would make "3 changes" mean something different
   // depending on whether a preset was clicked first. Undo/redo is exercised
@@ -234,8 +234,8 @@ test("a copied link restores in a fresh browser context", async ({ page, context
     await other.goto(link);
     await expect(other.getByTestId("plate_mm-value")).toHaveText("205 mm");
     await expect(other.locator("#city_label")).toHaveValue("Tokyo");
-    // A share restore stays stale until Generate; it never fetches on its own.
-    await expect(other.getByTestId("generate-button")).toBeEnabled();
+    // A share restore stays stale until Preview; it never fetches on its own.
+    await expect(other.getByTestId("preview-button")).toBeEnabled();
   } finally {
     await fresh.close();
   }

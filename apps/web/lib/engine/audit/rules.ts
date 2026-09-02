@@ -275,7 +275,7 @@ export function auditPrintability(input: AuditInput): AuditFinding[] {
     if (out.some((f) => f.id === finding.id && f.detail === finding.detail)) return;
     out.push(finding);
   };
-  // The bake's own findings go through the same door, so a rule that raises
+  // The build's own findings go through the same door, so a rule that raises
   // the same thing twice (a refusal reported per piece, a solid checked per
   // region) is said once.
   for (const finding of input.built) add(finding);

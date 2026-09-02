@@ -11,7 +11,7 @@ import { mockChicagoOverpass, mockEmptyOverpass, mockTinyLoopOverpass, watchOver
  * The FrameCraft smoke test: 01's primary user flow, end to end.
  *
  * Since FrameCraft v3 E4 the app never calls `services/bake` at all: ingest
- * (Overpass) and the bake (manifold3d) both run in the browser. This suite
+ * (Overpass) and the build (manifold3d) both run in the browser. This suite
  * therefore runs fully offline -- every Overpass mirror is route-mocked from
  * a committed fixture (`overpassMock.ts`), never the real service -- and
  * `services/bake` is used only as the CLI printability validator, exactly as
@@ -19,9 +19,9 @@ import { mockChicagoOverpass, mockEmptyOverpass, mockTinyLoopOverpass, watchOver
  *
  * What it pins down, by 01's acceptance criteria:
  *   A1  preset -> preview in under the budget, measured and asserted
- *   A2  an empty Overpass response shows the low-coverage warning and blocks Bake
+ *   A2  an empty Overpass response shows the low-coverage warning and blocks Export
  *   A3  no fetch on a PrintParams slider, and no page reload
- *   A4  bake -> done -> a Blob download link in under 90 s
+ *   A4  export -> done -> a Blob download link in under 90 s
  *   A5  the downloaded file passes `python -m app.cli validate` (exit 0),
  *       proven twice: a small synthetic scene and, separately, the full
  *       Chicago scene at real complexity (audit v3-02 finding 12's restored
@@ -103,7 +103,7 @@ test.describe.configure({ mode: "serial" });
 // The happy path
 // ==========================================================================
 
-test("happy path: Chicago preset previews, sliders stay local, bake downloads a 3MF", async ({
+test("happy path: Chicago preset previews, sliders stay local, export downloads a 3MF", async ({
   page,
 }) => {
   const calls = watchOverpass(page);
@@ -222,7 +222,7 @@ test("happy path: Chicago preset previews, sliders stay local, bake downloads a 
   await expect(page.getByTestId("base_thickness_mm-value")).toHaveText("4.0 mm");
 
   // Give any stray request time to appear before asserting there was none. The
-  // debounced engine job (a WASM bake, never a fetch) runs in here too.
+  // debounced engine job (a WASM build, never a fetch) runs in here too.
   await page.waitForTimeout(1_500);
   const sliderCalls = calls.slice(beforeSliders);
   expect(
@@ -314,9 +314,9 @@ test("happy path: Chicago preset previews, sliders stay local, bake downloads a 
   await expect(page.getByTestId("rotation_deg-value")).toHaveText("1°");
   // The commit is debounced by 250 ms and then re-ingests; wait well past
   // that. The worker also has to finish whatever `small_scale`'s own engine
-  // job is running first: `EngineClient.bake()` cannot preempt a bake once
-  // the worker has started it (`client.ts:supersedeBake`), so the A3 stress
-  // test just above can leave a full Chicago-scale bake queued ahead of this
+  // job is running first: `EngineClient.buildModel()` cannot preempt a build once
+  // the worker has started it (`client.ts:supersedeBuild`), so the A3 stress
+  // test just above can leave a full Chicago-scale build queued ahead of this
   // ingest message in the same worker. DECISIONS.md [V3-P2-E4].
   await expect
     .poll(() => ingestFetches(calls) - beforeRotation, { timeout: WARMUP_BUDGET_MS })
@@ -325,11 +325,11 @@ test("happy path: Chicago preset previews, sliders stay local, bake downloads a 
   await page.waitForTimeout(2_000);
   expect(ingestFetches(calls) - beforeRotation).toBe(1);
 
-  // Back to 0 so the bake runs on the preset (fixture-backed, offline).
+  // Back to 0 so the build runs on the preset (fixture-backed, offline).
   const t6b = Date.now();
   await nudgeSlider(page, "rotation_deg", "ArrowLeft");
   await expect(page.getByTestId("rotation_deg-value")).toHaveText("0°");
-  await expect(page.getByTestId("generate-button")).toHaveText(/^Generate$/, {
+  await expect(page.getByTestId("preview-button")).toHaveText(/^Preview$/, {
     timeout: WARMUP_BUDGET_MS,
   });
   await expect(page.getByTestId("scene-error")).toHaveCount(0);
@@ -337,34 +337,34 @@ test("happy path: Chicago preset previews, sliders stay local, bake downloads a 
   log(`A6b rotation nudge back -> preview: ${((Date.now() - t6b) / 1000).toFixed(1)} s`);
 
   // ---- 7. the engine result and the stats card populate on their own ---
-  // ("one truth: engine result when fresh", not gated on clicking Bake).
+  // ("one truth: engine result when fresh", not gated on clicking Export).
   const statsCard = page.getByTestId("stats-card");
   await expect(statsCard).toBeVisible({ timeout: A4_BUDGET_MS });
   await expect(statsCard).toContainText("Triangles", { timeout: A4_BUDGET_MS });
-  const cardTextBeforeBake = (await statsCard.textContent()) ?? "";
-  log(`stats card before Bake is even clicked: ${cardTextBeforeBake.replace(/\s+/g, " ").trim()}`);
+  const cardTextBeforeExport = (await statsCard.textContent()) ?? "";
+  log(`stats card before Export is even clicked: ${cardTextBeforeExport.replace(/\s+/g, " ").trim()}`);
   await expect(statsCard).toContainText("Volume");
   await expect(statsCard).toContainText("Bounding box");
   await expect(statsCard).toContainText("Filament (estimate)");
   await expect(statsCard).toContainText("Manifold");
-  expect(cardTextBeforeBake).toMatch(/Triangles\s*[\d,]+/);
-  expect(cardTextBeforeBake).toMatch(/mm³/);
-  expect(cardTextBeforeBake).toMatch(/\d+\.\d\s*×\s*\d+\.\d\s*×\s*\d+\.\d\s*mm/);
-  expect(cardTextBeforeBake).toMatch(/\d+\.\d\s*g/);
+  expect(cardTextBeforeExport).toMatch(/Triangles\s*[\d,]+/);
+  expect(cardTextBeforeExport).toMatch(/mm³/);
+  expect(cardTextBeforeExport).toMatch(/\d+\.\d\s*×\s*\d+\.\d\s*×\s*\d+\.\d\s*mm/);
+  expect(cardTextBeforeExport).toMatch(/\d+\.\d\s*g/);
 
-  // ---- 8. bake, and a Blob download link appears ------------------------
-  const bakeButton = page.getByTestId("bake-button");
-  await expect(bakeButton).toBeEnabled();
-  const bakeStartedAt = Date.now();
-  await bakeButton.click();
-  await expect(page.getByTestId("bake-status")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
+  // ---- 8. export, and a Blob download link appears ------------------------
+  const exportButton = page.getByTestId("export-button");
+  await expect(exportButton).toBeEnabled();
+  const exportStartedAt = Date.now();
+  await exportButton.click();
+  await expect(page.getByTestId("export-status")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
 
   const downloads = page.getByTestId("download-links");
   await expect(downloads).toBeVisible({ timeout: A4_BUDGET_MS });
-  const bakeMs = Date.now() - bakeStartedAt;
-  log(`A4 bake -> done: ${(bakeMs / 1000).toFixed(1)} s (01/A4 budget ${A4_BUDGET_MS / 1000} s)`);
-  expect(bakeMs).toBeLessThan(A4_BUDGET_MS);
-  await expect(page.getByTestId("bake-status")).toContainText("Done");
+  const exportMs = Date.now() - exportStartedAt;
+  log(`A4 export -> done: ${(exportMs / 1000).toFixed(1)} s (01/A4 budget ${A4_BUDGET_MS / 1000} s)`);
+  expect(exportMs).toBeLessThan(A4_BUDGET_MS);
+  await expect(page.getByTestId("export-status")).toContainText("Done");
 
   // ---- 9. the download link really is a well-formed 3MF (a real zip) ---
   //
@@ -415,14 +415,14 @@ test("happy path: Chicago preset previews, sliders stay local, bake downloads a 
   expect(sidecar.print_params.plate_mm).toBe(200);
   expect(sidecar.bake_result.status).toBe("done");
 
-  // ---- 10. moving a slider retires the finished bake --------------------
-  // 01's promise is that the preview and the printed result agree, so a bake
-  // whose parameters have since moved may not stay downloadable.
+  // ---- 10. moving a slider retires the finished export --------------------
+  // 01's promise is that the preview and the printed result agree, so an
+  // export whose parameters have since moved may not stay downloadable.
   const beforeStale = ingestFetches(calls);
   await setSlider(page, "small_scale", 110);
-  await expect(page.getByTestId("bake-stale-note")).toBeVisible();
+  await expect(page.getByTestId("export-stale-note")).toBeVisible();
   await expect(page.getByTestId("download-links")).toHaveCount(0);
-  await expect(page.getByTestId("bake-status")).toContainText("outdated");
+  await expect(page.getByTestId("export-status")).toContainText("outdated");
   await expect(statsCard).toContainText("previous computation");
   // ...and retiring it never triggers a fetch either.
   expect(ingestFetches(calls) - beforeStale).toBe(0);
@@ -436,7 +436,7 @@ test("happy path: Chicago preset previews, sliders stay local, bake downloads a 
 // A2: the low-coverage path
 // ==========================================================================
 
-test("low coverage: an empty Overpass response warns and disables Bake", async ({
+test("low coverage: an empty Overpass response warns and disables Export", async ({
   page,
 }) => {
   // A synthetic near-empty response stands in for "a pin in open water":
@@ -453,8 +453,8 @@ test("low coverage: an empty Overpass response warns and disables Bake", async (
   await expect(warning).toContainText("Fewer than 20 buildings");
   log(`low coverage banner: ${(await warning.textContent())?.trim()}`);
 
-  await expect(page.getByTestId("bake-button")).toBeDisabled();
-  await expect(page.getByTestId("bake-block-reason")).toContainText(
+  await expect(page.getByTestId("export-button")).toBeDisabled();
+  await expect(page.getByTestId("export-block-reason")).toContainText(
     "Fewer than 20 buildings",
   );
   // A2: a warning, not an empty canvas and not a crash.
@@ -469,7 +469,7 @@ test("the downloaded file passes the Python printability validator (small scene)
   page,
 }) => {
   // A small (30-building) synthetic scene that -- unlike the full Chicago
-  // fixture above -- bakes and validates cleanly end to end: proven directly
+  // fixture above -- builds and validates cleanly end to end: proven directly
   // against `services/bake`'s own CLI while building this fixture (see
   // `docs/handoff/v3-02-integration.md`). `color_mode: "parts"` is set
   // because `services/bake/app/validate/checks.py`'s `bodies` check is
@@ -497,9 +497,9 @@ test("the downloaded file passes the Python printability validator (small scene)
   // this specific test actually means to prove. DECISIONS.md [V3-P2-E4].
   await page.locator("#export_target").selectOption("generic-3mf");
 
-  const bakeButton = page.getByTestId("bake-button");
-  await expect(bakeButton).toBeEnabled();
-  await bakeButton.click();
+  const exportButton = page.getByTestId("export-button");
+  await expect(exportButton).toBeEnabled();
+  await exportButton.click();
   const downloads = page.getByTestId("download-links");
   await expect(downloads).toBeVisible({ timeout: A4_BUDGET_MS });
 
@@ -538,7 +538,7 @@ test("the downloaded file passes the Python printability validator (full Chicago
   // Audit v3-02 finding 12: the happy path's own Chicago download is only
   // checked for zip-magic ("PK"), citing a "measured, documented gap" that
   // DECISIONS.md [V3-P2-E4] (the entry timestamped after the min-wall fix)
-  // records as CLOSED: `npm run bake:cli` on the full Chicago fixture passes
+  // records as CLOSED: `npm run export:cli` on the full Chicago fixture passes
   // `make validate` cleanly in BOTH `color_mode`s. This test is that
   // restored assertion, run through the real UI -> download -> CLI pipeline
   // the small-scene test above already proves, at full Chicago complexity
@@ -562,19 +562,19 @@ test("the downloaded file passes the Python printability validator (full Chicago
   await page.locator("#color_mode").getByRole("radio", { name: "one per part" }).click();
   await page.locator("#export_target").selectOption("generic-3mf");
 
-  const bakeButton = page.getByTestId("bake-button");
+  const exportButton = page.getByTestId("export-button");
   // A short fixed timeout measured flaky on a slower CI runner at full
   // Chicago complexity (992 buildings): `preview-stats` visible does not
   // guarantee the button has actually become interactive yet on a 2-core
   // software-WebGL host still busy with the instanced preview's first paint.
   // The assertion itself (enabled, not merely present) is unchanged; only
   // how long it is given to become true scales with `E2E_BUDGET_FACTOR`.
-  await expect(bakeButton).toBeEnabled({ timeout: WARMUP_BUDGET_MS });
-  const bakeStartedAt = Date.now();
-  await bakeButton.click();
+  await expect(exportButton).toBeEnabled({ timeout: WARMUP_BUDGET_MS });
+  const exportStartedAt = Date.now();
+  await exportButton.click();
   const downloads = page.getByTestId("download-links");
   await expect(downloads).toBeVisible({ timeout: A4_BUDGET_MS });
-  log(`Chicago parts bake -> done: ${((Date.now() - bakeStartedAt) / 1000).toFixed(1)} s`);
+  log(`Chicago parts export -> done: ${((Date.now() - exportStartedAt) / 1000).toFixed(1)} s`);
 
   const meshLink = downloads.getByRole("link", { name: /\.3mf$/ });
   const meshHref = await meshLink.getAttribute("href");
@@ -618,12 +618,12 @@ test("exporting a Bambu Studio project writes every region on its own extruder",
   await expect(page.getByTestId("preview-stats")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
 
   // bambu-3mf is the contract default (`export_target`), so this exercises
-  // the default Bake path, not an exotic one.
+  // the default Export path, not an exotic one.
   await expect(page.locator("#export_target")).toHaveValue("bambu-3mf");
 
-  const bakeButton = page.getByTestId("bake-button");
-  await expect(bakeButton).toBeEnabled();
-  await bakeButton.click();
+  const exportButton = page.getByTestId("export-button");
+  await expect(exportButton).toBeEnabled();
+  await exportButton.click();
   const downloads = page.getByTestId("download-links");
   await expect(downloads).toBeVisible({ timeout: A4_BUDGET_MS });
 

@@ -1,6 +1,6 @@
 /**
  * The engine worker's message protocol, and the two job handlers
- * (`runIngestJob`, `runBakeJob`) that actually do the work.
+ * (`runIngestJob`, `runBuildJob`) that actually do the work.
  *
  * Pulled out of `worker.ts` so the exact same code runs inside the real
  * `Worker` AND inside `client.ts`'s in-page fallback (no Worker support:
@@ -16,7 +16,7 @@ import type { PerfTiming } from "../perf";
 import { hasIndexedDb, IndexedDbOverpassCache, MemoryOverpassCache, type OverpassCache, type OverpassFetchError } from "./osm/overpass";
 import { buildScene } from "./osm/scene";
 import type { EngineSceneGraph } from "./osm/types";
-import { bake } from "./engine";
+import { buildModel } from "./engine";
 import type { EngineInput, EngineResult } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -29,12 +29,12 @@ import type { EngineInput, EngineResult } from "./types";
  * Phase 3: `EngineInput.terrain` is now a `TerrainGrid` (plain numbers plus a
  * `Float32Array`), not a `TerrainSampler` -- a sampler carries a method and
  * could never cross a structured-clone boundary, but a grid clones (and can be
- * transferred) exactly like the `RegionMesh` buffers `runOneBake` already
- * transfers back. `bake()` itself builds the sampler from the grid
+ * transferred) exactly like the `RegionMesh` buffers `runOneBuild` already
+ * transfers back. `buildModel()` itself builds the sampler from the grid
  * (`engine.ts:samplerFromGrid`), so nothing on this side of the boundary ever
  * touches a function value.
  */
-export type BakeWireInput = EngineInput;
+export type BuildWireInput = EngineInput;
 
 /**
  * Perf mode is a PAGE decision (`?perf=1` / `localStorage`), and a worker can
@@ -63,19 +63,19 @@ export interface IngestJobMessage extends PerfJobFlag {
   params?: PrintParams;
 }
 
-export interface BakeJobMessage extends PerfJobFlag {
-  kind: "bake";
+export interface BuildJobMessage extends PerfJobFlag {
+  kind: "build";
   id: number;
-  input: BakeWireInput;
+  input: BuildWireInput;
 }
 
 export interface CancelMessage {
   kind: "cancel";
   id: number;
-  jobKind: "ingest" | "bake";
+  jobKind: "ingest" | "build";
 }
 
-export type WorkerRequest = IngestJobMessage | BakeJobMessage | CancelMessage;
+export type WorkerRequest = IngestJobMessage | BuildJobMessage | CancelMessage;
 
 export interface IngestProgressMessage {
   kind: "ingest-progress";
@@ -98,20 +98,20 @@ export interface IngestFailedMessage extends PerfTimingsField {
   error: OverpassFetchError;
 }
 
-export interface BakeProgressMessage {
-  kind: "bake-progress";
+export interface BuildProgressMessage {
+  kind: "build-progress";
   id: number;
   message: string;
 }
 
-export interface BakeDoneMessage extends PerfTimingsField {
-  kind: "bake-done";
+export interface BuildDoneMessage extends PerfTimingsField {
+  kind: "build-done";
   id: number;
   result: EngineResult;
 }
 
-export interface BakeErrorMessage extends PerfTimingsField {
-  kind: "bake-error";
+export interface BuildErrorMessage extends PerfTimingsField {
+  kind: "build-error";
   id: number;
   message: string;
 }
@@ -120,9 +120,9 @@ export type WorkerResponse =
   | IngestProgressMessage
   | IngestDoneMessage
   | IngestFailedMessage
-  | BakeProgressMessage
-  | BakeDoneMessage
-  | BakeErrorMessage;
+  | BuildProgressMessage
+  | BuildDoneMessage
+  | BuildErrorMessage;
 
 /** What a handler posts a response through. `transfer` is honoured by the real worker's `postMessage` and ignored by the in-page fallback (nothing to transfer across a realm boundary that never existed). */
 export type Post = (response: WorkerResponse, transfer?: Transferable[]) => void;
@@ -197,87 +197,87 @@ export async function runIngestJob(msg: IngestJobMessage, post: Post): Promise<v
 /**
  * Handle a `{kind:"cancel"}` message.
  *
- * An ingest's fetch is aborted. A bake that is already RUNNING cannot be
- * preempted mid-flight (see `runBakeJob`'s docstring) and the client-side
- * supersede is what protects the caller there; but a bake still sitting in
- * `queuedBake` has not started, and starting it after its own promise was
- * rejected would spend a full Chicago-scale bake on a result that is dropped
+ * An ingest's fetch is aborted. A build that is already RUNNING cannot be
+ * preempted mid-flight (see `runBuildJob`'s docstring) and the client-side
+ * supersede is what protects the caller there; but a build still sitting in
+ * `queuedBuild` has not started, and starting it after its own promise was
+ * rejected would spend a full Chicago-scale build on a result that is dropped
  * by id on arrival. So a cancel for the queued id drops it (v3-02 finding 7).
  */
 export function cancelJob(msg: CancelMessage): void {
-  if (msg.jobKind === "bake") {
-    if (queuedBake !== null && queuedBake.msg.id === msg.id) queuedBake = null;
+  if (msg.jobKind === "build") {
+    if (queuedBuild !== null && queuedBuild.msg.id === msg.id) queuedBuild = null;
     return;
   }
   ingestControllers.get(msg.id)?.abort();
 }
 
 // ---------------------------------------------------------------------------
-// Bake
+// Build
 // ---------------------------------------------------------------------------
 
-let bakeRunning = false;
-let queuedBake: { msg: BakeJobMessage; post: Post } | null = null;
+let buildRunning = false;
+let queuedBuild: { msg: BuildJobMessage; post: Post } | null = null;
 
 /**
- * Run one engine bake and post the result, single-flight.
+ * Run one engine build and post the result, single-flight.
  *
- * `bake()` awaits WASM setup and then runs synchronous manifold3d calls with
+ * `buildModel()` awaits WASM setup and then runs synchronous manifold3d calls with
  * no yield points in between, so once it is under way the worker thread is
- * fully busy until it returns -- a `cancel` message for a bake job cannot
+ * fully busy until it returns -- a `cancel` message for a build job cannot
  * preempt it (see `protocol.ts`'s module docstring and `client.ts`'s
- * `EngineClient.bake`, which drops a superseded result on arrival instead).
+ * `EngineClient.buildModel`, which drops a superseded result on arrival instead).
  *
- * A `bake` message that arrives while one is already running does NOT queue
- * behind it for its own full run: it overwrites `queuedBake`, so a burst of N
+ * A `build` message that arrives while one is already running does NOT queue
+ * behind it for its own full run: it overwrites `queuedBuild`, so a burst of N
  * requests made while the worker is busy (a slider settling, then a rotation
- * commit, then another) costs at most one MORE full bake after the one
+ * commit, then another) costs at most one MORE full build after the one
  * already under way, not N of them run back to back. Every dropped
- * intermediate id would only ever have had its `bake-done`/`bake-error`
+ * intermediate id would only ever have had its `build-done`/`build-error`
  * silently discarded anyway -- `client.ts`'s supersede already rejected its
  * promise the moment a newer request replaced it -- so running it to
  * completion first would just be worker time nothing is waiting for.
  * Measured on the full Chicago fixture, this is the difference between an
- * un-preemptible bake queue that visibly falls further behind with every
+ * un-preemptible build queue that visibly falls further behind with every
  * slider/rotation change and one that catches up to the latest request after
- * a bounded, single extra bake. DECISIONS.md [V3-P2-E4].
+ * a bounded, single extra build. DECISIONS.md [V3-P2-E4].
  *
- * `bake()` itself never throws for a printability problem (those are
+ * `buildModel()` itself never throws for a printability problem (those are
  * `findings`/`resolvedText`); a caught error here is a genuine bug in the
- * input, exactly the cases `bake()`'s own docstring says it throws for.
+ * input, exactly the cases `buildModel()`'s own docstring says it throws for.
  */
-export async function runBakeJob(msg: BakeJobMessage, post: Post): Promise<void> {
-  if (bakeRunning) {
-    queuedBake = { msg, post };
+export async function runBuildJob(msg: BuildJobMessage, post: Post): Promise<void> {
+  if (buildRunning) {
+    queuedBuild = { msg, post };
     return;
   }
-  bakeRunning = true;
+  buildRunning = true;
   try {
-    await runOneBake(msg, post);
+    await runOneBuild(msg, post);
   } finally {
-    bakeRunning = false;
-    const next = queuedBake;
-    queuedBake = null;
-    if (next !== null) void runBakeJob(next.msg, next.post);
+    buildRunning = false;
+    const next = queuedBuild;
+    queuedBuild = null;
+    if (next !== null) void runBuildJob(next.msg, next.post);
   }
 }
 
-async function runOneBake(msg: BakeJobMessage, post: Post): Promise<void> {
-  post({ kind: "bake-progress", id: msg.id, message: "Baking..." });
+async function runOneBuild(msg: BuildJobMessage, post: Post): Promise<void> {
+  post({ kind: "build-progress", id: msg.id, message: "Building..." });
   try {
-    const result = await bake(msg.input);
+    const result = await buildModel(msg.input);
     const transfer: Transferable[] = [];
     for (const region of result.regions) {
       transfer.push(region.positions.buffer, region.indices.buffer);
     }
-    post({ kind: "bake-done", id: msg.id, result }, transfer);
+    post({ kind: "build-done", id: msg.id, result }, transfer);
   } catch (error) {
-    post({ kind: "bake-error", id: msg.id, message: error instanceof Error ? error.message : String(error) });
+    post({ kind: "build-error", id: msg.id, message: error instanceof Error ? error.message : String(error) });
   }
 }
 
-/** Test-only: drop the module-level single-flight bake state between tests. */
-export function resetBakeQueueForTest(): void {
-  bakeRunning = false;
-  queuedBake = null;
+/** Test-only: drop the module-level single-flight build state between tests. */
+export function resetBuildQueueForTest(): void {
+  buildRunning = false;
+  queuedBuild = null;
 }

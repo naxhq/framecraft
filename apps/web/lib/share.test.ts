@@ -1022,7 +1022,7 @@ describe("a link is untrusted input", () => {
   it("completes a nested group rather than leaving it half-filled", () => {
     // A hand-made link may legally send `{"enabled": true}` -- every property
     // inside the four nested objects is optional on the wire -- and everything
-    // downstream, from `paletteFor` to the bake, assumes a complete object.
+    // downstream, from `paletteFor` to the build, assumes a complete object.
     const decoded = decodeShare(
       payloadOf({ r: REQUEST, p: { north_arrow: { enabled: true } } }),
     );

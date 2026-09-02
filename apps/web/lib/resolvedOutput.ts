@@ -1,11 +1,11 @@
 /**
- * What actually gets cut: one row per text the bake will (or will not) carve,
+ * What actually gets cut: one row per text the build will (or will not) carve,
  * with the final string, the surface it is cut into and why a line was
  * skipped.
  *
  * Two callers share this module:
  *  - `components/editor/OutputPanel.tsx`'s "Resolved output" panel, which
- *    lists every row so nothing that bakes is ever missing from it;
+ *    lists every row so nothing that builds is ever missing from it;
  *  - `lib/warnings.ts`'s Issues badge integration (`letteringWarnings`),
  *    which turns every SKIPPED row into a specific, actionable warning
  *    ("Line 2: the {city} token has no value") instead of the shared
@@ -13,7 +13,7 @@
  *    unchanged, in `transform.lettering_layout`'s own warnings -- this module
  *    adds a MORE SPECIFIC diagnosis on top of it, it does not replace it).
  *
- * `lib/bake.ts` reads the same rows to decide which lines to actually send to
+ * `lib/exportFlow.ts` reads the same rows to decide which lines to actually send to
  * `POST /bake`: never a zero-length engraving (rule: an empty line is omitted
  * outright, not sent as `""`).
  */
@@ -68,7 +68,7 @@ const UNDERSIDE_SURFACE = "Underside mark";
 
 /**
  * Every text FrameCraft would try to cut for these `params`, resolved against
- * `ctx`, in the order the bake sees them (engravings, then the underside
+ * `ctx`, in the order the build sees them (engravings, then the underside
  * mark). One row per configured line -- an engraving array of length 3 always
  * yields exactly 3 rows, cut or skipped, never fewer.
  */

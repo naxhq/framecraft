@@ -11,7 +11,7 @@
  *    table and the baseline note all read the same object.
  * 3. **Worker timings merge onto the page clock.** A dedicated worker's
  *    `performance.timeOrigin` is its own creation, so a raw `startMs` would
- *    plot a bake before the navigation that started it. The merge rebases from
+ *    plot a build before the navigation that started it. The merge rebases from
  *    `epochMs`, and this is the only place that is proven.
  *
  * The vitest environment is `node`, so `location`/`localStorage` are absent
@@ -317,7 +317,7 @@ describe("perfMergeTimings", () => {
 
   it("marks every merged timing as worker scope, whatever the sender said", () => {
     perfMergeTimings([
-      { name: "engine.bake", scope: "main", startMs: 1, durationMs: 2, epochMs: performance.timeOrigin + 9 },
+      { name: "engine.build", scope: "main", startMs: 1, durationMs: 2, epochMs: performance.timeOrigin + 9 },
     ]);
     expect(perfDrainTimings()[0].scope).toBe("worker");
   });
@@ -374,7 +374,7 @@ describe("perfFlush", () => {
     const listener = vi.fn();
     const unsubscribe = perfSubscribe(listener);
     try {
-      perfRecord("engine.bake", 10, 1_234);
+      perfRecord("engine.build", 10, 1_234);
       const report = perfFlush("engine job");
       expect(report?.label).toBe("engine job");
       expect(table).toHaveBeenCalled();

@@ -44,12 +44,12 @@ function log(message: string): void {
  * A custom palette, seeded straight into `localStorage` before the page ever
  * loads, that clashes base against buildings -- the only ADJACENT_PAIRS
  * entry guaranteed to exist as a REAL region in the tiny-loop fixture this
- * whole file bakes against: that fixture is buildings-only (no `highway`,
+ * whole file builds against: that fixture is buildings-only (no `highway`,
  * `natural=water`, `landuse` or `leisure` tag anywhere in it), so a fresh
  * `EngineResult` never carries a `roads`/`water`/`parks` region at all, and
  * `colourRows` prefers the live result the moment one exists -- a pair that
  * needs one of those three can never be demonstrated against this scene once
- * the first bake has landed, whatever colour edit drives it (found the hard
+ * the first build has landed, whatever colour edit drives it (found the hard
  * way: base recoloured to water's own blue, applied and visibly on the
  * plate, still raised nothing, because there was no `water` ROW to compare
  * against, not because the colour never landed). `base`/`buildings` has no
@@ -93,13 +93,13 @@ async function seedClashPalette(page: Page): Promise<void> {
  * Wait for the debounced engine job to land a FRESH result. Every colour
  * swatch and the contrast checker's own rows read `colourRows`, which prefers
  * the live `EngineResult` over `params` the moment one exists -- so any edit
- * only reaches the panel once the rebake this edit itself scheduled actually
+ * only reaches the panel once the rebuild this edit itself scheduled actually
  * completes, not immediately on the state write (`ColourGroup.tsx`'s own
  * docstring on `colourRows`). The stats card labels a stale result
  * "(previous computation)"; this is the same signal the preview-theme test
  * uses.
  */
-async function waitForFreshBake(page: Page): Promise<void> {
+async function waitForFreshBuild(page: Page): Promise<void> {
   await expect(page.getByTestId("stats-card")).not.toContainText("previous computation", {
     timeout: WARMUP_BUDGET_MS,
   });
@@ -125,7 +125,7 @@ test("applying Blueprint recolours the region rows and the preview, and marks th
   // default's warm stone, so this proves the swatch actually moved, not just
   // the button's own pressed state. `colourRows` sources a region row from the
   // live engine result once one exists (`generateTinyLoop` waits for one), so
-  // the swatch only updates once the next debounced bake, scheduled by this
+  // the swatch only updates once the next debounced build, scheduled by this
   // very click, actually lands -- a plain `inputValue()` read races that.
   await expect(page.locator("#colour_color_base")).toHaveValue("#13315c", { timeout: WARMUP_BUDGET_MS });
 
@@ -143,7 +143,7 @@ test("saving the current colours as a custom palette and reapplying it restores 
   // `<input type="color">` fires its own React update correctly, but the
   // swatch it renders is still a CONTROLLED value sourced from `colourRows`,
   // which prefers the live engine result the instant one exists, so it only
-  // shows a hand-typed colour once the debounced rebake that edit itself
+  // shows a hand-typed colour once the debounced rebuild that edit itself
   // scheduled has actually landed; button-driven writes hit the exact same
   // path, just already proven reliable by the Blueprint test above), THEN
   // save it under a name -- this is what proves "the current colours",
@@ -197,7 +197,7 @@ test("a deliberately clashing pair (base and buildings both mid grey) raises the
   // docstring for why not a raw colour input, and not `water`/`roads`/
   // `parks`, here).
   await page.getByTestId(`palette-apply-${CLASH_PALETTE.id}`).click();
-  await waitForFreshBake(page);
+  await waitForFreshBuild(page);
 
   const warning = page.getByTestId("colour-contrast-warning");
   await expect(warning).toContainText("Buildings", { timeout: WARMUP_BUDGET_MS });
@@ -211,7 +211,7 @@ test("a deliberately clashing pair (base and buildings both mid grey) raises the
 // Preview theme: viewport-only, geometry untouched
 // ==========================================================================
 
-test("flipping the preview theme changes only the canvas background, never the baked geometry", async ({
+test("flipping the preview theme changes only the canvas background, never the built geometry", async ({
   page,
 }) => {
   const pageErrors = watchPageErrors(page);
@@ -229,7 +229,7 @@ test("flipping the preview theme changes only the canvas background, never the b
   // The engine job re-runs on any params change (including this one), so
   // wait for the NEXT fresh result rather than racing it -- the card labels
   // itself "(previous computation)" and adds a "Parameters changed" line
-  // while the debounced rebake is still in flight, so waiting for that text
+  // while the debounced rebuild is still in flight, so waiting for that text
   // to clear is what "fresh" means here (mirrors `smoke.spec.ts`'s own
   // stats-card discipline). Then compare its own reported geometry -- volume
   // and triangle count are read straight off `EngineResult.merged`/`stats`,
@@ -247,7 +247,7 @@ test("flipping the preview theme changes only the canvas background, never the b
 // FRAME group: profile + shadow gap
 // ==========================================================================
 
-test("selecting the ogee profile and a shadow gap updates the panel and a bake still downloads", async ({
+test("selecting the ogee profile and a shadow gap updates the panel and an export still downloads", async ({
   page,
 }) => {
   const pageErrors = watchPageErrors(page);
@@ -262,7 +262,7 @@ test("selecting the ogee profile and a shadow gap updates the panel and a bake s
   await expect(shadowGapToggle).toHaveAttribute("aria-checked", "true");
   await expect(page.locator("#frame_style_shadow_gap_width_mm")).toBeVisible();
 
-  await page.getByTestId("bake-button").click();
+  await page.getByTestId("export-button").click();
   await expect(page.getByTestId("download-links")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
   const links = page.getByTestId("download-links").locator("a");
   await expect(links).not.toHaveCount(0);

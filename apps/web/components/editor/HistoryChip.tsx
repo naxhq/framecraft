@@ -10,8 +10,8 @@ import { jumpToHistory, redoHistory, undoHistory, useHistoryStore } from "@/stor
  * DECISIONS [V3-P6]: the brief that named this widget called it "the existing
  * 'N adjustments made' chip" -- but `AdjustmentsChip` is a settled, tested
  * surface for a completely different kind of remark (widened footprints,
- * dropped patches, the bake's own notes; `lib/adjustments.ts`'s
- * site/repair/bake grouping), and folding undo history into it would mean
+ * dropped patches, the build's own notes; `lib/adjustments.ts`'s
+ * site/repair/build grouping), and folding undo history into it would mean
  * either two unrelated concepts sharing one count-and-drawer, or rewriting
  * that module's grouping and every e2e spec that names it. `IssuesBadge`
  * already set the precedent for this exact situation (`[V3-P4-U]`): a THIRD,

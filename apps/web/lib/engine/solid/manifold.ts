@@ -55,7 +55,7 @@ export const MITRE_LIMIT = 2.0;
 let modulePromise: Promise<ManifoldToplevel> | null = null;
 
 /**
- * True in `uv run`/`tsx`/vitest's Node process (the reference CLI, the bake
+ * True in `uv run`/`tsx`/vitest's Node process (the reference CLI, the build
  * fixtures, every existing unit test): `manifold-3d`'s emscripten glue reads
  * the `.wasm` straight off disk there via `node:fs`, relative to its own
  * `import.meta.url` inside `node_modules`, which already works and must stay
@@ -145,7 +145,7 @@ let outstanding = 0;
 /**
  * How many WASM handles this module is still holding.
  *
- * Zero after a finished bake. It is a module-level count rather than a per
+ * Zero after a finished build. It is a module-level count rather than a per
  * arena one on purpose: a handle parked in an arena that itself was dropped on
  * the floor is exactly the leak this number exists to catch.
  */
@@ -546,7 +546,7 @@ export const UNION_BATCH = 200;
  * Union many solids without ever building a single accumulator.
  *
  * 04 stage 2.5 is explicit that the sequential form is quadratic in practice
- * and is "the difference between a 20 second bake and a 20 minute one". The
+ * and is "the difference between a 20 second build and a 20 minute one". The
  * input list is deduplicated by identity first, because 04's trap list forbids
  * unioning a solid with itself.
  */
@@ -627,7 +627,7 @@ export const UNION_DEBRIS_MM3 = 1e-9;
  *
  * One decomposition, no re-union: counting is all the connectivity check needs,
  * and rebuilding the solid to count it costs more than the count (1.5 s of a
- * Chicago bake).
+ * Chicago build).
  */
 export function countBodies(
   solid: Manifold,

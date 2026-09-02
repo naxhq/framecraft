@@ -106,7 +106,7 @@ export const GROUPS: readonly GroupSpec[] = [
   {
     id: "output",
     title: "Output",
-    summary: "The bake, the files and the measured stats.",
+    summary: "The model, the files and the measured stats.",
     collapsedByDefault: false,
   },
 ] as const;

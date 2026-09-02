@@ -2,7 +2,7 @@
  * The typed, cancellation-aware wrapper around the engine workers.
  *
  * `EngineClient` is the ONLY thing the app talks to for ingest (`buildScene`)
- * and bake (`bake()`): `store/editor.ts` never imports `worker.ts` or
+ * and build (`buildModel()`): `store/editor.ts` never imports `worker.ts` or
  * `protocol.ts` directly. Two KINDS of transport share one protocol
  * (`lib/engine/protocol.ts`):
  *
@@ -11,27 +11,27 @@
  *    thread -- what every environment without `Worker` uses (vitest, SSR,
  *    `next build`'s prerender pass, a browser that refused worker creation).
  *
- * INGEST AND BAKE EACH GET THEIR OWN TRANSPORT INSTANCE (`ingestTransport`/
- * `bakeTransport`), never one shared between them. `bake()` runs manifold3d
+ * INGEST AND BUILD EACH GET THEIR OWN TRANSPORT INSTANCE (`ingestTransport`/
+ * `buildTransport`), never one shared between them. `buildModel()` runs manifold3d
  * WASM calls with no yield points once it is under way (`protocol.ts`'s own
  * docstring), so a worker running one is fully busy -- unresponsive to any
  * OTHER message posted to that same worker -- until it returns. Sharing one
- * worker between ingest and bake therefore meant a click that should be
+ * worker between ingest and build therefore meant a click that should be
  * instant (a radius fix from the detail advisor, a pin move) could sit queued
- * behind a still-running, full-Chicago-scale bake for however long that bake
+ * behind a still-running, full-Chicago-scale build for however long that build
  * takes: measured exceeding 16 s in a real browser, entirely on the worker
  * message queue, before the ingest fetch even started. Two workers means the
- * OS genuinely runs them on separate threads, so a bake in progress on the
- * bake worker cannot delay a message posted to the ingest worker by even one
+ * OS genuinely runs them on separate threads, so a build in progress on the
+ * build worker cannot delay a message posted to the ingest worker by even one
  * tick. `worker.ts`/`protocol.ts` needed no change: both already dispatch by
  * message kind, so a worker dedicated to one kind just never receives the
  * other.
  *
- * Cancellation of superseded jobs: calling `ingest()` (or `bake()`) again
+ * Cancellation of superseded jobs: calling `ingest()` (or `buildModel()`) again
  * while a previous call of the SAME kind is still in flight rejects the
  * PREVIOUS call's promise with `EngineClientError("cancelled", ...)` and
  * tells that job's transport to cancel it (meaningful for `ingest`'s network
- * fetch; a no-op for `bake`, which cannot be preempted mid-flight -- see
+ * fetch; a no-op for `build`, which cannot be preempted mid-flight -- see
  * `protocol.ts`). Callers should treat that rejection as "a newer request
  * took over", not as a failure to report.
  */
@@ -41,8 +41,8 @@ import type { PrintParams, SceneRequest } from "../contracts";
 import { perfEnabled, perfMergeTimings, perfRecord, perfSpan } from "../perf";
 import type { OverpassFetchError } from "./osm/overpass";
 import type { EngineSceneGraph } from "./osm/types";
-import { allocateJobId, cancelJob, runBakeJob, runIngestJob } from "./protocol";
-import type { BakeWireInput, WorkerRequest, WorkerResponse } from "./protocol";
+import { allocateJobId, cancelJob, runBuildJob, runIngestJob } from "./protocol";
+import type { BuildWireInput, WorkerRequest, WorkerResponse } from "./protocol";
 import type { EngineResult } from "./types";
 
 export type IngestOutcome =
@@ -53,7 +53,7 @@ export interface IngestOptions {
   onProgress?: (message: string) => void;
 }
 
-export interface BakeOptions {
+export interface BuildOptions {
   onProgress?: (message: string) => void;
 }
 
@@ -76,7 +76,7 @@ export class EngineClientError extends Error {
 interface Transport {
   postMessage(message: WorkerRequest, transfer?: Transferable[]): void;
   onMessage(handler: (message: WorkerResponse) => void): void;
-  /** A transport-level failure (worker threw, worker crashed) -- never a bake/ingest failure, which arrives as a normal response message. */
+  /** A transport-level failure (worker threw, worker crashed) -- never a build/ingest failure, which arrives as a normal response message. */
   onError(handler: (error: Error) => void): void;
   terminate(): void;
 }
@@ -142,10 +142,10 @@ class InlineTransport implements Transport {
           this.errorHandler?.(error instanceof Error ? error : new Error(String(error)));
         });
         return;
-      case "bake":
-        // runBakeJob never rejects (it posts a bake-error message instead);
+      case "build":
+        // runBuildJob never rejects (it posts a build-error message instead);
         // the catch here is only a safety net for a genuinely unexpected throw.
-        runBakeJob(message, post).catch((error: unknown) => {
+        runBuildJob(message, post).catch((error: unknown) => {
           this.errorHandler?.(error instanceof Error ? error : new Error(String(error)));
         });
         return;
@@ -193,29 +193,29 @@ interface PendingJob<T> {
 /** The two transports `EngineClient` needs -- one per job kind, never shared. */
 export interface EngineClientTransports {
   ingest?: Transport;
-  bake?: Transport;
+  build?: Transport;
 }
 
 export class EngineClient {
   private readonly ingestTransport: Transport;
-  private readonly bakeTransport: Transport;
+  private readonly buildTransport: Transport;
   private readonly pendingIngest = new Map<number, PendingJob<IngestOutcome>>();
-  private readonly pendingBake = new Map<number, PendingJob<EngineResult>>();
+  private readonly pendingBuild = new Map<number, PendingJob<EngineResult>>();
   private readonly progress = new Map<number, (message: string) => void>();
   private currentIngestId: number | null = null;
-  private currentBakeId: number | null = null;
+  private currentBuildId: number | null = null;
   private disposed = false;
 
   constructor(transports: EngineClientTransports = {}) {
     this.ingestTransport = transports.ingest ?? createDefaultTransport();
-    this.bakeTransport = transports.bake ?? createDefaultTransport();
+    this.buildTransport = transports.build ?? createDefaultTransport();
     this.ingestTransport.onMessage((message) => this.handleMessage(message));
     this.ingestTransport.onError((error) => this.handleTransportError(error, "ingest"));
-    this.bakeTransport.onMessage((message) => this.handleMessage(message));
-    this.bakeTransport.onError((error) => this.handleTransportError(error, "bake"));
+    this.buildTransport.onMessage((message) => this.handleMessage(message));
+    this.buildTransport.onError((error) => this.handleTransportError(error, "build"));
   }
 
-  /** `SceneRequest` -> `EngineSceneGraph`, off the main thread on its OWN worker, fails soft (network problems resolve `{ok:false,error}`; only a superseded/disposed call rejects). Never waits on a bake, running or queued. */
+  /** `SceneRequest` -> `EngineSceneGraph`, off the main thread on its OWN worker, fails soft (network problems resolve `{ok:false,error}`; only a superseded/disposed call rejects). Never waits on a build, running or queued. */
   ingest(request: SceneRequest, params?: PrintParams, options: IngestOptions = {}): Promise<IngestOutcome> {
     if (this.disposed) return Promise.reject(new EngineClientError("disposed", "the engine client was disposed"));
     this.supersedeIngest();
@@ -236,18 +236,18 @@ export class EngineClient {
   }
 
   /** `EngineInput` (terrain included, phase 3) -> `EngineResult`, off the main thread on its OWN worker. */
-  bake(input: BakeWireInput, options: BakeOptions = {}): Promise<EngineResult> {
+  buildModel(input: BuildWireInput, options: BuildOptions = {}): Promise<EngineResult> {
     if (this.disposed) return Promise.reject(new EngineClientError("disposed", "the engine client was disposed"));
-    this.supersedeBake();
+    this.supersedeBuild();
     const id = allocateJobId();
-    this.currentBakeId = id;
+    this.currentBuildId = id;
     if (options.onProgress) this.progress.set(id, options.onProgress);
     return perfSpan(
-      "engine.bake.client",
+      "engine.build.client",
       () =>
         new Promise<EngineResult>((resolve, reject) => {
-          this.pendingBake.set(id, { id, resolve, reject });
-          this.bakeTransport.postMessage({ kind: "bake", id, input, perf: perfEnabled() });
+          this.pendingBuild.set(id, { id, resolve, reject });
+          this.buildTransport.postMessage({ kind: "build", id, input, perf: perfEnabled() });
         }),
     );
   }
@@ -258,18 +258,18 @@ export class EngineClient {
     this.disposed = true;
     const error = new EngineClientError("disposed", "the engine client was disposed");
     // Cancel before terminating: `terminate()` is a no-op on the inline
-    // transport, where a queued bake would otherwise run to completion for a
+    // transport, where a queued build would otherwise run to completion for a
     // client that no longer exists (v3-02 finding 7). On a real worker the
     // terminate that follows makes these messages moot, and harmless.
     for (const job of this.pendingIngest.values()) this.ingestTransport.postMessage({ kind: "cancel", id: job.id, jobKind: "ingest" });
-    for (const job of this.pendingBake.values()) this.bakeTransport.postMessage({ kind: "cancel", id: job.id, jobKind: "bake" });
+    for (const job of this.pendingBuild.values()) this.buildTransport.postMessage({ kind: "cancel", id: job.id, jobKind: "build" });
     for (const job of this.pendingIngest.values()) job.reject(error);
-    for (const job of this.pendingBake.values()) job.reject(error);
+    for (const job of this.pendingBuild.values()) job.reject(error);
     this.pendingIngest.clear();
-    this.pendingBake.clear();
+    this.pendingBuild.clear();
     this.progress.clear();
     this.ingestTransport.terminate();
-    this.bakeTransport.terminate();
+    this.buildTransport.terminate();
   }
 
   private supersedeIngest(): void {
@@ -283,18 +283,18 @@ export class EngineClient {
     job.reject(new EngineClientError("cancelled", "a newer ingest request superseded this one"));
   }
 
-  private supersedeBake(): void {
-    const previousId = this.currentBakeId;
+  private supersedeBuild(): void {
+    const previousId = this.currentBuildId;
     if (previousId === null) return;
-    const job = this.pendingBake.get(previousId);
+    const job = this.pendingBuild.get(previousId);
     if (!job) return;
-    this.pendingBake.delete(previousId);
+    this.pendingBuild.delete(previousId);
     this.progress.delete(previousId);
-    // A bake cannot be preempted mid-flight (protocol.ts); this still tells
+    // A build cannot be preempted mid-flight (protocol.ts); this still tells
     // the transport, so the worker-side map stays tidy, but what actually
     // protects the caller is dropping the pending promise right here.
-    this.bakeTransport.postMessage({ kind: "cancel", id: previousId, jobKind: "bake" });
-    job.reject(new EngineClientError("cancelled", "a newer bake request superseded this one"));
+    this.buildTransport.postMessage({ kind: "cancel", id: previousId, jobKind: "build" });
+    job.reject(new EngineClientError("cancelled", "a newer build request superseded this one"));
   }
 
   /**
@@ -303,7 +303,7 @@ export class EngineClient {
    *
    * `engine.post` is stamped by `worker.ts` immediately before `postMessage`,
    * so the difference between its `epochMs` and the moment this handler runs
-   * IS the structured-clone/transfer cost of the result -- which for a bake is
+   * IS the structured-clone/transfer cost of the result -- which for a build is
    * a pile of `Float64Array` region buffers and the one number no in-worker
    * measurement can see. `perfMergeTimings` rebases the rest onto the page
    * clock (a worker's time origin is its own creation, not the document's).
@@ -325,7 +325,7 @@ export class EngineClient {
     this.absorbTimings(message);
     switch (message.kind) {
       case "ingest-progress":
-      case "bake-progress":
+      case "build-progress":
         this.progress.get(message.id)?.(message.message);
         return;
       case "ingest-done": {
@@ -341,21 +341,21 @@ export class EngineClient {
         );
         return;
       }
-      case "bake-done": {
-        const job = this.pendingBake.get(message.id);
+      case "build-done": {
+        const job = this.pendingBuild.get(message.id);
         if (!job) return;
-        this.pendingBake.delete(message.id);
+        this.pendingBuild.delete(message.id);
         this.progress.delete(message.id);
-        if (this.currentBakeId === message.id) this.currentBakeId = null;
+        if (this.currentBuildId === message.id) this.currentBuildId = null;
         job.resolve(message.result);
         return;
       }
-      case "bake-error": {
-        const job = this.pendingBake.get(message.id);
+      case "build-error": {
+        const job = this.pendingBuild.get(message.id);
         if (!job) return;
-        this.pendingBake.delete(message.id);
+        this.pendingBuild.delete(message.id);
         this.progress.delete(message.id);
-        if (this.currentBakeId === message.id) this.currentBakeId = null;
+        if (this.currentBuildId === message.id) this.currentBuildId = null;
         job.reject(new Error(message.message));
         return;
       }
@@ -368,11 +368,11 @@ export class EngineClient {
 
   /**
    * A transport-level failure now only rejects the jobs of the SCOPE it
-   * belongs to: the ingest worker crashing does not have to mean a bake in
-   * flight on the completely separate bake worker is dead too, and vice
+   * belongs to: the ingest worker crashing does not have to mean a build in
+   * flight on the completely separate build worker is dead too, and vice
    * versa.
    */
-  private handleTransportError(error: Error, scope: "ingest" | "bake"): void {
+  private handleTransportError(error: Error, scope: "ingest" | "build"): void {
     const wrapped = new EngineClientError("transport", error.message);
     if (scope === "ingest") {
       for (const job of this.pendingIngest.values()) {
@@ -382,12 +382,12 @@ export class EngineClient {
       this.pendingIngest.clear();
       this.currentIngestId = null;
     } else {
-      for (const job of this.pendingBake.values()) {
+      for (const job of this.pendingBuild.values()) {
         job.reject(wrapped);
         this.progress.delete(job.id);
       }
-      this.pendingBake.clear();
-      this.currentBakeId = null;
+      this.pendingBuild.clear();
+      this.currentBuildId = null;
     }
   }
 }

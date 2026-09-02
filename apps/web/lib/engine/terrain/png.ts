@@ -2,7 +2,7 @@
  * Just enough PNG to read a Mapzen Terrarium tile, with no new dependency.
  *
  * The browser has `createImageBitmap` + `OffscreenCanvas` and that is what
- * `tiles.ts` uses there. Node has neither, and the engine's tests, the bake CLI
+ * `tiles.ts` uses there. Node has neither, and the engine's tests, the export CLI
  * and `make validate` all run in Node, so the tiles have to be decodable
  * without a DOM. Every image decoder on npm would be a new dependency for one
  * fixed, tiny case: 256 x 256, 8 bits per channel, RGB or RGBA, non-interlaced,

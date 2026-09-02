@@ -7,7 +7,7 @@
  * how Tauri turns it on). Off means every entry point here is a single boolean
  * read and a straight call through to the wrapped work: no marks, no measures,
  * no allocation, nothing for the engine to pay for. This matters because the
- * marks sit inside the solid pipeline's hot path, where a bake runs thousands
+ * marks sit inside the solid pipeline's hot path, where a build runs thousands
  * of manifold3d calls with no yield points.
  *
  * Three realms record into three different buffers, and only one of them can
@@ -23,7 +23,7 @@
  *    (`lib/engine/protocol.ts`). A worker's `performance.timeOrigin` is the
  *    moment the worker was created, NOT the document's, so every timing also
  *    carries `epochMs` and `perfMergeTimings` rebases it onto the page clock.
- *  - **Node** (`bake:cli`, vitest). `perfEnabled()` is false there unless a
+ *  - **Node** (`build:cli`, vitest). `perfEnabled()` is false there unless a
  *    caller sets it, and nothing installs an observer.
  *
  * Nothing in this module throws. A browser without `PerformanceObserver`,
@@ -387,7 +387,7 @@ export function perfDrainTimings(): PerfTiming[] {
  *
  * `startMs` is rebased from the sender's `epochMs` onto this realm's clock,
  * because a dedicated worker's `performance.timeOrigin` is the moment the
- * worker was created and its raw `startMs` would plot the whole bake before
+ * worker was created and its raw `startMs` would plot the whole build before
  * the page had even navigated.
  */
 export function perfMergeTimings(incoming: readonly PerfTiming[]): void {
@@ -757,7 +757,7 @@ let installed = false;
  * Start the long-task observer and publish `window.__framecraftPerf`.
  *
  * Called from the HUD's mount effect, which is the first thing the editor
- * renders, so the observer is running before any preview or bake. Idempotent
+ * renders, so the observer is running before any preview or build. Idempotent
  * and a no-op with perf mode off.
  */
 export function perfInstall(): void {

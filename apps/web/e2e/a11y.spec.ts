@@ -235,7 +235,7 @@ test("every control is reachable by Tab, in order, with a visible focus ring", a
   await expect(page.getByTestId("editor")).toBeVisible();
   await generateChicago(page);
   // Let the debounced WASM engine job settle before spending the walk's own
-  // budget: a Tab press that lands mid-bake pays for whatever store-wide
+  // budget: a Tab press that lands mid-build pays for whatever store-wide
   // re-render the engine result's arrival triggers on TOP of its own work,
   // which is exactly the kind of unrelated cost this walk should not have to
   // absorb 120 times over.
@@ -348,11 +348,11 @@ test("every control is reachable by Tab, in order, with a visible focus ring", a
     "shortcuts-button",
     "theme-toggle",
     "reset-button",
-    "bake-button",
+    "export-button",
     // The headline feature of the v2 redesign: a hero can be picked without a
     // mouse only if the viewport is in the tab order.
     "preview-canvas",
-    // V2-P6. Copy link is an action like Generate and Bake, and the advisor's
+    // V2-P6. Copy link is an action like Preview and Export, and the advisor's
     // remedy is a real button that moves the radius -- both were shipped
     // outside this list (audit v2-06 finding 5). The advisor button exists in
     // this state because Chicago at 900 m on a 180 mm plate is band `fair`,
@@ -376,12 +376,12 @@ test("every control is reachable by Tab, in order, with a visible focus ring", a
   await expect(page.getByTestId("advisor-use-plate")).toHaveCount(0);
   expect(testIds.has("advisor-use-plate")).toBe(false);
 
-  // Generate is absent from the walk, and that is correct: the scene is
+  // Preview is absent from the walk, and that is correct: the scene is
   // current, so it carries a real `disabled` attribute and a disabled control
   // must not be a dead tab stop. Asserted rather than assumed, because "not in
   // the tab order" and "disabled" have to agree.
-  await expect(page.getByTestId("generate-button")).toBeDisabled();
-  expect(testIds.has("generate-button")).toBe(false);
+  await expect(page.getByTestId("preview-button")).toBeDisabled();
+  expect(testIds.has("preview-button")).toBe(false);
 
   // The six preset chips are reachable too.
   const presets = shipped.filter((stop) => /—/.test(stop.name)).length;

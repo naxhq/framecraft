@@ -113,7 +113,7 @@ const SLOT_OPTIONS = Array.from({ length: SLOT_MAX }, (_, i) => {
  * export and the colour-change plan all read from the same place
  * (`params.colour`, resolved through `lib/engine/solid/context.ts`'s
  * `regionSlot`/`regionColor` -- the one function every one of those reads,
- * so they can never disagree). One row per region the current bake produced,
+ * so they can never disagree). One row per region the current build produced,
  * or every colourable region name before the first one has (`lib/colourMap.ts:
  * colourRows`), plus the palette picker, per-building tint and the
  * height-gradient controls (v3 phase 5, `[V3-P5-C]`).
@@ -372,7 +372,7 @@ export function ColourGroup() {
 
       <Field
         label="Filament slots"
-        hint="What the printed model, the Bambu project and the colour-change plan actually use: a slot and a colour per region. This is what the preview shows once a bake has run."
+        hint="What the exported file, the Bambu project and the colour-change plan actually use: a slot and a colour per region. This is what the preview shows once the model has been built."
       >
         <div className="space-y-1.5" data-testid="colour-region-rows">
           {rows.map((row) => {
@@ -526,8 +526,8 @@ export function ColourGroup() {
               <Note tone="info" testId="colour-tint-preview-only-note">
                 Building tint affects the preview and the OBJ export only. No printer
                 profile can change filament colour per building, so the active export
-                target ({params.export_target ?? "bambu-3mf"}) prints every building in
-                its region&apos;s own slot colour.
+                target ({params.export_target ?? "bambu-3mf"}) gives every building its
+                region&apos;s own slot colour instead.
               </Note>
             ) : null}
           </div>

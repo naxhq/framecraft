@@ -8,7 +8,7 @@
  * and everything else -- faces, refusals, reasons, warning strings, the scale
  * bar's chosen round number and its label -- has to match exactly, because a
  * preview that draws text at a different size, on a different edge, or that
- * shows text the bake refuses, is the failure this fixture exists to prevent.
+ * shows text the build refuses, is the failure this fixture exists to prevent.
  *
  * If this test fails, one of the two implementations changed without the other.
  * Fix the code, not the tolerance.
@@ -104,7 +104,7 @@ describe("the lettering fixture", () => {
 });
 
 describe.each(expected.cases)("lettering parity: $name", (testCase) => {
-  it("lays the text out exactly where the bake cuts it", () => {
+  it("lays the text out exactly where the build cuts it", () => {
     const fresh = T.lettering_layout_json(
       testCase.params,
       testCase.ctx,
@@ -131,7 +131,7 @@ describe("lettering unit behaviour (mirrors test_lettering.py)", () => {
     // fills them in by hand.  They have to be the generated contract's numbers:
     // the size default moved from 3.0 to 4.0 because 3.0 refused six of eight
     // real strings in the default face (v2-03 audit, finding 4), and a mirror
-    // left behind would seed the preview at a size the bake will not cut.
+    // left behind would seed the preview at a size the build will not cut.
     expect(T.ENGRAVING_DEFAULT_SIZE_MM).toBe(PARAM_RANGES.engravings.size_mm.default);
     expect(T.ENGRAVING_DEFAULT_DEPTH_MM).toBe(PARAM_RANGES.engravings.depth_mm.default);
     expect(T.ENGRAVING_DEFAULT_SIZE_MM).toBeGreaterThanOrEqual(
@@ -165,7 +165,7 @@ describe("lettering unit behaviour (mirrors test_lettering.py)", () => {
     // +rotation_deg, so north lands at bearing -rotation and an arrow drawn on
     // +y has to be turned by +rotation to meet it.  This test used to pin -29,
     // which put the preview's arrow 58 deg out and due south at rotation 90
-    // (v2-03 audit, finding 1); the bake's own test now derives the answer from
+    // (v2-03 audit, finding 1); the build's own test now derives the answer from
     // the projection instead of from the formula under test.
     for (const rotation of [0, 29, 90, 180, 271]) {
       const layout = T.north_arrow_layout(
@@ -215,7 +215,7 @@ describe("lettering unit behaviour (mirrors test_lettering.py)", () => {
     }
   });
 
-  it("predicts the bake's refusal of a base too thin for its pockets", () => {
+  it("predicts the build's refusal of a base too thin for its pockets", () => {
     expect(T.hanger_min_base_mm("none")).toBe(0);
     expect(T.hanger_min_base_mm("keyhole")).toBe(T.KEYHOLE_DEPTH_MM + T.HANGER_MIN_ROOF_MM);
     expect(T.hanger_min_base_mm("magnets")).toBe(T.MAGNET_DEPTH_MM + T.HANGER_MIN_ROOF_MM);

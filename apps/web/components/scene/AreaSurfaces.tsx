@@ -63,7 +63,7 @@ export function areaTrianglePositions(areas: ReadonlyArray<PreviewArea>): number
       faces = ShapeUtils.triangulateShape(outline, holes);
     } catch {
       // A self-touching OSM polygon can defeat earcut. Skipping one patch is
-      // the right failure mode for a preview; the bake runs make_valid first.
+      // the right failure mode for a preview; the build runs make_valid first.
       continue;
     }
     // MUST be built AFTER triangulateShape: extractPoints() repeats each

@@ -2,7 +2,7 @@
  * Building tint variation and the height-gradient colour band (v3 phase 5,
  * `[V3-P5-C]`): `colour.tint` and `colour.gradient`.
  *
- * Neither ever reaches a bake: no printer profile can express an arbitrary
+ * Neither ever reaches a build: no printer profile can express an arbitrary
  * per-building hue shift or an N-slot height gradient through filament
  * changes on the current export targets (`bambu-3mf`, `generic-3mf`, `stl`,
  * `stl-parts-zip`, `color-change-3mf`) -- only `obj` carries per-instance

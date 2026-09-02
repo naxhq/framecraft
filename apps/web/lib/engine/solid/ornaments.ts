@@ -23,7 +23,7 @@ import {
 import * as T from "../../transform";
 import type { ResolvedLine } from "../types";
 import { placementFor, type SurfaceName } from "./areas";
-import { CUTTER_OVERSHOOT_MM, addFinding, finding, type BakeContext } from "./context";
+import { CUTTER_OVERSHOOT_MM, addFinding, finding, type BuildContext } from "./context";
 import { lipKeepSection, lipTopMm } from "./frame";
 import type { Manifold } from "./manifold";
 import { contoursFromAreas, repairText, STROKE_FAIL_FACTOR } from "./lettering";
@@ -37,7 +37,7 @@ export interface OrnamentGeometry {
 }
 
 /** How far below the base top the deepest surface region reaches, print mm. */
-function deepestRecessMm(ctx: BakeContext): number {
+function deepestRecessMm(ctx: BuildContext): number {
   let depth = 0;
   const layers: SurfaceName[] = ["water", "rail", "roads", "parks"];
   for (const layer of layers) {
@@ -47,7 +47,7 @@ function deepestRecessMm(ctx: BakeContext): number {
 }
 
 /** The thinnest base a pocket of `depthMm` cut from below can live in. */
-function neededBaseMm(ctx: BakeContext, depthMm: number): number {
+function neededBaseMm(ctx: BuildContext, depthMm: number): number {
   return depthMm + T.HANGER_MIN_ROOF_MM + deepestRecessMm(ctx);
 }
 
@@ -73,7 +73,7 @@ function line(
  * and the bar are never laid out twice and can never disagree.
  */
 export function buildOrnaments(
-  ctx: BakeContext,
+  ctx: BuildContext,
   layout: T.LetteringLayout,
 ): OrnamentGeometry {
   const { wasm, arena, params } = ctx;
@@ -150,7 +150,7 @@ export function buildOrnaments(
   //
   // NOT here any more (v3 phase 7, DECISIONS `[V3-P7-A2]`). The user's
   // `underside_mark.template` is no longer a mark of its own: it is APPENDED to
-  // the mandatory attribution, which is cut on every bake whether the switch is
+  // the mandatory attribution, which is cut on every build whether the switch is
   // on or off, and `solid/attribution.ts` owns the whole underside block so the
   // two can never be laid out on top of each other. `underside_mark.enabled`
   // now decides only whether the user's own line joins that block; it can never

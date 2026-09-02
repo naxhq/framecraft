@@ -9,7 +9,7 @@ import { treeInstanceMatrices, type PreviewTree } from "@/lib/preview";
  * Trees as one InstancedMesh of an 8-sided cone (04 stage 1: "Model as an
  * 8-sided cone, height 3x radius", capped at 2000 keeping the largest -- the
  * selection itself happens in the shared transform, so the preview shows
- * exactly the trees the bake will emit).
+ * exactly the trees the build will emit).
  *
  * The unit cone is built once with its axis along +z to match the print frame,
  * so an instance matrix is a pure scale + translate.

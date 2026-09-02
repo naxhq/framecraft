@@ -43,7 +43,7 @@ Overpass responses under `fixtures/` are data.
 
 ## 2. What FrameCraft engraves into the model
 
-Every bake, with no switch to turn it off, cuts three marks. Each carries
+Every build, with no switch to turn it off, cuts three marks. Each carries
 `FrameCraft`, the OpenStreetMap credit and the date the model was generated.
 The engine composes those strings from its own constants: the editor cannot
 supply them, shorten them or blank them.
@@ -63,7 +63,7 @@ substituted for it. Turning `underside_mark` off removes your line and leaves
 every mandatory mark exactly where it was.
 
 The two small marks are deliberately finer than a 0.4 mm nozzle can resolve.
-That is a choice, not an oversight: they are provenance, and the bake says so
+That is a choice, not an oversight: they are provenance, and the build says so
 with an informational finding when it happens. They are unambiguous in the mesh
 and in a photograph taken with a loupe, whether or not they show on the print.
 
@@ -76,7 +76,7 @@ author      your name, from the "Author" field, blank when you did not set one
 license     Model data © OpenStreetMap contributors, ODbL 1.0
 generator   FrameCraft 3.0.0
 source      lat=..., lon=..., radius_m=...
-generated   the ISO 8601 timestamp of the bake
+generated   the ISO 8601 timestamp of the build
 ```
 
 * **3MF** (generic and Bambu): `<metadata>` entries, plus the reserved
@@ -153,5 +153,5 @@ grants rights over OpenStreetMap data beyond what the ODbL itself grants.
   the rulings.
 * `apps/web/lib/engine/export/common.ts` builds the provenance block; the four
   writers in `apps/web/lib/engine/export/` put it into their own formats.
-* `apps/web/lib/engine/solid/attribution.test.ts` checks that every bake carries
+* `apps/web/lib/engine/solid/attribution.test.ts` checks that every build carries
   every mark and that every exporter carries the block.

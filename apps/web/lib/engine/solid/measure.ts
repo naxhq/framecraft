@@ -16,7 +16,7 @@
  */
 
 import * as T from "../../transform";
-import type { BakeContext } from "./context";
+import type { BuildContext } from "./context";
 import {
   MIN_WALL_KEEP_FACTOR,
   MIN_WALL_PROBE_FACTOR,
@@ -162,9 +162,9 @@ export function inscribedWidthMm(
  * The difference from {@link inscribedWidthMm} alone is the whole reason the
  * engine's gate and the reference validator disagreed on a draped model. The
  * widest disc that fits somewhere in a region says nothing about a 0.14 mm wing
- * hanging off it, and a FLAT bake never has one - Stage 1 strips or widens every
+ * hanging off it, and a FLAT build never has one - Stage 1 strips or widens every
  * thin appendage in 2D, so by the time a slice is taken there are none left. A
- * DRAPED bake has them everywhere: the repair works on the flat footprint, and a
+ * DRAPED build has them everywhere: the repair works on the flat footprint, and a
  * horizontal cut through a hillside is an oblique cut through that footprint, so
  * it produces wings the 2D repair never saw (`[V3-P3-G16]`).
  *
@@ -177,14 +177,14 @@ export function inscribedWidthMm(
  * (`[V3-P7-fix]`). `4A/P` never UNDER-reports a long strip, which is what makes
  * it safe on a WING; it says nothing about a fat region that happens to carry
  * one, and a merged Chicago block measures 4A/P = 6.4 mm while carrying a
- * 0.17 mm one. Removing it was measured: it takes the default bake from 6 s to
+ * 0.17 mm one. Removing it was measured: it takes the default build from 6 s to
  * over 16 s against a 15 s budget, and it turns three draped fixtures from
  * clean into `wall-too-thin` at 0.158 mm - findings that may well be real, and
  * that nobody has judged. Both belong to the same piece of work as
  * `measureMinWall`'s own flat blind spot, not to this fix.
  */
 export function narrowestWidthMm(
-  ctx: BakeContext,
+  ctx: BuildContext,
   section: CrossSection,
   maxMm: number,
 ): number {
@@ -261,7 +261,7 @@ function skipped(z: number, bands: readonly SkipBand[]): boolean {
 }
 
 export function sliceHeights(
-  ctx: BakeContext,
+  ctx: BuildContext,
   topMm: number,
   skipBands: readonly SkipBand[] = [],
 ): number[] {
@@ -301,7 +301,7 @@ export function sliceHeights(
 }
 
 /**
- * Extra Z samples the DRAPED model needs, print mm. Empty for a flat bake.
+ * Extra Z samples the DRAPED model needs, print mm. Empty for a flat build.
  *
  * Every height above is a feature PLANE of the flat model: the mouth of a
  * groove, the floor of a recess, just under the base top. Draping smears each
@@ -317,11 +317,11 @@ export function sliceHeights(
  * are shared: `MAX_DRAPED_SLICES` total, spread evenly over the union of the
  * bands rather than per feature.
  *
- * This runs ONLY when a drape is active, so no flat bake samples a single extra
+ * This runs ONLY when a drape is active, so no flat build samples a single extra
  * height and the committed golden's numbers cannot move (`[V3-P3-G16]`).
  */
 export function drapedSliceHeights(
-  ctx: BakeContext,
+  ctx: BuildContext,
   flat: readonly number[],
   reliefMm: number,
   topMm: number,
@@ -358,7 +358,7 @@ export const DRAPED_SLICE_PITCH_MM = 0.05;
  *
  * Each slice costs an erosion of the whole assembled section, so this is a time
  * budget, not a resolution choice: 96 slices of the Chicago plate is about six
- * seconds, which is a price worth paying on a bake the user asked to put a
+ * seconds, which is a price worth paying on a build the user asked to put a
  * hillside under and never paid on one they did not.
  */
 export const MAX_DRAPED_SLICES = 32;
@@ -385,19 +385,19 @@ export interface MinWallReport {
  * for an empty scene.
  */
 export function measureMinWall(
-  ctx: BakeContext,
+  ctx: BuildContext,
   solid: Manifold,
   skipBands: readonly SkipBand[] = [],
 ): MinWallReport {
   const bbox = solid.boundingBox();
   const flat = sliceHeights(ctx, bbox.max[2], skipBands);
-  /** The printed relief, or null for a flat bake. Every terrain branch reads it. */
+  /** The printed relief, or null for a flat build. Every terrain branch reads it. */
   const draped =
     ctx.terrain === null
       ? null
       : T.terrain_z_mm(ctx.terrain.rangeM, ctx.params, ctx.scale);
   // A draped model needs the sweep as well as the planes: see
-  // `drapedSliceHeights`. `ctx.terrain` is null for every flat bake, so this is
+  // `drapedSliceHeights`. `ctx.terrain` is null for every flat build, so this is
   // exactly `flat` there and no committed number can move.
   const heights =
     draped === null
@@ -444,7 +444,7 @@ export function measureMinWall(
       // and only what does not is worth searching.
       components.push(...lean.decompose());
       for (const piece of components) {
-        // On a FLAT bake only a region that VANISHES under the erosion probe is
+        // On a FLAT build only a region that VANISHES under the erosion probe is
         // measured, and this is a known blind spot rather than a claim
         // (`[V3-P7-fix]`). The old comment argued that Stage 1 removes every
         // thin appendage in 2D so a region holding a full disc holds it
@@ -456,12 +456,12 @@ export function measureMinWall(
         // SEE the next one. Measuring every persisting region by the
         // appendage-aware rule is what the reference validator does and what
         // this should do; it was measured at 13.4 s against the 15 s budget on
-        // the default Chicago bake (5.3 s today), and the cost is the residue
+        // the default Chicago build (5.3 s today), and the cost is the residue
         // probe itself, four offsets per region per slice, not the width search
         // behind it. Closing it needs a cheaper appendage probe, and that is a
         // piece of work of its own rather than a line here.
         //
-        // A DRAPED bake is cut obliquely through those same footprints and grows
+        // A DRAPED build is cut obliquely through those same footprints and grows
         // wings the 2D repair never saw, so every persisting region is measured
         // there, and measured by the appendage-aware rule (`[V3-P3-G16]`).
         //

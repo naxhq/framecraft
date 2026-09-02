@@ -3,7 +3,7 @@
  *
  * Every size, anchor, rotation and refusal comes from
  * `transform.lettering_layout`, the shared function the preview draws from and
- * the reference bake cuts from. This module turns those numbers into solids and
+ * the reference build cuts from. This module turns those numbers into solids and
  * decides nothing about where anything goes. The glyph outlines are the
  * committed assets in `lib/fonts/*.glyphs.json`, read through
  * `lib/previewText.ts`'s `glyphAreas`, so the letterforms the editor draws and
@@ -38,7 +38,7 @@ import {
   PART_OVERLAP_MM,
   addFinding,
   finding,
-  type BakeContext,
+  type BuildContext,
 } from "./context";
 import { lipKeepSection, lipTopMm } from "./frame";
 import type { Contour, CrossSection, Manifold } from "./manifold";
@@ -107,7 +107,7 @@ export function facesFor(params: PrintParams): string[] {
     }
   }
   if (params.frame && params.scale_bar?.enabled) out.add(T.SCALE_BAR_FACE);
-  // The mandatory attribution is cut on EVERY bake (`solid/attribution.ts`), in
+  // The mandatory attribution is cut on EVERY build (`solid/attribution.ts`), in
   // the underside mark's own face, so that face is always needed -- with the
   // switch off as much as with it on (`[V3-P7-A2]`).
   out.add(T.UNDERSIDE_MARK_FACE);
@@ -177,7 +177,7 @@ export interface RepairedText {
  * refused here rather than shipped.
  */
 export function repairText(
-  ctx: BakeContext,
+  ctx: BuildContext,
   areas: readonly PreviewArea[],
   dilationMm: number,
   targetMm: number,
@@ -371,7 +371,7 @@ function edgeCutsAt(
  * Exported for `solid/tiling.ts`, which cuts its own pocket into the same
  * underside and has to leave the same roof over the same recesses.
  */
-export function deepestRecessMm(ctx: BakeContext): number {
+export function deepestRecessMm(ctx: BuildContext): number {
   let depth = 0;
   const layers: SurfaceName[] = ["water", "rail", "roads", "parks"];
   for (const layer of layers) {
@@ -382,7 +382,7 @@ export function deepestRecessMm(ctx: BakeContext): number {
 }
 
 /** Thinnest base that can carry a pocket of `depthMm` cut from underneath. */
-function undersideFloorOk(ctx: BakeContext, depthMm: number): boolean {
+function undersideFloorOk(ctx: BuildContext, depthMm: number): boolean {
   return (
     depthMm + T.HANGER_MIN_ROOF_MM + deepestRecessMm(ctx) <= ctx.params.base_thickness_mm + 1e-9
   );
@@ -430,7 +430,7 @@ const EDGE_LABEL: Record<string, string> = {
  * it, exactly as `transform.underside_mark_layout` does it.
  */
 function undersideColumn(
-  ctx: BakeContext,
+  ctx: BuildContext,
   fits: readonly T.TextFit[],
   reservedMm: number,
 ): T.Placement[] {
@@ -467,11 +467,11 @@ function undersideColumn(
  * adjustment it made on the caller's behalf: a size auto-fitted down to fit its
  * edge, a scale bar rounded to a round number of metres. They used to be pushed
  * to `ctx.warnings`, which `EngineResult` has no field for, so nothing that
- * reads a bake ever saw them (v3-02 audit, MAJOR 2). They are informational -
+ * reads a build ever saw them (v3-02 audit, MAJOR 2). They are informational -
  * the line was still cut, and cut correctly - so they are one `info` finding
  * carrying the layout's own wording rather than the engine's paraphrase of it.
  */
-function reportLayoutWarnings(ctx: BakeContext, warnings: readonly string[]): void {
+function reportLayoutWarnings(ctx: BuildContext, warnings: readonly string[]): void {
   if (warnings.length === 0) return;
   addFinding(
     ctx,
@@ -494,7 +494,7 @@ function reportLayoutWarnings(ctx: BakeContext, warnings: readonly string[]): vo
  * never be laid out on top of each other (`[V3-P7-A2]`).
  */
 export function buildLettering(
-  ctx: BakeContext,
+  ctx: BuildContext,
   tokens: TokenContext,
   rotationDeg = 0,
   reservedUndersideMm = 0,
@@ -776,7 +776,7 @@ interface EmittedPiece {
  * pocket exactly, in the `lettering` region.
  */
 function emitPiece(
-  ctx: BakeContext,
+  ctx: BuildContext,
   piece: Piece,
   section: CrossSection,
   lipTop: number,

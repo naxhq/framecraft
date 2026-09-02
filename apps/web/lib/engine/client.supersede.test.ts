@@ -1,10 +1,10 @@
 /**
- * `[V3-P3-U]`: a running bake must never block an ingest request, however
- * long the bake takes. `EngineClient` now runs ingest and bake on two
+ * `[V3-P3-U]`: a running build must never block an ingest request, however
+ * long the build takes. `EngineClient` now runs ingest and build on two
  * entirely separate transports/workers (`client.ts`'s own module docstring
  * explains why); this file proves the CLIENT-LEVEL half of that guarantee --
- * that `EngineClient.ingest()` never waits on a bake promise, running or
- * queued -- through the in-page fallback transport, using a "slow fake" bake
+ * that `EngineClient.ingest()` never waits on a build promise, running or
+ * queued -- through the in-page fallback transport, using a "slow fake" build
  * handler (a real `await`ed delay, not a synchronous CPU spin, so a
  * single-threaded test runner can still observe the race).
  *
@@ -15,8 +15,8 @@
  * unmodified, against a real browser.
  *
  * A dedicated file, not added to `client.test.ts`: `vi.mock("./engine", ...)`
- * is file-scoped but still replaces `bake()` for every test in whichever file
- * calls it, and `client.test.ts`'s own "really runs a bake end to end" tests
+ * is file-scoped but still replaces `buildModel()` for every test in whichever file
+ * calls it, and `client.test.ts`'s own "really runs a build end to end" tests
  * need the REAL engine.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -24,15 +24,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultPrintParams } from "../contracts";
 import { scene } from "./solid/fixture";
 
-const bakeMock = vi.fn();
-vi.mock("./engine", () => ({ bake: (input: unknown) => bakeMock(input) }));
+const buildModelMock = vi.fn();
+vi.mock("./engine", () => ({ buildModel: (input: unknown) => buildModelMock(input) }));
 
-/** Resolves after `ms`, so the fake bake genuinely yields to the event loop instead of spinning the one JS thread the test itself runs on. */
+/** Resolves after `ms`, so the fake build genuinely yields to the event loop instead of spinning the one JS thread the test itself runs on. */
 function delay<T>(ms: number, value: T): Promise<T> {
   return new Promise((resolve) => setTimeout(() => resolve(value), ms));
 }
 
-function fakeBakeResult(regions: unknown[] = []): unknown {
+function fakeBuildResult(regions: unknown[] = []): unknown {
   return {
     regions,
     merged: null,
@@ -58,13 +58,13 @@ function fakeBakeResult(regions: unknown[] = []): unknown {
 
 const REQUEST = { lat: 41.8827, lon: -87.6233, radius_m: 900, rotation_deg: 0, preset_id: "chicago-loop" };
 
-describe("EngineClient: an in-flight bake never blocks an ingest", () => {
+describe("EngineClient: an in-flight build never blocks an ingest", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    bakeMock.mockReset();
+    buildModelMock.mockReset();
   });
 
-  it("ingest resolves before a slow bake started earlier does", async () => {
+  it("ingest resolves before a slow build started earlier does", async () => {
     const { createEngineClient } = await import("./client");
     // A single successful attempt, not a thrown network error: `fetchOverpass`
     // retries a THROWN error up to 4 times with real (setTimeout) backoff --
@@ -74,21 +74,21 @@ describe("EngineClient: an in-flight bake never blocks an ingest", () => {
       "fetch",
       vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ elements: [] }) })),
     );
-    // The bake will not settle until well after the ingest below does.
-    bakeMock.mockImplementation(() => delay(2_000, fakeBakeResult()));
+    // The build will not settle until well after the ingest below does.
+    buildModelMock.mockImplementation(() => delay(2_000, fakeBuildResult()));
 
     const client = createEngineClient();
     try {
       const order: string[] = [];
-      const bakePending = client
-        .bake({ scene: scene(), params: defaultPrintParams() })
+      const buildPending = client
+        .buildModel({ scene: scene(), params: defaultPrintParams() })
         .then((result) => {
-          order.push("bake");
+          order.push("build");
           return result;
         });
 
-      // Started AFTER the bake, still resolves first: nothing in the client
-      // makes it wait on the bake's promise.
+      // Started AFTER the build, still resolves first: nothing in the client
+      // makes it wait on the build's promise.
       const ingestPending = client.ingest(REQUEST).then((result) => {
         order.push("ingest");
         return result;
@@ -97,31 +97,31 @@ describe("EngineClient: an in-flight bake never blocks an ingest", () => {
       await ingestPending;
       expect(order).toEqual(["ingest"]);
 
-      await bakePending;
-      expect(order).toEqual(["ingest", "bake"]);
+      await buildPending;
+      expect(order).toEqual(["ingest", "build"]);
     } finally {
       client.dispose();
     }
   });
 
-  it("a bake superseded while another is still running does not delay a subsequent ingest either", async () => {
+  it("a build superseded while another is still running does not delay a subsequent ingest either", async () => {
     const { createEngineClient } = await import("./client");
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ elements: [] }) })));
-    bakeMock.mockImplementation(() => delay(2_000, fakeBakeResult()));
+    buildModelMock.mockImplementation(() => delay(2_000, fakeBuildResult()));
 
     const client = createEngineClient();
     try {
-      const firstBake = client.bake({ scene: scene(), params: defaultPrintParams() });
-      const secondBake = client.bake({ scene: scene(), params: defaultPrintParams() });
-      await expect(firstBake).rejects.toMatchObject({ code: "cancelled" });
+      const firstBuild = client.buildModel({ scene: scene(), params: defaultPrintParams() });
+      const secondBuild = client.buildModel({ scene: scene(), params: defaultPrintParams() });
+      await expect(firstBuild).rejects.toMatchObject({ code: "cancelled" });
 
       const started = Date.now();
       await client.ingest(REQUEST);
-      // Generous relative to the 2 s fake bakes: this only fails if ingest
-      // was ever made to wait on either bake settling.
+      // Generous relative to the 2 s fake builds: this only fails if ingest
+      // was ever made to wait on either build settling.
       expect(Date.now() - started).toBeLessThan(1_000);
 
-      await secondBake;
+      await secondBuild;
     } finally {
       client.dispose();
     }

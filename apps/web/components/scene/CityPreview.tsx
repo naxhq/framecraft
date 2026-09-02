@@ -87,12 +87,12 @@ import { paletteFor, readPreviewPalette, readViewportPalette, type PreviewPalett
  * booleans (02):
  *  - buildings are oriented boxes, not their real footprints;
  *  - the minimum-feature repair is a per-footprint dilation, so neighbours that
- *    the bake would merge into one block are still drawn separately;
+ *    the build would merge into one block are still drawn separately;
  *  - engraved roads and recessed water are drawn on the surface instead of cut
  *    into the slab;
  *  - lettering, the ornaments and the underside pockets are flat fills on the
  *    surface too, at the shared layout's own sizes and anchors, rather than
- *    grooves. What the bake refuses, the preview does not draw.
+ *    grooves. What the build refuses, the preview does not draw.
  * The note under the canvas says so, using the real threshold.
  */
 
@@ -149,7 +149,7 @@ export const previewDeps = {
   /**
    * The tree filter reads the nozzle too: `transform.tree_min_radius_mm` raises
    * the printed-radius floor above 04's 0.5 mm from a 0.47 mm nozzle up, and the
-   * preview must hide exactly the trees the bake drops (DECISIONS [P5-web]).
+   * preview must hide exactly the trees the build drops (DECISIONS [P5-web]).
    */
   trees: (graph: SceneGraph | null, params: PrintParams): unknown[] => [
     graph,
@@ -247,7 +247,7 @@ export function CityPreview() {
   const engineResult = useEditorStore((state) => state.engine.result);
   const engineStale = useEditorStore((state) => state.engine.stale);
   const engineFindings = useEditorStore((state) => state.engine.result?.findings ?? NO_FINDINGS);
-  const bakeWarnings = useMemo(
+  const buildWarnings = useMemo(
     () =>
       engineFindings
         .filter((finding) => finding.severity !== "info")
@@ -415,7 +415,7 @@ export function CityPreview() {
   const onAdvisorAction = useCallback(
     (action: AdvisorAction) => {
       // The radius goes through exactly the path a slider release takes:
-      // `setRadius` marks the scene stale and retires the bake, `generate`
+      // `setRadius` marks the scene stale and retires the build, `generate`
       // fetches. The plate is a plain parameter write and stays client-side.
       applyAdvisorAction(action, {
         setRadius,
@@ -426,8 +426,8 @@ export function CityPreview() {
     [setRadius, generate, setParam],
   );
 
-  // 04 stage 4 caps the model at 60 mm and the bake refuses to start above it.
-  // Showing the number on the canvas is what makes the disabled Bake button
+  // 04 stage 4 caps the model at 60 mm and the build refuses to start above it.
+  // Showing the number on the canvas is what makes the disabled Export button
   // legible while the height sliders move.
   const predictedTop = useMemo(
     () => predictedTopMm(graph, params),
@@ -471,10 +471,10 @@ export function CityPreview() {
         droppedCount: layout.droppedCount,
         treeFloorMetres: treeFloor,
         nozzleMm: params.nozzle_mm,
-        bakeWarnings,
+        buildWarnings,
         // The shared layout's own messages, verbatim: an auto-fitted size, a
         // dropped character, a refused engraving. They are informational -- the
-        // bake reports the same strings -- so they belong in the drawer with
+        // build reports the same strings -- so they belong in the drawer with
         // the rest of "what the pipeline quietly did".
         textNotices: textModel.notices,
       }),
@@ -484,7 +484,7 @@ export function CityPreview() {
       layout.droppedCount,
       treeFloor,
       params.nozzle_mm,
-      bakeWarnings,
+      buildWarnings,
       textModel.notices,
     ],
   );
@@ -500,11 +500,11 @@ export function CityPreview() {
   const approximationNote =
     thresholds === null
       ? ""
-      : "Preview is approximate: the bake merges buildings closer than " +
+      : "Preview is approximate: the build merges buildings closer than " +
         `${mergeNoticeMetres(thresholds).toFixed(1)} m, and roads, water, ` +
         "lettering, the ornaments and the underside marks are drawn as flat " +
         "fills here instead of being cut into the plate. Sizes, anchors and " +
-        "refusals are the bake's own.";
+        "refusals are the build's own.";
 
   const baseTop = T.base_top_mm(params);
   const roadZ = T.road_z_mm(params);
@@ -517,9 +517,9 @@ export function CityPreview() {
   // means and why a stale result is never shown here.
   const freshEngineResult = engineFresh({ status: engineStatus, result: engineResult, stale: engineStale });
   // Manual picks plus, once `hero_auto` is on, the auto-promoted ones -- the
-  // same effective set `store/editor.ts:currentHeroIds` bakes with, so the
+  // same effective set `store/editor.ts:currentHeroIds` builds with, so the
   // preview highlight and the keyboard cursor's "hero" announcement never
-  // disagree with what a click on Bake would actually produce. Deps are
+  // disagree with what a click on Export would actually produce. Deps are
   // primitives/identity-stable references only (`graph`, the hero arrays),
   // never `params` itself or `params.hero_auto` -- `setParam` rebuilds
   // `params` by spread on every write, and this scores every building.
@@ -544,7 +544,7 @@ export function CityPreview() {
    * `EngineResult.buildingTints` when a fresh one carries any (real geometry,
    * so it wins), `lib/tint.ts`'s deterministic client-side draw otherwise --
    * the fast instanced preview shows a tint immediately on toggling it, with
-   * no bake to wait for, and swaps to the engine's own numbers the moment one
+   * no build to wait for, and swaps to the engine's own numbers the moment one
    * lands. `null` (not an empty Map) when tint is off, so `InstancedBuildings`
    * never spends a pass building `Color`s it will not use.
    */
@@ -590,7 +590,7 @@ export function CityPreview() {
         What is actually drawn on the frame and the underside, so an e2e can see
         that enabling an engraving put geometry on the plate rather than only a
         line in the panel. It counts RINGS, so a refused engraving -- which the
-        bake will not cut and this does not draw -- leaves it unchanged.
+        build will not cut and this does not draw -- leaves it unchanged.
       */
       data-preview-text-count={textModel.shapeCount}
       // `colour.preview_theme` scope (`app/globals.css`), read back by the
@@ -700,7 +700,7 @@ export function CityPreview() {
           {/*
             Frame lettering, the north arrow, the scale bar, the underside mark
             and the hanger pockets. Flat fills at the SHARED layout's own sizes
-            and anchors (`transform.lettering_layout`, the function the bake
+            and anchors (`transform.lettering_layout`, the function the build
             cuts from), two-sided because the underside half is looked at from
             below. Once RegionMeshes is showing, its own `lettering` region (or
             the frame's embossed letters) is the real cut -- these flat fills
@@ -826,7 +826,7 @@ export function CityPreview() {
       {/*
         The spec strip: the three numbers that describe this as a printed
         object. Scale comes from the mirrored token table, so it is the same
-        string the bake engraves; the height is the number the server's own
+        string the build engraves; the height is the number the build's own
         60 mm guard compares; the wall is what every thin footprint is repaired
         to. It is the signature element of this editor and it earns the space.
       */}
@@ -944,8 +944,8 @@ export function CityPreview() {
           data-testid="preview-too-tall"
           className="pointer-events-none absolute bottom-16 left-3 rounded-milled bg-danger px-2 py-1 text-2xs font-medium text-primary-ink shadow-raised"
         >
-          Over the {heightCeilingMm(params).toFixed(0)} mm print ceiling — the bake will
-          refuse this.
+          Over the {heightCeilingMm(params).toFixed(0)} mm printer height ceiling. The
+          build will refuse this.
         </span>
       ) : null}
       {treeFloor !== null ? (
@@ -979,18 +979,18 @@ function PreviewEmpty() {
       </h2>
       <ol className="max-w-sm space-y-1 text-left text-sm text-ink-muted">
         <li>1. Choose a preset city, or click the map to drop the pin.</li>
-        <li>2. Generate. The scene arrives in a few seconds.</li>
+        <li>2. Preview. The model arrives in a few seconds.</li>
         <li>3. Tune it. The preview follows every control instantly.</li>
-        <li>4. Bake, and download the .3mf.</li>
+        <li>4. Export, and download the .3mf.</li>
       </ol>
       <p className="text-2xs text-ink-faint">
-        Keyboard: G generate · B bake · R reset · ? for the full list
+        Keyboard: G preview · B export · R reset · ? for the full list
       </p>
     </div>
   );
 }
 
-/** While `POST /scene` is in flight: the shape of what is coming, not a spinner. */
+/** While the OpenStreetMap fetch is in flight: the shape of what is coming, not a spinner. */
 function PreviewSkeleton() {
   return (
     <div

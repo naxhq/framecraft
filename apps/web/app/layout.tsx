@@ -47,7 +47,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         {/*
           The OSM attribution is a licence obligation, not decoration: it is in
           the layout so it survives every route, and it is also written into the
-          3MF metadata and CREDITS.txt by the bake.
+          3MF metadata and CREDITS.txt by the export.
         */}
         <footer className="fc-scored flex items-center justify-center gap-2 bg-bench px-4 py-2 text-2xs text-ink-faint">
           <span aria-hidden="true" className="h-px w-6 bg-line-strong" />

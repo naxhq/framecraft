@@ -1,5 +1,5 @@
 #!/usr/bin/sh
-# make gate, step 4: bake the Chicago fixture through the BROWSER engine and
+# make gate, step 4: build the Chicago fixture through the BROWSER engine and
 # judge both files with the reference validator.
 #
 # This lives in a file rather than inline in the Makefile for a mechanical
@@ -17,10 +17,10 @@ rc=0
 
 # `make gate` step 0 makes these, but this script has to stand on its own: run
 # straight from a clean checkout it used to die on the first redirect below
-# instead of baking anything (v3-02 audit finding 15).
+# instead of exporting anything (v3-02 audit finding 15).
 mkdir -p artifacts/logs
 
-echo "both files are baked and validated: fixtures/print-params-default.json"
+echo "both files are exported and validated: fixtures/print-params-default.json"
 echo "(color_mode=single, the literal default) and print-params-parts.json"
 echo "(color_mode=parts). Single mode's 3MF is written from EngineResult.merged,"
 echo "a real manifold3d union, so it carries one body like the parts assembly"
@@ -30,15 +30,15 @@ webgate() {
 	label="$1"
 	params="$2"
 	out="$3"
-	( cd apps/web && npm run bake:cli -- \
+	( cd apps/web && npm run export:cli -- \
 		--scene ../../fixtures/chicago-scene.json \
 		--params "../../$params" \
 		--target generic-3mf \
-		--out "../../$out" ) > "artifacts/logs/bake-cli-$label.log" 2>&1
-	bakerc=$?
-	cat "artifacts/logs/bake-cli-$label.log"
-	if [ $bakerc -ne 0 ]; then
-		echo "gate: bake:cli ($label) FAILED" >&2
+		--out "../../$out" ) > "artifacts/logs/export-cli-$label.log" 2>&1
+	clirc=$?
+	cat "artifacts/logs/export-cli-$label.log"
+	if [ $clirc -ne 0 ]; then
+		echo "gate: export:cli ($label) FAILED" >&2
 		return 1
 	fi
 	"$MAKE_BIN" validate FILE="$out" > "artifacts/logs/validate-web-$label.log" 2>&1

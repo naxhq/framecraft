@@ -101,7 +101,7 @@ export function circleRing(center: LatLon, radiusM: number, steps = 96): LonLat[
 }
 
 /**
- * The crop square the bake will actually print, as a closed [lon, lat] ring.
+ * The crop square the build will actually print, as a closed [lon, lat] ring.
  *
  * `rotation_deg` rotates the crop before it is squared (01). The server
  * (`app/geom/project.py`, `LocalFrame.to_local`) rotates the *geometry*

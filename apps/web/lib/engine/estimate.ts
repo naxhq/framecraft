@@ -48,7 +48,7 @@ export const LAYER_HEIGHT_MM = 0.2;
  * are most of the section.
  *
  * 0.55 is the calibration constant for the whole estimate: it is what puts the
- * default Chicago bake in a plausible window against a real slice, and it is
+ * default Chicago build in a plausible window against a real slice, and it is
  * ROUGH. Anything that changes the infill, the wall count or the layer height
  * moves it, and the estimate does not know about any of them (`[V3-P4-E2]`).
  */
@@ -128,7 +128,7 @@ export interface EstimateOptions {
 }
 
 /**
- * Filament per slot, filament in total, and a print time, for one bake.
+ * Filament per slot, filament in total, and a print time, for one build.
  *
  * Pure: it reads the meshes and the parameters and touches nothing else.
  */

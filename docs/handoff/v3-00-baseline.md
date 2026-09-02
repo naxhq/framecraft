@@ -1,8 +1,14 @@
 # v3 performance baseline
 
-Every number here was read out of the browser's own Performance API through the
-permanent `?perf=1` mode (`apps/web/lib/perf.ts`). Nothing is estimated. Each
-figure is **median / min / max of three runs** unless the row says otherwise.
+Two provenances, stated per section. Sections a, c and d (local static build,
+this commit) were read out of the permanent `?perf=1` mode
+(`apps/web/lib/perf.ts`). Section b comes from `next build` output plus
+`zlib` gzip and brotli sizes over `apps/web/out`. The Part B sections (deployed
+site, desktop build, CI) were measured against the deployed commit `7eda2d7`,
+which predates perf mode, from Navigation and Resource Timing, Chrome DevTools
+Protocol network events, `curl -sI` headers and GitHub run timestamps. Nothing
+is estimated. Each figure is **median / min / max of three runs** unless the
+row says otherwise.
 Raw per-run JSON: `artifacts/perf/baseline/local/` (gitignored).
 
 ## Host and build
@@ -56,8 +62,8 @@ Transfer, by kind, on the cold load:
 | MapLibre worker script | 1 | 18,892 | not reported by Chrome for a worker entry |
 | OSM raster tiles | 8 | 0 (cross-origin) | 443 / 424 / 514 |
 
-The warm navigation transfers **exactly the same 3,616,857 bytes** as the cold
-one. `scripts/serve-static.mjs` sends `Cache-Control: no-store`, so nothing is
+The warm navigation transfers **exactly the same 3,616,857 bytes of
+subresources** (excluding the 38,352 B document) as the cold one. `scripts/serve-static.mjs` sends `Cache-Control: no-store`, so nothing is
 cached between navigations. The warm load is still faster because the V8 code
 cache and the compiled JS survive in the renderer.
 
@@ -124,8 +130,9 @@ Eagerly loaded JavaScript, everything `/` pulls before a click:
 | MapLibre worker pair (`maplibre-gl-worker.mjs`, `maplibre-gl-shared.mjs`) | 508,167 | 141,989 | 117,332 |
 | **eager JS total** | **3,372,985** | **937,681** | **786,332** |
 
-Deferred today: `manifold/manifold.wasm` and one 80,417 B chunk, both on the
-first bake.
+Not requested by `/`: `manifold/manifold.wasm` and one 80,417 B chunk (both
+fetched on the first build), plus 13 further `.js` files totalling 626,350 B
+that nothing on this route pulls at all.
 
 ### Compression
 
@@ -223,10 +230,10 @@ section (c) is fixture-backed and excludes it.
 
 Bake button to the download link, three runs:
 
-| target | wall (min / med / max) | `export.run` | writer | sidecar | payload bytes |
+| target | wall | `export.run` | writer | sidecar | payload bytes |
 |---|---|---|---|---|---|
-| `bambu-3mf` | 13,044 / 13,418 / 24,761 ms | 1,033 / 1,009 / 1,096 ms | 1,031 ms | 1 ms | 4,509,098 |
-| `generic-3mf` | 12,456 / 12,911 / 14,719 ms | 673 / 660 / 694 ms | 672 ms | 0.4 ms | 2,937,229 |
+| `bambu-3mf` | 13,418 / 13,044 / 24,761 ms | 1,033 / 1,009 / 1,096 ms | 1,031 ms | 1 ms | 4,509,098 |
+| `generic-3mf` | 12,911 / 12,456 / 14,719 ms | 673 / 660 / 694 ms | 672 ms | 0.4 ms | 2,937,229 |
 
 The wall times are dominated by a full engine re-bake (`engine.bake` 11,749 ms
 median for Bambu, 11,637 ms for generic): changing `export_target` is a
@@ -321,17 +328,16 @@ cd apps/web && npx playwright test e2e/perf.spec.ts
 
 ---
 
-## Deployed site, desktop build and CI (Task 0 part B)
+## Part B: deployed site, desktop build and CI, measured on deployed `7eda2d7` (no perf mode)
 
-Measured 2026-09-02. Every number below comes from the Performance API
+Measured 2026-09-02 against the deployed commit `7eda2d7`, a build that
+predates perf mode, so no `?perf=1` row exists for anything in Part B.
+Every number below comes from the Performance API
 (Navigation Timing, Resource Timing, `longtask` PerformanceObserver), from
 Chrome DevTools Protocol network events, or from GitHub's own run timestamps.
 No stopwatch estimates. Raw JSON for every run is under
 `artifacts/perf/baseline/deployed/`, `artifacts/perf/baseline/desktop/` and
 `artifacts/perf/baseline/ci/`.
-
-Companion note: `docs/handoff/v3-00-baseline.md` (local dev, owned by another
-agent). This one covers only the deployed site, the desktop build and CI.
 
 ### 0. Environment
 
@@ -422,12 +428,12 @@ counted from the wire. One run shown; the five runs span 1 286 409 to
 
 | Kind | files | transfer B | decoded B |
 |---|---:|---:|---:|
-| JS | 19 | 933 826 | 3 356 322 |
+| JS | 19 | 947 671 | 3 356 322 |
 | OSM raster tiles | 8 | 235 772 | 235 772 |
 | Fonts (woff2) | 2 | 81 240 | 80 640 |
 | CSS | 2 | 18 874 | 116 353 |
 | HTML + other | 2 | 17 039 | 74 063 |
-| **total** | **33** | **1 286 751** | **3 863 150** |
+| **total** | **33** | **1 300 596** | **3 863 150** |
 
 Warm total on the wire: **0 B**, all 33 resources from cache.
 
@@ -455,7 +461,7 @@ Ordered by transfer size. All are fetched before the user touches anything.
 | `459.93ec3f1d8ad26614.js` | 3 421 | 7 786 | 6.7 | |
 | `webpack-3da5251897d62103.js` | 2 899 | 5 397 | 9.3 | runtime |
 | `main-app-ce70fda2b9c5a497.js` | 527 | 557 | 16.4 | |
-| `819.ab55fa05732e06f6.js` | 0 (13 845 on the wire) | 36 820 | n/a | engine worker entry, fetched by the worker |
+| `819.ab55fa05732e06f6.js` | 13 845 (CDP; Resource Timing reports 0 for a worker fetch) | 36 820 | n/a | engine worker entry, fetched by the worker |
 
 Two chunks are NOT on the landing page. They arrive only on the first bake:
 
@@ -616,8 +622,8 @@ The page is served from `http://tauri.localhost/` out of the embedded bundle.
 
 Two things follow from those columns. Transfer equals decoded, so the Tauri
 asset protocol serves the bundle uncompressed; that costs nothing in time
-because there is no wire. And the warm navigation re-transfers the full
-3 561 196 B rather than 0 B as on the web, because the custom protocol does not
+because there is no wire. And the warm navigation re-transfers
+3 561 196 B of the 3 562 072 B (the favicon excepted) rather than 0 B as on the web, because the custom protocol does not
 participate in the HTTP cache. It still completes in 71 ms.
 
 `manifold.wasm` is local too: 541 470 B, fetched in 8.0 to 11.4 ms across the
@@ -791,10 +797,10 @@ Each hypothesis, and the single number that settles it.
 |---|---|---|
 | WASM shipped uncompressed | **Ruled out** | `manifold.wasm` arrives `Content-Encoding: gzip`, 207 042 B on the wire against 541 470 B decoded (2.62:1) |
 | No long cache lifetime on hashed assets | **Confirmed** | Every response, content-hashed chunks included, carries `Cache-Control: max-age=600`, the same lifetime as the index HTML |
-| Large eager chunks | **Confirmed** | 933 826 B of JS transfer and 3 356 322 B decoded across 19 files before the user touches anything; five chunks account for 581 805 B transfer and 2 196 201 B decoded |
+| Large eager chunks | **Confirmed** | 947 671 B of JS transfer and 3 356 322 B decoded across 19 files before the user touches anything; five chunks account for 581 805 B transfer and 2 196 201 B decoded |
 | No code splitting around the worker | **Ruled out for the heavy part, confirmed for the shell** | The engine worker entry (36 820 B decoded) and two shared chunks load at page load, but `manifold.wasm` (541 470 B) and the glyph tables (80 417 B) load only on first bake |
 | Overpass live per user | **Confirmed** | Every preset click issues a live 842 B POST; 3 of 8 attempts got 504 from overpass-api.de after ~10 s, and 2 of 5 deployed flows never produced a preview within 180 s |
-| Cold-start work the desktop build skips | **Confirmed, and quantified** | Desktop skips all 1 286 751 B of network transfer plus the 207 042 B WASM fetch; it still pays 8 live tile fetches and the same live Overpass query |
+| Cold-start work the desktop build skips | **Confirmed, and quantified** | Desktop skips all 1 300 596 B of network transfer plus the 207 042 B WASM fetch; it still pays 8 live tile fetches and the same live Overpass query |
 
 Five notes that qualify those verdicts.
 
@@ -821,7 +827,7 @@ Like the cache lifetime, this is decided by the host, not the build.
 **The desktop's saving is network time, not parse time.** Its in-page
 `loadEventEnd` is 236 ms against the deployed 108 ms, because it parses
 3 554 872 B uncompressed from the embedded bundle instead of 3 863 150 B
-decoded from gzip. What it removes is the 1.29 MB of transfer and, on a real
+decoded from gzip. What it removes is the 1.30 MB of transfer and, on a real
 network rather than this host's, the round trips that go with it. Its warm
 navigation re-reads the whole bundle (3 561 196 B) because the Tauri protocol
 has no HTTP cache, and still finishes in 71 ms.
@@ -843,7 +849,7 @@ state.
 
 | Item | Reason |
 |---|---|
-| WASM instantiate time | The app sets no `performance.mark`, and `WebAssembly.instantiate` is not covered by any Performance API entry type. Only the fetch (7.4 to 55.0 ms) is observable. |
+| WASM instantiate time on the deployed build | The deployed `7eda2d7` sets no `performance.mark`, and `WebAssembly.instantiate` is not covered by any Performance API entry type, so only the fetch (7.4 to 55.0 ms) is observable there. On this commit's local build perf mode measures it (section a and c, `wasm.instantiate` 9.3 to 12.4 ms median, noting the audit's finding that the span also covers the module load). |
 | `largest-contentful-paint` on the deployed site | No LCP entry was produced in any run. The first large paint is the MapLibre canvas, which LCP does not attribute. |
 | Cross-origin tile bytes from Resource Timing | `tile.openstreetmap.org` sends no `Timing-Allow-Origin`, so Resource Timing reports 0. Tile bytes above come from CDP network events instead. |
 | Two of five deployed Chicago flows | Every Overpass mirror failed (504, then two 60 s timeouts), so no preview appeared inside 180 s. Recorded in 1.7 rather than retried until it passed. |

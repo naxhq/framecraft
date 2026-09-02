@@ -1,9 +1,9 @@
 /**
  * Recent designs: a small localStorage list of share payloads, so a design
- * copied or baked earlier this session (or a previous one) is one click away
+ * copied or exported earlier this session (or a previous one) is one click away
  * instead of a link dug out of chat history ([V3-P6]).
  *
- * Every successful bake and every Copy-link records an entry here. The
+ * Every successful export and every Copy-link records an entry here. The
  * payload is the same `v3.<base64url>.<checksum>` string `lib/share.ts`
  * already produces -- restoring a recent design is `decodeShare` on it,
  * exactly like opening a shared link, so the two paths can never disagree

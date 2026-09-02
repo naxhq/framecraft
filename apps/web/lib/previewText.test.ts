@@ -9,8 +9,8 @@
  * The load-bearing claim is the last suite: over every case in the committed
  * fixture, every vertex the preview draws lands on the 6 mm frame lip, inside
  * the usable length of its own edge, and nothing at all is drawn for a piece
- * the bake refuses. A preview that shows text the bake will not cut, or shows
- * it hanging off the frame, is exactly the preview/bake divergence 01 calls the
+ * the build refuses. A preview that shows text the build will not cut, or shows
+ * it hanging off the frame, is exactly the preview/build divergence 01 calls the
  * worst failure mode.
  */
 
@@ -229,7 +229,7 @@ describe("placeArea", () => {
   const unit: PreviewArea = { outer: [1, 0, 1, 2, 0, 2], holes: [] };
 
   it("is `lettering.place`: mirror, then rotate, then translate", () => {
-    // The bake's affine matrix is [cos*sx, -sin, sin*sx, cos, ax, ay]; the
+    // The build's affine matrix is [cos*sx, -sin, sin*sx, cos, ax, ay]; the
     // mirror is applied in the LOCAL frame, which is what makes the underside
     // mark read once the plate is turned over.
     const placement: T.Placement = {
@@ -267,7 +267,7 @@ describe("placeArea", () => {
 // ==========================================================================
 
 describe("ornaments", () => {
-  it("draws the north arrow as the bake's four-point head", () => {
+  it("draws the north arrow as the build's four-point head", () => {
     const arrow = northArrowArea(4);
     expect(ringPoints(arrow.outer)).toHaveLength(4);
     const box = bounds([arrow]);
@@ -280,7 +280,7 @@ describe("ornaments", () => {
   /**
    * Signed distance to the keyhole's TRUE region: the union of the 8 mm entry
    * disc, the slot box and the slot's 4 mm round end -- which is exactly what
-   * `lettering.keyhole_polygon` unions on the bake side.
+   * `lettering.keyhole_polygon` unions on the build side.
    *
    * The minimum of the three signed distances is the union's own signed
    * distance outside the shape and a (correctly signed) under-estimate inside
@@ -301,7 +301,7 @@ describe("ornaments", () => {
     return Math.min(disc, cap, box);
   }
 
-  it("draws the keyhole outline ON the union the bake cuts", () => {
+  it("draws the keyhole outline ON the union the build cuts", () => {
     // The bounding-box assertions below are set by the circle's cardinal points
     // and the cap, and NONE of them moves when the arc is terminated at the
     // wrong angle -- which is how a 0.93 mm funnel-shaped shoulder shipped
@@ -357,7 +357,7 @@ describe("ornaments", () => {
   });
 
   it("draws the keyhole as one closed outline, not a union", () => {
-    // The bake unions a circle, a box and a circle; the browser never runs a
+    // The build unions a circle, a box and a circle; the browser never runs a
     // boolean, so the same shape is walked analytically. The claim is that the
     // result covers exactly the union's extents.
     const params = defaultPrintParams();
@@ -365,7 +365,7 @@ describe("ornaments", () => {
     const hole = keyholeArea(params);
     expect(hole.holes).toEqual([]);
     const box = bounds([hole]);
-    // The arcs are a 64-gon, like the bake's `buffer(quad_segs=16)`, so an
+    // The arcs are a 64-gon, like the build's `buffer(quad_segs=16)`, so an
     // extent lands within one chord's sagitta of the true circle -- 4 mm x
     // (1 - cos(pi/64)) = 0.005 mm. Asserting equality would be asserting that
     // the sample grid happens to hit the cardinal angles.
@@ -450,7 +450,7 @@ describe("buildPreviewText", () => {
   });
 
   it("draws nothing for a refused engraving, and says why", () => {
-    // A serif line long enough to be squeezed under the 1.5 mm floor: the bake
+    // A serif line long enough to be squeezed under the 1.5 mm floor: the build
     // will not cut it, so the preview must not show it.
     const params = withText({
       plate_mm: 100,
@@ -506,7 +506,7 @@ describe("buildPreviewText", () => {
     ).toBeGreaterThan(0);
 
     const model = buildPreviewText(withText({ frame: false, ...lettering }), CTX);
-    // Nothing on the lip, because there is no lip: the bake's cutter would sit
+    // Nothing on the lip, because there is no lip: the build's cutter would sit
     // 2 mm above an empty plate and cut air, which is what its own "turn the
     // frame on to print them" warning is about.
     expect(model.pieces.filter((piece) => piece.face === "top")).toEqual([]);

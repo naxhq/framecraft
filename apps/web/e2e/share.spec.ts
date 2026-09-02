@@ -86,7 +86,7 @@ test("a copied link restores the whole editor in a fresh browser", async ({
   expect(heroId).toMatch(/^\w+/);
   // The resolved name really is a name, not the bare id showing through
   // because nothing resolved -- otherwise the "after restore, before
-  // Generate" check below (which asserts the id) would pass vacuously.
+  // Preview" check below (which asserts the id) would pass vacuously.
   expect(heroLabel).not.toContain(heroId);
 
   // ---- 2. copy the link -------------------------------------------------
@@ -115,7 +115,7 @@ test("a copied link restores the whole editor in a fresh browser", async ({
     await expect(other.getByTestId("plate_mm-value")).toHaveText("200 mm");
     await expect(other.getByTestId("radius_m-value")).toHaveText("900 m");
     await expect(other.getByTestId("group-buildings-toggle")).toContainText("1/12 heroes");
-    // Before Generate there is no scene to resolve a NAME from at all (step 4
+    // Before Preview there is no scene to resolve a NAME from at all (step 4
     // below asserts that restoring a link never fetches on its own), so the
     // honest, stable thing the row can show is the id the link carries --
     // never the misleading "unnamed building" a bare lookup-miss would claim.
@@ -134,9 +134,9 @@ test("a copied link restores the whole editor in a fresh browser", async ({
     await other.getByTestId("group-colour-toggle").click();
     await expect(other.getByTestId("part_color_water-hex")).toHaveText("#123456");
 
-    // ---- 4. it stops there: stale, ready to Generate, no fetch ----------
+    // ---- 4. it stops there: stale, ready to Preview, no fetch ------------
     await expect(other.getByTestId("preview-empty")).toBeVisible();
-    await expect(other.getByTestId("generate-button")).toBeEnabled();
+    await expect(other.getByTestId("preview-button")).toBeEnabled();
     await expect(other.getByTestId("share-notice")).toHaveCount(0);
     await other.waitForTimeout(1_000);
     expect(
@@ -144,18 +144,18 @@ test("a copied link restores the whole editor in a fresh browser", async ({
       "opening a shared link fetched a scene by itself",
     ).toBe(0);
 
-    // ---- 5. Generate, and the lettering is really on the model ----------
-    await other.getByTestId("generate-button").click();
+    // ---- 5. Preview, and the lettering is really on the model -----------
+    await other.getByTestId("preview-button").click();
     await expect(other.getByTestId("preview-stats")).toBeVisible({
       timeout: WARMUP_BUDGET_MS,
     });
     expect(ingestFetches(otherCalls)).toBe(1);
 
     // Now that a scene exists, the SAME hero re-resolves to the SAME name
-    // Generate showed in the original context -- the restored id round-tripped
+    // Preview showed in the original context -- the restored id round-tripped
     // to a real building, not an id nothing in the re-ingested scene answers to.
     const restoredHeroLabel = (await other.getByTestId("hero-item").first().textContent()) ?? "";
-    log(`hero label after restore + Generate: ${restoredHeroLabel.trim()}`);
+    log(`hero label after restore + Preview: ${restoredHeroLabel.trim()}`);
     expect(restoredHeroLabel).not.toContain("unnamed building");
     expect(restoredHeroLabel.trim()).toBe(heroLabel.trim());
 

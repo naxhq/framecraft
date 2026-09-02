@@ -55,7 +55,7 @@ function log(message: string): void {
   console.log(`[terrain] ${message}`);
 }
 
-test("enabling terrain fetches a mocked elevation tile and the model stays baked", async ({
+test("enabling terrain fetches a mocked elevation tile and the model stays built", async ({
   page,
 }) => {
   const overpassCalls = watchOverpass(page);
@@ -64,7 +64,7 @@ test("enabling terrain fetches a mocked elevation tile and the model stays baked
   // `watchOverpass` records every Overpass request the LISTENER sees, mocked
   // or not (`page.on("request")` fires before routing decides anything), so
   // `generateTinyLoop`'s own ingest call is already in here -- the baseline
-  // is taken AFTER Generate, and the real assertion is that turning terrain
+  // is taken AFTER Preview, and the real assertion is that turning terrain
   // on adds none on top of it.
   const beforeTerrain = ingestPosts(overpassCalls).length;
 
@@ -87,7 +87,7 @@ test("enabling terrain fetches a mocked elevation tile and the model stays baked
   // synthetic tile; the group must settle on something other than "error".
   await expect(page.getByTestId("terrain-error")).toHaveCount(0, { timeout: WARMUP_BUDGET_MS });
 
-  // The engine keeps baking with terrain on: the stats card is still there
+  // The engine keeps building with terrain on: the stats card is still there
   // and still reports a positive bounding box, i.e. a real model, not an
   // empty/failed one.
   await expect(page.getByTestId("stats-card")).toBeVisible({ timeout: WARMUP_BUDGET_MS });

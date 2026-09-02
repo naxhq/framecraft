@@ -4,7 +4,7 @@
  *
  * This module is one half of a MIRRORED PAIR: `services/bake/app/geom/tokens.py`
  * is the same table with the same snake_case names, so the string the editor
- * previews on the frame is byte for byte the string the bake cuts into it. The
+ * previews on the frame is byte for byte the string the build cuts into it. The
  * pair is pinned by `fixtures/tokens-expected.json`, which both test suites
  * assert against (DECISIONS [V2-P2], the same arrangement transform.ts already
  * uses per [P4] - hence snake_case here rather than idiomatic camelCase, so the
@@ -70,7 +70,7 @@ const TOKEN_RE = /\{([A-Za-z_][A-Za-z_0-9]*)\}/g;
  * Everything the token table can talk about.
  *
  * `date` is supplied by the CALLER as an ISO `YYYY-MM-DD` string and never read
- * from the clock here, so a bake and its preview agree and a test is not a
+ * from the clock here, so a build and its preview agree and a test is not a
  * function of the day it runs on.
  */
 export interface TokenContext {
@@ -289,7 +289,7 @@ export interface ResolvedText {
  * TS-only: this is how the editor decides an engraving line or the underside
  * template is EFFECTIVELY empty and names the exact token responsible ("the
  * {city} token has no value"), for the Issues badge and the Resolved output
- * panel (`lib/resolvedOutput.ts`). The bake never needs this - by the time a
+ * panel (`lib/resolvedOutput.ts`). The build never needs this - by the time a
  * string reaches `POST /bake` it is already fully resolved client-side
  * (DECISIONS [V3-P1]) - so it has no Python mirror and is not part of the
  * `tokens-expected.json` parity fixture.

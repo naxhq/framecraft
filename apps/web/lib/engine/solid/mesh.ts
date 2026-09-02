@@ -64,7 +64,7 @@ export const WELD_EPSILON_MM = 1e-6;
  * "starts at six decimals"), and for the same reason: a boolean between two
  * arc-approximated outlines can leave a triangle whose three vertices are tens
  * of nanometres apart, which is real geometry to a 1 nm weld and nothing at all
- * to a printer. Measured on the phase 5 chamfer + rounded-corner bake: one
+ * to a printer. Measured on the phase 5 chamfer + rounded-corner build: one
  * triangle of 1.3e-10 mm^2 whose longest edge is 3.8e-5 mm, at the frame's
  * rounded inner corner, which 1e-6 cannot touch and 1e-4 removes exactly
  * (`[V3-P5-F1]`).
@@ -99,7 +99,7 @@ export const REPAIR_ROUNDS = 4;
  * pinch is all three of the first and still two objects where there was one).
  *
  * OPT IN, and off by default (`cleanMesh`'s `collapseNeedles` option). The
- * ladder above clears every degenerate face an untiled bake produces on its
+ * ladder above clears every degenerate face an untiled build produces on its
  * own, at a coarser rung than this repair would let it reach, and a mesh that
  * is already clean must not be touched by a repair it does not need: with this
  * on for everything, the Chicago plate's merged mesh stopped one rung early on

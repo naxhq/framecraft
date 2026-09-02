@@ -56,7 +56,7 @@ describe("matrixDeps", () => {
     // A hero is now DRAWN at its hero height (`transform.building_top_mm_for`),
     // which is a geometry change and has to rewrite the buffer. Until it did,
     // a picked hero was coloured but not raised, and that was the one place the
-    // preview knowingly disagreed with the bake (`docs/handoff/v2-04-ui.md`
+    // preview knowingly disagreed with the build (`docs/handoff/v2-04-ui.md`
     // §11). The default `hero_mode` is `true_height`, so this pick moves it.
     expect(reruns("hero_building_ids", ["w1"])).toBe(true);
     // `hero_mode` alone moves nothing while no hero is picked...

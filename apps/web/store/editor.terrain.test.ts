@@ -150,7 +150,7 @@ describe("terrain fetch: fails soft", () => {
     expect(state.terrain.error).toContain("network down");
   });
 
-  it("never marks the scene stale or touches bake state: this is not an ingest failure", async () => {
+  it("never marks the scene stale or touches export state: this is not an ingest failure", async () => {
     fetchTerrainGridMock.mockResolvedValue(null);
     useEditorStore.setState((s) => ({ scene: { ...s.scene, stale: false } }));
     useEditorStore.getState().setNested("terrain", { enabled: true });
@@ -175,7 +175,7 @@ describe("terrain fetch: turning it back off", () => {
 });
 
 describe("terrain fetch: cancellation", () => {
-  it("cancelEngineJob drops a pending terrain fetch, not only a pending bake", async () => {
+  it("cancelEngineJob drops a pending terrain fetch, not only a pending build", async () => {
     fetchTerrainGridMock.mockResolvedValue(grid(1));
     const store = useEditorStore.getState();
     store.setNested("terrain", { enabled: true });

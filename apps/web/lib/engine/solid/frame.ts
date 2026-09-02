@@ -18,7 +18,7 @@
  *    only construction that works for a rounded corner as well as a square one
  *    (a tapered extrusion scales about the origin, which moves the INNER edge
  *    of a ring as much as the outer one). `plain` takes the pre-phase-5 path
- *    unchanged - one extrusion of one ring - so a default bake is byte for byte
+ *    unchanged - one extrusion of one ring - so a default build is byte for byte
  *    what it was.
  * 2. **Corners.** `square` is the sharp rectangle it always was.  `mitred` and
  *    `rounded` come from the JOIN TYPE of an offset by `corner_radius_mm`:
@@ -41,7 +41,7 @@
 import * as T from "../../transform";
 import type { PreviewArea } from "../../preview";
 import { northArrowArea, placeArea, scaleBarAreas } from "../../previewText";
-import type { BakeContext } from "./context";
+import type { BuildContext } from "./context";
 import {
   CIRCLE_SEGMENTS,
   CUTTER_OVERSHOOT_MM,
@@ -161,7 +161,7 @@ export interface FrameStyle {
  *   user has not asked for one of their own (`[V3-P5-F2]`);
  * * with `frame` off there is no lip, so there is no styling either.
  */
-export function frameStyle(params: BakeContext["params"]): FrameStyle {
+export function frameStyle(params: BuildContext["params"]): FrameStyle {
   const style = params.frame_style;
   const profile = (style?.profile ?? "plain") as FrameProfile;
   const gap =
@@ -198,8 +198,8 @@ export function frameStyle(params: BakeContext["params"]): FrameStyle {
   };
 }
 
-/** True when this bake emits the frame as a body of its own. */
-export function frameIsSeparate(ctx: BakeContext): boolean {
+/** True when this build emits the frame as a body of its own. */
+export function frameIsSeparate(ctx: BuildContext): boolean {
   return Boolean(ctx.params.frame) && frameStyle(ctx.params).separate !== null;
 }
 
@@ -208,15 +208,15 @@ export function frameIsSeparate(ctx: BakeContext): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * A square of half-extent `halfMm` with this bake's corner style, print mm.
+ * A square of half-extent `halfMm` with this build's corner style, print mm.
  *
  * `square` is a plain rectangle - the same four points the pre-phase-5 frame
- * was built from, so a default bake's ring is bit for bit the ring it was.
+ * was built from, so a default build's ring is bit for bit the ring it was.
  * The other two are an offset of the inset rectangle: Clipper2's `Square` join
  * cuts the corner at 45 degrees (a mitre), `Round` radiuses it.
  */
 export function cornerSquareSection(
-  ctx: BakeContext,
+  ctx: BuildContext,
   halfMm: number,
   radiusMm: number,
   corner: FrameCorner,
@@ -253,7 +253,7 @@ export function cornerSquareSection(
  * the inside, which is what keeps a rounded corner concentric all the way up.
  */
 export function frameRingAt(
-  ctx: BakeContext,
+  ctx: BuildContext,
   outerDeltaMm: number,
   innerDeltaMm: number,
 ): CrossSection | null {
@@ -293,7 +293,7 @@ export function frameRingAt(
 }
 
 /** The lip's footprint at the base top: the outer square minus the inner one. */
-export function frameRingSection(ctx: BakeContext): CrossSection | null {
+export function frameRingSection(ctx: BuildContext): CrossSection | null {
   const frame = T.frame_geometry_mm(ctx.params);
   if (!frame.enabled) return null;
   if (!(frame.outer_half_mm > frame.inner_half_mm)) return null;
@@ -321,7 +321,7 @@ export interface ProfileSlab {
  * chamfer 30 per cent down the lip must not move when the plate gets thicker.
  */
 export function profileSlabs(
-  ctx: BakeContext,
+  ctx: BuildContext,
   bottomMm: number,
   baseTopMm: number,
   topMm: number,
@@ -419,7 +419,7 @@ export function profileSlabs(
 }
 
 /** Z the frame solid starts at: inside the plate, or clear of it when separate. */
-export function frameBottomMm(ctx: BakeContext): number {
+export function frameBottomMm(ctx: BuildContext): number {
   const frame = T.frame_geometry_mm(ctx.params);
   const style = frameStyle(ctx.params);
   if (style.separate !== null) {
@@ -437,7 +437,7 @@ export function frameBottomMm(ctx: BakeContext): number {
 }
 
 /** The lip solid, or null when the frame is off. */
-export function buildFrameLip(ctx: BakeContext): Manifold | null {
+export function buildFrameLip(ctx: BuildContext): Manifold | null {
   const frame = T.frame_geometry_mm(ctx.params);
   if (!frame.enabled) return null;
   const style = frameStyle(ctx.params);
@@ -470,7 +470,7 @@ export function buildFrameLip(ctx: BakeContext): Manifold | null {
  * this, so a chamfered or stepped profile carries its ink on the material that
  * is actually there rather than over the void the profile cut away.
  */
-export function frameTopFaceSection(ctx: BakeContext): CrossSection | null {
+export function frameTopFaceSection(ctx: BuildContext): CrossSection | null {
   const frame = T.frame_geometry_mm(ctx.params);
   if (!frame.enabled) return null;
   const slabs = profileSlabs(ctx, frameBottomMm(ctx), frame.bottom_mm, frame.top_mm);
@@ -480,7 +480,7 @@ export function frameTopFaceSection(ctx: BakeContext): CrossSection | null {
 }
 
 /** Width of the flat top face, mm: what a line of text has to fit inside. */
-export function topFaceWidthMm(ctx: BakeContext): number {
+export function topFaceWidthMm(ctx: BuildContext): number {
   const frame = T.frame_geometry_mm(ctx.params);
   const slabs = profileSlabs(ctx, frameBottomMm(ctx), frame.bottom_mm, frame.top_mm);
   const top = slabs[slabs.length - 1];
@@ -497,7 +497,7 @@ export function topFaceWidthMm(ctx: BakeContext): number {
  * eats into the band is REPORTED - see {@link reportNarrowTextBand} - and the
  * clip is what stops the ink hanging over the chamfer.
  */
-export function lipKeepSection(ctx: BakeContext): CrossSection | null {
+export function lipKeepSection(ctx: BuildContext): CrossSection | null {
   const face = frameTopFaceSection(ctx);
   if (face === null) return null;
   const margin = T.lip_text_margin_mm(ctx.params);
@@ -511,7 +511,7 @@ export function lipKeepSection(ctx: BakeContext): CrossSection | null {
 }
 
 /** Z of the lip's top face, mm. Everything on the frame is measured from it. */
-export function lipTopMm(ctx: BakeContext): number {
+export function lipTopMm(ctx: BuildContext): number {
   return T.frame_geometry_mm(ctx.params).top_mm;
 }
 
@@ -524,7 +524,7 @@ export function lipTopMm(ctx: BakeContext): number {
  * model is still sound - but a clipped letter is exactly the kind of thing a
  * user must be told about rather than discover on the plate.
  */
-export function reportNarrowTextBand(ctx: BakeContext, hasEdgeText: boolean): void {
+export function reportNarrowTextBand(ctx: BuildContext, hasEdgeText: boolean): void {
   if (!hasEdgeText) return;
   const face = topFaceWidthMm(ctx);
   if (face >= T.FRAME_WIDTH_MM - 1e-9) return;
@@ -551,9 +551,9 @@ export function reportNarrowTextBand(ctx: BakeContext, hasEdgeText: boolean): vo
 // Shadow gap, matting
 // ---------------------------------------------------------------------------
 
-/** A band between two half-extents, with this bake's corner style. */
+/** A band between two half-extents, with this build's corner style. */
 function bandSection(
-  ctx: BakeContext,
+  ctx: BuildContext,
   outerHalfMm: number,
   innerHalfMm: number,
 ): CrossSection | null {
@@ -575,7 +575,7 @@ function bandSection(
 }
 
 /** Half-extent of the inner edge of the shadow-gap channel, mm. */
-export function shadowGapInnerHalfMm(ctx: BakeContext): number {
+export function shadowGapInnerHalfMm(ctx: BuildContext): number {
   const frame = T.frame_geometry_mm(ctx.params);
   const gap = frameStyle(ctx.params).shadowGap;
   return gap === null ? frame.inner_half_mm : frame.inner_half_mm - gap.widthMm;
@@ -589,7 +589,7 @@ export function shadowGapInnerHalfMm(ctx: BakeContext): number {
  * region's placement is clamped by): a channel deeper than half the plate
  * leaves less than a floor under it, and a channel through the plate is a slot.
  */
-export function buildShadowGap(ctx: BakeContext): Manifold | null {
+export function buildShadowGap(ctx: BuildContext): Manifold | null {
   const style = frameStyle(ctx.params);
   const gap = style.shadowGap;
   if (gap === null || !ctx.params.frame) return null;
@@ -631,7 +631,7 @@ export function buildShadowGap(ctx: BakeContext): Manifold | null {
  * the city, and reaches `PART_OVERLAP_MM` into the plate below it so the two
  * bodies interpenetrate at the seam like every other pair.
  */
-export function buildMatting(ctx: BakeContext): Manifold | null {
+export function buildMatting(ctx: BuildContext): Manifold | null {
   const style = frameStyle(ctx.params);
   const matting = style.matting;
   if (matting === null || !ctx.params.frame) return null;
@@ -677,7 +677,7 @@ export interface FrameMating {
 }
 
 /** Centres of the magnet pockets that register a separate frame, plate mm. */
-export function frameMagnetCentresMm(ctx: BakeContext): Array<[number, number]> {
+export function frameMagnetCentresMm(ctx: BuildContext): Array<[number, number]> {
   const frame = T.frame_geometry_mm(ctx.params);
   const mid = (frame.outer_half_mm + frame.inner_half_mm) / 2;
   const perSide = Math.max(1, Math.round(ctx.params.hanger_magnet?.count ?? 2));
@@ -703,7 +703,7 @@ export function frameMagnetCentresMm(ctx: BakeContext): Array<[number, number]> 
  * is the only way a 2 mm magnet fits between a 2 mm lip and a 3 mm plate with
  * a millimetre of roof left in each.
  */
-export function buildFrameMating(ctx: BakeContext): FrameMating {
+export function buildFrameMating(ctx: BuildContext): FrameMating {
   const out: FrameMating = { baseAdd: [], baseCut: [], frameCut: [] };
   const style = frameStyle(ctx.params);
   const separate = style.separate;
@@ -833,7 +833,7 @@ export function buildFrameMating(ctx: BakeContext): FrameMating {
  * ink is (`[V3-P5-F5]`).
  */
 export function letteringKeepOut(
-  ctx: BakeContext,
+  ctx: BuildContext,
   layout: T.LetteringLayout,
   marginMm: number,
 ): Contour[] {
@@ -966,7 +966,7 @@ function grooveContour(
  * which is what took the WASM heap out of bounds.
  */
 export function buildFrameTexture(
-  ctx: BakeContext,
+  ctx: BuildContext,
   layout: T.LetteringLayout,
 ): Manifold | null {
   const style = frameStyle(ctx.params);
@@ -1111,7 +1111,7 @@ export function buildFrameTexture(
  * intersected with the face, so a rail's grooves are clipped once.
  */
 function brushMitres(
-  ctx: BakeContext,
+  ctx: BuildContext,
   outerMm: number,
 ): { horizontal: CrossSection | null; vertical: CrossSection | null } {
   const o = outerMm;
@@ -1158,7 +1158,7 @@ function brushMitres(
  * grew after the engine did. Kept as the one place a "you asked for X and did
  * not get it" sentence is worded.
  */
-export function reportUnbuiltFrameStyle(ctx: BakeContext): void {
+export function reportUnbuiltFrameStyle(ctx: BuildContext): void {
   const style = ctx.params.frame_style;
   if (style === undefined) return;
   if (!ctx.params.frame) {

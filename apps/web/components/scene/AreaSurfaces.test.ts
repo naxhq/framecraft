@@ -6,7 +6,7 @@
  * hole vertices off the shortened outline, so the vertex array the face
  * indices refer to has to be concatenated AFTER the call. Building it before
  * shifts every hole index by one per preceding contour, which fills the island
- * in and inflates the surface -- exactly the preview/bake divergence 01 calls
+ * in and inflates the surface -- exactly the preview/build divergence 01 calls
  * the worst failure mode. `fixtures/chicago-scene.json` already ships water and
  * green polygons with holes, so this is reachable on real data.
  */

@@ -11,7 +11,7 @@ fully static site. Architecture: `docs/ARCHITECTURE.md`.
 - **Web app** (`apps/web`, :3000): standalone. It never calls `services/bake`.
   Deployed as GitHub Pages (<https://naxhq.github.io/framecraft/>), a
   self-hosted static tree, or the Tauri desktop app.
-- **Bake service** (`services/bake`, :8000): optional. It is the Python
+- **Reference service** (`services/bake`, :8000): optional. It is the Python
   reference implementation and the CLI printability validator
   (`python -m app.cli validate`, wrapped by `make validate`). You only need it
   to run the validator, the pytest suite, or its API (`/health`, `/presets`,
@@ -50,36 +50,36 @@ serve the static export (`next build`, then
 | `make help` | list targets (default) |
 | `make install` | `uv sync` (services/bake), `npm ci` (apps/web), `npx playwright install chromium` |
 | `make contracts` | regenerate `contracts.py` and `contracts.ts` from `packages/contracts/schema/*.json`; never hand-edit the outputs |
-| `make up` / `make down` | start / stop bake (:8000) and web (:3000); docker compose if present, else native; `down` verifies the ports actually freed |
+| `make up` / `make down` | start / stop the reference service (:8000) and web (:3000); docker compose if present, else native; `down` verifies the ports actually freed |
 | `make dev` | both services natively, foreground |
 | `make test` | `pytest -q` (services/bake) then `vitest run` (apps/web) |
 | `make gate` | the full quality gate, section 4 |
-| `make gate-v2` | the v2 geometry gates on the reference pipeline: G8 v1-golden, parts bakes at plate 180 and 256, TEXT=all, parts+text, each validated as `.3mf` and `.stl` |
-| `make bake-fixture` | bake the Chicago preset through the **reference Python CLI** to `artifacts/chicago.3mf`; `COLOR=parts`, `TEXT=all`, `PLATE=100..256` compose into distinct stems |
+| `make gate-v2` | the v2 geometry gates on the reference pipeline: G8 v1-golden, parts builds at plate 180 and 256, TEXT=all, parts+text, each validated as `.3mf` and `.stl` |
+| `make export-fixture` | build and export the Chicago preset through the **reference Python CLI** to `artifacts/chicago.3mf`; `COLOR=parts`, `TEXT=all`, `PLATE=100..256` compose into distinct stems. `make bake-fixture` is a deprecation alias that prints the new name and runs it |
 | `make validate FILE=x` (or `make validate x`) | the printability validator on a `.3mf`/`.stl`: the 04 rows, the parts/lettering rows, the container rows, plus the sidecar-driven `max_height_mm` and `attribution` rows; exit 1 on any FAIL |
 | `make refresh-fixtures` | re-fetch the six preset Overpass responses (network) |
-| `make clean` | remove `.next`, baked artifacts, `.run`, logs |
+| `make clean` | remove `.next`, exported artifacts, `.run`, logs |
 
 ### The browser engine from the command line
 
-`npm run bake:cli` (in `apps/web`, via vite-node) runs the TypeScript engine
+`npm run export:cli` (in `apps/web`, via vite-node) runs the TypeScript engine
 on a scene and params JSON and writes the export plus a sidecar `make
 validate` can judge:
 
 ```sh
 cd apps/web
-npm run bake:cli -- --scene ../../fixtures/chicago-scene.json \
+npm run export:cli -- --scene ../../fixtures/chicago-scene.json \
   --params ../../fixtures/print-params-default.json \
   --target generic-3mf --out ../../artifacts/chicago-web.3mf
 ```
 
-Flags (`apps/web/scripts/bake-cli.ts`): `--scene <scene.json>` or
+Flags (`apps/web/scripts/export-cli.ts`): `--scene <scene.json>` or
 `--overpass <overpass.json>` (ingest a raw Overpass response through
 `lib/engine/osm`, the app's own path, which carries rail and bridge tags a
 Python-produced SceneGraph does not); `--params`; `--target` (any
 `export_target`: `bambu-3mf`, `generic-3mf`, `stl`, `stl-parts-zip`, `obj`,
 `step`, `color-change-3mf`); `--terrain <grid.json|demo|demo:<relief_m>>`
-(a synthetic ramp, so a draped bake validates reproducibly offline);
+(a synthetic ramp, so a draped build validates reproducibly offline);
 `--radius <m>` and `--rotation <deg>` for `--overpass`;
 `--tiling COLSxROWS[:joint[:tolerance_mm]]` (joint `dovetail` or `pin`;
 also writes every tile as its own file with its own sidecar, since the tiled
@@ -96,8 +96,8 @@ Steps as the Makefile labels them, every one checked:
 2. pytest (`services/bake`), failing on any skip/xfail as well as any failure
 3. eslint (`--max-warnings 0`), `tsc --noEmit`, vitest (no skipped/todo),
    `rm -rf apps/web/.next`, `next build`
-4. browser engine: `scripts/gate-web-engine.sh` bakes the Chicago fixture via
-   `npm run bake:cli` in both modes (`fixtures/print-params-default.json`
+4. browser engine: `scripts/gate-web-engine.sh` builds the Chicago fixture via
+   `npm run export:cli` in both modes (`fixtures/print-params-default.json`
    single, `fixtures/print-params-parts.json` parts) and both files must read
    ALL CHECKS PASS from `make validate`
 5. Playwright chromium presence check
@@ -152,8 +152,8 @@ path into `apps/web/out`, which `frontendDist` points at.
 ## 7. CI and release workflows
 
 - `.github/workflows/ci.yml` (push to main, every PR): three jobs mirroring
-  the gate. `bake-service` (pytest, zero-skip check), `web` (no-skip guard,
-  lint, typecheck, vitest, `next build`, both `bake:cli` bakes judged by the
+  the gate. `reference-service` (pytest, zero-skip check), `web` (no-skip guard,
+  lint, typecheck, vitest, `next build`, both `export:cli` runs judged by the
   Python validator), `e2e` (Playwright with `E2E_BUDGET_FACTOR=3`, every spec
   Overpass-mocked from committed fixtures, results.json checked, artifacts
   uploaded on failure).
@@ -185,7 +185,7 @@ path into `apps/web/out`, which `frontendDist` points at.
   the command line, or the probe counts itself.
 - **Leftover node/chromium processes slow everything.** Orphaned processes
   from earlier runs load the box (seven stray `node.exe` at 82 % CPU were
-  measured stretching engine bakes from 3 s to 5+ s); clear them before
+  measured stretching engine builds from 3 s to 5+ s); clear them before
   timing-sensitive gates, or budgets start flaking.
 - **Slow or software-GL machines.** Every WebGL/WASM-heavy e2e wait scales
   with `E2E_BUDGET_FACTOR` (default 1; CI uses 3). Raise it rather than
@@ -214,7 +214,7 @@ path into `apps/web/out`, which `frontendDist` points at.
   50k triangles.
 - Desktop installers are unsigned: SmartScreen/Gatekeeper warn on first
   launch.
-- A separate frame, cleat or easel bake is deliberately a second body, and
+- A separate frame, cleat or easel build is deliberately a second body, and
   the reference validator's `bodies` row reads 2 vs 1 for it (the engine's
   own gate excuses exactly the expected loose parts; an `expected_bodies`
   sidecar field is designed but not built).

@@ -20,7 +20,7 @@ import { COLOURABLE_REGION_NAMES } from "./engine/types";
 
 const DEFAULT_SLOTS = DEFAULT_PRINT_PARAMS.colour!.region_slots!;
 
-/** Every non-easel region gets a row at slot 1, its palette colour -- exactly what colourRows falls back to before a bake. */
+/** Every non-easel region gets a row at slot 1, its palette colour -- exactly what colourRows falls back to before a build. */
 function rowsFor(paletteId: string): ColourRow[] {
   const palette = BUILTIN_PALETTES.find((p) => p.id === paletteId)!;
   return COLOURABLE_REGION_NAMES.filter((r) => r !== "easel").map((region) => ({

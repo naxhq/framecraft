@@ -1,6 +1,6 @@
 "use client";
 
-import { BAKE_STALE_NOTE } from "@/lib/bake";
+import { EXPORT_STALE_NOTE } from "@/lib/exportFlow";
 import type { EngineSceneGraph } from "@/lib/engine/osm/types";
 import { useEditorStore } from "@/store/editor";
 import { Note } from "./Controls";
@@ -15,9 +15,9 @@ const INFILL_FACTOR = 0.35;
  * and the measured minimum wall.
  *
  * Since FrameCraft v3 E4 every number here comes straight from the live
- * `EngineResult` (`state.engine.result`), not from a finished Bake: the debounced
+ * `EngineResult` (`state.engine.result`), not from a finished Export: the debounced
  * engine job updates this card the moment it lands, whether or not the user has
- * clicked Bake yet -- "one truth: engine result when fresh" (E4 brief, item 3).
+ * clicked Export yet -- "one truth: engine result when fresh" (E4 brief, item 3).
  * Volume and grams are summed/derived here (no `estimate.ts` module exists yet;
  * that is phase 4 work, out of this task's scope) using the same formula the
  * footer text has always documented. Manifold is the absence of a `not-manifold`
@@ -97,7 +97,7 @@ export function StatsCard() {
       {engine.stale ? (
         <div className="mb-2">
           <Note tone="warn" testId="stats-stale-note">
-            {BAKE_STALE_NOTE}
+            {EXPORT_STALE_NOTE}
           </Note>
         </div>
       ) : null}

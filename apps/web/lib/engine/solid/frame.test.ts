@@ -4,7 +4,7 @@
  *
  * Every case is a small synthetic scene, for the reason `synthetic.test.ts`
  * gives: the Chicago plate exercises each of these once and can never point at
- * which one moved. The Chicago bake itself is checked end to end by the CLI
+ * which one moved. The Chicago build itself is checked end to end by the CLI
  * runs recorded in `docs/handoff/v3-05-frame.md`.
  *
  * The load-bearing property in most of these is a VOLUME or a BODY COUNT
@@ -19,7 +19,7 @@ import { defaultPrintParams, type PrintParams } from "../../contracts";
 import { textTokenContext } from "../../previewText";
 import * as T from "../../transform";
 import { tintedColor } from "../../tint";
-import { bake } from "../engine";
+import { buildModel } from "../engine";
 import type { EngineResult, RegionName } from "../types";
 import { bandIndexOf, bandRegionName, GRADIENT_MAX_BANDS } from "../types";
 import { building, scene, solidFromMesh, square } from "./fixture";
@@ -66,13 +66,13 @@ function regionOf(result: EngineResult, name: RegionName) {
   return result.regions.find((region) => region.region === name);
 }
 
-/** Bake, and fail loudly if a WASM handle leaked. */
-async function bakeScene(
-  input: Parameters<typeof bake>[0],
+/** Build the model, and fail loudly if a WASM handle leaked. */
+async function buildFromScene(
+  input: Parameters<typeof buildModel>[0],
 ): Promise<EngineResult> {
   await loadManifold();
   const before = outstandingWasmObjects();
-  const result = await bake({ date: "2026-09-01", ...input });
+  const result = await buildModel({ date: "2026-09-01", ...input });
   expect(outstandingWasmObjects()).toBe(before);
   return result;
 }
@@ -158,8 +158,8 @@ describe("frame profiles", () => {
     }
   });
 
-  it("bakes a chamfered, round-cornered frame into one watertight body", async () => {
-    const result = await bakeScene({
+  it("builds a chamfered, round-cornered frame into one watertight body", async () => {
+    const result = await buildFromScene({
       scene: smallScene(),
       params: params({
         frame_style: { profile: "chamfer", corner: "rounded", corner_radius_mm: 4 },
@@ -256,7 +256,7 @@ describe("the shadow gap", () => {
   });
 
   it("cuts a channel that leaves the plate whole", async () => {
-    const result = await bakeScene({
+    const result = await buildFromScene({
       scene: smallScene(),
       params: params({
         frame_style: { shadow_gap: { enabled: true, width_mm: 1.5, depth_mm: 0.8 } },
@@ -266,12 +266,12 @@ describe("the shadow gap", () => {
     expect(base?.bodies).toBe(1);
     expect(result.merged.bodies).toBe(1);
     // The channel is real: the plate lost material to it.
-    const plain = await bakeScene({ scene: smallScene(), params: params() });
+    const plain = await buildFromScene({ scene: smallScene(), params: params() });
     expect(result.merged.volumeMm3).toBeLessThan(plain.merged.volumeMm3);
   });
 
   it("refuses a channel that would breach the base floor, with the numbers", async () => {
-    const result = await bakeScene({
+    const result = await buildFromScene({
       scene: smallScene(),
       params: params({
         base_thickness_mm: 3,
@@ -288,7 +288,7 @@ describe("the shadow gap", () => {
 
 describe("matting", () => {
   it("emits its own region between the frame and the city", async () => {
-    const result = await bakeScene({
+    const result = await buildFromScene({
       scene: smallScene(),
       params: params({
         color_mode: "parts",
@@ -323,7 +323,7 @@ describe("matting", () => {
 
 describe("a separate frame part", () => {
   it("comes out as its own body, registered by a snap ridge", async () => {
-    const result = await bakeScene({
+    const result = await buildFromScene({
       scene: smallScene(),
       params: params({
         frame_style: { separate: { enabled: true, mount: "snap", tolerance_mm: 0.2 } },
@@ -347,7 +347,7 @@ describe("a separate frame part", () => {
   });
 
   it("refuses a magnet wider than the frame band", async () => {
-    const result = await bakeScene({
+    const result = await buildFromScene({
       scene: smallScene(),
       params: params({
         frame_style: { separate: { enabled: true, mount: "magnet", tolerance_mm: 0.2 } },
@@ -360,7 +360,7 @@ describe("a separate frame part", () => {
   });
 
   it("cuts paired magnet pockets that fit, half the magnet in each part", async () => {
-    const result = await bakeScene({
+    const result = await buildFromScene({
       scene: smallScene(),
       params: params({
         base_thickness_mm: 4,
@@ -371,8 +371,8 @@ describe("a separate frame part", () => {
     expect(result.findings.filter((f) => f.id === "frame-feature-refused")).toEqual([]);
     expect(result.merged.bodies).toBe(2);
     // The pockets are real: the frame lost material to them, and so did the
-    // plate, against the same bake with the mount switched off.
-    const off = await bakeScene({
+    // plate, against the same build with the mount switched off.
+    const off = await buildFromScene({
       scene: smallScene(),
       params: params({ base_thickness_mm: 4 }),
     });
@@ -396,8 +396,8 @@ describe("frame texture", () => {
       const print = params({
         frame_style: { texture: { pattern, scale_mm: 2.0, depth_mm: 0.25 } },
       });
-      const result = await bakeScene({ scene: smallScene(), params: print });
-      const plain = await bakeScene({ scene: smallScene(), params: params() });
+      const result = await buildFromScene({ scene: smallScene(), params: print });
+      const plain = await buildFromScene({ scene: smallScene(), params: params() });
       const frame = regionOf(result, "frame");
       const plainFrame = regionOf(plain, "frame");
       expect(frame).toBeDefined();
@@ -418,7 +418,7 @@ describe("frame texture", () => {
     // A 0.3 mm pitch is finer than two nozzles, so it is clamped to 0.8 mm -
     // and a 0.8 mm dot grid over a 180 mm frame is 6 500 dimples, well past
     // the cap.
-    const result = await bakeScene({
+    const result = await buildFromScene({
       scene: smallScene(),
       params: params({
         frame_style: { texture: { pattern: "dots", scale_mm: 0.3, depth_mm: 0.2 } },
@@ -430,7 +430,7 @@ describe("frame texture", () => {
     expect(refusal).toBeDefined();
     expect(refusal?.detail).toContain(String(TEXTURE_MAX_ELEMENTS));
     // Refused, so the frame is the plain one.
-    const plain = await bakeScene({ scene: smallScene(), params: params() });
+    const plain = await buildFromScene({ scene: smallScene(), params: params() });
     expect(regionOf(result, "frame")!.volumeMm3).toBeCloseTo(
       regionOf(plain, "frame")!.volumeMm3,
       6,
@@ -442,8 +442,8 @@ describe("frame texture", () => {
       engravings: [{ text: "CHICAGO", edge: "top", size_mm: 4, mode: "engrave" }],
       frame_style: { texture: { pattern: "hatch", scale_mm: 2.0, depth_mm: 0.25 } },
     });
-    const result = await bakeScene({ scene: smallScene(), params: engraved });
-    const noTexture = await bakeScene({
+    const result = await buildFromScene({ scene: smallScene(), params: engraved });
+    const noTexture = await buildFromScene({
       scene: smallScene(),
       params: params({
         engravings: [{ text: "CHICAGO", edge: "top", size_mm: 4, mode: "engrave" }],
@@ -513,7 +513,7 @@ describe("the cleat and the easel", () => {
     ["cleat", "cleat"],
     ["easel", "easel"],
   ] as const)("emits %s as a loose part inside its own pocket", async (hanger, region) => {
-    const result = await bakeScene({
+    const result = await buildFromScene({
       scene: smallScene(),
       params: params({ hanger, base_thickness_mm: 5 }),
     });
@@ -535,7 +535,7 @@ describe("the cleat and the easel", () => {
 
   it("refuses both on a base too thin to carry the pocket", async () => {
     for (const hanger of ["cleat", "easel"] as const) {
-      const result = await bakeScene({
+      const result = await buildFromScene({
         scene: smallScene(),
         params: params({ hanger, base_thickness_mm: 3 }),
       });
@@ -554,7 +554,7 @@ describe("the cleat and the easel", () => {
 
 describe("the height gradient", () => {
   it("splits the buildings into equal-count bands, tallest last", async () => {
-    const result = await bakeScene({
+    const result = await buildFromScene({
       scene: towerScene(),
       params: params({
         color_mode: "parts",
@@ -575,14 +575,14 @@ describe("the height gradient", () => {
     expect(bands.map((b) => b.slot)).toEqual([2, 3]);
     expect(regionOf(result, "buildings_band_2")?.slot).toBe(3);
     // The split changes no geometry: the same model, in two regions.
-    const plain = await bakeScene({ scene: towerScene(), params: params({ color_mode: "parts" }) });
+    const plain = await buildFromScene({ scene: towerScene(), params: params({ color_mode: "parts" }) });
     expect(result.merged.volumeMm3).toBeCloseTo(plain.merged.volumeMm3, 6);
     expect(result.stats.triangles).toBe(plain.stats.triangles);
   });
 
   it("caps the band count and says so", async () => {
     const slots = Array.from({ length: GRADIENT_MAX_BANDS + 2 }, (_, i) => (i % 16) + 1);
-    const result = await bakeScene({
+    const result = await buildFromScene({
       scene: towerScene(),
       params: params({
         color_mode: "parts",
@@ -607,7 +607,7 @@ describe("the height gradient", () => {
 
 describe("per-building tints", () => {
   it("are absent by default and deterministic when on", async () => {
-    const off = await bakeScene({ scene: towerScene(), params: params() });
+    const off = await buildFromScene({ scene: towerScene(), params: params() });
     expect(off.buildingTints).toBeUndefined();
 
     const print = params({
@@ -616,7 +616,7 @@ describe("per-building tints", () => {
         tint: { enabled: true, hue_range_deg: 12, lightness_range: 0.12, seed: 7 },
       },
     });
-    const on = await bakeScene({ scene: towerScene(), params: print });
+    const on = await buildFromScene({ scene: towerScene(), params: print });
     const tints = on.buildingTints ?? [];
     expect(tints).toHaveLength(4);
     expect(new Set(tints.map((t) => t.id))).toEqual(new Set(["a", "b", "c", "d"]));
@@ -626,8 +626,8 @@ describe("per-building tints", () => {
         tintedColor(tint.id, "#D8D3C6", print.colour?.tint),
       );
     }
-    // Deterministic across bakes.
-    const again = await bakeScene({ scene: towerScene(), params: print });
+    // Deterministic across builds.
+    const again = await buildFromScene({ scene: towerScene(), params: print });
     expect(again.buildingTints).toEqual(tints);
     // And the print path ignores them: same geometry, same slots.
     expect(again.merged.volumeMm3).toBeCloseTo(off.merged.volumeMm3, 6);
@@ -664,13 +664,13 @@ describe("per-building tints", () => {
 
 /**
  * Volume the four inner-wall attribution marks take out of the plain 6 mm lip,
- * mm3 (v3 phase 7). Measured on this bake; see the note in the test below.
+ * mm3 (v3 phase 7). Measured on this build; see the note in the test below.
  */
 const ATTRIBUTION_WALL_CUT_MM3 = 27.6;
 
-describe("the default bake", () => {
+describe("the default build", () => {
   it("is what it was: one body, one region set, plain 6 mm lip", async () => {
-    const result = await bakeScene({ scene: smallScene(), params: params() });
+    const result = await buildFromScene({ scene: smallScene(), params: params() });
     expect(result.merged.bodies).toBe(1);
     expect(result.buildingTints).toBeUndefined();
     expect(result.buildingBands).toBeUndefined();
@@ -686,8 +686,8 @@ describe("the default bake", () => {
     // 2.2 mm of extrusion lands on 2.19995, which is 0.2 mm3 of 9 187), LESS
     // the four copies of the mandatory attribution engraved into its inner
     // walls (v3 phase 7, `solid/attribution.ts`). That mark is cut on every
-    // bake and is not a parameter, so the plain lip is 27.60 mm3 lighter than
-    // it was in phase 5 - which is the number below, measured on this bake and
+    // build and is not a parameter, so the plain lip is 27.60 mm3 lighter than
+    // it was in phase 5 - which is the number below, measured on this build and
     // re-measurable from it: `ring - frame.volumeMm3`.
     const ring = (180 * 180 - 168 * 168) * (frame.bbox.max[2] - frame.bbox.min[2]);
     expect(ring - frame.volumeMm3).toBeCloseTo(ATTRIBUTION_WALL_CUT_MM3, 2);

@@ -9,10 +9,10 @@ import { useEditorStore } from "@/store/editor";
 /**
  * The things that must never be collapsed: a scene that failed to load, a
  * location that has moved away from the model on screen, and the two warnings
- * that disable Bake (01/A2 coverage, 04 stage 4's 60 mm ceiling).
+ * that disable Export (01/A2 coverage, 04 stage 4's 60 mm ceiling).
  *
  * Everything else -- widened footprints, dropped patches, estimated heights,
- * the bake's own remarks -- is informational and lives in the adjustments chip
+ * the build's own remarks -- is informational and lives in the adjustments chip
  * over the viewport. The split is `lib/adjustments.ts`; the thresholds are
  * `lib/warnings.ts`, so the banner, the chip and the disabled button can never
  * disagree.
@@ -28,7 +28,7 @@ export function WarningBanners() {
 
   // Cheap: one pass over the buildings for the 60 mm height guard, and the
   // scene is already in memory. Memoised on the primitives that move it so a
-  // theme toggle or a bake poll does not recompute it.
+  // theme toggle or an export does not recompute it.
   const blocking = useMemo(
     () => blockingWarnings(sceneWarnings(graph, params)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -80,7 +80,7 @@ export function WarningBanners() {
 
       {stale && graph ? (
         <Banner tone="info" testId="scene-stale">
-          The location moved. Generate to rebuild the model for it.
+          The location moved. Preview to rebuild the model for it.
         </Banner>
       ) : null}
 

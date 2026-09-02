@@ -41,7 +41,7 @@ import SearchBox from "./SearchBox";
  *
  * Two overlays: the radius circle, and the *rotated crop square*, which is what
  * will actually be printed -- so the rotation slider has a visible meaning
- * before the user ever hits Generate.
+ * before the user ever hits Preview.
  */
 
 const OSM_ATTRIBUTION = "© OpenStreetMap contributors";

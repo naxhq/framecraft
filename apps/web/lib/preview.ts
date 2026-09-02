@@ -4,11 +4,11 @@
  * Rules this module exists to enforce:
  *
  * 1. **No maths of its own.** Every scale, threshold, height and z offset comes
- *    from `lib/transform.ts`, which is the mirror of the bake's
+ *    from `lib/transform.ts`, which is the mirror of the build's
  *    `app/geom/transform.py`. The only geometry this file computes on its own
  *    is *shape* (oriented bounding rectangles, ribbon triangles) -- never a
  *    printed dimension.
- * 2. **No booleans.** 02: the browser never runs CSG. The bake's stage-1
+ * 2. **No booleans.** 02: the browser never runs CSG. The build's stage-1
  *    minimum-feature repair is approximated with a cheap per-footprint 2D
  *    dilation (see `buildBuildings`), which is why the UI carries the
  *    "preview is approximate" note.
@@ -18,7 +18,7 @@
  *    into three objects.
  *
  * Coordinate frame: x east, y north, z up -- the same frame as the SceneGraph
- * and the bake. `components/scene/CityPreview.tsx` rotates the whole group once
+ * and the build. `components/scene/CityPreview.tsx` rotates the whole group once
  * to satisfy three.js's Y-up convention.
  */
 
@@ -80,9 +80,9 @@ export interface PreviewModel {
   content: T.Extents;
   frame: T.FrameGeometry;
   buildings: PreviewBuilding[];
-  /** Footprints the bake's stage-1 repair would widen. */
+  /** Footprints the build's stage-1 repair would widen. */
   dilatedCount: number;
-  /** Footprints the bake would drop as sub-detail. */
+  /** Footprints the build would drop as sub-detail. */
   droppedCount: number;
   roads: PreviewRibbons | null;
   road_z_mm: number | null;
@@ -286,15 +286,15 @@ export function buildBuildings(
  * The box geometry is a unit cube centred on the origin, so the matrix is
  * `translate(cx, cy, mid_z) * rotateZ(angle) * scale(width, depth, height)`.
  * Buildings are drawn from the base top, not from `building_bottom_mm`: the
- * bake's 0.2 mm overlap only exists to make its union unambiguous and would be
+ * build's 0.2 mm overlap only exists to make its union unambiguous and would be
  * invisible inside the slab here.
  *
  * **Heroes are drawn at their hero height.** `building_top_mm_for(..., is_hero)`
- * is the shared function the bake extrudes with, and the ids come from
+ * is the shared function the build extrudes with, and the ids come from
  * `transform.hero_height_ids`, which is empty unless `hero_mode` actually grants
  * true height -- so `own_color` alone moves nothing. Until this call went
  * through the hero-aware form, a picked hero was coloured but not raised, and
- * that was the one place the preview knowingly disagreed with the bake
+ * that was the one place the preview knowingly disagreed with the build
  * (`docs/handoff/v2-04-ui.md` §11).
  */
 export function buildingInstanceMatrices(
@@ -466,16 +466,16 @@ export function buildAreas(
 // ---------------------------------------------------------------------------
 
 /**
- * Visible trees only, capped and ordered exactly as the bake orders them.
+ * Visible trees only, capped and ordered exactly as the build orders them.
  *
  * The filter is `select_tree_indices_for`, i.e. 04's 0.5 mm rule AND the
- * nozzle-aware floor the bake applies in stage 1 (`transform.tree_min_radius_mm`
+ * nozzle-aware floor the build applies in stage 1 (`transform.tree_min_radius_mm`
  * -- an 8-gon cone of circumradius r is only `2 r cos(pi/8)` wide at its base).
  * At the default 0.4 mm nozzle the floor is 0.433 mm and 04's 0.5 mm still
  * binds, so nothing changes; from 0.5 mm up the preview drops exactly the trees
- * the bake drops. The other half of 04's tree rule ("does not intersect a
+ * the build drops. The other half of 04's tree rule ("does not intersect a
  * building or road footprint") is a boolean the browser never runs, so the
- * preview can still show a tree the bake removes -- never the reverse.
+ * preview can still show a tree the build removes -- never the reverse.
  */
 export function buildTrees(scene: SceneGraph, params: PrintParams): PreviewTree[] {
   if (!params.trees) return [];
@@ -571,7 +571,7 @@ export function mergeNoticeMetres(thresholds: T.Thresholds): number {
  * `"3353 widened to the 18.9 m minimum wall"`.
  *
  * The metres are `min_wall_ground = min_wall_mm(params) / scale`, i.e. TWO
- * nozzles of print divided by the scale -- the same wall the bake repairs to
+ * nozzles of print divided by the scale -- the same wall the build repairs to
  * and the Stage 4 gate measures. It lives here, next to its test, because the
  * look-alike is silent: `min_detail` is one nozzle, exactly half of this, and
  * at any scale it reads as a perfectly plausible "minimum wall" in the HUD

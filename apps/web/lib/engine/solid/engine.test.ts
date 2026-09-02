@@ -1,9 +1,9 @@
 /**
- * The Chicago golden: one real bake, every claim the engine makes about it.
+ * The Chicago golden: one real build, every claim the engine makes about it.
  *
- * The bake is expensive (a few seconds of WASM booleans), so it is run ONCE in
+ * The build is expensive (a few seconds of WASM booleans), so it is run ONCE in
  * a `beforeAll` and every assertion reads the same result. A test that needs a
- * different parameter set says so and pays for its own bake.
+ * different parameter set says so and pays for its own build.
  */
 
 import { readFileSync } from "node:fs";
@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { defaultPrintParams, type PrintParams } from "../../contracts";
-import { bake } from "../engine";
+import { buildModel } from "../engine";
 import { sceneFromOverpass } from "../osm/scene";
 import type { EngineResult } from "../types";
 import {
@@ -28,20 +28,20 @@ import { degenerateFaces, openEdges } from "./mesh";
 import { VERTEX_DECIMALS } from "../export/common";
 import * as T from "../../transform";
 
-/** The bake has to finish inside this, in Node, on a developer machine. */
+/** The build has to finish inside this, in Node, on a developer machine. */
 // The 13.7 to 13.9 s that briefly justified doubling this was not host noise:
 // it was `measure.measureMinWall` paying the persistence intersect for every
 // region of every slice, and raising the budget hid the defect that the e2e
-// preview then stalled on. Fixed at source (`[V3-P7-fix2-1]`), the same bake is
+// preview then stalled on. Fixed at source (`[V3-P7-fix2-1]`), the same build is
 // back under 7 s, so the committed 15 s stands as written.
 const TIME_BUDGET_MS = 15_000;
 
 /**
- * The same budget for a DRAPED bake, in Node, on a developer machine.
+ * The same budget for a DRAPED build, in Node, on a developer machine.
  *
  * Draping refines the plate, the four surface layers and their grooves to
  * `TERRAIN_CELL_MM` before warping them, which is real work on top of the flat
- * bake rather than instead of it. Phase 3's own target is 6 s for the flat
+ * build rather than instead of it. Phase 3's own target is 6 s for the flat
  * Chicago default; this is the hilly one and it gets the flat budget.
  */
 const TERRAIN_TIME_BUDGET_MS = 15_000;
@@ -67,14 +67,14 @@ function totalVolume(result: EngineResult): number {
   return total;
 }
 
-describe("chicago bake at the default parameters", () => {
+describe("chicago build at the default parameters", () => {
   let result: EngineResult;
   let elapsedMs = 0;
   let leaked = 0;
 
   beforeAll(async () => {
     const started = Date.now();
-    result = await bake({ scene, params: defaultPrintParams(), date: "2026-08-30" });
+    result = await buildModel({ scene, params: defaultPrintParams(), date: "2026-08-30" });
     elapsedMs = Date.now() - started;
     leaked = outstandingWasmObjects();
   }, 120_000);
@@ -134,7 +134,7 @@ describe("chicago bake at the default parameters", () => {
     expect(result.stats.heightFallbacks).toBeGreaterThan(0);
   });
 
-  it("comes within 5 per cent of the reference bake's volume", () => {
+  it("comes within 5 per cent of the reference build's volume", () => {
     // The WELDED solid, not the sum of the regions. The regions are separate
     // bodies that interpenetrate at their seams by `PART_OVERLAP_MM`, so their
     // volumes double-count that overlap by construction; `merged` is the
@@ -202,7 +202,7 @@ describe("chicago bake at the default parameters", () => {
     let unionVolume = 0;
     let unionBodies = 0;
     const overlaps: Array<[string, number]> = [];
-    await bake(
+    await buildModel(
       { scene, params: defaultPrintParams(), date: "2026-08-30" },
       {
         onSolids: (regions) => {
@@ -306,7 +306,7 @@ describe("chicago bake at the default parameters", () => {
   });
 
   it("finishes inside the time budget", () => {
-    console.info(`[chicago] bake ${elapsedMs} ms (engine ${result.stats.elapsedMs.toFixed(0)} ms)`);
+    console.info(`[chicago] build ${elapsedMs} ms (engine ${result.stats.elapsedMs.toFixed(0)} ms)`);
     expect(elapsedMs).toBeLessThan(TIME_BUDGET_MS);
   });
 });
@@ -319,7 +319,7 @@ describe("chicago with a hero building", () => {
       hero_building_ids: ["w64388609"],
       hero_mode: "both",
     };
-    const result = await bake({ scene, params, date: "2026-08-30" });
+    const result = await buildModel({ scene, params, date: "2026-08-30" });
     const hero = result.regions.find((region) => region.region === "hero_building");
     expect(hero).toBeDefined();
     expect(hero?.volumeMm3).toBeGreaterThan(0);
@@ -337,7 +337,7 @@ describe("chicago with a hero building", () => {
       hero_building_ids: ["w64388609"],
       hero_mode: "true_height",
     };
-    const result = await bake({ scene, params, date: "2026-08-30" });
+    const result = await buildModel({ scene, params, date: "2026-08-30" });
     const hero = result.regions.find((region) => region.region === "hero_building");
     const buildings = result.regions.find((region) => region.region === "buildings");
     expect(hero).toBeDefined();
@@ -357,8 +357,8 @@ describe("chicago with lettering", () => {
         { edge: "bottom", text: "日本語", mode: "engrave", size_mm: 5 },
       ],
     };
-    const plain = await bake({ scene, params: defaultPrintParams(), date: "2026-08-30" });
-    const lettered = await bake({ scene, params, date: "2026-08-30" });
+    const plain = await buildModel({ scene, params: defaultPrintParams(), date: "2026-08-30" });
+    const lettered = await buildModel({ scene, params, date: "2026-08-30" });
 
     const cut = lettered.resolvedText.find((line) => line.id === "engraving-0");
     expect(cut?.status).toBe("cuts");
@@ -387,7 +387,7 @@ describe("chicago trees", () => {
     // 4.0 m across. At plate 180 the scale is 0.0933 mm/m, so a site prints at
     // 0.373 mm against 04's 0.5 mm floor and none survive; at plate 256 it is
     // 0.1356 mm/m and every one clears the floor, so `TREE_CAP` binds instead.
-    const small = await bake({ scene, params: defaultPrintParams(), date: "2026-08-30" });
+    const small = await buildModel({ scene, params: defaultPrintParams(), date: "2026-08-30" });
     expect(scene.trees).toHaveLength(5762);
     expect(small.stats.trees ?? 0).toBe(0);
     expect(small.stats.treesDropped).toBe(5762);
@@ -398,7 +398,7 @@ describe("chicago trees", () => {
     expect(small.regions.find((r) => r.region === "parks")).toBeDefined();
 
     const params: PrintParams = { ...defaultPrintParams(), plate_mm: 256 };
-    const big = await bake({ scene, params, date: "2026-08-30" });
+    const big = await buildModel({ scene, params, date: "2026-08-30" });
     expect(big.stats.trees ?? 0).toBeGreaterThan(0);
     // The cap keeps the largest `TREE_CAP` of them; the rest of the 5 762 are
     // reported as dropped, and some of the survivors then fall inside a
@@ -428,7 +428,7 @@ describe("chicago on a hillside", () => {
     const radiusM = T.radius_m_from_bounds(scene.bounds);
     const grid = rampGrid(radiusM, 60, 30);
     const started = Date.now();
-    const hilly = await bake({
+    const hilly = await buildModel({
       scene,
       params: defaultPrintParams(),
       terrain: grid,
@@ -436,7 +436,7 @@ describe("chicago on a hillside", () => {
     });
     const elapsed = Date.now() - started;
 
-    const flat = await bake({ scene, params: defaultPrintParams(), date: "2026-08-30" });
+    const flat = await buildModel({ scene, params: defaultPrintParams(), date: "2026-08-30" });
     // The drape is a vertical shear, so it adds material and nothing else: the
     // plate is exactly as wide and exactly as flat underneath as it was.
     expect(hilly.merged.bbox.max[0]).toBeCloseTo(flat.merged.bbox.max[0], 6);
@@ -453,7 +453,7 @@ describe("chicago on a hillside", () => {
     // fails the file on it. The engine used to miss that entirely (it reported
     // 0.8 mm, saturated) and now reports it with a count and a remedy that
     // actually applies (`[V3-P3-G16]`). The finding is the REQUIRED behaviour
-    // here, not an accepted failure: a draped bake that reported nothing would
+    // here, not an accepted failure: a draped build that reported nothing would
     // be the bug.
     const thin = hilly.findings.find((f) => f.id === "wall-too-thin");
     expect(thin).toBeDefined();
@@ -466,7 +466,7 @@ describe("chicago on a hillside", () => {
     expect(hilly.findings.filter((f) => f.severity === "error").map((f) => f.id)).toEqual([
       "wall-too-thin",
     ]);
-    // The FLAT bake of the same scene reports none of it, which is what makes
+    // The FLAT build of the same scene reports none of it, which is what makes
     // the sweep terrain-only.
     expect(flat.findings.find((f) => f.id === "wall-too-thin")).toBeUndefined();
     // Every draped region is still a solid manifold3d will take back, with no
@@ -502,10 +502,10 @@ describe("chicago on a hillside", () => {
 });
 
 describe("chicago as the app ingests it", () => {
-  it("bakes the elevated network into one clean, connected model", async () => {
+  it("builds the elevated network into one clean, connected model", async () => {
     // The committed `fixtures/chicago-scene.json` comes from the Python
     // service, which carries no `bridge`/`layer` tags and no rail layer, so it
-    // exercises none of phase 3's elevated geometry. The app bakes the scene
+    // exercises none of phase 3's elevated geometry. The app builds the scene
     // its OWN ingest builds, and that one has 780 elevated ways in the Loop:
     // every bridge defect this phase fixed was invisible on the committed
     // fixture and obvious on this one (`[V3-P3-G13]`).
@@ -518,7 +518,7 @@ describe("chicago as the app ingests it", () => {
       { lat: 41.8827, lon: -87.6233, radius_m: 900, rotation_deg: 0 },
       params,
     );
-    const result = await bake({ scene: ingested, params, date: "2026-08-30" });
+    const result = await buildModel({ scene: ingested, params, date: "2026-08-30" });
 
     expect(result.stats.bridges ?? 0).toBeGreaterThan(500);
     // One connected object, and every region a solid with no degenerate face

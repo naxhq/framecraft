@@ -3,11 +3,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  BAKE_STALE_NOTE,
-  bakeDownloadLinks,
-  bakeStatusLabel,
+  EXPORT_STALE_NOTE,
+  exportDownloadLinks,
+  exportStatusLabel,
   saveDownloadFile,
-} from "@/lib/bake";
+} from "@/lib/exportFlow";
 import { isTauri } from "@/lib/platform";
 import { buildProject, downloadProject, parseProject } from "@/lib/project";
 import { textTokenContext } from "@/lib/previewText";
@@ -15,7 +15,7 @@ import { recentDesignName, recordRecent } from "@/lib/recent";
 import { resolvedOutputLines, type ResolvedLine as PredictedLine } from "@/lib/resolvedOutput";
 import { SHARE_LINK_LENGTH_LIMIT, encodeShare, shareUrl } from "@/lib/share";
 import type { ResolvedLine as EngineResolvedLine } from "@/lib/engine/types";
-import { bakeBlockReason, heightCeilingMm, predictedTopMm, warningDeps } from "@/lib/warnings";
+import { exportBlockReason, heightCeilingMm, predictedTopMm, warningDeps } from "@/lib/warnings";
 import { locationToRequest, useEditorStore } from "@/store/editor";
 import { Note } from "./Controls";
 import EstimateCard from "./EstimateCard";
@@ -27,19 +27,19 @@ import StatsCard from "./StatsCard";
  * The action row and everything that comes out of it.
  *
  * Hierarchy (the defect this replaces: two equal-weight buttons, and a
- * Generate that stayed clickable with nothing to do):
+ * Preview that stayed clickable with nothing to do):
  *
- *  - With no scene, **Generate** is the primary action -- it is the only thing
- *    that can move the product forward -- and Bake is disabled with the reason.
- *  - Once a scene exists, **Bake** becomes primary and Generate drops to a
+ *  - With no scene, **Preview** is the primary action -- it is the only thing
+ *    that can move the product forward -- and Export is disabled with the reason.
+ *  - Once a scene exists, **Export** becomes primary and Preview drops to a
  *    quiet outline, carrying a real `disabled` attribute whenever the scene is
  *    already current. A button that looks alive and does nothing is worse than
  *    one that is honestly out of play.
  *
- * Bake is disabled -- with the reason spelled out -- whenever the engine would
+ * Export is disabled -- with the reason spelled out -- whenever the engine would
  * refuse the job anyway: too few buildings (01/A2) or a model over 04's 60 mm
  * ceiling. Both verdicts come from the SceneGraph already in memory; neither
- * costs a request, and since v3 E4 neither Bake nor Generate ever leave the
+ * costs a request, and since v3 E4 neither Export nor Preview ever leave the
  * browser tab except for the ingest fetch to Overpass.
  */
 export function OutputPanel({
@@ -55,9 +55,9 @@ export function OutputPanel({
   const stale = useEditorStore((state) => state.scene.stale);
   const params = useEditorStore((state) => state.params);
   const engine = useEditorStore((state) => state.engine);
-  const bake = useEditorStore((state) => state.bake);
+  const exportState = useEditorStore((state) => state.exportState);
   const generate = useEditorStore((state) => state.generate);
-  const requestBake = useEditorStore((state) => state.requestBake);
+  const requestExport = useEditorStore((state) => state.requestExport);
   const location = useEditorStore((state) => state.location);
 
   const predictedTop = useMemo(
@@ -65,7 +65,7 @@ export function OutputPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     warningDeps(graph, params),
   );
-  const blockReason = bakeBlockReason(graph, params);
+  const blockReason = exportBlockReason(graph, params);
   // The selected printer's own ceiling, `lib/warnings.ts:heightCeilingMm`
   // (team lead's ruling, `[V3-P4]`): the ACTIVE profile's `maxHeightMm`,
   // straight, so this line and the block reason above can never name two
@@ -86,8 +86,8 @@ export function OutputPanel({
    * FRESH (`status === "ready" && !stale`) its own `resolvedText` is
    * authoritative -- it is what the exported file actually carries, because
    * the engine resolved every token and every refusal itself. Before the
-   * first bake, or while a newer one is computing, the client-side PREDICTION
-   * (`lib/resolvedOutput.ts`, the same maths the Issues badge and `lib/bake.ts`
+   * first build, or while a newer one is computing, the client-side PREDICTION
+   * (`lib/resolvedOutput.ts`, the same maths the Issues badge and `lib/exportFlow.ts`
    * used pre-engine) fills the gap so the panel is never empty.
    */
   const fresh = engine.status === "ready" && !engine.stale && engine.result !== null;
@@ -103,15 +103,15 @@ export function OutputPanel({
     [fresh, engine.result, predictedLines],
   );
 
-  const exporting = bake.phase === "exporting";
+  const exporting = exportState.phase === "exporting";
   const generating = sceneStatus === "loading";
   const hasScene = graph !== null;
-  // Nothing has moved since the last successful Generate, so there is nothing
+  // Nothing has moved since the last successful Preview, so there is nothing
   // to generate. Not "inert": genuinely disabled.
   const sceneIsCurrent = sceneStatus === "ready" && !stale;
-  // Empty while the bake is stale: the file was exported from parameters the
+  // Empty while the export is stale: the file was written from parameters the
   // user has since moved.
-  const links = bakeDownloadLinks(bake);
+  const links = exportDownloadLinks(exportState);
 
   /*
     The shareable link.
@@ -135,7 +135,7 @@ export function OutputPanel({
 
   /**
    * A recent design is the exact share payload (`lib/recent.ts`), recorded on
-   * a successful Copy-link and (below) a successful bake -- the two moments
+   * a successful Copy-link and (below) a successful export -- the two moments
    * the brief names, and, not coincidentally, the two moments a design is
    * demonstrably "finished enough to be worth keeping" rather than mid-edit.
    */
@@ -201,17 +201,17 @@ export function OutputPanel({
   };
 
   /**
-   * Every SUCCESSFUL bake records a recent design too, not just Copy-link.
-   * `[bake]` (the whole state object, a fresh reference on every phase
+   * Every SUCCESSFUL export records a recent design too, not just Copy-link.
+   * `[exportState]` (the whole state object, a fresh reference on every phase
    * transition) as the effect's only dependency means this fires exactly
-   * once per completed bake -- never once per render of an unchanged "done"
-   * state, and never for `bakeExporting`/`bakeFailedLocally`'s own phases.
+   * once per completed export -- never once per render of an unchanged "done"
+   * state, and never for `exportStarted`/`exportFailedLocally`'s own phases.
    */
   useEffect(() => {
-    if (bake.phase !== "done") return;
+    if (exportState.phase !== "done") return;
     recordCurrentAsRecent();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bake]);
+  }, [exportState]);
 
   const primary =
     "rounded-milled bg-primary px-3 py-2 text-sm font-medium text-primary-ink transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-40";
@@ -226,23 +226,23 @@ export function OutputPanel({
       <div className="flex gap-2">
         <button
           type="button"
-          data-testid="generate-button"
+          data-testid="preview-button"
           onClick={() => void generate()}
           disabled={generating || sceneIsCurrent}
           title={sceneIsCurrent ? "The scene already matches this location." : undefined}
           className={`flex-1 ${hasScene ? secondary : primary}`}
         >
-          {generating ? "Generating..." : stale && graph ? "Regenerate" : "Generate"}
+          {generating ? "Previewing..." : stale && graph ? "Preview again" : "Preview"}
         </button>
         <button
           type="button"
-          data-testid="bake-button"
-          onClick={() => void requestBake()}
+          data-testid="export-button"
+          onClick={() => void requestExport()}
           disabled={exporting || blockReason !== null}
           title={blockReason ?? undefined}
           className={`flex-1 ${hasScene ? primary : secondary}`}
         >
-          {exporting ? "Baking..." : "Bake"}
+          {exporting ? "Exporting..." : "Export"}
         </button>
         <ExportMenu />
         {/*
@@ -266,7 +266,7 @@ export function OutputPanel({
 
       {/*
         Save/Load a `.framecraft.json` project ([V3-P6]). A second, quieter
-        row: this is not the primary flow (Generate/Bake/Export are), but it
+        row: this is not the primary flow (Preview and Export are), but it
         needs to live in the OUTPUT group beside them, not behind a menu that
         would hide "your work has a Save button" from a first-time user.
       */}
@@ -354,7 +354,7 @@ export function OutputPanel({
       ) : null}
 
       {blockReason && graph ? (
-        <Note tone="warn" testId="bake-block-reason">
+        <Note tone="warn" testId="export-block-reason">
           {blockReason}
         </Note>
       ) : null}
@@ -365,7 +365,7 @@ export function OutputPanel({
         `max-h` + `overflow-y-auto`, not `space-y-3` alone: `group-output` is
         a `shrink-0` sibling of the scrollable group list in `ParamPanel.tsx`
         (never itself scrollable), so unbounded content here -- the estimate
-        card, a finished bake's status and download links, and the stats
+        card, a finished export's status and download links, and the stats
         card, all at once -- pushed the whole Output section past the
         sidebar's own height and squeezed that group list to zero visible
         height, making every group above it unreachable by click (found by
@@ -373,18 +373,18 @@ export function OutputPanel({
         assumed: `group-output intercepts pointer events` on a click aimed at
         the Printer group's toggle, two groups above it). The action row,
         the predicted height and the block reason above stay OUTSIDE this
-        cap -- Bake must never itself be scrolled out of reach.
+        cap -- Export must never itself be scrolled out of reach.
 
         `tabIndex={0}`, same discipline as `AdjustmentsChip`'s drawer: this is
         now an `overflow-y-auto` region with no focusable child guaranteed
-        (a fresh scene with nothing baked yet has no links, no notes, nothing
+        (a fresh scene with nothing exported yet has no links, no notes, nothing
         to tab to), so without it a keyboard-only user could not reach
         content past the fold -- and axe's `scrollable-region-focusable` rule
         (serious) agrees, caught by `e2e/a11y.spec.ts`'s Issues-drawer state.
       */}
       <div id={resultsId} tabIndex={0} className="max-h-[45vh] space-y-3 overflow-y-auto">
         {/*
-          Ahead of the bake status/download links: what the print will cost,
+          Ahead of the export status/download links: what the print will cost,
           before or after the decision to run it. Folded under the same
           toggle as the rest of the results (not always on screen): a card
           with a slot row per filament plus a caveat paragraph is real height,
@@ -393,22 +393,22 @@ export function OutputPanel({
         */}
         {showResults ? <EstimateCard /> : null}
 
-        {showResults && bake.phase !== "idle" ? (
-          <div className="space-y-2" data-testid="bake-status">
+        {showResults && exportState.phase !== "idle" ? (
+          <div className="space-y-2" data-testid="export-status">
             <div className="flex items-center justify-between gap-2 text-2xs">
               <span
-                className={bake.phase === "failed" ? "text-danger" : "text-ink-muted"}
+                className={exportState.phase === "failed" ? "text-danger" : "text-ink-muted"}
               >
-                {bakeStatusLabel(bake)}
+                {exportStatusLabel(exportState)}
               </span>
-              {bake.target ? (
-                <span className="truncate text-2xs text-ink-faint">{bake.target}</span>
+              {exportState.target ? (
+                <span className="truncate text-2xs text-ink-faint">{exportState.target}</span>
               ) : null}
             </div>
 
             {exporting ? (
               <div
-                data-testid="bake-progress"
+                data-testid="export-progress"
                 role="progressbar"
                 aria-label="Exporting"
                 className="h-1.5 overflow-hidden rounded-milled bg-plate-sunken"
@@ -417,9 +417,9 @@ export function OutputPanel({
               </div>
             ) : null}
 
-            {bake.stale ? (
-              <Note tone="warn" testId="bake-stale-note">
-                {BAKE_STALE_NOTE}
+            {exportState.stale ? (
+              <Note tone="warn" testId="export-stale-note">
+                {EXPORT_STALE_NOTE}
               </Note>
             ) : null}
 
@@ -446,9 +446,9 @@ export function OutputPanel({
               </div>
             ) : null}
 
-            {bake.notes.length > 0 ? (
-              <ul className="space-y-1" data-testid="bake-notes">
-                {bake.notes.map((note) => (
+            {exportState.notes.length > 0 ? (
+              <ul className="space-y-1" data-testid="export-notes">
+                {exportState.notes.map((note) => (
                   <li key={note} className="text-2xs text-ink-faint">
                     {note}
                   </li>

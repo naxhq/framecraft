@@ -4,8 +4,8 @@
  * One zustand store holds everything the editor UI needs: where the pin is,
  * every PrintParams value, the fetched SceneGraph, the live engine result,
  * and the export/download state. Since FrameCraft v3 E4 this store no longer
- * calls `services/bake` at all: ingest (`buildScene`, Overpass) and the bake
- * (`bake()`, manifold3d) both run through `lib/engine/client.ts`'s
+ * calls `services/bake` at all: ingest (`buildScene`, Overpass) and the model
+ * build (`buildModel()`, manifold3d) both run through `lib/engine/client.ts`'s
  * `EngineClient`, off the main thread when a Worker is available.
  *
  * The rule that shapes this file (01 step 4, 02 "Performance budgets"):
@@ -16,7 +16,7 @@
  *   test (`store/editor.test.ts`) that fails if any `setParam` ever touches
  *   `fetch`. What used to trigger `POST /scene` now triggers the ingest job;
  *   a PrintParams change never re-fetches, but it DOES schedule a debounced
- *   (~400 ms) engine job -- a WASM bake, never a network call -- so the live
+ *   (~400 ms) engine job -- a WASM build, never a network call -- so the live
  *   preview and the COLOUR panel stay in step with the parameters on screen.
  *
  * `rotation_deg` counts as a location change because the crop happens during
@@ -38,14 +38,14 @@
 import { create } from "zustand";
 
 import {
-  bakeDone,
-  bakeExporting,
-  bakeFailedLocally,
-  initialBakeState,
-  markBakeStale,
+  exportDone,
+  exportStarted,
+  exportFailedLocally,
+  initialExportState,
+  markExportStale,
   runExport,
-  type BakeState,
-} from "@/lib/bake";
+  type ExportState,
+} from "@/lib/exportFlow";
 import { DEFAULT_PRINT_PARAMS, PARAM_RANGES, defaultPrintParams } from "@/lib/contracts";
 import type { PrintParams, SceneGraph, SceneRequest } from "@/lib/contracts";
 import { createEngineClient, EngineClientError } from "@/lib/engine/client";
@@ -63,7 +63,7 @@ import { presetCityName } from "@/lib/presets";
 import { profileApplyPatch, type PrinterProfileId } from "@/lib/printers";
 import { decodeShare, readShareParam } from "@/lib/share";
 import { terrainCache, terrainCacheKey } from "@/lib/terrainCache";
-import { bakeBlockReason } from "@/lib/warnings";
+import { exportBlockReason } from "@/lib/warnings";
 
 export type Theme = "light" | "dark";
 
@@ -72,7 +72,7 @@ export const THEME_STORAGE_KEY = "framecraft-theme";
 /**
  * Where the last known author name is remembered ACROSS sessions and across a
  * `resetParams()`, so a fresh page (or a reset) does not lose it. The LIVE
- * value that actually reaches the bake and the preview is always
+ * value that actually reaches the build and the preview is always
  * `params.place.author` (the frozen v3 wire field); this is only ever read to
  * PREFILL that field, once, on the store's own init.
  */
@@ -120,15 +120,15 @@ export interface SceneState {
   graph: SceneGraph | null;
   /** Error text when `status === "error"`. */
   message: string | null;
-  /** The SceneRequest that produced `graph`; a Bake of a stale scene still reuses it for the export's source metadata. */
+  /** The SceneRequest that produced `graph`; an Export of a stale scene still reuses it for the export's source metadata. */
   request: SceneRequest | null;
-  /** True when the location moved after the last successful Generate. */
+  /** True when the location moved after the last successful Preview. */
   stale: boolean;
 }
 
 /**
- * The live browser-engine result: the debounced `bake()` job's own state,
- * independent of whether the user has clicked Bake. The preview (`components/
+ * The live browser-engine result: the debounced `buildModel()` job's own state,
+ * independent of whether the user has clicked Export. The preview (`components/
  * scene/RegionMeshes.tsx`), the COLOUR panel and the Resolved output panel
  * all read `result` while it is fresh (`status === "ready" && !stale`) and
  * fall back to the instanced v1 preview / the token-resolution prediction
@@ -151,7 +151,7 @@ export const initialEngineState: EngineJobState = {
   stale: false,
 };
 
-/** Invalidate a fresh engine result because the inputs moved under it. Mirrors `lib/bake.ts:markBakeStale`. */
+/** Invalidate a fresh engine result because the inputs moved under it. Mirrors `lib/exportFlow.ts:markExportStale`. */
 export function markEngineStale(previous: EngineJobState): EngineJobState {
   if (previous.stale || previous.status !== "ready") return previous;
   return { ...previous, stale: true };
@@ -209,7 +209,7 @@ export interface EditorState {
   engine: EngineJobState;
   /** The TERRAIN group's DEM fetch state, independent of `engine` (phase 3). */
   terrain: TerrainState;
-  bake: BakeState;
+  exportState: ExportState;
   /** Where the Place name field's prefill comes from ([V3-P1]). */
   placeDetect: PlaceDetectState;
   theme: Theme;
@@ -267,7 +267,7 @@ export interface EditorState {
   /**
    * Apply one `AuditFinding.fix` through `lib/engine/audit/fixes.ts:applyFix`
    * (the Issues drawer's per-row button): one state change, stale-marks the
-   * engine/bake and reschedules a bake exactly like any other control.
+   * engine/export and reschedules a build exactly like any other control.
    * Returns what moved (or why nothing did) so the row can report it.
    */
   applyFinding: (finding: AuditFinding) => FixApplication;
@@ -307,7 +307,7 @@ export interface EditorState {
    * scene is marked stale ONLY when the location actually differs from what
    * is on screen now, so stepping through a run of pure-parameter edits never
    * re-triggers Overpass, while stepping across a pin move or a preset click
-   * does mark it stale (Generate is still the user's own move either way).
+   * does mark it stale (Preview is still the user's own move either way).
    */
   applyHistorySnapshot: (snapshot: { location: LocationState; params: PrintParams }) => void;
 
@@ -342,7 +342,7 @@ export interface EditorState {
   // --- engine flows (worker/in-page, never a server) ---
   generate: () => Promise<void>;
   /** Reuses a fresh engine result, or runs one now, then exports it and offers the download. */
-  requestBake: () => Promise<void>;
+  requestExport: () => Promise<void>;
   /** Drop any pending debounced engine job, and any pending terrain fetch (component unmount, test cleanup). */
   cancelEngineJob: () => void;
 }
@@ -403,7 +403,7 @@ function describeIngestError(error: OverpassFetchError): string {
 /**
  * The one `EngineClient` for this page's lifetime. Constructed eagerly (module
  * scope), but nothing inside it touches a `Worker`/WASM until `ingest()`/
- * `bake()` is actually called -- safe to construct during Next's server-side
+ * `buildModel()` is actually called -- safe to construct during Next's server-side
  * prerender pass of this "use client" module, where `typeof Worker ===
  * "undefined"` picks the in-page fallback transport anyway.
  */
@@ -448,8 +448,8 @@ function scheduleEngineJob(get: Get, set: Set): void {
 /**
  * The manual hero picks plus, when `hero_auto.enabled`, the top-scoring
  * auto-promoted buildings on top of them (`lib/heroes.ts`). Read by both the
- * engine job (what actually bakes at hero height/colour) and by callers that
- * want to know the CURRENT effective set without waiting for a bake, such as
+ * engine job (what actually builds at hero height/colour) and by callers that
+ * want to know the CURRENT effective set without waiting for a build, such as
  * the HEROES panel.
  */
 function currentHeroIds(scene: SceneState, params: PrintParams): string[] {
@@ -461,8 +461,8 @@ function currentHeroIds(scene: SceneState, params: PrintParams): string[] {
 
 /**
  * Run one engine job now (bypassing the debounce) and adopt its result.
- * Returns `null` when there is no scene to bake, the job was superseded by a
- * newer one (a normal outcome, not an error), or the bake failed.
+ * Returns `null` when there is no scene to build, the job was superseded by a
+ * newer one (a normal outcome, not an error), or the build failed.
  */
 async function runEngineJob(get: Get, set: Set): Promise<EngineResult | null> {
   clearEngineDebounce();
@@ -472,7 +472,7 @@ async function runEngineJob(get: Get, set: Set): Promise<EngineResult | null> {
   const today = new Date().toISOString().slice(0, 10);
   const terrainGrid = params.terrain?.enabled ? terrain.grid : null;
   try {
-    const result = await engineClient.bake({
+    const result = await engineClient.buildModel({
       scene: scene.graph,
       params,
       rotationDeg: location.rotation_deg,
@@ -511,7 +511,7 @@ function scheduleTerrainJob(get: Get, set: Set): void {
  * Fetch (or serve from cache) the `TerrainGrid` for the current pin, radius,
  * rotation, exaggeration and smoothing. Fails soft: a rejected/`null` fetch
  * leaves `terrain.grid` at `null` and records `terrain.error`, so the engine
- * job bakes with `terrain: null` (flat) and the TERRAIN group shows the
+ * job builds with `terrain: null` (flat) and the TERRAIN group shows the
  * failure instead of silently pretending the toggle did nothing.
  *
  * Never touches `scene`/`engine.stale` for ingest purposes: this is a
@@ -578,7 +578,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   scene: { ...IDLE_SCENE },
   engine: { ...initialEngineState },
   terrain: { ...initialTerrainState },
-  bake: { ...initialBakeState },
+  exportState: { ...initialExportState },
   placeDetect: { ...IDLE_PLACE_DETECT },
   theme: "light",
   presetChosen: false,
@@ -598,7 +598,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         location: { ...state.location, lat, lon, preset_id: null },
         scene: { ...state.scene, stale: true },
         engine: markEngineStale(state.engine),
-        bake: markBakeStale(state.bake),
+        exportState: markExportStale(state.exportState),
         presetChosen: false,
         placeDetect: {
           status: "resolving",
@@ -617,7 +617,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       location: { ...state.location, radius_m: snapRadius(radiusM) },
       scene: { ...state.scene, stale: true },
       engine: markEngineStale(state.engine),
-      bake: markBakeStale(state.bake),
+      exportState: markExportStale(state.exportState),
     }));
     scheduleTerrainJob(get, set);
   },
@@ -628,7 +628,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       location: { ...state.location, rotation_deg: normalised },
       scene: { ...state.scene, stale: true },
       engine: markEngineStale(state.engine),
-      bake: markBakeStale(state.bake),
+      exportState: markExportStale(state.exportState),
     }));
     scheduleTerrainJob(get, set);
   },
@@ -650,7 +650,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         },
         scene: { ...state.scene, stale: true },
         engine: markEngineStale(state.engine),
-        bake: markBakeStale(state.bake),
+        exportState: markExportStale(state.exportState),
         presetChosen: true,
         placeDetect: {
           status: cityName !== null ? "ready" : "idle",
@@ -667,13 +667,13 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 
   // A slider move is a pure state write. No fetch, and the SCENE is unaffected
   // by every one of these parameters -- but a fresh ENGINE RESULT and a
-  // finished BAKE are not: they were built from the old values, so an engine
+  // finished EXPORT are not: they were built from the old values, so an engine
   // job is scheduled and the export stops being offered until a new one runs.
   setParam: (key, value) => {
     set((state) => ({
       params: { ...state.params, [key]: value },
       engine: markEngineStale(state.engine),
-      bake: markBakeStale(state.bake),
+      exportState: markExportStale(state.exportState),
     }));
     scheduleEngineJob(get, set);
     // `terrain` (the on/off toggle and smoothing) and `terrain_exaggeration`
@@ -683,7 +683,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     if (key === "terrain" || key === "terrain_exaggeration") scheduleTerrainJob(get, set);
   },
 
-  // Every nested write goes through `setParam` too, so bake staleness, the
+  // Every nested write goes through `setParam` too, so export staleness, the
   // `previewDeps` memo keys and the engine job scheduling all keep working
   // exactly as they do for a slider.
   setNested: (key, patch) => {
@@ -701,7 +701,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       // re-running whatever produced the value that was there before.
       params: defaultPrintParams(),
       engine: markEngineStale(state.engine),
-      bake: markBakeStale(state.bake),
+      exportState: markExportStale(state.exportState),
       heroCapHit: false,
     }));
     scheduleEngineJob(get, set);
@@ -716,7 +716,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     set((state) => ({
       params: { ...state.params, ...patch },
       engine: markEngineStale(state.engine),
-      bake: markBakeStale(state.bake),
+      exportState: markExportStale(state.exportState),
     }));
     scheduleEngineJob(get, set);
   },
@@ -727,7 +727,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     set((state) => ({
       params: outcome.params,
       engine: markEngineStale(state.engine),
-      bake: markBakeStale(state.bake),
+      exportState: markExportStale(state.exportState),
     }));
     scheduleEngineJob(get, set);
     return outcome;
@@ -740,7 +740,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     set((state) => ({
       params: outcome.params,
       engine: markEngineStale(state.engine),
-      bake: markBakeStale(state.bake),
+      exportState: markExportStale(state.exportState),
     }));
     scheduleEngineJob(get, set);
     return outcome;
@@ -773,7 +773,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
           city_label: state.placeDetect.overridden ? state.params.city_label : (city ?? ""),
         },
         engine: markEngineStale(state.engine),
-        bake: markBakeStale(state.bake),
+        exportState: markExportStale(state.exportState),
       };
     });
     scheduleEngineJob(get, set);
@@ -784,7 +784,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       placeDetect: { ...state.placeDetect, overridden: true },
       params: { ...state.params, city_label: value },
       engine: markEngineStale(state.engine),
-      bake: markBakeStale(state.bake),
+      exportState: markExportStale(state.exportState),
     }));
     scheduleEngineJob(get, set);
   },
@@ -794,7 +794,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       placeDetect: { ...state.placeDetect, overridden: false },
       params: { ...state.params, city_label: state.placeDetect.detectedCity ?? "" },
       engine: markEngineStale(state.engine),
-      bake: markBakeStale(state.bake),
+      exportState: markExportStale(state.exportState),
     }));
     scheduleEngineJob(get, set);
   },
@@ -859,7 +859,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       params: snapshot.params,
       scene: locationChanged ? { ...state.scene, stale: true } : state.scene,
       engine: locationChanged || paramsChanged ? markEngineStale(state.engine) : state.engine,
-      bake: locationChanged || paramsChanged ? markBakeStale(state.bake) : state.bake,
+      exportState: locationChanged || paramsChanged ? markExportStale(state.exportState) : state.exportState,
     }));
     // The (WASM, in-page) engine job, never Overpass: harmless to schedule
     // whether or not anything actually moved, unlike `generate()`.
@@ -873,7 +873,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       params,
       scene: { ...state.scene, stale: true },
       engine: markEngineStale(state.engine),
-      bake: markBakeStale(state.bake),
+      exportState: markExportStale(state.exportState),
       terrain: { ...initialTerrainState },
       presetChosen: false,
       heroCapHit: false,
@@ -887,7 +887,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     scheduleTerrainJob(get, set);
     // Unlike a share restore, opening a project file is a deliberate "load
     // this design" action -- it re-ingests immediately rather than leaving
-    // the scene stale for the user to Generate themselves.
+    // the scene stale for the user to Preview themselves.
     void get().generate();
   },
 
@@ -898,7 +898,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
    * live Overpass query at whatever location it names, and auto-running one on
    * page load would make opening a link in a background tab a server request
    * nobody asked for. The scene is marked stale instead, which is exactly the
-   * state a moved pin leaves behind: Generate is enabled and says "Generate".
+   * state a moved pin leaves behind: Preview is enabled and says "Preview".
    *
    * `presetChosen` stays false even when the link names a preset: the chip may
    * only light up once something real backs it (`activePresetId`).
@@ -915,7 +915,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       params,
       scene: { ...state.scene, stale: true },
       engine: markEngineStale(state.engine),
-      bake: markBakeStale(state.bake),
+      exportState: markExportStale(state.exportState),
       // A cached grid is for the OLD pin/params; a link can name a different
       // place and different terrain settings entirely.
       terrain: { ...initialTerrainState },
@@ -993,10 +993,10 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         set((state) => ({
           scene: { status: "ready", graph: outcome.scene, message: null, request, stale: false },
           // A new SceneGraph invalidates a fresh engine result and a finished
-          // bake for the same reason a slider does: the geometry is no longer
+          // export for the same reason a slider does: the geometry is no longer
           // this geometry.
           engine: markEngineStale(state.engine),
-          bake: markBakeStale(state.bake),
+          exportState: markExportStale(state.exportState),
         }));
         scheduleEngineJob(get, set);
         perfFlush("ingest");
@@ -1025,16 +1025,16 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     }
   },
 
-  requestBake: async () => {
+  requestExport: async () => {
     const { scene, params } = get();
     // Includes 04's 60 mm ceiling, which the engine would refuse anyway; this
     // is pure arithmetic over the scene already in memory, never a request.
-    const blocked = bakeBlockReason(scene.graph, params);
+    const blocked = exportBlockReason(scene.graph, params);
     if (blocked) {
-      set({ bake: bakeFailedLocally(initialBakeState, blocked) });
+      set({ exportState: exportFailedLocally(initialExportState, blocked) });
       return;
     }
-    set((state) => ({ bake: bakeExporting(state.bake) }));
+    set((state) => ({ exportState: exportStarted(state.exportState) }));
 
     let result = get().engine.result;
     const fresh = get().engine;
@@ -1043,14 +1043,14 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     }
     if (result === null) {
       set((state) => ({
-        bake: bakeFailedLocally(state.bake, get().engine.error ?? "The engine could not build a model."),
+        exportState: exportFailedLocally(state.exportState, get().engine.error ?? "The engine could not build a model."),
       }));
       return;
     }
 
     const graph = get().scene.graph;
     if (!graph) {
-      set((state) => ({ bake: bakeFailedLocally(state.bake, "Generate a scene first.") }));
+      set((state) => ({ exportState: exportFailedLocally(state.exportState, "Preview a location first.") }));
       return;
     }
     try {
@@ -1065,10 +1065,10 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
           preset_id: location.preset_id,
         },
       });
-      set((state) => ({ bake: bakeDone(state.bake, target, outcome, result.findings) }));
+      set((state) => ({ exportState: exportDone(state.exportState, target, outcome, result.findings) }));
       perfFlush("export");
     } catch (error) {
-      set((state) => ({ bake: bakeFailedLocally(state.bake, errorMessage(error)) }));
+      set((state) => ({ exportState: exportFailedLocally(state.exportState, errorMessage(error)) }));
     }
   },
 

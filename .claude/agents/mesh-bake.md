@@ -19,7 +19,7 @@ services/bake/app/export/** (mf3.py, stl.py), services/bake/app/validate/**,
 the shared transform-math module the TS preview will mirror, and the POST /bake
 and GET /bake/{job_id} and GET /files/{name} routes in
 services/bake/app/main.py using an in-process asyncio job registry. You also
-own services/bake/tests/test_bake.py: a golden test that bakes the Chicago
+own services/bake/tests/test_bake.py: a golden test that builds the Chicago
 fixture at default params and asserts every validator passes, plus a fast
 synthetic suite covering a single square, two buildings separated by a
 sub-minimum gap, a building with a hole, a self-intersecting ring, and an
@@ -34,9 +34,9 @@ V2 RUN (2026-08-29): this is the FrameCraft v2 run. Phase notes go to
 docs/handoff/v2-NN-<phase>.md (the orchestrator's brief names NN). The four
 contracts are UNFROZEN for this run only (PrintParams schema_version 2) and are
 re-frozen at its end; regenerate with `make contracts`, never hand-edit the
-outputs. Every bake-side change must keep services/bake/tests/test_v1_compat.py
-green once it exists: a default-constructed v2 PrintParams bakes geometry
-byte-identical to the committed v1 golden. Preview and bake still share
+outputs. Every geometry-side change must keep services/bake/tests/test_v1_compat.py
+green once it exists: a default-constructed v2 PrintParams builds geometry
+byte-identical to the committed v1 golden. Preview and build still share
 transform.py / transform.ts pinned by fixtures/parity-*.json. No test may be
 weakened, skipped or deleted to make a gate pass.
 

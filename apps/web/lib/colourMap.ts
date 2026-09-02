@@ -9,7 +9,7 @@
  * (`RegionMesh.slot`/`colorHex`), so nothing here recomputes a colour on its
  * own; it only reads `params.colour` (through `lib/engine/solid/context.ts`'s
  * `regionSlot`/`regionColor`, the one place that table is resolved) for the
- * regions a bake has not produced yet.
+ * regions a build has not produced yet.
  */
 
 import type { PrintParams } from "./contracts";
@@ -24,9 +24,9 @@ export interface ColourRow {
 }
 
 /**
- * One row per region. While a bake result is fresh, the rows are exactly the
+ * One row per region. While a build result is fresh, the rows are exactly the
  * regions it produced (so the panel can never show a slot/colour the exported
- * file disagrees with); before the first bake (or while one is a stale
+ * file disagrees with); before the first build (or while one is a stale
  * placeholder with no regions) every region name the contract can colour
  * shows up with its resolved default. `easel` is not listed: it has no
  * `colour.region_slots`/`region_colors` entry of its own, it always mirrors
@@ -40,10 +40,10 @@ export function colourRows(params: PrintParams, result: EngineResult | null): Co
       colorHex: region.colorHex,
     }));
   }
-  // Only the CONTRACT's own region names before a bake -- not
+  // Only the CONTRACT's own region names before a build -- not
   // `REGION_NAMES`, which also carries the derived, feature-gated regions
   // (`cleat`, `buildings_band_2..8`, `[V3-P5-F7]`): those exist only once an
-  // actual bake produced them (cleat hanger on, gradient on), and listing
+  // actual build produced them (cleat hanger on, gradient on), and listing
   // eight phantom band rows before the user has ever enabled a gradient
   // would be a row the panel cannot back up with a real slot/colour choice.
   return COLOURABLE_REGION_NAMES.filter((region) => region !== "easel").map((region) => ({

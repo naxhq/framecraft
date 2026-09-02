@@ -187,7 +187,7 @@ describe("detailAdvice", () => {
 
 describe("applyAdvisorAction", () => {
   it("takes a radius down the same path a slider release takes", () => {
-    // `setRadius` marks the scene stale and retires a finished bake; `generate`
+    // `setRadius` marks the scene stale and retires a finished build; `generate`
     // is the one POST /scene. Both, in that order, or the editor would either
     // fetch the old radius or not fetch at all.
     const calls: string[] = [];

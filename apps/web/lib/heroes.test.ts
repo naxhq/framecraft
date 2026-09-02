@@ -3,7 +3,7 @@
  *
  * The cap is the frozen contract's `hero_building_ids.maxItems`. Enforcing it
  * in the editor is not belt-and-braces: a thirteenth id would be rejected by
- * pydantic at `POST /bake`, so the user would lose a whole bake to find out
+ * pydantic at `POST /bake`, so the user would lose a whole build to find out
  * what a message at the moment of the click could have told them.
  */
 

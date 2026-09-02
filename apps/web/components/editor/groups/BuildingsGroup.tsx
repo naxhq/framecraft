@@ -23,7 +23,7 @@ const EMPTY_HERO_IDS: readonly string[] = [];
 
 /**
  * What a hero row shows, in words. With NO SCENE at all (a fresh share-link
- * restore, before Generate has run: `store/editor.ts`'s own rule is that a
+ * restore, before Preview has run: `store/editor.ts`'s own rule is that a
  * restore never fetches on its own) there is nothing to look a name up IN --
  * showing `heroDisplayName`'s "unnamed building" there would be a lie: it
  * reads as "checked, this building has no name" when the truth is "never
@@ -126,7 +126,7 @@ export function BuildingsGroup() {
 
       <Field
         label="Hero buildings"
-        hint="Click a building in the preview to pick it out. Heroes keep their true height and can take their own colour when the bake runs."
+        hint="Click a building in the preview to pick it out. Heroes keep their true height and can take their own colour when the model is built."
       >
         <div data-testid="hero-list" className="space-y-1">
           {heroes.length === 0 ? (
@@ -214,7 +214,7 @@ export function BuildingsGroup() {
           <div data-testid="hero-auto-list" className="space-y-1">
             {autoOnlyIds.length === 0 ? (
               <p className="text-2xs text-ink-faint">
-                {graph ? "No further buildings stood out here." : "Generate a scene first."}
+                {graph ? "No further buildings stood out here." : "Preview a location first."}
               </p>
             ) : (
               <ul className="space-y-1">

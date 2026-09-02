@@ -3,7 +3,7 @@
  *
  * The load-bearing test is the second block: `city_label`, the engraving texts
  * and the underside template are free text, and B and R are ordinary letters.
- * A shortcut that fires while someone types "Berlin" would start a bake in the
+ * A shortcut that fires while someone types "Berlin" would start a build in the
  * middle of a word.
  */
 
@@ -16,7 +16,7 @@ const input = (type: string) => ({ tagName: "INPUT", type });
 describe("shortcutFor", () => {
   it("maps the four action keys", () => {
     expect(shortcutFor({ key: "g" })).toBe("generate");
-    expect(shortcutFor({ key: "b" })).toBe("bake");
+    expect(shortcutFor({ key: "b" })).toBe("export");
     expect(shortcutFor({ key: "r" })).toBe("reset");
     expect(shortcutFor({ key: "?" })).toBe("help");
     expect(shortcutFor({ key: "Escape" })).toBe("dismiss");
@@ -24,7 +24,7 @@ describe("shortcutFor", () => {
 
   it("accepts the capitals a caps-lock user sends", () => {
     expect(shortcutFor({ key: "G" })).toBe("generate");
-    expect(shortcutFor({ key: "B" })).toBe("bake");
+    expect(shortcutFor({ key: "B" })).toBe("export");
   });
 
   it("opens the sheet on Shift+/ as well as on ?", () => {
@@ -86,8 +86,8 @@ describe("shortcutFor", () => {
     // arrow keys it does answer to are not shortcuts.
     expect(shortcutFor({ key: "g", target: input("range") })).toBe("generate");
     expect(shortcutFor({ key: "ArrowRight", target: input("range") })).toBeNull();
-    expect(shortcutFor({ key: "b", target: input("checkbox") })).toBe("bake");
-    expect(shortcutFor({ key: "b", target: { tagName: "BUTTON" } })).toBe("bake");
+    expect(shortcutFor({ key: "b", target: input("checkbox") })).toBe("export");
+    expect(shortcutFor({ key: "b", target: { tagName: "BUTTON" } })).toBe("export");
   });
 });
 
@@ -116,7 +116,7 @@ describe("the shortcut sheet's own list", () => {
       ),
     );
     expect([...documented].sort()).toEqual(
-      ["bake", "dismiss", "generate", "help", "redo", "reset", "undo"].sort(),
+      ["export", "dismiss", "generate", "help", "redo", "reset", "undo"].sort(),
     );
   });
 

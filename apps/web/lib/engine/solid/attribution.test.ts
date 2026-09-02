@@ -4,7 +4,7 @@
  *
  * Two halves. The pure half (composition, wrapping, depth clamping, band
  * arithmetic) needs nothing but the shared metrics and runs in microseconds.
- * The baked half runs three real bakes - default, `underside_mark` off, frame
+ * The built half runs three real builds - default, `underside_mark` off, frame
  * off - and measures the geometry each one produced, because "the resolved line
  * says it cut" is exactly the claim a regression would keep telling the truth
  * about while cutting nothing.
@@ -16,7 +16,7 @@ import { defaultPrintParams, type PrintParams } from "../../contracts";
 import { primeGlyphFace, resetGlyphFaces } from "../../fontGlyphs";
 import monoGlyphs from "../../fonts/mono.glyphs.json";
 import * as T from "../../transform";
-import { bake } from "../engine";
+import { buildModel } from "../engine";
 import type { EngineResult, RegionMesh } from "../types";
 import {
   ATTRIBUTION_FACE,
@@ -162,22 +162,22 @@ describe("wall normals", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The bakes
+// The builds
 // ---------------------------------------------------------------------------
 
-describe("every bake carries the marks", () => {
+describe("every build carries the marks", () => {
   let plain: EngineResult;
   let silenced: EngineResult;
   let frameless: EngineResult;
 
   beforeAll(async () => {
-    plain = await bake({ scene: smallScene(), params: defaultPrintParams(), date: DATE });
-    silenced = await bake({
+    plain = await buildModel({ scene: smallScene(), params: defaultPrintParams(), date: DATE });
+    silenced = await buildModel({
       scene: smallScene(),
       params: { ...defaultPrintParams(), underside_mark: { enabled: false, template: "{city}" } },
       date: DATE,
     });
-    frameless = await bake({
+    frameless = await buildModel({
       scene: smallScene(),
       params: { ...defaultPrintParams(), frame: false },
       date: DATE,
@@ -212,7 +212,7 @@ describe("every bake carries the marks", () => {
   });
 
   it("APPENDS the user's template under the mandatory text, never instead of it", async () => {
-    const marked = await bake({
+    const marked = await buildModel({
       scene: smallScene(),
       params: {
         ...defaultPrintParams(),
@@ -254,7 +254,7 @@ describe("every bake carries the marks", () => {
   });
 
   it("cuts the full 0.6 mm when the plate is thick enough", async () => {
-    const thick = await bake({
+    const thick = await buildModel({
       scene: smallScene(),
       params: { ...defaultPrintParams(), base_thickness_mm: 5 },
       date: DATE,
@@ -357,7 +357,7 @@ describe("the provenance block", () => {
       city_label: "Chicago",
       place: { country: "", state: "", neighbourhood: "", author: "V. Alizadeh" },
     };
-    const result = await bake({ scene: smallScene(), params, date: DATE });
+    const result = await buildModel({ scene: smallScene(), params, date: DATE });
     const created = new Date("2026-09-01T09:00:00Z");
     const source = { lat: 41.8827, lon: -87.6233, radius_m: 200 };
 
@@ -413,7 +413,7 @@ describe("the provenance block", () => {
 
   it("is in the sidecar, saying the same thing the files say", async () => {
     const { buildSidecarJson } = await import("../export/common");
-    const result = await bake({
+    const result = await buildModel({
       scene: smallScene(),
       params: {
         ...defaultPrintParams(),
@@ -446,7 +446,7 @@ describe("the provenance block", () => {
   it("is blank-safe: no author is an empty entry, not a missing one", async () => {
     const { exportGeneric3mf } = await import("../export/generic3mf");
     const { unzipText } = await import("../export/zip");
-    const result = await bake({ scene: smallScene(), params: defaultPrintParams(), date: DATE });
+    const result = await buildModel({ scene: smallScene(), params: defaultPrintParams(), date: DATE });
     const model = unzipText(
       exportGeneric3mf(result, { created: new Date("2026-09-01T09:00:00Z") }).bytes,
       "3D/3dmodel.model",

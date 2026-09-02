@@ -11,7 +11,7 @@
  * own module, `[V3-P5-C]`), and this module calls it, so the shade the preview
  * paints on a building and the shade the OBJ gives it are the same number from
  * the same function rather than two implementations that agree until one of
- * them is edited. What this module adds is the part only the bake knows: WHICH
+ * them is edited. What this module adds is the part only the build knows: WHICH
  * building solid each tint belongs to, and where it is on the plate
  * (`[V3-P5-F8]`).
  */

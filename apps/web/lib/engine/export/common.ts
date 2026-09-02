@@ -351,9 +351,9 @@ export const FALLBACK_SLOT_COLORS = ["#FFFFFF", "#00AE42", "#0086D6", "#F5A623",
 
 /**
  * Shape `make validate FILE=...` reads (`services/bake/app/cli.py`'s own
- * sidecar, which the reference Python bake writes): one function so
- * `scripts/bake-cli.ts` (the gate's CLI path) and the browser's own Bake ->
- * download flow (`lib/bake.ts`) can never drift into two different sidecar
+ * sidecar, which the reference Python implementation writes): one function so
+ * `scripts/export-cli.ts` (the gate's CLI path) and the browser's own Export ->
+ * download flow (`lib/exportFlow.ts`) can never drift into two different sidecar
  * shapes for the same `EngineResult`.
  */
 export interface SidecarInput {
@@ -382,7 +382,7 @@ export function buildSidecarJson(input: SidecarInput): Record<string, unknown> {
   return {
     attribution: ATTRIBUTION,
     license: "ODbL 1.0",
-    generator: "FrameCraft web bake",
+    generator: "FrameCraft web engine",
     created_at: isoTimestamp(created),
     // The same five facts every exported FILE carries, so a sidecar read on its
     // own says exactly what the model beside it says (`[V3-P7-A10]`).
@@ -429,7 +429,7 @@ export function buildSidecarJson(input: SidecarInput): Record<string, unknown> {
     export_target: target,
     printer_profile: printerProfileId,
     /**
-     * The Z ceiling this bake was made against, mm.
+     * The Z ceiling this build was made against, mm.
      *
      * The reference validator's bounding-box row reads it (`app/cli.py`
      * `_max_height_from_sidecar`) so a 90 mm model made for a 250 mm machine

@@ -38,7 +38,7 @@
  */
 
 import * as T from "../../transform";
-import type { BakeContext } from "./context";
+import type { BuildContext } from "./context";
 import type { Contour, CrossSection, Manifold } from "./manifold";
 import { snapZ } from "./manifold";
 
@@ -59,7 +59,7 @@ export const TERRAIN_CELL_MM = 3.0;
  * The terrain rises out of a flat rim rather than off a cliff, because the
  * frame is not draped: a picture frame with a wavy top edge is not a picture
  * frame, and the taper is also what keeps the plate rim and the 45 degree
- * chamfer exactly where a flat bake puts them.
+ * chamfer exactly where a flat build puts them.
  *
  * The taper is the STEEPEST thing on the plate, and steepness is what a
  * per-vertex warp cannot represent: the chord error of a smoothstep of
@@ -109,7 +109,7 @@ export const LOW_RELIEF_MM = 0.8;
  */
 export const DRAPE_SIMPLIFY_MM = 1e-6;
 
-/** The displacement field, resolved once per bake. */
+/** The displacement field, resolved once per build. */
 export interface Drape {
   /** Vertical displacement of the terrain surface at a plan point, print mm. */
   atMm(xMm: number, yMm: number): number;
@@ -124,13 +124,13 @@ export interface Drape {
 }
 
 /**
- * Resolve the displacement field, or `null` when this bake is flat.
+ * Resolve the displacement field, or `null` when this build is flat.
  *
  * `reliefMm` is the sampler's own range put through
  * `transform.terrain_z_mm`, which is where - and the only place where -
  * `terrain_exaggeration` is applied (`[V3-P3-G1]`).
  */
-export function makeDrape(ctx: BakeContext): Drape | null {
+export function makeDrape(ctx: BuildContext): Drape | null {
   const sampler = ctx.terrain;
   if (sampler === null) return null;
   const { params, scale } = ctx;
@@ -185,7 +185,7 @@ export function makeDrape(ctx: BakeContext): Drape | null {
  * between them a plane.
  */
 export function drapeSolid(
-  ctx: BakeContext,
+  ctx: BuildContext,
   drape: Drape | null,
   solid: Manifold | null,
   cellMm: number = TERRAIN_CELL_MM,

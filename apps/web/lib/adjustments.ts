@@ -4,12 +4,12 @@
  * The editor has two kinds of thing to say about a model, and they deserve
  * very different weight:
  *
- *  - **Blocking.** Bake will refuse this: too few buildings, or over 04's
+ *  - **Blocking.** Export will refuse this: too few buildings, or over 04's
  *    60 mm ceiling. These stay on screen as banners (`components/editor/
  *    WarningBanners.tsx`) because they are the reason a button is disabled.
  *  - **Informational.** Things the pipeline quietly did or will do: footprints
  *    widened to the minimum wall, patches dropped as sub-detail, trees below
- *    the nozzle floor, heights estimated from OSM tags, and whatever the bake
+ *    the nozzle floor, heights estimated from OSM tags, and whatever the build
  *    itself reported. Six of those stacked in a sidebar is noise; one chip that
  *    opens a grouped drawer is a summary you can act on.
  *
@@ -20,7 +20,7 @@
 import type { SceneWarning } from "./warnings";
 
 /** Which heading an adjustment sits under in the drawer. */
-export type AdjustmentGroup = "site" | "repair" | "bake";
+export type AdjustmentGroup = "site" | "repair" | "build";
 
 export interface Adjustment {
   id: string;
@@ -34,13 +34,13 @@ export interface Adjustment {
 export const ADJUSTMENT_GROUP_TITLES: Record<AdjustmentGroup, string> = {
   site: "What the map gave us",
   repair: "Made printable",
-  bake: "From the bake",
+  build: "From the model",
 };
 
 export const ADJUSTMENT_GROUP_ORDER: readonly AdjustmentGroup[] = [
   "site",
   "repair",
-  "bake",
+  "build",
 ];
 
 /**
@@ -56,24 +56,24 @@ export interface AdjustmentSources {
   warnings: readonly SceneWarning[];
   /** `preview.dilatedNotice(...)`, or null when nothing was widened. */
   dilatedNote: string | null;
-  /** Footprints the bake drops as sub-detail. */
+  /** Footprints the build drops as sub-detail. */
   droppedCount: number;
   /** Ground radius under which a fat nozzle drops trees, or null. */
   treeFloorMetres: number | null;
   nozzleMm: number;
-  /** `BakeResult.warnings` from the last finished bake. */
-  bakeWarnings: readonly string[];
+  /** `BakeResult.warnings` from the last finished build. */
+  buildWarnings: readonly string[];
   /**
    * `transform.lettering_layout(...).warnings`, verbatim: an auto-fitted size,
    * a character the face cannot lay out, a refused engraving, the "the frame is
-   * off" line. Verbatim on purpose -- these are the same strings the bake
+   * off" line. Verbatim on purpose -- these are the same strings the build
    * reports for the same parameters, so a user who reads one here and one in
-   * the bake output is reading one sentence twice, not two.
+   * the build output is reading one sentence twice, not two.
    */
   textNotices?: readonly string[];
 }
 
-/** The warnings that must stay on screen because they disable Bake. */
+/** The warnings that must stay on screen because they disable Export. */
 export function blockingWarnings(
   warnings: readonly SceneWarning[],
 ): SceneWarning[] {
@@ -149,10 +149,10 @@ export function collectAdjustments(sources: AdjustmentSources): Adjustment[] {
     });
   }
 
-  for (const [index, warning] of sources.bakeWarnings.entries()) {
+  for (const [index, warning] of sources.buildWarnings.entries()) {
     out.push({
-      id: `bake-${index}`,
-      group: "bake",
+      id: `build-${index}`,
+      group: "build",
       message: warning,
       tone: "warn",
     });
@@ -196,7 +196,7 @@ function capitalise(text: string): string {
 
 /**
  * The shared math's messages are clause-shaped ("the top engraving was reduced
- * from 8 mm to 5.16 mm to fit the 6 mm lip band"), because the bake joins them
+ * from 8 mm to 5.16 mm to fit the 6 mm lip band"), because the build joins them
  * into a warnings list. In the drawer they are read one per bullet, so they get
  * the sentence case and the full stop the rest of the list has -- without
  * rewording a single one of them.

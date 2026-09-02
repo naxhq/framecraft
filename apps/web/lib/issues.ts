@@ -8,7 +8,7 @@
  *
  *  - `lib/warnings.ts`'s `SceneWarning[]` (`sceneWarnings` +
  *    `letteringWarnings`), the CLIENT-side verdicts computed straight off the
- *    `SceneGraph` in memory -- cheap, always current, and what disables Bake
+ *    `SceneGraph` in memory -- cheap, always current, and what disables Export
  *    (`WarningBanners.tsx` still reads them directly for that; nothing here
  *    changes that path).
  *  - `lib/engine/types.ts`'s `AuditFinding[]`, the live browser engine's own
@@ -54,7 +54,7 @@ const LEVEL_TO_SEVERITY: Record<WarningLevel, IssueSeverity> = {
  * this.
  */
 const WARNING_TITLES: Record<string, string> = {
-  "coverage-empty": "Too few buildings to bake",
+  "coverage-empty": "Too few buildings to export",
   "coverage-sparse": "Low building coverage",
   "model-too-tall": "The model is too tall to print",
   "base-too-thin-for-underside": "The base is too thin for what is cut into it",

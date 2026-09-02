@@ -28,11 +28,11 @@ import { useEditorStore } from "@/store/editor";
  *
  * This is additive next to `AdjustmentsChip` ([V3-P4-U], scope note): that
  * chip keeps the passive, non-fix-capable remarks it already owned (widened
- * footprints, dropped patches, the bake's own notes); this badge is the new
+ * footprints, dropped patches, the build's own notes); this badge is the new
  * surface for everything that can be acted on. The two floating badges sit
  * side by side over the viewport rather than one replacing the other --
  * folding them into a single widget would mean rewriting `AdjustmentsChip`'s
- * existing, well-tested category grouping (site/repair/bake) into a
+ * existing, well-tested category grouping (site/repair/build) into a
  * severity grouping across every e2e spec that names it
  * (`a11y.spec.ts`, `lettering.spec.ts`, `ui.spec.ts`), which is out of this
  * task's remaining scope; flagged to the team lead for a follow-up
@@ -68,7 +68,7 @@ export function IssuesBadge({ issues }: { issues: readonly Issue[] }) {
     if (uninteresting) buttonRef.current?.focus();
   }, [open]);
 
-  // A fresh set of issues (a new bake, a new scene) retires last time's
+  // A fresh set of issues (a new build, a new scene) retires last time's
   // "Fixed" marks and report: they described a PREVIOUS list, and a stale
   // "Fixed" on a row that has since come back (the fix did not stick, or the
   // model changed again) would lie.

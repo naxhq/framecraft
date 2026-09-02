@@ -6,19 +6,19 @@
  * low-coverage warning rather than an empty scene or a crash.
  * 03: when `height_tag_ratio` is under 0.15 the UI must say heights are
  * largely estimated.
- * 04 stage 4: the printed model must stay under 60 mm tall. The bake refuses
- * such a model in under a millisecond (`bake.ModelTooTallError`), so the editor
- * has to reach the same verdict from the same math -- offering a Bake the
- * server will bounce is exactly the preview/bake divergence 01 calls the worst
- * failure mode. The prediction is pure client-side arithmetic over the
- * SceneGraph already in memory: no `/scene` call, no `/bake` call.
+ * 04 stage 4: the printed model must stay under 60 mm tall. The build refuses
+ * such a model in under a millisecond (`ModelTooTallError`), so the editor
+ * has to reach the same verdict from the same math -- offering an Export the
+ * engine will refuse is exactly the preview/build divergence 01 calls the
+ * worst failure mode. The prediction is pure client-side arithmetic over the
+ * SceneGraph already in memory, and never a network call.
  *
  * [V2-P5] adds a second refusal of the same shape: a base too thin to carry
  * what is cut into its underside (`lettering.BaseTooThinError`, the arithmetic
  * in `transform.underside_min_base_mm`). Two docstrings in `transform.py` said
  * "the editor predicts the refusal from this function" and nothing in
  * `apps/web` called it, so `hanger = keyhole` on the default 3 mm base was
- * silently offered and the user found out from a failed bake (v2-07 audit,
+ * silently offered and the user found out from a failed build (v2-07 audit,
  * finding 4). It is a `block` warning now, exactly like `model-too-tall`.
  */
 
@@ -56,7 +56,7 @@ export function heightCeilingMm(params: PrintParams): number {
 }
 
 /** 01/A2. `coverage: "empty"` is the server's own verdict on the same rule. */
-export const MIN_BUILDINGS_TO_BAKE = 20;
+export const MIN_BUILDINGS_TO_EXPORT = 20;
 /** 03: under this share of `height_source === "tag"`, heights are guesses. */
 export const ESTIMATED_HEIGHT_RATIO = 0.15;
 
@@ -87,7 +87,7 @@ function effectiveParamsForHeight(graph: SceneGraph, params: PrintParams): Print
 /**
  * Height the finished print would reach, mm, or null when there is no scene.
  *
- * Straight from `transform.predicted_top_mm`, the function the bake's own guard
+ * Straight from `transform.predicted_top_mm`, the function the build's own guard
  * calls, so the number shown in the UI is the number the server compares to 60.
  * Cheap enough (one pass over the buildings) to live in a `useMemo`.
  */
@@ -235,7 +235,7 @@ export function undersideBlockMessage(params: PrintParams): string | null {
 
 /**
  * Every warning the current scene deserves. A `block` level warning also
- * disables Bake (see `bakeBlockReason`).
+ * disables Export (see `exportBlockReason`).
  */
 export function sceneWarnings(
   graph: SceneGraph | null,
@@ -245,12 +245,12 @@ export function sceneWarnings(
   const warnings: SceneWarning[] = [];
   const { building_count: count, coverage, height_tag_ratio: ratio } = graph.stats;
 
-  if (coverage === "empty" || count < MIN_BUILDINGS_TO_BAKE) {
+  if (coverage === "empty" || count < MIN_BUILDINGS_TO_EXPORT) {
     warnings.push({
       id: "coverage-empty",
       level: "block",
       message:
-        `Fewer than ${MIN_BUILDINGS_TO_BAKE} buildings here (${count}) — ` +
+        `Fewer than ${MIN_BUILDINGS_TO_EXPORT} buildings here (${count}) — ` +
         "enlarge the radius or move the pin.",
     });
   } else if (coverage === "sparse") {
@@ -312,7 +312,7 @@ export function tintPreviewOnlyWarning(params: PrintParams): SceneWarning[] {
       message:
         "Building tint affects the preview and the OBJ export only. " +
         `The active export target (${params.export_target ?? "bambu-3mf"}) ` +
-        "prints every building in its region's own filament colour.",
+        "gives every building its region's own filament colour instead.",
     },
   ];
 }
@@ -325,9 +325,9 @@ export function tintPreviewOnlyWarning(params: PrintParams): SceneWarning[] {
  * while these need a `TokenContext` (the resolved place, the scene's scale and
  * building count, today's date) that only a caller with a live scene and a
  * resolved place can build. Every caller that shows the Issues badge merges
- * the two lists (`components/scene/CityPreview.tsx`); `bakeBlockReason` does
+ * the two lists (`components/scene/CityPreview.tsx`); `exportBlockReason` does
  * not, because nothing here is ever `block` level -- an empty line is omitted
- * from the bake (`lib/bake.ts`), never a reason to refuse it.
+ * from the export (`lib/exportFlow.ts`), never a reason to refuse it.
  *
  * One info-level entry when the frame is off and lettering is configured for
  * it (never one per line: turning Frame back on fixes every line at once), and
@@ -363,12 +363,12 @@ export function letteringWarnings(
   return warnings;
 }
 
-/** Why Bake is disabled, or null when it is allowed. */
-export function bakeBlockReason(
+/** Why Export is disabled, or null when it is allowed. */
+export function exportBlockReason(
   graph: SceneGraph | null,
   params: PrintParams,
 ): string | null {
-  if (!graph) return "Generate a scene first.";
+  if (!graph) return "Preview a location first.";
   const blocking = sceneWarnings(graph, params).find((w) => w.level === "block");
   return blocking ? blocking.message : null;
 }

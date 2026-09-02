@@ -7,7 +7,7 @@ import { RECENT_CHANGED_EVENT, clearRecent, listRecent, type RecentDesign } from
 import { useEditorStore } from "@/store/editor";
 
 /**
- * Recent designs: every successful bake or Copy-link recorded a `{name,
+ * Recent designs: every successful export or Copy-link recorded a `{name,
  * savedAt, payload}` (`lib/recent.ts`), and this is where they come back
  * ([V3-P6]). Restoring one runs the exact same `decodeShare` a shared link
  * uses -- a recent entry IS a share payload, so the two can never disagree
@@ -23,7 +23,7 @@ export function RecentDesigns() {
 
   useEffect(() => {
     setList(listRecent());
-    // A bake or a Copy-link elsewhere on the page (`OutputPanel.tsx`) writes
+    // An export or a Copy-link elsewhere on the page (`OutputPanel.tsx`) writes
     // through `lib/recent.ts`, which fires this event -- the cheapest way to
     // notice without a shared store slice for a list that is, by design,
     // just a mirror of localStorage.

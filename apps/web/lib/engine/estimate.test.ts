@@ -4,13 +4,13 @@
  * The arithmetic is checked against numbers worked out by hand; the Chicago
  * default is checked against the window the phase brief asks for, and that
  * assertion is the calibration: if a constant in `estimate.ts` moves far enough
- * to take a real bake out of a plausible print time, this fails.
+ * to take a real build out of a plausible print time, this fails.
  */
 
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { defaultPrintParams, type PrintParams } from "../contracts";
-import { bake } from "./engine";
+import { buildModel } from "./engine";
 import { chicagoScene } from "./solid/fixture";
 import {
   ESTIMATE_CAVEAT,
@@ -150,8 +150,8 @@ describe("the default Chicago plate", () => {
 
   beforeAll(async () => {
     const params: PrintParams = defaultPrintParams();
-    const baked = await bake({ scene: chicagoScene(), params, date: "2026-09-01" });
-    out = estimate(baked, params);
+    const built = await buildModel({ scene: chicagoScene(), params, date: "2026-09-01" });
+    out = estimate(built, params);
     console.info(
       `[chicago estimate] ${out.volumeMm3.toFixed(0)} mm3, ${out.grams.toFixed(1)} g, ` +
         `${out.metres.toFixed(1)} m, ${out.layers} layers, ${out.duration}`,

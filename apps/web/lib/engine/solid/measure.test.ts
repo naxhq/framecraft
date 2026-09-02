@@ -8,11 +8,11 @@
  * either order, so nothing about the ANSWER pins their order - and their costs
  * differ by two orders of magnitude, because the erosion is sized by the region
  * and the intersect is sized by the slice. Running persistence first made the
- * default browser bake 2.7x slower and stalled the e2e preview
+ * default browser build 2.7x slower and stalled the e2e preview
  * (`[V3-P7-fix2-1]`, `docs/handoff/v3-07-fix.md` §8).
  *
  * A wall-clock bound would pin this too, and would be flaky on a loaded host.
- * This counts the intersects instead: on a flat bake the persistence test may
+ * This counts the intersects instead: on a flat build the persistence test may
  * only ever see a region the erosion probe already found thin.
  */
 

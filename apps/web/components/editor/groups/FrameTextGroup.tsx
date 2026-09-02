@@ -242,7 +242,7 @@ export function FrameTextGroup() {
    * The panel shows each line's VERDICT next to the line itself -- the fitted
    * size, or the refusal and the size that would work -- because that is where
    * the user is when they choose a cap height. The same messages also reach the
-   * adjustments drawer through the preview, and the bake reports them again for
+   * adjustments drawer through the preview, and the build reports them again for
    * the same parameters; all three are one string from one function.
    */
   const layout = useMemo(

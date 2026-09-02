@@ -1,8 +1,8 @@
 /**
  * The chip's arithmetic and the drawer's grouping.
  *
- * What matters here is the SPLIT: a warning that disables Bake must never end
- * up inside a collapsed drawer, and everything that does not disable Bake must
+ * What matters here is the SPLIT: a warning that disables Export must never end
+ * up inside a collapsed drawer, and everything that does not disable Export must
  * never stack up as another line of orange text beside the model.
  */
 
@@ -49,7 +49,7 @@ const EMPTY: AdjustmentSources = {
   droppedCount: 0,
   treeFloorMetres: null,
   nozzleMm: 0.4,
-  bakeWarnings: [],
+  buildWarnings: [],
 };
 
 describe("the blocking / informational split", () => {
@@ -83,9 +83,9 @@ describe("collectAdjustments", () => {
       droppedCount: 12,
       treeFloorMetres: 9.3,
       nozzleMm: 0.8,
-      bakeWarnings: ["2 self-intersections repaired", "roads clipped to the plate"],
+      buildWarnings: ["2 self-intersections repaired", "roads clipped to the plate"],
     });
-    // 2 informational warnings + widened + dropped + trees + 2 bake = 7.
+    // 2 informational warnings + widened + dropped + trees + 2 build = 7.
     expect(adjustments).toHaveLength(7);
     expect(adjustmentsLabel(adjustments.length)).toBe("7 adjustments made");
   });
@@ -125,12 +125,12 @@ describe("collectAdjustments", () => {
     );
   });
 
-  it("marks the bake's own remarks as warnings, with stable ids", () => {
+  it("marks the build's own remarks as warnings, with stable ids", () => {
     const items = collectAdjustments({
       ...EMPTY,
-      bakeWarnings: ["a", "b"],
+      buildWarnings: ["a", "b"],
     });
-    expect(items.map((item) => item.id)).toEqual(["bake-0", "bake-1"]);
+    expect(items.map((item) => item.id)).toEqual(["build-0", "build-1"]);
     expect(items.every((item) => item.tone === "warn")).toBe(true);
   });
 });
@@ -156,7 +156,7 @@ describe("groupAdjustments", () => {
       droppedCount: 2,
       treeFloorMetres: 5,
       nozzleMm: 0.6,
-      bakeWarnings: ["x"],
+      buildWarnings: ["x"],
     });
     const sections = groupAdjustments(adjustments);
     const total = sections.reduce((sum, section) => sum + section.items.length, 0);
@@ -183,7 +183,7 @@ describe("lettering notices", () => {
     droppedCount: 0,
     treeFloorMetres: null,
     nozzleMm: 0.4,
-    bakeWarnings: [],
+    buildWarnings: [],
   };
 
   it("files them under `Made printable`, which is what they are", () => {
@@ -205,7 +205,7 @@ describe("lettering notices", () => {
       textNotices: ["engraving 1 (top) was not cut: it needs 5.20 mm"],
     });
     // The shared math's own words, verbatim apart from the capital and the
-    // stop: a user who reads this here and again in the bake output must be
+    // stop: a user who reads this here and again in the build output must be
     // reading one sentence twice, not two.
     expect(item.message).toBe("Engraving 1 (top) was not cut: it needs 5.20 mm.");
   });

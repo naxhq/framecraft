@@ -17,7 +17,7 @@
  */
 
 import type { Point, Road } from "../../contracts";
-import type { BakeContext } from "./context";
+import type { BuildContext } from "./context";
 import { addFinding } from "./context";
 import type { Contour } from "./manifold";
 import { ribbonContours, roadContours } from "./repair";
@@ -90,12 +90,12 @@ export function splitRoadsByLevel(scene: {
   return { grade, elevated };
 }
 
-/** Roads this bake will build in the air. Empty when `bridges.enabled` is false. */
+/** Roads this build will build in the air. Empty when `bridges.enabled` is false. */
 export function bridgeRoadWays(scene: { roads: readonly Road[] }): Road[] {
   return splitRoadsByLevel(scene).elevated;
 }
 
-/** Rail ways this bake will build in the air. */
+/** Rail ways this build will build in the air. */
 export function bridgeRailWays(scene: unknown): RailWay[] {
   return railWays(scene).filter(isElevated);
 }
@@ -107,7 +107,7 @@ export function bridgeRailWays(scene: unknown): RailWay[] {
  * minimum wall exactly as a road's is: a rail line printed thinner than two
  * perimeters is a scratch, not a track.
  */
-export function railWidthGroundM(ctx: BakeContext, way: RailWay): number {
+export function railWidthGroundM(ctx: BuildContext, way: RailWay): number {
   const fallback = ctx.params.regions?.rail?.width_m ?? 6.0;
   return Math.max(
     (way.width_m ?? fallback) * ctx.params.road_scale,
@@ -123,7 +123,7 @@ export function railWidthGroundM(ctx: BakeContext, way: RailWay): number {
  * there. With bridges off every segment is laid at grade, which is v2's
  * behaviour and the reason this reads `bridgesEnabled` rather than assuming it.
  */
-export function roadLayerContours(ctx: BakeContext): Contour[] {
+export function roadLayerContours(ctx: BuildContext): Contour[] {
   if (ctx.params.road_mode === "off") return [];
   const enabled = ctx.params.bridges?.enabled ?? true;
   const roads = enabled ? splitRoadsByLevel(ctx.scene).grade : ctx.scene.roads;
@@ -131,7 +131,7 @@ export function roadLayerContours(ctx: BakeContext): Contour[] {
 }
 
 /** Ribbon contours for the rail layer, print mm. */
-export function railLayerContours(ctx: BakeContext): Contour[] {
+export function railLayerContours(ctx: BuildContext): Contour[] {
   const enabled = ctx.params.bridges?.enabled ?? true;
   const ways = enabled ? railWays(ctx.scene).filter((w) => !isElevated(w)) : railWays(ctx.scene);
   if (ways.length === 0) return [];
@@ -149,7 +149,7 @@ export function railLayerContours(ctx: BakeContext): Contour[] {
  * a user who set "emboss" and left the default negative offset would otherwise
  * see engraved roads with nothing explaining why.
  */
-export function reportRoadModeConflict(ctx: BakeContext): void {
+export function reportRoadModeConflict(ctx: BuildContext): void {
   const mode = ctx.params.road_mode;
   const proud = ctx.params.regions?.roads?.proud_mm ?? -0.2;
   if (mode === "emboss" && proud < 0) {

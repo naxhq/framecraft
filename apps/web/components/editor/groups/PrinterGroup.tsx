@@ -120,7 +120,7 @@ export function PrinterGroup() {
 
       <Field
         label="Tiling"
-        hint="Split the model into a grid of interlocking tiles when it will not fit the plate as one piece. Each tile still bakes and exports through the same pipeline."
+        hint="Split the model into a grid of interlocking tiles when it will not fit the plate as one piece. Each tile is built and exported through the same pipeline."
       >
         <div className="space-y-3">
           <Toggle

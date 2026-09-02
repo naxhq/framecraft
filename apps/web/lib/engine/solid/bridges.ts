@@ -30,7 +30,7 @@
 
 import type { Point } from "../../contracts";
 import * as T from "../../transform";
-import type { BakeContext } from "./context";
+import type { BuildContext } from "./context";
 import {
   MAX_POCKET_FRACTION,
   PART_OVERLAP_MM,
@@ -78,17 +78,17 @@ export interface BridgeRegion {
 }
 
 /** `params.bridges.enabled`, defaulting to the contract's `true`. */
-export function bridgesEnabled(ctx: BakeContext): boolean {
+export function bridgesEnabled(ctx: BuildContext): boolean {
   return ctx.params.bridges?.enabled ?? true;
 }
 
 /** `params.bridges.clearance_mm`, defaulting to the contract's 1.0. */
-export function clearanceMm(ctx: BakeContext): number {
+export function clearanceMm(ctx: BuildContext): number {
   return ctx.params.bridges?.clearance_mm ?? 1.0;
 }
 
 /** `params.bridges.abutments`, defaulting to the contract's `true`. */
-export function abutmentsWanted(ctx: BakeContext): boolean {
+export function abutmentsWanted(ctx: BuildContext): boolean {
   return ctx.params.bridges?.abutments ?? true;
 }
 
@@ -127,7 +127,7 @@ export const ABUTMENT_FLARE = 1.0;
  * height: a 0.2 mm deck is three layers of unsupported bridge and it would sag
  * between its abutments whatever the slicer did.
  */
-export function deckThicknessMm(ctx: BakeContext, region: "roads" | "rail"): number {
+export function deckThicknessMm(ctx: BuildContext, region: "roads" | "rail"): number {
   const depth = ctx.params.regions?.[region]?.depth_mm ?? (region === "roads" ? 0.6 : 0.4);
   return Math.max(depth, T.MIN_BUILDING_HEIGHT_MM);
 }
@@ -151,7 +151,7 @@ export function deckThicknessMm(ctx: BakeContext, region: "roads" | "rail"): num
  * the seam overlap, so going two overlaps below that floor clears every one of
  * them at every legal base thickness (`[V3-P3-G13]`).
  */
-export function abutmentFootMm(ctx: BakeContext): number {
+export function abutmentFootMm(ctx: BuildContext): number {
   const pocketFloor = ctx.baseTopMm * (1 - MAX_POCKET_FRACTION);
   return Math.max(ctx.baseTopMm * 0.1, pocketFloor - 2 * PART_OVERLAP_MM);
 }
@@ -226,7 +226,7 @@ function abutmentContours(ways: readonly BridgeWay[], scale: number): Contour[] 
  * underneath it and stays exactly as it was.
  */
 export function buildBridges(
-  ctx: BakeContext,
+  ctx: BuildContext,
   buildingFootprint: CrossSection | null,
   drape: Drape | null,
 ): BridgeRegion[] {
@@ -379,7 +379,7 @@ export function buildBridges(
  * An abutment lost here is not silently lost: {@link groundedOnly} then finds
  * the deck it would have held up and drops that too, with a count.
  */
-function printableAbutments(ctx: BakeContext, seated: CrossSection): CrossSection | null {
+function printableAbutments(ctx: BuildContext, seated: CrossSection): CrossSection | null {
   const parts = ctx.arena.keepAll(seated.decompose());
   const kept: CrossSection[] = [];
   for (const part of parts) {
@@ -420,7 +420,7 @@ function printableAbutments(ctx: BakeContext, seated: CrossSection): CrossSectio
  * question that can be asked and the only one that has to be asked here.
  */
 function groundedOnly(
-  ctx: BakeContext,
+  ctx: BuildContext,
   solid: Manifold,
 ): { solid: Manifold | null; dropped: number } {
   const bodies = ctx.arena.keepAll(solid.decompose());
@@ -443,12 +443,12 @@ function groundedOnly(
 }
 
 /** Narrowest a deck may print, mm. See {@link DECK_MIN_WIDTH_FACTOR}. */
-export function deckMinWidthMm(ctx: BakeContext): number {
+export function deckMinWidthMm(ctx: BuildContext): number {
   return DECK_MIN_WIDTH_FACTOR * ctx.thresholdsMm.minWall;
 }
 
-/** Road ways this bake will build in the air, at their grade printed width. */
-export function roadBridgeWays(ctx: BakeContext): BridgeWay[] {
+/** Road ways this build will build in the air, at their grade printed width. */
+export function roadBridgeWays(ctx: BuildContext): BridgeWay[] {
   if (ctx.params.road_mode === "off") return [];
   const floor = deckMinWidthMm(ctx);
   const out: BridgeWay[] = [];
@@ -459,8 +459,8 @@ export function roadBridgeWays(ctx: BakeContext): BridgeWay[] {
   return out;
 }
 
-/** Rail ways this bake will build in the air, at their grade printed width. */
-export function railBridgeWays(ctx: BakeContext): BridgeWay[] {
+/** Rail ways this build will build in the air, at their grade printed width. */
+export function railBridgeWays(ctx: BuildContext): BridgeWay[] {
   const floor = deckMinWidthMm(ctx);
   const out: BridgeWay[] = [];
   for (const way of bridgeRailWays(ctx.scene)) {

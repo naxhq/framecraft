@@ -16,21 +16,21 @@ audit, and every export file, runs in the browser.
 | Piece | Path | What it is |
 |---|---|---|
 | Web app | `apps/web/` | Next.js 15 App Router, React 19, TS strict, Tailwind 4, zustand 5, react-three-fiber 9 + drei, MapLibre GL 6, manifold-3d WASM, fflate |
-| Engine | `apps/web/lib/engine/` | The TypeScript bake pipeline: `osm/` (ingest), `terrain/`, `solid/` (geometry), `audit/`, `export/` (writers), plus `engine.ts`, `worker.ts`, `client.ts`, `protocol.ts` |
+| Engine | `apps/web/lib/engine/` | The TypeScript build pipeline: `osm/` (ingest), `terrain/`, `solid/` (geometry), `audit/`, `export/` (writers), plus `engine.ts`, `worker.ts`, `client.ts`, `protocol.ts` |
 | Reference | `services/bake/` | Python 3.12 FastAPI service: the reference implementation of the same pipeline and the CLI printability validator (`python -m app.cli validate`). Not a runtime dependency of the web app |
 | Contracts | `packages/contracts/` | JSON Schema source of truth (schema version 3), generating `apps/web/lib/contracts.ts` and `services/bake/app/contracts.py` |
 | Desktop | `apps/desktop/` | Tauri 2 shell embedding the same static export (section 8) |
 
 The engine runs off the main thread in **two Web Workers**, one per job kind:
-`lib/engine/client.ts`'s `EngineClient` holds an ingest transport and a bake
+`lib/engine/client.ts`'s `EngineClient` holds an ingest transport and a build
 transport ("one per job kind, never shared", `EngineClientTransports`), each a
 `WorkerTransport` over `lib/engine/worker.ts` when `Worker` exists and an
 `InlineTransport` fallback otherwise (SSR, vitest, a browser that refuses
 worker creation). `lib/engine/protocol.ts` holds the message protocol and the
-job handlers (`runIngestJob`, `runBakeJob`, `cancelJob`), shared verbatim by
-the worker and the inline fallback so the two cannot drift. Bakes are
+job handlers (`runIngestJob`, `runBuildJob`, `cancelJob`), shared verbatim by
+the worker and the inline fallback so the two cannot drift. Builds are
 single-flight: a request that arrives while one runs overwrites a single
-queued slot, so the worker is never more than one bake behind.
+queued slot, so the worker is never more than one build behind.
 
 The WASM binary is copied to `public/manifold/manifold.wasm` by
 `apps/web/scripts/copy-manifold-wasm.mjs` (`predev`/`prebuild`);
@@ -40,8 +40,8 @@ outside Node, and `next.config.ts` carries a client-only webpack
 
 `services/bake` still answers `/health`, `/presets`, `/scene`, `/bake`,
 `/bake/{id}`, `/files/{name}` on :8000, but nothing in the deployed app calls
-them. Its jobs today: `make gate` bakes the committed Chicago fixture through
-the browser engine's own CLI (`npm run bake:cli`) and judges the files with
+them. Its jobs today: `make gate` builds the committed Chicago fixture through
+the browser engine's own CLI (`npm run export:cli`) and judges the files with
 the Python validator; `tests/test_transform.py` and `lib/transform.test.ts`
 pin the shared transform math (`app/geom/transform.py` mirrored by
 `lib/transform.ts`) against `fixtures/parity-expected.json` to 0.01 mm.
@@ -93,14 +93,14 @@ anywhere a plain `SceneGraph` is expected (`[V3-P2-E1]`).
   tags on ways, which is what `solid/bridges.ts` builds decks from. The
   committed `fixtures/chicago-scene.json` (Python-produced) has none of these;
   the app's own ingest of the raw Overpass fixture carries 780 elevated ways,
-  which is why `bake-cli` grew `--overpass` (section 7c of
+  which is why `export-cli` grew `--overpass` (section 7c of
   `docs/handoff/v3-03-geometry.md`).
 - `presets.ts`: the six frozen presets, city names read from
   `apps/web/lib/presets.ts`. There is no `/presets` call.
 
 ## 3. Geometry (`apps/web/lib/engine/solid/`, `engine.ts`)
 
-`bake(input: EngineInput, options?)` returns an `EngineResult`: watertight
+`buildModel(input: EngineInput, options?)` returns an `EngineResult`: watertight
 `RegionMesh` solids (positions `Float64Array`), a welded `merged` solid,
 `stats`, `findings` (the audit), `resolvedText` (every lettering line with its
 resolved string or refusal), optional `tiles`, `buildingTints`,
@@ -131,10 +131,10 @@ seam slivers no tolerance sweep removed. Consequence: per-region
 - `measure.ts`: the min-wall audit, question for question the reference
   validator's rule: per connected region of a slice, widest inscribed disc by
   erosion (`inscribedWidthMm`), only regions that persist one printed layer
-  upward, saturating at the minimum wall. A draped bake adds
+  upward, saturating at the minimum wall. A draped build adds
   `drapedSliceHeights`, a Z sweep between the flat probe planes, because a
   hillside puts walls at heights no flat slice list samples; `ctx.terrain` is
-  null for flat bakes so they pay nothing. Declared attribution bands are
+  null for flat builds so they pay nothing. Declared attribution bands are
   excluded (section 6).
 - `mesh.ts`: double-precision mesh repair on the way out (weld ladder, needle
   split, `collapseNeedles`), transactional: a pass that opens an edge or moves
@@ -189,7 +189,7 @@ seam slivers no tolerance sweep removed. Consequence: per-region
 
 ## 4. Attribution (`solid/attribution.ts`)
 
-Every bake carries engraved marks no parameter can remove: a deep underside
+Every build carries engraved marks no parameter can remove: a deep underside
 mark spanning the plate, the same line on all four inner frame walls, 1.2 mm
 microtext on the base's south edge, and a second underside mark when the frame
 is off. The marks' Z bands are declared (`EngineResult.attributionBands`),
@@ -224,13 +224,13 @@ sidecar (`buildSidecarJson`: print params, provenance, `max_height_mm`,
 
 ## 6. Preview, store, validation
 
-- `store/editor.ts` owns one module-scope `EngineClient`. `generate()` calls
+- `store/editor.ts` owns one module-scope `EngineClient`. `generate()` (the Preview action) calls
   `ingest()` (never a `/scene` POST); every scene-ready moment and every
   `PrintParams` write schedules a debounced (~400 ms) engine job
   (`scheduleEngineJob` / `runEngineJob`) into `state.engine`
   (`EngineJobState`: `idle|computing|ready|error` plus `stale`).
-  `requestBake()` reuses a fresh result or runs one, then hands it to
-  `lib/bake.ts:runExport`, which calls the exporter and yields Blob download
+  `requestExport()` reuses a fresh result or runs one, then hands it to
+  `lib/exportFlow.ts:runExport`, which calls the exporter and yields Blob download
   URLs. Store setters never touch `fetch`; `store/editor.test.ts` enforces it.
 - `components/scene/CityPreview.tsx` keeps the `previewDeps` discipline: every
   `useMemo` is keyed on named primitives read off `params`, never the object,
@@ -253,13 +253,13 @@ sidecar (`buildSidecarJson`: print params, provenance, `max_height_mm`,
   (`lib/recent.ts`); undo/redo (`store/history.ts`, reference-diff subscriber,
   800 ms coalescing, cap 100). Warnings surface only through the Issues badge.
 - Validation is layered: the engine's own gate (`solid/validate.ts` plus
-  `auditPrintability`) runs on every bake in the app; the Python validator
+  `auditPrintability`) runs on every build in the app; the Python validator
   cross-checks exported files independently of the TypeScript that wrote them
   (all 04 stage 4 rows, the container rows, and the sidecar-driven
   `max_height_mm` and `attribution` rows); and `make gate` ties them together
   (see `RUNBOOK.md` for the eight steps and current numbers). CI
   (`.github/workflows/ci.yml`) mirrors the gate: pytest, the static no-skip
-  guard, lint/typecheck/vitest/build, both `bake:cli` bakes judged by the
+  guard, lint/typecheck/vitest/build, both `export:cli` runs judged by the
   validator, and the Playwright suite with `E2E_BUDGET_FACTOR=3`.
 
 ## 7. Fonts and shared math
@@ -294,11 +294,11 @@ exaggeration curve and its true inverse, terrain scale), pinned by
 
 ## 9. History
 
-Through v1 and v2 the bake ran server-side: the browser POSTed a
+Through v1 and v2 the build ran server-side: the browser POSTed a
 `SceneRequest` to `services/bake`, which fetched Overpass, built the
 SceneGraph, ran the manifold3d pipeline in a worker thread and served the
 files, under the rule "the browser never runs booleans". `[V3-A1]` retired
-that rule; `lib/api.ts` and the polling bake state machine were deleted in
+that rule; `lib/api.ts` and the polling job state machine were deleted in
 phase 2 (`docs/handoff/v3-02-integration.md`). The v2 architecture is
 preserved in git history (v1 baseline commit `da9ab83`, the v2 tree at the
 start of the v3 run) and in `docs/handoff/v2-*.md`.
@@ -314,7 +314,7 @@ start of the v3 run) and in `docs/handoff/v2-*.md`.
   surfaces; the export notes its size above 50k triangles (`[V3-A6]`).
 - **Unsigned installers.** SmartScreen and Gatekeeper warn on first launch
   until signing secrets exist (`release.yml` header documents the hooks).
-- **Loose-part bakes fail the reference `bodies` row by design.** A separate
+- **Loose-part builds fail the reference `bodies` row by design.** A separate
   frame, cleat wedge or easel leg is a deliberate second body; the engine's
   own gate excuses exactly the expected ones (`expectedBodies`), but the file
   validator counts what is there. The `expected_bodies` sidecar field that

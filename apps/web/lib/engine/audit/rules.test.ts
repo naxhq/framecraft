@@ -1,10 +1,10 @@
 /**
  * The printability audit, as pure data.
  *
- * No bake here: every rule in `rules.ts` is a function of finished meshes,
+ * No build here: every rule in `rules.ts` is a function of finished meshes,
  * stats and parameters, and that is exactly what these tests hand it. The rules
  * that need a real model to be worth anything (overhangs on a hillside, the
- * merge count on a real city) are exercised against the engine's own bakes in
+ * merge count on a real city) are exercised against the engine's own builds in
  * `solid/engine.test.ts` and `solid/tiling.test.ts`.
  */
 
@@ -295,7 +295,7 @@ describe("islands", () => {
 });
 
 describe("the finding list as a whole", () => {
-  it("keeps what the bake already reported and puts errors first", () => {
+  it("keeps what the build already reported and puts errors first", () => {
     const built: AuditFinding[] = [
       { id: "text-too-small", severity: "warning", title: "a", detail: "b" },
       { id: "terrain-low-relief", severity: "info", title: "c", detail: "d" },

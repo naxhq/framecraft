@@ -17,7 +17,7 @@ import { regionColor, regionSlot } from "./engine/solid/context";
 import { COLOURABLE_REGION_NAMES } from "./engine/types";
 
 describe("colourRows", () => {
-  it("without a bake result, lists every region name the contract can colour, easel excluded", () => {
+  it("without a build result, lists every region name the contract can colour, easel excluded", () => {
     const rows = colourRows(defaultPrintParams(), null);
     const regions = rows.map((row) => row.region);
     expect(regions).not.toContain("easel");
@@ -28,7 +28,7 @@ describe("colourRows", () => {
     expect(regions).toContain("attribution");
   });
 
-  it("without a bake result, reads the contract defaults (base 1, buildings 2, water 3, roads/parks 4)", () => {
+  it("without a build result, reads the contract defaults (base 1, buildings 2, water 3, roads/parks 4)", () => {
     const rows = colourRows(defaultPrintParams(), null);
     const byRegion = Object.fromEntries(rows.map((row) => [row.region, row]));
     expect(byRegion.base.slot).toBe(1);
@@ -53,7 +53,7 @@ describe("colourRows", () => {
     ]);
   });
 
-  it("an empty regions array (a bake that produced nothing) falls back to the contract defaults", () => {
+  it("an empty regions array (a build that produced nothing) falls back to the contract defaults", () => {
     const rows = colourRows(defaultPrintParams(), { regions: [] } as never);
     expect(rows.length).toBeGreaterThan(0);
   });
@@ -244,19 +244,19 @@ describe("printedColors", () => {
   });
 
   it("matches the frozen default colour table's own documented disagreement (audit verification)", () => {
-    // The audit's own verification was against a REAL bake (`artifacts/
+    // The audit's own verification was against a REAL build (`artifacts/
     // audit-bambu.3mf`, no hero picked), where `hero_building` has no mesh
     // and is therefore ABSENT from the exported regions -- `slotColors` only
     // ever sees real `RegionMesh`es, so roads (REGION_NAMES index 5) is the
-    // first REAL region on slot 4 there and wins with #3A3A3A. The PRE-BAKE
+    // first REAL region on slot 4 there and wins with #3A3A3A. The PRE-BUILD
     // fallback this test uses (`colourRows(params, null)`, no `EngineResult`
     // yet) is documented to list every colourable name including ones that
-    // may never actually bake (`colourRows`'s own docstring) -- `hero_building`
+    // may never actually build (`colourRows`'s own docstring) -- `hero_building`
     // (REGION_NAMES index 4, before roads) is one of those, so it wins here
     // instead. Both are the SAME rule (`printedColors` mirrors
     // `export/common.ts:slotColors` exactly); they disagree only because the
     // ROW SETS differ, which is `colourRows`'s own known, pre-existing
-    // pre-bake approximation, not a bug in this rule.
+    // pre-build approximation, not a bug in this rule.
     const rows = colourRows(defaultPrintParams(), null).filter((row) => row.slot === 4);
     const regionsOnSlot4 = rows.map((row) => row.region).sort();
     expect(regionsOnSlot4).toEqual(["hero_building", "lettering", "parks", "rail", "roads"].sort());
@@ -266,8 +266,8 @@ describe("printedColors", () => {
     expect(printed.get("roads")).toBe("#E3A72F");
     expect(printed.get("parks")).toBe("#E3A72F");
 
-    // The same rows, with the pre-bake-only `hero_building` row removed (as
-    // it genuinely would be, absent from a real bake with no hero picked),
+    // The same rows, with the pre-build-only `hero_building` row removed (as
+    // it genuinely would be, absent from a real build with no hero picked),
     // reproduce the audit's own measured winner exactly.
     const withoutPhantomHero = rows.filter((row) => row.region !== "hero_building");
     expect(printedColors(withoutPhantomHero).get("roads")).toBe("#3A3A3A");
@@ -302,7 +302,7 @@ describe("slotColourConflicts", () => {
     const conflicts = slotColourConflicts(rows);
     const onSlot4 = conflicts.find((c) => c.slot === 4);
     expect(onSlot4, JSON.stringify(conflicts)).toBeDefined();
-    // Winner is `hero_building` here because the PRE-BAKE fallback row set
+    // Winner is `hero_building` here because the PRE-BUILD fallback row set
     // includes it unconditionally (see `printedColors`'s own test above for
     // why); `lettering` shares hero_building's exact default colour
     // (#E3A72F) by coincidence, so it is not a LOSING region even though it
@@ -458,7 +458,7 @@ describe("preview-theme isolation (colour.preview_theme never reaches an exporte
     }
   });
 
-  it("colourRows (what the COLOUR panel and the exporters' pre-bake fallback both read) is identical across themes", () => {
+  it("colourRows (what the COLOUR panel and the exporters' pre-build fallback both read) is identical across themes", () => {
     expect(colourRows(dark, null)).toEqual(colourRows(light, null));
   });
 });

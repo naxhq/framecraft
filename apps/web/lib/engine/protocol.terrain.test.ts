@@ -1,9 +1,9 @@
 /**
- * `runOneBake` (via `runBakeJob`) must hand `msg.input` to `bake()` verbatim,
+ * `runOneBuild` (via `runBuildJob`) must hand `msg.input` to `buildModel()` verbatim,
  * including `terrain` -- phase 3's `EngineInput.terrain` is a
  * structured-clone-friendly `TerrainGrid`, not a `TerrainSampler`, so unlike
  * the pre-phase-3 code there is no longer a reason to null it out on the way
- * in. Mocks `./engine` so this is a fast plumbing check, not a real bake:
+ * in. Mocks `./engine` so this is a fast plumbing check, not a real build:
  * `synthetic.test.ts`'s "the terrain hook" describe block is what actually
  * exercises a terrain grid through the real solid pipeline.
  */
@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import { defaultPrintParams } from "../contracts";
 import type { TerrainGrid } from "./types";
 
-const bakeMock = vi.fn(async (input?: unknown) => {
+const buildModelMock = vi.fn(async (input?: unknown) => {
   void input;
   return {
     regions: [],
@@ -49,12 +49,12 @@ const bakeMock = vi.fn(async (input?: unknown) => {
   };
 });
 
-vi.mock("./engine", () => ({ bake: (input: unknown) => bakeMock(input) }));
+vi.mock("./engine", () => ({ buildModel: (input: unknown) => buildModelMock(input) }));
 
-describe("runOneBake: terrain passes through to bake() unmodified", () => {
+describe("runOneBuild: terrain passes through to buildModel() unmodified", () => {
   it("does not null out a TerrainGrid on the way in", async () => {
-    const { runBakeJob, resetBakeQueueForTest } = await import("./protocol");
-    resetBakeQueueForTest();
+    const { runBuildJob, resetBuildQueueForTest } = await import("./protocol");
+    resetBuildQueueForTest();
     const grid: TerrainGrid = {
       originEastM: -100,
       originNorthM: -100,
@@ -66,9 +66,9 @@ describe("runOneBake: terrain passes through to bake() unmodified", () => {
       source: "test",
     };
     const posted: unknown[] = [];
-    await runBakeJob(
+    await runBuildJob(
       {
-        kind: "bake",
+        kind: "build",
         id: 1,
         input: {
           scene: {
@@ -87,17 +87,17 @@ describe("runOneBake: terrain passes through to bake() unmodified", () => {
       },
       (message) => posted.push(message),
     );
-    expect(bakeMock).toHaveBeenCalledTimes(1);
-    expect(bakeMock.mock.calls[0][0]).toMatchObject({ terrain: grid });
+    expect(buildModelMock).toHaveBeenCalledTimes(1);
+    expect(buildModelMock.mock.calls[0][0]).toMatchObject({ terrain: grid });
   });
 
-  it("bakes fine with no terrain at all (terrain stays undefined, never forced to null)", async () => {
-    const { runBakeJob, resetBakeQueueForTest } = await import("./protocol");
-    resetBakeQueueForTest();
-    bakeMock.mockClear();
-    await runBakeJob(
+  it("builds fine with no terrain at all (terrain stays undefined, never forced to null)", async () => {
+    const { runBuildJob, resetBuildQueueForTest } = await import("./protocol");
+    resetBuildQueueForTest();
+    buildModelMock.mockClear();
+    await runBuildJob(
       {
-        kind: "bake",
+        kind: "build",
         id: 2,
         input: {
           scene: {
@@ -115,6 +115,6 @@ describe("runOneBake: terrain passes through to bake() unmodified", () => {
       },
       () => undefined,
     );
-    expect((bakeMock.mock.calls[0][0] as { terrain?: unknown }).terrain).toBeUndefined();
+    expect((buildModelMock.mock.calls[0][0] as { terrain?: unknown }).terrain).toBeUndefined();
   });
 });

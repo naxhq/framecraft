@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 
 import { defaultPrintParams, type PrintParams } from "../../contracts";
-import { bake } from "../engine";
+import { buildModel } from "../engine";
 import type { EngineResult, RegionName } from "../types";
 import { scene } from "./fixture";
 import { outstandingWasmObjects } from "./manifold";
@@ -22,14 +22,14 @@ function regionOf(result: EngineResult, name: RegionName) {
   return result.regions.find((region) => region.region === name);
 }
 
-async function bakeWith(params: PrintParams): Promise<EngineResult> {
-  return bake({ scene: EMPTY, params, date: "2026-08-30" });
+async function buildWith(params: PrintParams): Promise<EngineResult> {
+  return buildModel({ scene: EMPTY, params, date: "2026-08-30" });
 }
 
 describe("edge engravings", () => {
   it("cuts a groove into the lip and leaves the base alone", async () => {
-    const plain = await bakeWith(defaultPrintParams());
-    const cut = await bakeWith({
+    const plain = await buildWith(defaultPrintParams());
+    const cut = await buildWith({
       ...defaultPrintParams(),
       engravings: [{ edge: "top", text: "FRAMECRAFT", mode: "engrave", size_mm: 4 }],
     });
@@ -48,8 +48,8 @@ describe("edge engravings", () => {
   }, 60_000);
 
   it("stands an embossed line proud of the lip", async () => {
-    const plain = await bakeWith(defaultPrintParams());
-    const raised = await bakeWith({
+    const plain = await buildWith(defaultPrintParams());
+    const raised = await buildWith({
       ...defaultPrintParams(),
       engravings: [// 4 mm is refused by the shared layout: an embossed stroke is two
         // nozzles wide, and widening this face to that at 4 mm closes a
@@ -65,7 +65,7 @@ describe("edge engravings", () => {
   }, 60_000);
 
   it("refuses edge text when there is no lip to carry it", async () => {
-    const result = await bakeWith({
+    const result = await buildWith({
       ...defaultPrintParams(),
       frame: false,
       engravings: [{ edge: "top", text: "FRAMECRAFT", mode: "engrave", size_mm: 4 }],
@@ -80,8 +80,8 @@ describe("edge engravings", () => {
 
 describe("inlay mode", () => {
   it("emits the letters as their own region and pockets the frame to hold them", async () => {
-    const plain = await bakeWith(defaultPrintParams());
-    const inlaid = await bakeWith({
+    const plain = await buildWith(defaultPrintParams());
+    const inlaid = await buildWith({
       ...defaultPrintParams(),
       engravings: [
         { edge: "top", text: "FRAMECRAFT", mode: "inlay", size_mm: 4, depth_mm: 0.6 },
@@ -114,8 +114,8 @@ describe("inlay mode", () => {
 
 describe("ornaments", () => {
   it("cuts the north arrow into the lip", async () => {
-    const plain = await bakeWith(defaultPrintParams());
-    const marked = await bakeWith({
+    const plain = await buildWith(defaultPrintParams());
+    const marked = await buildWith({
       ...defaultPrintParams(),
       north_arrow: { enabled: true, corner: "ne", size_mm: 4 },
     });
@@ -128,8 +128,8 @@ describe("ornaments", () => {
   }, 60_000);
 
   it("cuts the scale bar and its label", async () => {
-    const plain = await bakeWith(defaultPrintParams());
-    const barred = await bakeWith({
+    const plain = await buildWith(defaultPrintParams());
+    const barred = await buildWith({
       ...defaultPrintParams(),
       scale_bar: { enabled: true, edge: "bottom", length_mode: "auto", length_m: 500 },
     });
@@ -144,14 +144,14 @@ describe("ornaments", () => {
   }, 60_000);
 
   it("refuses an ornament when the frame is off", async () => {
-    const result = await bakeWith({
+    const result = await buildWith({
       ...defaultPrintParams(),
       frame: false,
       north_arrow: { enabled: true, corner: "ne", size_mm: 4 },
       scale_bar: { enabled: true, edge: "bottom", length_mode: "auto", length_m: 500 },
     });
     // Nothing the PARAMETERS asked for is cut. The mandatory attribution marks
-    // are not parameters: they are cut on every bake, with a second underside
+    // are not parameters: they are cut on every build, with a second underside
     // mark standing in for the frame-wall one when there is no frame
     // (v3 phase 7, `solid/attribution.ts`), so they are excluded here and
     // checked on their own in `attribution.test.ts`.

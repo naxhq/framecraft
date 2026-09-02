@@ -1,4 +1,4 @@
-// Shared engine interfaces for the browser bake pipeline (FrameCraft v3).
+// Shared engine interfaces for the browser build pipeline (FrameCraft v3).
 // Producers: lib/engine/osm/* (SceneGraph), lib/engine/solid/* (RegionMesh[]).
 // Consumers: lib/engine/export/* (files), components/scene/* (preview).
 // Extend additively; do not rename members, three builders depend on them.
@@ -9,7 +9,7 @@ import type { PrintParams, SceneGraph } from "../contracts";
  * The regions the CONTRACT can colour: one `colour.region_slots` /
  * `region_colors` key each, plus `easel`, which borrows `base`.
  *
- * This list is what a colour panel lists before the first bake. It is NOT the
+ * This list is what a colour panel lists before the first build. It is NOT the
  * full set of names a `RegionMesh` can carry: see {@link DERIVED_REGION_NAMES}.
  */
 export const COLOURABLE_REGION_NAMES = [
@@ -28,7 +28,7 @@ export const COLOURABLE_REGION_NAMES = [
 ] as const;
 
 /**
- * Regions the BAKE derives, which exist only when a feature is switched on
+ * Regions the BUILD derives, which exist only when a feature is switched on
  * (v3 phase 5, DECISIONS `[V3-P5-F7]`).
  *
  * * `cleat` - the wall-side wedge of a French cleat mount (`hanger: "cleat"`),
@@ -131,7 +131,7 @@ export interface AuditFinding {
   fix?: { label: string; safe: boolean; patch: Record<string, unknown> };
 }
 
-/** A text feature after token expansion, reported so nothing is a surprise after baking. */
+/** A text feature after token expansion, reported so nothing is a surprise after building. */
 export interface ResolvedLine {
   id: string;
   text: string;
@@ -161,7 +161,7 @@ export interface EngineStats {
    * v3 phase 3, all optional so every existing consumer stays valid.
    *
    * `terrainReliefMm` is the printed height of the hillside after
-   * `terrain_exaggeration`, absent when the bake is flat. The three counts are
+   * `terrain_exaggeration`, absent when the build is flat. The three counts are
    * absent when the scene has nothing of that kind in it.
    */
   terrainReliefMm?: number;
@@ -301,7 +301,7 @@ export interface TerrainSampler {
 
 export interface EngineInput {
   scene: SceneGraph;
-  /** Fully token-resolved params (see lib/bake.ts resolveParamsForBake). */
+  /** Fully token-resolved params (see lib/exportFlow.ts resolveParamsForExport). */
   params: PrintParams;
   terrain?: TerrainGrid | null;
   /** Building ids promoted to heroes (manual plus auto). */
@@ -322,7 +322,7 @@ export interface EngineInput {
    * attribution is a caller that can supply an empty one, and the whole point
    * of the marks is that nothing outside `solid/attribution.ts` decides what
    * they say. The engine composes them from its own constants, the params and
-   * the bake date, and reads nothing from here.
+   * the build date, and reads nothing from here.
    *
    * Kept, rather than removed, so every existing caller still typechecks; it is
    * accepted and discarded. It will be deleted in a later phase.
@@ -352,7 +352,7 @@ export interface BuildingTint {
  *
  * The bands are EQUAL COUNT, not equal height: `topRangeMm` is what the band
  * actually covers, measured from the buildings this scene has. A preview that
- * wants to colour a building the way the bake will can either read the band
+ * wants to colour a building the way the build will can either read the band
  * REGIONS (which carry the geometry) or match a height against these ranges.
  */
 export interface BuildingBandSummary {
@@ -401,7 +401,7 @@ export interface EngineResult {
   params: PrintParams;
   /**
    * Z bands the mandatory attribution marks occupy, `[low, high]` mm (v3 phase
-   * 7). Never empty for a real bake: every model carries the marks.
+   * 7). Never empty for a real build: every model carries the marks.
    *
    * Written into the export sidecar as `attribution_bands` and read back by the
    * reference validator, which excludes them from its STRUCTURAL minimum-wall

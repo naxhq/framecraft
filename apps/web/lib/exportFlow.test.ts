@@ -1,7 +1,7 @@
 /**
- * Bake, v3: the pure export/state-transition functions in `lib/bake.ts`.
+ * Export, v3: the pure export/state-transition functions in `lib/exportFlow.ts`.
  *
- * There is no server round trip left to test: `bake()` (the browser engine)
+ * There is no server round trip left to test: `buildModel()` (the browser engine)
  * is `lib/engine/solid`'s job and `lib/engine/export`'s writers are tested in
  * `lib/engine/export/*.test.ts`. This file owns the glue -- turning a fake
  * (but shape-correct) `EngineResult` into `DownloadFile[]`, and the small
@@ -11,20 +11,20 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  BAKE_STALE_NOTE,
-  bakeDone,
-  bakeDownloadLinks,
-  bakeExporting,
-  bakeFailedLocally,
-  bakeStatusLabel,
-  initialBakeState,
+  EXPORT_STALE_NOTE,
+  exportDone,
+  exportDownloadLinks,
+  exportStarted,
+  exportFailedLocally,
+  exportStatusLabel,
+  initialExportState,
   isTerminal,
-  markBakeStale,
-  revokeBakeUrls,
+  markExportStale,
+  revokeExportUrls,
   runExport,
   stemForResult,
-  type BakeState,
-} from "./bake";
+  type ExportState,
+} from "./exportFlow";
 import { defaultPrintParams } from "./contracts";
 import type { EngineResult, RegionMesh } from "./engine/types";
 
@@ -83,28 +83,28 @@ const scene = {
 
 describe("state transitions", () => {
   it("starts idle", () => {
-    expect(initialBakeState.phase).toBe("idle");
-    expect(bakeStatusLabel(initialBakeState)).toBe("Not baked yet");
-    expect(isTerminal(initialBakeState.phase)).toBe(false);
+    expect(initialExportState.phase).toBe("idle");
+    expect(exportStatusLabel(initialExportState)).toBe("Not exported yet");
+    expect(isTerminal(initialExportState.phase)).toBe(false);
   });
 
-  it("bakeExporting moves to exporting and clears any previous error", () => {
-    const state = bakeExporting(bakeFailedLocally(initialBakeState, "boom"));
+  it("exportStarted moves to exporting and clears any previous error", () => {
+    const state = exportStarted(exportFailedLocally(initialExportState, "boom"));
     expect(state.phase).toBe("exporting");
     expect(state.error).toBeNull();
     expect(isTerminal(state.phase)).toBe(false);
   });
 
-  it("bakeFailedLocally carries the message and is terminal", () => {
-    const state = bakeFailedLocally(initialBakeState, "The engine could not build a model.");
+  it("exportFailedLocally carries the message and is terminal", () => {
+    const state = exportFailedLocally(initialExportState, "The engine could not build a model.");
     expect(state.phase).toBe("failed");
     expect(state.error).toBe("The engine could not build a model.");
     expect(isTerminal(state.phase)).toBe(true);
-    expect(bakeStatusLabel(state)).toBe("The engine could not build a model.");
+    expect(exportStatusLabel(state)).toBe("The engine could not build a model.");
   });
 });
 
-describe("runExport / bakeDone", () => {
+describe("runExport / exportDone", () => {
   it("exports an stl and its sidecar as download files", () => {
     const result = fakeResult();
     const outcome = runExport(result, "stl", scene);
@@ -113,7 +113,7 @@ describe("runExport / bakeDone", () => {
     expect(outcome.sidecarName.endsWith(".json")).toBe(true);
     expect(outcome.sidecarBytes.length).toBeGreaterThan(0);
 
-    const state = bakeDone(initialBakeState, "stl", outcome, result.findings);
+    const state = exportDone(initialExportState, "stl", outcome, result.findings);
     expect(state.phase).toBe("done");
     expect(state.stale).toBe(false);
     expect(state.target).toBe("stl");
@@ -123,7 +123,7 @@ describe("runExport / bakeDone", () => {
     for (const file of state.files) {
       expect(file.href.startsWith("blob:")).toBe(true);
     }
-    revokeBakeUrls(state); // must not throw
+    revokeExportUrls(state); // must not throw
   });
 
   it("the sidecar carries the real PrintParams, stats and export target", () => {
@@ -146,48 +146,48 @@ describe("runExport / bakeDone", () => {
     expect(stemForResult(fakeResult({ params: { ...defaultPrintParams(), city_label: "" } }))).toBe("framecraft");
   });
 
-  it("revoking a previous export's URLs happens automatically on the next bakeDone", () => {
+  it("revoking a previous export's URLs happens automatically on the next exportDone", () => {
     const result = fakeResult();
-    const first = bakeDone(initialBakeState, "stl", runExport(result, "stl", scene), []);
+    const first = exportDone(initialExportState, "stl", runExport(result, "stl", scene), []);
     const firstHrefs = first.files.map((f) => f.href);
-    const second = bakeDone(first, "stl", runExport(result, "stl", scene), []);
+    const second = exportDone(first, "stl", runExport(result, "stl", scene), []);
     // Different object URLs (a second createObjectURL call never reuses the first's).
     expect(second.files.map((f) => f.href)).not.toEqual(firstHrefs);
   });
 });
 
 describe("staleness", () => {
-  function withFinishedBake(): BakeState {
+  function withFinishedExport(): ExportState {
     const result = fakeResult();
-    return bakeDone(initialBakeState, "stl", runExport(result, "stl", scene), result.findings);
+    return exportDone(initialExportState, "stl", runExport(result, "stl", scene), result.findings);
   }
 
   it("keeps the files but withdraws the download links once stale", () => {
-    const fresh = withFinishedBake();
-    expect(bakeDownloadLinks(fresh)).toHaveLength(2);
+    const fresh = withFinishedExport();
+    expect(exportDownloadLinks(fresh)).toHaveLength(2);
 
-    const stale = markBakeStale(fresh);
+    const stale = markExportStale(fresh);
     expect(stale.stale).toBe(true);
     expect(stale.files).toBe(fresh.files);
     expect(stale.phase).toBe("done");
-    expect(bakeDownloadLinks(stale)).toHaveLength(0);
-    expect(bakeStatusLabel(stale)).toBe("Done (outdated)");
+    expect(exportDownloadLinks(stale)).toHaveLength(0);
+    expect(exportStatusLabel(stale)).toBe("Done (outdated)");
   });
 
-  it("marks a failed bake too, so its error stops looking current", () => {
-    const state = markBakeStale(bakeFailedLocally(initialBakeState, "boom"));
+  it("marks a failed export too, so its error stops looking current", () => {
+    const state = markExportStale(exportFailedLocally(initialExportState, "boom"));
     expect(state.stale).toBe(true);
   });
 
-  it("leaves a non-terminal or already-stale bake untouched, by identity", () => {
-    expect(markBakeStale(initialBakeState)).toBe(initialBakeState);
-    const exporting = bakeExporting(initialBakeState);
-    expect(markBakeStale(exporting)).toBe(exporting);
-    const once = markBakeStale(withFinishedBake());
-    expect(markBakeStale(once)).toBe(once);
+  it("leaves a non-terminal or already-stale export untouched, by identity", () => {
+    expect(markExportStale(initialExportState)).toBe(initialExportState);
+    const exporting = exportStarted(initialExportState);
+    expect(markExportStale(exporting)).toBe(exporting);
+    const once = markExportStale(withFinishedExport());
+    expect(markExportStale(once)).toBe(once);
   });
 
   it("the stale note is real copy, not empty", () => {
-    expect(BAKE_STALE_NOTE.length).toBeGreaterThan(0);
+    expect(EXPORT_STALE_NOTE.length).toBeGreaterThan(0);
   });
 });

@@ -4,7 +4,7 @@
  * The joint tests measure real geometry rather than asserting that a function
  * was called: a mating pair either stands `tolerance_mm` apart or it does not,
  * and `Manifold.minGap` answers that in millimetres. The synthetic scenes are
- * small so the whole file runs in a few seconds; the Chicago tile is baked
+ * small so the whole file runs in a few seconds; the Chicago tile is built
  * once, at the end, for the timing budget and the per-tile plate fit.
  */
 
@@ -12,7 +12,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { defaultPrintParams, type PrintParams } from "../../contracts";
 import { resolveProfile } from "../../printers";
-import { bake } from "../engine";
+import { buildModel } from "../engine";
 import type { EngineResult, TileResult } from "../types";
 import { area, building, chicagoScene, road, scene, solidFromMesh, square } from "./fixture";
 import {
@@ -28,7 +28,7 @@ import { loadManifold, type Manifold, type ManifoldToplevel } from "./manifold";
 import { inscribedWidthMm } from "./measure";
 import { degenerateFaces, openEdges } from "./mesh";
 
-/** A 2x2 tiled Chicago has to bake inside this, in Node, on a developer machine. */
+/** A 2x2 tiled Chicago has to build inside this, in Node, on a developer machine. */
 const TILED_TIME_BUDGET_MS = 25_000;
 
 let wasm: ManifoldToplevel;
@@ -119,14 +119,14 @@ describe("the grid", () => {
   });
 });
 
-describe("a tiled bake", () => {
+describe("a tiled build", () => {
   let result: EngineResult;
   let whole: EngineResult;
 
   beforeAll(async () => {
     const graph = smallScene();
-    whole = await bake({ scene: graph, params: smallParams(), date: "2026-09-01" });
-    result = await bake({
+    whole = await buildModel({ scene: graph, params: smallParams(), date: "2026-09-01" });
+    result = await buildModel({
       scene: graph,
       params: smallParams({ tiling: tiling({ cols: 2, rows: 2 }) }),
       date: "2026-09-01",
@@ -197,7 +197,7 @@ describe("the joint", () => {
   }
 
   async function tiles(toleranceMm: number, joint: "dovetail" | "pin" = "dovetail") {
-    const result = await bake({
+    const result = await buildModel({
       scene: smallScene(),
       params: smallParams({
         tiling: tiling({ cols: 2, rows: 1, tolerance_mm: toleranceMm, joint, index_mark: false }),
@@ -299,15 +299,15 @@ describe("the joint", () => {
 
   it("accounts for every cubic millimetre: the tiles are the model less the gaps", async () => {
     const graph = smallScene();
-    const whole = await bake({ scene: graph, params: smallParams(), date: "2026-09-01" });
-    const snug = await bake({
+    const whole = await buildModel({ scene: graph, params: smallParams(), date: "2026-09-01" });
+    const snug = await buildModel({
       scene: graph,
       params: smallParams({
         tiling: tiling({ cols: 2, rows: 2, tolerance_mm: 0, index_mark: false }),
       }),
       date: "2026-09-01",
     });
-    const loose = await bake({
+    const loose = await buildModel({
       scene: graph,
       params: smallParams({
         tiling: tiling({ cols: 2, rows: 2, tolerance_mm: 0.3, index_mark: false }),
@@ -332,12 +332,12 @@ describe("the joint", () => {
 describe("the index mark", () => {
   it("engraves the tile's own reference into every underside", async () => {
     const graph = smallScene();
-    const marked = await bake({
+    const marked = await buildModel({
       scene: graph,
       params: smallParams({ tiling: tiling({ cols: 2, rows: 2, index_mark: true }) }),
       date: "2026-09-01",
     });
-    const plain = await bake({
+    const plain = await buildModel({
       scene: graph,
       params: smallParams({ tiling: tiling({ cols: 2, rows: 2, index_mark: false }) }),
       date: "2026-09-01",
@@ -367,7 +367,7 @@ describe("the index mark", () => {
 });
 
 describe("the Chicago plate, split four ways", () => {
-  it("bakes inside the time budget and hands back four printable tiles", async () => {
+  it("builds inside the time budget and hands back four printable tiles", async () => {
     const params: PrintParams = {
       ...defaultPrintParams(),
       tiling: {
@@ -380,7 +380,7 @@ describe("the Chicago plate, split four ways", () => {
       },
     };
     const started = Date.now();
-    const result = await bake({ scene: chicagoScene(), params, date: "2026-09-01" });
+    const result = await buildModel({ scene: chicagoScene(), params, date: "2026-09-01" });
     const elapsed = Date.now() - started;
     console.info(`[chicago 2x2] ${elapsed} ms, ${result.tiles?.length} tiles`);
 

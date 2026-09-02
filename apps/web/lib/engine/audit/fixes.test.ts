@@ -1,5 +1,5 @@
 // Applying a finding's fix: the deep merge, what it reports, and what it
-// refuses. Nothing here bakes anything; `applyFix` is a pure write.
+// refuses. Nothing here builds anything; `applyFix` is a pure write.
 
 import { describe, expect, it } from "vitest";
 

@@ -38,7 +38,7 @@ import type { PreviewArea } from "../../preview";
 import { glyphAreas, placeArea } from "../../previewText";
 import * as T from "../../transform";
 import type { Bbox3, RegionMesh, RegionName, TileResult } from "../types";
-import { CUTTER_OVERSHOOT_MM, addFinding, finding, type BakeContext } from "./context";
+import { CUTTER_OVERSHOOT_MM, addFinding, finding, type BuildContext } from "./context";
 import { contoursFromAreas, deepestRecessMm, repairText } from "./lettering";
 import type { Contour, CrossSection, Manifold } from "./manifold";
 import {
@@ -272,7 +272,7 @@ interface BandSlice {
  * label that will not fit and a tile that came out empty are all findings.
  */
 export function buildTiles(
-  ctx: BakeContext,
+  ctx: BuildContext,
   sources: readonly TileSource[],
   merged: Manifold | null,
 ): TileResult[] {
@@ -375,7 +375,7 @@ function edgesOf(start: number, span: number, count: number): number[] {
  * numbers out of the ~40 000 vertices a Chicago slice carries.
  */
 function probeCoordinates(
-  ctx: BakeContext,
+  ctx: BuildContext,
   solid: Manifold,
   interiorX: readonly number[],
   interiorY: readonly number[],
@@ -484,7 +484,7 @@ function unionBounds(sources: readonly TileSource[], merged: Manifold | null): B
 // ---------------------------------------------------------------------------
 
 function buildSeams(
-  ctx: BakeContext,
+  ctx: BuildContext,
   spec: TileGridSpec,
   xEdges: readonly number[],
   yEdges: readonly number[],
@@ -535,7 +535,7 @@ function buildSeams(
 }
 
 function makeSeam(
-  ctx: BakeContext,
+  ctx: BuildContext,
   spec: TileGridSpec,
   axis: 0 | 1,
   planeMm: number,
@@ -593,7 +593,7 @@ function keyCentres(fromMm: number, toMm: number, n: number): number[] {
  * the interference-fit case the test measures.
  */
 function dovetailKeys(
-  ctx: BakeContext,
+  ctx: BuildContext,
   axis: 0 | 1,
   planeMm: number,
   fromMm: number,
@@ -629,7 +629,7 @@ function dovetailKeys(
 
 /** `section` offset by `deltaMm`; the section itself when the delta is zero. */
 function growSection(
-  ctx: BakeContext,
+  ctx: BuildContext,
   section: CrossSection,
   deltaMm: number,
 ): CrossSection | null {
@@ -692,7 +692,7 @@ export function dovetailContour(
  * and at the bottom of the hole alike.
  */
 function pinKeys(
-  ctx: BakeContext,
+  ctx: BuildContext,
   axis: 0 | 1,
   planeMm: number,
   fromMm: number,
@@ -736,7 +736,7 @@ function pinKeys(
  * extraMm` past the seam.
  */
 function pinSolid(
-  ctx: BakeContext,
+  ctx: BuildContext,
   axis: 0 | 1,
   planeMm: number,
   centreMm: number,
@@ -775,7 +775,7 @@ interface TileBox {
 }
 
 function buildTile(
-  ctx: BakeContext,
+  ctx: BuildContext,
   spec: TileGridSpec,
   sources: readonly TileSource[],
   merged: Manifold | null,
@@ -810,7 +810,7 @@ function buildTile(
     // `collapseNeedles`: a tile is a trim by up to four planes, a union with
     // its keys and three subtractions deep, and each of those can leave a
     // needle the whole-mesh weld ladder cannot reach (`mesh.NEEDLE_COLLAPSE_MM`,
-    // `[V3-P7-A9]`). An untiled bake never needs it and never asks for it.
+    // `[V3-P7-A9]`). An untiled build never needs it and never asks for it.
     const mesh = toRegionMesh(solid, source.region, source.slot, source.colorHex, undefined, {
       collapseNeedles: true,
     });
@@ -846,7 +846,7 @@ function buildTile(
  * not quite the same object once it has been cut, and this is exactly how much
  * not quite.
  */
-function reportSlivers(ctx: BakeContext, label: string, volumeMm3: number): void {
+function reportSlivers(ctx: BuildContext, label: string, volumeMm3: number): void {
   if (!(volumeMm3 > 0)) return;
   const seen = ctx.findings.find((f) => f.id === "tile-seam-trimmed");
   const total = (seen?.detail.match(/([\d.]+) mm3 in total/)?.[1] ?? "0") as string;
@@ -870,7 +870,7 @@ function reportSlivers(ctx: BakeContext, label: string, volumeMm3: number): void
  * Computed once for the whole grid: the sections are shared by both tiles of
  * every seam and by both sliver passes.
  */
-function bandSlices(ctx: BakeContext, merged: Manifold, seams: readonly Seam[]): BandSlice[] {
+function bandSlices(ctx: BuildContext, merged: Manifold, seams: readonly Seam[]): BandSlice[] {
   const { arena } = ctx;
   const lines = new Map<string, { axis: 0 | 1; at: number }>();
   for (const seam of seams) lines.set(`${seam.axis}:${seam.planeMm}`, { axis: seam.axis, at: seam.planeMm });
@@ -904,7 +904,7 @@ function bandSlices(ctx: BakeContext, merged: Manifold, seams: readonly Seam[]):
  * the list is the base slab, where the recesses are, because that is where a
  * cut can leave a rind of plate between a groove and the seam.
  */
-export function sliverHeights(ctx: BakeContext, topMm: number): number[] {
+export function sliverHeights(ctx: BuildContext, topMm: number): number[] {
   const baseTop = ctx.baseTopMm;
   const span = Math.max(0, topMm - baseTop);
   const eps = 0.05;
@@ -967,7 +967,7 @@ export function sliverHeights(ctx: BakeContext, topMm: number): number[] {
  * point that carries a thin thing carries nothing else.
  */
 function sliverCutter(
-  ctx: BakeContext,
+  ctx: BuildContext,
   bands: readonly BandSlice[],
   males: readonly Seam[],
   sockets: readonly Seam[],
@@ -1057,7 +1057,7 @@ function sliverCutter(
  * nowhere near a wall, so it creates no slivers to find.
  */
 function tileBandSection(
-  ctx: BakeContext,
+  ctx: BuildContext,
   band: BandSlice,
   males: readonly Seam[],
   sockets: readonly Seam[],
@@ -1094,7 +1094,7 @@ function tileBandSection(
 
 /** `section` clipped to a strip of half-width `halfMm` about a cut line. */
 function clipToBand(
-  ctx: BakeContext,
+  ctx: BuildContext,
   section: CrossSection,
   plane: { axis: 0 | 1; at: number },
   halfMm: number,
@@ -1140,7 +1140,7 @@ function clipToBand(
  *   `0.25 * min_detail^2` on top.
  */
 function thinPart(
-  ctx: BakeContext,
+  ctx: BuildContext,
   section: CrossSection,
   minWallMm: number,
 ): CrossSection | null {
@@ -1227,7 +1227,7 @@ function holdsNoDisc(section: CrossSection, minWallMm: number): boolean {
  * the sides where it is already the boundary of the model.
  */
 function tileSolid(
-  ctx: BakeContext,
+  ctx: BuildContext,
   source: Manifold,
   box: TileBox,
   males: readonly Seam[],
@@ -1290,7 +1290,7 @@ function tileSolid(
  * mid air, so a body whose bounding box never reaches back across the plane is
  * dropped.
  */
-function maleKey(ctx: BakeContext, source: Manifold, seam: Seam): Manifold | null {
+function maleKey(ctx: BuildContext, source: Manifold, seam: Seam): Manifold | null {
   const { wasm, arena } = ctx;
   if (seam.key === null) return null;
   const hit = arena.keep(wasm.Manifold.intersection([source, seam.key]));
@@ -1338,7 +1338,7 @@ function mergeBbox(into: Bbox3 | null, add: Bbox3): Bbox3 {
  * depth is the underside mark's own, floored by what the base can carry over
  * the deepest recess in it.
  */
-function indexCutter(ctx: BakeContext, label: string, box: TileBox): Manifold | null {
+function indexCutter(ctx: BuildContext, label: string, box: TileBox): Manifold | null {
   const asset = loadedGlyphFace(INDEX_MARK_FACE);
   if (asset === null) return null;
   const spanMm = Math.min(box.x1 - box.x0, box.y1 - box.y0);

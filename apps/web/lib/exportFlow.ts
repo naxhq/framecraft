@@ -1,7 +1,7 @@
 /**
- * Bake, v3: turning a fresh `EngineResult` into a downloaded file.
+ * Export, v3: turning a fresh `EngineResult` into a downloaded file.
  *
- * There is no server round trip left in this module. "Bake" now means:
+ * There is no server round trip left in this module. Export means:
  * export `EngineResult` for `PrintParams.export_target` through
  * `lib/engine/export`, build the same sidecar JSON the CLI/Python validator
  * expects (`lib/engine/export/common.ts:buildSidecarJson`, so the two can
@@ -20,19 +20,19 @@ import type { ColorChangePlan } from "./engine/export/colorchange";
 import type { AuditFinding, EngineResult } from "./engine/types";
 import { resolveProfile } from "./printers";
 
-export type BakePhase = "idle" | "exporting" | "done" | "failed";
+export type ExportPhase = "idle" | "exporting" | "done" | "failed";
 
 export interface DownloadFile {
   /** Shown next to the download link; the file's own name. */
   label: string;
   filename: string;
-  /** A `blob:` object URL. Revoked by `bakeExporting`/`revokeBakeUrls` the moment it stops being current. */
+  /** A `blob:` object URL. Revoked by `exportStarted`/`revokeExportUrls` the moment it stops being current. */
   href: string;
   mime: string;
 }
 
-export interface BakeState {
-  phase: BakePhase;
+export interface ExportState {
+  phase: ExportPhase;
   error: string | null;
   files: DownloadFile[];
   target: ExportTarget | null;
@@ -44,14 +44,14 @@ export interface BakeState {
    * True once a PrintParams value, the location or the SceneGraph changed
    * after this export was produced, i.e. the files no longer describe what
    * the preview is showing. The result is kept (the stats and the resolved
-   * text still describe a real bake) but it must not be offered as a
+   * text still describe a real build) but it must not be offered as a
    * download: 01's whole promise is that the preview and the printed result
    * agree.
    */
   stale: boolean;
 }
 
-export const initialBakeState: BakeState = {
+export const initialExportState: ExportState = {
   phase: "idle",
   error: null,
   files: [],
@@ -62,12 +62,12 @@ export const initialBakeState: BakeState = {
   stale: false,
 };
 
-/** Shown by the Bake panel and the stats card while `stale` is true. */
-export const BAKE_STALE_NOTE =
-  "Parameters changed since this bake — bake again to download a matching file.";
+/** Shown by the Output panel and the stats card while `stale` is true. */
+export const EXPORT_STALE_NOTE =
+  "Parameters changed since this export. Export again to download a matching file.";
 
-/** Revoke every Blob URL a `BakeState` is holding. A `blob:` URL leaks until it is revoked or the page unloads. */
-export function revokeBakeUrls(state: BakeState): void {
+/** Revoke every Blob URL a `ExportState` is holding. A `blob:` URL leaks until it is revoked or the page unloads. */
+export function revokeExportUrls(state: ExportState): void {
   for (const file of state.files) {
     if (!file.href.startsWith("blob:")) continue;
     try {
@@ -86,18 +86,18 @@ export function revokeBakeUrls(state: BakeState): void {
  * invalidate. A `failed` export goes stale too, so an old failure message
  * stops looking like a verdict on the CURRENT parameters. Returns the SAME
  * object when nothing changes, so a store write that marks an already-stale
- * (or non-terminal) bake re-renders nothing.
+ * (or non-terminal) export re-renders nothing.
  */
-export function markBakeStale(previous: BakeState): BakeState {
+export function markExportStale(previous: ExportState): ExportState {
   if (previous.stale || !isTerminal(previous.phase)) return previous;
   return { ...previous, stale: true };
 }
 
-export function bakeExporting(previous: BakeState): BakeState {
+export function exportStarted(previous: ExportState): ExportState {
   return { ...previous, phase: "exporting", error: null };
 }
 
-export function bakeFailedLocally(previous: BakeState, message: string): BakeState {
+export function exportFailedLocally(previous: ExportState, message: string): ExportState {
   return { ...previous, phase: "failed", error: message };
 }
 
@@ -124,7 +124,7 @@ export interface RunExportOutcome {
 /**
  * Export `result` for `target` and build its sidecar JSON. Pure (besides the
  * `Date.now()` the sidecar's `created_at` reads): no Blob, no download, no
- * store write. `bakeDone` turns the result into `DownloadFile[]`.
+ * store write. `exportDone` turns the result into `DownloadFile[]`.
  */
 export function runExport(result: EngineResult, target: ExportTarget, scene: SceneGraph, options: RunExportOptions = {}): RunExportOutcome {
   // The whole export as the user experiences it: the writer plus the sidecar.
@@ -167,12 +167,12 @@ function writeExport(result: EngineResult, target: ExportTarget, scene: SceneGra
 }
 
 /**
- * Turn a `RunExportOutcome` into the new terminal `BakeState`, as Blob object
+ * Turn a `RunExportOutcome` into the new terminal `ExportState`, as Blob object
  * URLs the OUTPUT panel can hand straight to `<a download>`. Revokes whatever
  * URLs the previous state was holding first.
  */
-export function bakeDone(previous: BakeState, target: ExportTarget, outcome: RunExportOutcome, findings: AuditFinding[]): BakeState {
-  revokeBakeUrls(previous);
+export function exportDone(previous: ExportState, target: ExportTarget, outcome: RunExportOutcome, findings: AuditFinding[]): ExportState {
+  revokeExportUrls(previous);
   const files: DownloadFile[] = [
     ...outcome.output.files.map((file) => ({
       label: file.name,
@@ -199,17 +199,17 @@ export function bakeDone(previous: BakeState, target: ExportTarget, outcome: Run
   };
 }
 
-/** The links the editor may actually offer: none while the bake is stale. */
-export function bakeDownloadLinks(state: BakeState): DownloadFile[] {
+/** The links the editor may actually offer: none while the export is stale. */
+export function exportDownloadLinks(state: ExportState): DownloadFile[] {
   if (state.stale) return [];
   return state.files;
 }
 
 /** Text for the phase row. */
-export function bakeStatusLabel(state: BakeState): string {
+export function exportStatusLabel(state: ExportState): string {
   switch (state.phase) {
     case "idle":
-      return "Not baked yet";
+      return "Not exported yet";
     case "exporting":
       return "Exporting...";
     case "done":
@@ -219,7 +219,7 @@ export function bakeStatusLabel(state: BakeState): string {
   }
 }
 
-export function isTerminal(phase: BakePhase): boolean {
+export function isTerminal(phase: ExportPhase): boolean {
   return phase === "done" || phase === "failed";
 }
 

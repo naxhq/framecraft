@@ -35,13 +35,13 @@ import TerrainGroup from "./groups/TerrainGroup";
  *  - **Ranges come from `PARAM_RANGES`** in the GENERATED contracts, never from
  *    a number typed into a component, so a schema change moves the sliders.
  *  - **Every write goes through `store.setParam`** (or `setNested`, which is
- *    `setParam` with an immutable spread), so bake staleness and the
+ *    `setParam` with an immutable spread), so export staleness and the
  *    `previewDeps` memo keys keep working and nothing here can reach the
  *    network. `store/editor.test.ts` drives every key of the frozen contract
  *    through `setParam` with `fetch` spied on and fails if one ever does.
  *
  * Output is pinned to the bottom rather than scrolling away with the rest:
- * Bake is the primary action once a scene exists, and a primary action that
+ * Export is the primary action once a scene exists, and a primary action that
  * has to be scrolled to is not primary. Its collapse toggle folds the results
  * (status, downloads, stats) and never the action row.
  */
@@ -60,7 +60,7 @@ const BODIES: Record<Exclude<GroupId, "output">, () => ReactNode> = {
 export function ParamPanel() {
   const resetParams = useEditorStore((state) => state.resetParams);
   // Manual picks plus, once `hero_auto` is on, the auto-promoted ones -- the
-  // same set that actually bakes (`store/editor.ts:currentHeroIds`), so the
+  // same set that actually builds (`store/editor.ts:currentHeroIds`), so the
   // badge never undercounts against what the HEROES section itself lists.
   const heroCount = useEditorStore((state) =>
     effectiveHeroIds(
@@ -153,7 +153,7 @@ export function ParamPanel() {
             type="button"
             data-testid="group-output-toggle"
             aria-expanded={!collapsed.output}
-            // Names the RESULTS wrapper only. The action row (Generate / Bake)
+            // Names the RESULTS wrapper only. The action row (Preview / Export)
             // and the predicted height are always rendered by design
             // (DECISIONS [V2-P4]), so pointing `aria-controls` at their
             // container announced "collapsed" over a region still on screen.

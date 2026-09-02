@@ -6,7 +6,7 @@
  * passing the answers around, so a scale computed in `buildings.ts` and a scale
  * computed in `roads.ts` cannot differ. It also carries the two output
  * channels - `findings` and `resolvedText` - because a refusal is a first class
- * result of the bake, never a thrown error.
+ * result of the build, never a thrown error.
  */
 
 import type { PrintParams, SceneGraph } from "../../contracts";
@@ -101,7 +101,7 @@ export interface ThresholdsMm {
   minDetail: number;
 }
 
-export interface BakeContext {
+export interface BuildContext {
   readonly wasm: ManifoldToplevel;
   readonly arena: Arena;
   readonly scene: SceneGraph;
@@ -153,14 +153,14 @@ export interface ContextInit {
  * side wall - an unprintable wall the recess itself created. With the frame on
  * the crop is a full 6 mm inside the plate and the two are the same number.
  */
-export function makeContext(init: ContextInit): BakeContext {
+export function makeContext(init: ContextInit): BuildContext {
   const { params, scene } = init;
   const radiusM = T.radius_m_from_bounds(scene.bounds);
   const scale = T.scale_mm_per_m(params, radiusM);
   const plateHalfMm = T.plate_extents_mm(params).max_x;
   // v3 phase 5: a shadow gap and a matting border both live between the lip and
   // the city, so the city gives way to them. Zero at the defaults, so a default
-  // bake's crop is exactly the number it always was (`[V3-P5-F2]`).
+  // build's crop is exactly the number it always was (`[V3-P5-F2]`).
   const cropHalfMm =
     T.content_extents_mm(params).max_x - T.frame_content_inset_mm(params);
   return {
@@ -188,7 +188,7 @@ export function makeContext(init: ContextInit): BakeContext {
 }
 
 /** Record a finding once; a repeat of the same id and detail is dropped. */
-export function addFinding(ctx: BakeContext, finding: AuditFinding): void {
+export function addFinding(ctx: BuildContext, finding: AuditFinding): void {
   const already = ctx.findings.some(
     (f) => f.id === finding.id && f.detail === finding.detail,
   );
@@ -342,7 +342,7 @@ export const MIN_REGION_DEPTH_MM = 0.2;
  * what it actually got.
  */
 export function placementOf(
-  ctx: BakeContext,
+  ctx: BuildContext,
   depthMm: number,
   proudMm: number,
 ): Placement {

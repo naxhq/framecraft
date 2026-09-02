@@ -45,6 +45,12 @@ docker-compose.yml  Makefile  RUNBOOK.md
 - OSM only (Overpass + OSM raster tiles). Google/Apple/Bing sources are forbidden.
   Attribution `© OpenStreetMap contributors` in the footer, 3MF metadata, CREDITS.txt.
 - No placeholder deliverables. Stubs only for items listed out of scope in `01`.
+- Vocabulary (v3.1): the two user actions are **Preview** (build or rebuild the
+  model from location and settings) and **Export** (write the model file in the
+  selected format). "Bake" survives only in `services/bake` (reference
+  implementation internals) and the frozen `BakeResult` schema; see
+  `DECISIONS.md` `[V3.1-O3]`. Export produces a printable model file, never
+  G-code; the Bambu project 3MF "opens ready to slice" is the claim to make.
 - Python: use `uv` (`services/bake/pyproject.toml`, Python 3.12). Web: `npm`.
 - This dev host is Windows 11 without Docker; `make` targets must work natively
   (uv + npm) and under docker compose. Use POSIX sh in Makefile recipes.
@@ -53,8 +59,9 @@ docker-compose.yml  Makefile  RUNBOOK.md
 
 `make up` (start both services; docker compose if present, else native)
 `make dev` (native, foreground) · `make install` · `make test` · `make gate`
-(pytest + vitest + next build + Playwright smoke) · `make bake-fixture`
-(Chicago preset -> `artifacts/chicago.3mf`) · `make validate FILE=...`
+(pytest + vitest + next build + Playwright smoke) · `make export-fixture`
+(Chicago preset -> `artifacts/chicago.3mf`; `bake-fixture` is a deprecation
+alias) · `make validate FILE=...`
 (CLI validator table) · `make refresh-fixtures` (re-fetch Overpass fixtures)
 · `make gate-v2` (G5 + G6 + G8: parts, text, v1 golden) · `make down` · `make clean`.
 

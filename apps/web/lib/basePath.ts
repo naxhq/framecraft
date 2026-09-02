@@ -42,7 +42,7 @@ declare global {
  * passes through byte-identical.
  *
  * No-op when the base path is empty, when already installed, and in any
- * Node runtime (vitest, bake-cli, Next's prerender pass), where emscripten
+ * Node runtime (vitest, export-cli, Next's prerender pass), where emscripten
  * reads the file from disk and never calls `fetch` for it.
  */
 export function installWasmBasePathFetchShim(): void {

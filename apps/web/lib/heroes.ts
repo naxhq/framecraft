@@ -2,13 +2,13 @@
  * Hero buildings: the handful a user wants to stand out.
  *
  * The editor half only. Clicking a building in the preview toggles its
- * SceneGraph id in `PrintParams.hero_building_ids`; the bake half (the
+ * SceneGraph id in `PrintParams.hero_building_ids`; the build half (the
  * `true_height` multiplier, the `own_color` part and the block-merge
  * exemption) is the parts-export phase's, per DECISIONS [V2-P3].
  *
  * The cap is the contract's own `maxItems`. It is enforced here rather than by
  * letting the write through and hoping the server rejects it: a payload the
- * frozen schema refuses would fail the whole bake with a validation error
+ * frozen schema refuses would fail the whole build with a validation error
  * instead of telling the user, at the moment of the click, that twelve is the
  * limit.
  */
@@ -63,7 +63,7 @@ export function heroCapMessage(cap: number = HERO_CAP): string {
  * Index -> hero, for the InstancedMesh colour buffer.
  *
  * The preview draws buildings in `lib/preview.ts`'s order, which drops the
- * footprints the bake drops, so the instance index is NOT the SceneGraph index
+ * footprints the build drops, so the instance index is NOT the SceneGraph index
  * and the lookup has to go through the id.
  */
 export function heroFlags(
@@ -219,10 +219,10 @@ export function autoHeroIds(
 }
 
 /**
- * The ids that will actually bake as heroes right now: manual alone with
+ * The ids that will actually build as heroes right now: manual alone with
  * `hero_auto` off, manual plus the top `hero_auto.count` otherwise.
  *
- * `buildings` is optional so a caller mid-Generate (no scene yet) still gets
+ * `buildings` is optional so a caller mid-Preview (no scene yet) still gets
  * the manual list rather than an empty one.
  */
 export function effectiveHeroIds(

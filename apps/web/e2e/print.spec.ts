@@ -8,7 +8,7 @@ import { mockTinyLoopOverpass } from "./overpassMock";
  *
  * Every Overpass call is routed to the tiny (30-building) synthetic fixture
  * (`mockTinyLoopOverpass`), the same one `terrain.spec.ts` uses: it clears
- * 01/A2's 20-building minimum and bakes cleanly, which matters here more than
+ * 01/A2's 20-building minimum and builds cleanly, which matters here more than
  * usual -- these specs wait on the browser engine's OWN findings and tile
  * split, not just a rendered preview.
  *
@@ -34,7 +34,7 @@ async function generateTinyLoop(page: Page): Promise<void> {
   await expect(page.getByTestId("preview-stats")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
   // A fresh EngineResult, not just the instanced fallback: the stats card
   // only renders once `state.engine.result` exists (terrain.spec.ts's own
-  // "the engine keeps baking" signal).
+  // "the engine keeps building" signal).
   await expect(page.getByTestId("stats-card")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
 }
 
@@ -134,14 +134,14 @@ test("a finding with a fix (a region on a slot the profile does not have) clears
   await expect(fixButton).toBeVisible();
   await fixButton.click();
   // Immediate, optimistic: the row marks itself fixed the moment the store
-  // reports a real change, before the next debounced bake even lands.
+  // reports a real change, before the next debounced build even lands.
   await expect(fixButton).toBeDisabled();
   await expect(fixButton).toHaveText("Fixed");
 
   // The region's slot really moved (back onto the profile's own slot count).
   await expect(page.locator("#colour_slot_buildings")).not.toHaveValue("9");
 
-  // Once the next bake lands, the engine no longer reports the finding at
+  // Once the next build lands, the engine no longer reports the finding at
   // all -- the row is gone, not merely disabled.
   await expect(item).toHaveCount(0, { timeout: WARMUP_BUDGET_MS });
   expect(pageErrors, `uncaught page errors: ${pageErrors.join(" | ")}`).toEqual([]);
@@ -194,12 +194,12 @@ test("enabling 2x2 tiling shows four tile labels in the preview and a tiled expo
   // The export note names the real tile count and, for a real Bambu printer
   // on the default `bambu-3mf` target, says the project carries one plate
   // per tile (the exact phrasing `lib/engine/export/index.ts` itself writes
-  // into a finished bake's own notes, so the two can never disagree).
+  // into a finished export's own notes, so the two can never disagree).
   await expect(page.getByTestId("tiled-export-note")).toContainText("4 tiles");
   await expect(page.getByTestId("tiled-export-note")).toContainText("one plate each");
   await expect(page.getByTestId("tiled-export-note")).toContainText("single Bambu Studio project");
 
-  await page.getByTestId("bake-button").click();
+  await page.getByTestId("export-button").click();
   await expect(page.getByTestId("download-links")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
   const links = page.getByTestId("download-links").locator("a");
   await expect(links).not.toHaveCount(0);

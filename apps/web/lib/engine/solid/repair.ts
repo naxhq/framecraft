@@ -33,7 +33,7 @@
 
 import type { Point, Road } from "../../contracts";
 import * as T from "../../transform";
-import type { BakeContext } from "./context";
+import type { BuildContext } from "./context";
 import { CIRCLE_SEGMENTS, LAYER_SEPARATION_MM, SIMPLIFY_EPS_MM } from "./context";
 import type { Contour, CrossSection } from "./manifold";
 import {
@@ -165,7 +165,7 @@ export interface BuildingSolid {
    * A stable name for this solid: the SceneGraph id of the footprint that set
    * its height, or `block-<n>` for a closing artefact that has no contributor.
    * It is what a per-building tint is seeded with (`[V3-P5-F8]`), so it has to
-   * be the same from one bake to the next for the same scene.
+   * be the same from one build to the next for the same scene.
    */
   id: string;
   /** Plan centroid of that footprint, print mm. */
@@ -310,7 +310,7 @@ export function weightedPercentile(
 // ---------------------------------------------------------------------------
 
 /** The square every additive layer is clipped to, as a section. */
-export function cropSection(ctx: BakeContext, halfMm: number): CrossSection {
+export function cropSection(ctx: BuildContext, halfMm: number): CrossSection {
   const section = sectionOf(ctx.wasm, ctx.arena, [
     rectContour(-halfMm, -halfMm, halfMm, halfMm),
   ]);
@@ -400,12 +400,12 @@ export function appendageWidthMm(section: CrossSection, minWall: number): number
  * material the dilation put OUTSIDE the component cannot change it; what the
  * clip would move is a band no wider than `RESIDUE_EDGE_TOLERANCE` of a wall
  * where the re-grown boundary crosses the component's own. It was measured at
- * about a second of Clipper2 work on the Chicago plate against a 15 s bake
- * budget, and it changed no validator number on any of the six bakes in
+ * about a second of Clipper2 work on the Chicago plate against a 15 s build
+ * budget, and it changed no validator number on any of the six builds in
  * `docs/handoff/v3-07-fix.md`.
  */
 export function residueParts(
-  ctx: BakeContext,
+  ctx: BuildContext,
   component: CrossSection,
   radius: number,
   areaFloor: number,
@@ -450,7 +450,7 @@ export function residueParts(
  * limb), which is why this runs after the close and not before it.
  */
 export function widenThinParts(
-  ctx: BakeContext,
+  ctx: BuildContext,
   component: CrossSection,
   rounds: number = APPENDAGE_ROUNDS,
   targetMm?: number,
@@ -512,7 +512,7 @@ export function widenThinParts(
  * The caller owns what comes back and must drop it.
  */
 export function thinParts(
-  ctx: BakeContext,
+  ctx: BuildContext,
   component: CrossSection,
   areaFloorMm2?: number,
 ): CrossSection[] | null {
@@ -541,7 +541,7 @@ export function thinParts(
  * OSM polygons leaves at their edges (`thicken.strip_thin_parts`).
  */
 export function stripThinParts(
-  ctx: BakeContext,
+  ctx: BuildContext,
   component: CrossSection,
   rounds: number = APPENDAGE_ROUNDS,
 ): CrossSection | null {
@@ -580,7 +580,7 @@ export function stripThinParts(
  * buildings, cut off for a raised surface layer.
  */
 function keepPrintable(
-  ctx: BakeContext,
+  ctx: BuildContext,
   components: readonly CrossSection[],
   mode: "strip" | "widen" | "keep",
   keep: CrossSection | null = null,
@@ -629,7 +629,7 @@ function keepPrintable(
  * limit rather than shipping one that was just under it.
  */
 export function survivesMinWall(
-  ctx: BakeContext,
+  ctx: BuildContext,
   section: CrossSection,
   minWallMm?: number,
 ): boolean {
@@ -653,7 +653,7 @@ export function survivesMinWall(
  * non-empty (`thicken.widen_to_min_wall`). Null when it never does.
  */
 export function widenToMinWall(
-  ctx: BakeContext,
+  ctx: BuildContext,
   section: CrossSection,
   rounds: number = MIN_WALL_WIDEN_ROUNDS,
 ): CrossSection | null {
@@ -678,7 +678,7 @@ export function widenToMinWall(
  * The same argument covers roads, so the same number is used here.
  */
 export function repairFlatLayer(
-  ctx: BakeContext,
+  ctx: BuildContext,
   contours: readonly Contour[],
   options: {
     clipHalfMm: number;
@@ -807,7 +807,7 @@ export function ribbonContours(
 
 /** Every road centreline as ribbon contours, at the clamped printed width. */
 export function roadContours(
-  ctx: BakeContext,
+  ctx: BuildContext,
   roads: readonly Road[],
 ): Contour[] {
   const out: Contour[] = [];
@@ -841,7 +841,7 @@ interface Footprint {
  * from nothing else - the dilation, the drop and the crop all apply.
  */
 export function repairBuildings(
-  ctx: BakeContext,
+  ctx: BuildContext,
   heroIds: readonly string[],
 ): RepairedBuildings {
   const { arena, wasm, params, scale } = ctx;

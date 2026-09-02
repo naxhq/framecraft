@@ -116,7 +116,7 @@ export function sampleRegions(): RegionMesh[] {
 /**
  * A stand-in for the boolean union in a hand-built fixture: the regions
  * concatenated. A test that needs the REAL union (one body, no interior walls)
- * bakes a scene; these fixtures are for checking file structure.
+ * builds a scene; these fixtures are for checking file structure.
  */
 function concatenated(regions: RegionMesh[]): RegionMesh {
   const positions: number[] = [];
@@ -147,7 +147,7 @@ export function makeResult(regions: RegionMesh[], params: PrintParams = defaultP
     regions,
     // The fixtures are hand-built partitions, so the "merged" mesh a single
     // object format writes is stood in for by the first region. A test that
-    // cares about the real union bakes one.
+    // cares about the real union builds one.
     merged: concatenated(regions),
     params,
     findings: [],

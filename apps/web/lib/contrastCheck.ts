@@ -28,7 +28,7 @@ import { bandIndexOf, type RegionName } from "./engine/types";
  * brief. Band regions (the height-gradient slots, `buildings_band_2..8`,
  * `[V3-P5-F7]`) are handled separately by `bandAdjacentPairs` below, since
  * which ones exist depends on `colour.gradient` and how many bands the
- * current bake produced, not on a fixed table.
+ * current build produced, not on a fixed table.
  */
 export const ADJACENT_PAIRS: ReadonlyArray<readonly [RegionName, RegionName]> = [
   ["base", "frame"],
@@ -47,7 +47,7 @@ export const ADJACENT_PAIRS: ReadonlyArray<readonly [RegionName, RegionName]> = 
  * present), chained in band-index order. `buildings`/`base` is already in
  * `ADJACENT_PAIRS`, so band 1 needs no separate anchor here. Returns `[]`
  * when `regionsPresent` carries no band beyond `buildings` itself (the
- * gradient is off, or the current rows predate a bake).
+ * gradient is off, or the current rows predate a build).
  */
 export function bandAdjacentPairs(
   regionsPresent: ReadonlySet<RegionName>,
@@ -113,7 +113,7 @@ export function nearestSeparatingColor(current: string, other: string): string |
  * entries -- what actually comes off the nozzle once slot-sharing is
  * resolved) fall under `CONTRAST_THRESHOLD`, one issue per pair, in
  * `ADJACENT_PAIRS` order. A region absent from `rows` (not yet built by any
- * bake and not a v1/v2 default -- should not happen, but a defensive read
+ * build and not a v1/v2 default -- should not happen, but a defensive read
  * rather than a crash) is skipped rather than compared against `undefined`.
  */
 export function contrastIssues(rows: readonly ColourRow[]): ContrastIssue[] {

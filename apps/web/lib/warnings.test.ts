@@ -1,12 +1,12 @@
 /**
- * Warning and Bake-gating rules.
+ * Warning and Export-gating rules.
  *
  * The load-bearing one is the 60 mm ceiling: `services/bake/app/bake.py` refuses
  * a model whose predicted top reaches `checks.MAX_HEIGHT_MM` before it builds
  * anything, so the editor must reach the same verdict from the same shared math
  * (`lib/transform.ts` <-> `app/geom/transform.py`, pinned by
- * `fixtures/parity-expected.json`). An editor that offers a bake the server
- * bounces is the preview/bake divergence 01 calls the worst failure mode.
+ * `fixtures/parity-expected.json`). An editor that offers an export the engine
+ * refuses is the preview/build divergence 01 calls the worst failure mode.
  */
 
 import { describe, expect, it } from "vitest";
@@ -17,8 +17,8 @@ import type { TokenContext } from "./tokens";
 import * as T from "./transform";
 import {
   ESTIMATED_HEIGHT_RATIO,
-  MIN_BUILDINGS_TO_BAKE,
-  bakeBlockReason,
+  MIN_BUILDINGS_TO_EXPORT,
+  exportBlockReason,
   heightCeilingMm,
   letteringWarnings,
   predictedTopMm,
@@ -118,7 +118,7 @@ function graphOf(count: number, tallest_m: number, ratio = 0.5): SceneGraph {
     trees: [],
     stats: {
       building_count: buildings.length,
-      coverage: buildings.length >= MIN_BUILDINGS_TO_BAKE ? "good" : "empty",
+      coverage: buildings.length >= MIN_BUILDINGS_TO_EXPORT ? "good" : "empty",
       height_tag_ratio: ratio,
     },
   };
@@ -158,16 +158,16 @@ describe("the 60 mm ceiling", () => {
   /** 200 m at 1:10714 (180 mm plate, frame on) is 18.7 mm + 3 mm of base. */
   const graph = graphOf(40, 200);
 
-  it("blocks Bake with the height, the limit and what to do about it", () => {
+  it("blocks Export with the height, the limit and what to do about it", () => {
     // 220 m doubled on a 256 mm frameless plate is 62.6 mm over a 3 mm base:
-    // exactly the "slide large_scale to 2.0 on a tall city" case the bake
+    // exactly the "slide large_scale to 2.0 on a tall city" case the build
     // refuses in under a millisecond (DECISIONS [P3-fix]).
     const skyline = graphOf(40, 220);
     const tall = p({ large_scale: 2.0, frame: false, plate_mm: 256 });
     const top = predictedTopMm(skyline, tall) as number;
     expect(top).toBeGreaterThanOrEqual(T.MAX_HEIGHT_MM);
 
-    const reason = bakeBlockReason(skyline, tall);
+    const reason = exportBlockReason(skyline, tall);
     expect(reason).toBe(
       `Model would be ${top.toFixed(1)} mm tall (Custom printer ceiling 60 mm) — ` +
         "lower the building scales or the plate size, or pick a taller printer",
@@ -176,21 +176,21 @@ describe("the 60 mm ceiling", () => {
     expect(warning?.level).toBe("block");
   });
 
-  it("allows Bake right up to the limit and blocks at it", () => {
-    // The bake refuses on `>=`, so the editor must too, exactly.
+  it("allows Export right up to the limit and blocks at it", () => {
+    // The build refuses on `>=`, so the editor must too, exactly.
     const graph60 = graphOf(40, 200);
     const params = p({ frame: false });
     const scale = T.scale_mm_per_m(params, 900);
     const justUnder = (T.MAX_HEIGHT_MM - 3 - 1e-6) / scale;
     graph60.buildings[0] = building(justUnder);
-    expect(bakeBlockReason(graph60, params)).toBeNull();
+    expect(exportBlockReason(graph60, params)).toBeNull();
     graph60.buildings[0] = building((T.MAX_HEIGHT_MM - 3) / scale);
     expect(predictedTopMm(graph60, params)).toBeCloseTo(T.MAX_HEIGHT_MM, 9);
-    expect(bakeBlockReason(graph60, params)).toContain("Model would be");
+    expect(exportBlockReason(graph60, params)).toContain("Model would be");
   });
 
   it("does not fire on a scene that fits", () => {
-    expect(bakeBlockReason(graph, p())).toBeNull();
+    expect(exportBlockReason(graph, p())).toBeNull();
     expect(sceneWarnings(graph, p()).map((w) => w.id)).not.toContain("model-too-tall");
   });
 });
@@ -233,7 +233,7 @@ describe("heightCeilingMm (team lead's ruling, [V3-P4]/[V3-P4-E9])", () => {
 // The hanger floor ([V2-P5], wired to the UI by [V2-P7-fix])
 // ==========================================================================
 
-describe("a base too thin for the underside blocks Bake", () => {
+describe("a base too thin for the underside blocks Export", () => {
   const graph = graphOf(40, 40);
 
   it("names the keyhole minimum from the shared math, not from a literal", () => {
@@ -247,7 +247,7 @@ describe("a base too thin for the underside blocks Bake", () => {
     expect(needed).toBeCloseTo(3.6, 9);
     expect(params.base_thickness_mm).toBe(3.0);
 
-    const reason = bakeBlockReason(graph, params);
+    const reason = exportBlockReason(graph, params);
     expect(reason).toContain(
       "Keyhole hanger needs a base of at least 3.6 mm (now 3.0 mm) — " +
         "raise the base thickness or choose no hanger.",
@@ -260,15 +260,15 @@ describe("a base too thin for the underside blocks Bake", () => {
   });
 
   it("clears the moment the base reaches the minimum, and not before", () => {
-    // The bake refuses on `base < needed`, so the editor must allow exactly
+    // The build refuses on `base < needed`, so the editor must allow exactly
     // `base >= needed` - one hundredth under and it is still blocked.
     const needed = T.underside_min_base_mm(p({ hanger: "keyhole" }));
-    expect(bakeBlockReason(graph, p({ hanger: "keyhole", base_thickness_mm: needed - 0.01 })))
+    expect(exportBlockReason(graph, p({ hanger: "keyhole", base_thickness_mm: needed - 0.01 })))
       .toContain("Keyhole hanger");
     expect(
-      bakeBlockReason(graph, p({ hanger: "keyhole", base_thickness_mm: needed })),
+      exportBlockReason(graph, p({ hanger: "keyhole", base_thickness_mm: needed })),
     ).toBeNull();
-    expect(bakeBlockReason(graph, p({ hanger: "keyhole", base_thickness_mm: 4 }))).toBeNull();
+    expect(exportBlockReason(graph, p({ hanger: "keyhole", base_thickness_mm: 4 }))).toBeNull();
   });
 
   it("moves with road_mode and water, because they cut the same plate", () => {
@@ -277,16 +277,16 @@ describe("a base too thin for the underside blocks Bake", () => {
     // to name them.
     const roadsOff = p({ hanger: "keyhole", road_mode: "off", base_thickness_mm: 3.0 });
     expect(T.underside_min_base_mm(roadsOff)).toBeCloseTo(3.5, 9);
-    expect(bakeBlockReason(graph, roadsOff)).toContain("at least 3.5 mm");
-    expect(bakeBlockReason(graph, roadsOff)).toContain("water already take 0.5 mm");
+    expect(exportBlockReason(graph, roadsOff)).toContain("at least 3.5 mm");
+    expect(exportBlockReason(graph, roadsOff)).toContain("water already take 0.5 mm");
 
     const dry = { ...roadsOff, water: false };
     expect(T.underside_min_base_mm(dry)).toBeCloseTo(3.0, 9);
-    expect(bakeBlockReason(graph, dry)).toBeNull();
+    expect(exportBlockReason(graph, dry)).toBeNull();
   });
 
   it("covers magnets and the underside mark too", () => {
-    expect(bakeBlockReason(graph, p({ hanger: "magnets" }))).toContain(
+    expect(exportBlockReason(graph, p({ hanger: "magnets" }))).toContain(
       "Magnet hanger needs a base of at least 4.7 mm (now 3.0 mm)",
     );
     const marked = p({
@@ -297,7 +297,7 @@ describe("a base too thin for the underside blocks Bake", () => {
     // function of the base (`road_z_mm` is `-min(0.6, base/3)`): at 1.5 mm the
     // engraved roads take 0.5 mm, not 0.6, so the floor is 1.8 and not 1.9.
     expect(T.underside_min_base_mm(marked)).toBeCloseTo(1.8, 9);
-    expect(bakeBlockReason(graph, marked)).toContain(
+    expect(exportBlockReason(graph, marked)).toContain(
       "Underside mark needs a base of at least 1.8 mm (now 1.5 mm) — " +
         "raise the base thickness or turn the underside mark off.",
     );
@@ -307,14 +307,14 @@ describe("a base too thin for the underside blocks Bake", () => {
     expect(sceneWarnings(graph, p()).map((w) => w.id)).not.toContain(
       "base-too-thin-for-underside",
     );
-    expect(bakeBlockReason(graph, p())).toBeNull();
+    expect(exportBlockReason(graph, p())).toBeNull();
   });
 });
 
-describe("coverage and estimated heights still gate the bake", () => {
+describe("coverage and estimated heights still gate the export", () => {
   it("blocks a scene under 20 buildings before it mentions the height", () => {
     const sparse = graphOf(5, 400);
-    const reason = bakeBlockReason(sparse, p({ large_scale: 2.0 }));
+    const reason = exportBlockReason(sparse, p({ large_scale: 2.0 }));
     expect(reason).toContain("enlarge the radius");
   });
 
@@ -323,11 +323,11 @@ describe("coverage and estimated heights still gate the bake", () => {
     const warnings = sceneWarnings(guessed, p());
     const estimated = warnings.find((w) => w.id === "estimated-heights");
     expect(estimated?.level).toBe("warn");
-    expect(bakeBlockReason(guessed, p())).toBeNull();
+    expect(exportBlockReason(guessed, p())).toBeNull();
   });
 
   it("says to generate first when there is no scene", () => {
-    expect(bakeBlockReason(null, p())).toBe("Generate a scene first.");
+    expect(exportBlockReason(null, p())).toBe("Preview a location first.");
     expect(sceneWarnings(null, p())).toEqual([]);
   });
 });
@@ -409,7 +409,7 @@ describe("a hero counts at its hero height", () => {
 
   it("raises the predicted top when the mode grants true height", () => {
     // `transform.predicted_top_mm` counts a hero at `building_top_mm_for(...,
-    // is_hero=true)` because that is the height the bake prints and the preview
+    // is_hero=true)` because that is the height the build prints and the preview
     // now draws. The 60 mm guard and the HUD have to see the same number.
     const plain = predictedTopMm(graph, p(halved)) as number;
     const hero = predictedTopMm(
@@ -594,7 +594,7 @@ describe("letteringWarnings", () => {
     ]);
   });
 
-  it("never rises to block level: an empty line is omitted from the bake, not a refusal", () => {
+  it("never rises to block level: an empty line is omitted from the export, not a refusal", () => {
     const params = p({ frame: true, engravings: [{ edge: "top", text: "{city}" }] });
     for (const warning of letteringWarnings(params, noCity)) {
       expect(warning.level).not.toBe("block");

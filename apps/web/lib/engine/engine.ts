@@ -1,8 +1,8 @@
 /**
- * The browser bake: a SceneGraph and a PrintParams in, watertight region solids
+ * The browser engine: a SceneGraph and a PrintParams in, watertight region solids
  * out.
  *
- * `bake()` is `04_PRINTABILITY_SPEC.md` end to end, with one structural change
+ * `buildModel()` is `04_PRINTABILITY_SPEC.md` end to end, with one structural change
  * from the reference implementation in `services/bake`: the output is not one
  * welded solid but one solid per colourable region. Those regions are separate
  * watertight BODIES that INTERPENETRATE at every seam by `PART_OVERLAP_MM`
@@ -27,11 +27,11 @@
  * 4. Lettering and ornaments, which are cutters into the frame and the base and
  *    therefore have to exist before either is finished.
  * 5. The plate, carved by every cutter at once.
- * 6. The welded assembly, draped as one solid if this bake has terrain.
+ * 6. The welded assembly, draped as one solid if this build has terrain.
  * 7. Measure, validate, convert to meshes.
  *
  * Every WASM handle lives in one `Arena` that is disposed in a `finally`, so a
- * failed bake leaks nothing.
+ * failed build leaks nothing.
  */
 
 import type { Engraving, PrintParams } from "../contracts";
@@ -67,7 +67,7 @@ import {
   regionColor,
   regionSlot,
 } from "./solid/context";
-import type { BakeContext } from "./solid/context";
+import type { BuildContext } from "./solid/context";
 import type { Drape } from "./solid/drape";
 import { LOW_RELIEF_MM, drapeSolid, makeDrape } from "./solid/drape";
 import { buildTrees } from "./solid/trees";
@@ -104,7 +104,7 @@ import { islandReport, validate, type BuiltRegion } from "./solid/validate";
 /** How far the assembly may sit off z = 0 before it is nudged back, mm. */
 const SIT_EPS_MM = 1e-9;
 
-export interface BakeOptions {
+export interface BuildOptions {
   /**
    * Called with the finished region solids while they are still alive.
    *
@@ -127,9 +127,9 @@ export interface BakeOptions {
  * `findings` and `resolvedText`. It does throw for a broken input (a scene with
  * no bounds, a zero radius), because that is a bug in the caller.
  */
-export async function bake(
+export async function buildModel(
   input: EngineInput,
-  options: BakeOptions = {},
+  options: BuildOptions = {},
 ): Promise<EngineResult> {
   const started = performance.now();
   const wasm = await loadManifold();
@@ -147,7 +147,7 @@ export async function bake(
     reportUnbuiltFrameStyle(ctx);
     reportRoadModeConflict(ctx);
 
-    // The displacement field, or null for a flat bake. EVERY terrain decision
+    // The displacement field, or null for a flat build. EVERY terrain decision
     // in the pipeline reads this one object, so the base, the layers, the
     // bridges and the trees cannot end up on four different surfaces.
     const drape = perfSpan("solid.drape", () => makeDrape(ctx));
@@ -197,22 +197,22 @@ export async function bake(
     //
     // The attribution is NOT an option and NOT an input: `EngineInput`'s own
     // `attribution` field is ignored (`[V3-P7-A1]`), the strings are composed
-    // from constants and this bake's date, and every mark is cut on every bake.
+    // from constants and this build's date, and every mark is cut on every build.
     // It is laid out BEFORE the lettering, because the user's own underside
     // lines have to be stacked clear of it.
-    const bakeDate = input.date ?? new Date().toISOString().slice(0, 10);
-    const tokens = textTokenContext(input.scene, input.params, bakeDate);
+    const buildDate = input.date ?? new Date().toISOString().slice(0, 10);
+    const tokens = textTokenContext(input.scene, input.params, buildDate);
     const expand = (text: string): string => expand_tokens(text, tokens);
     const lettering = perfSpan("solid.lettering", () =>
       buildLettering(
         ctx,
         tokens,
         input.rotationDeg ?? 0,
-        undersideReserveMm(ctx, bakeDate, expand),
+        undersideReserveMm(ctx, buildDate, expand),
       ),
     );
     const ornaments = perfSpan("solid.ornaments", () => buildOrnaments(ctx, lettering.layout));
-    const attribution = perfSpan("solid.attribution", () => buildAttribution(ctx, bakeDate, expand));
+    const attribution = perfSpan("solid.attribution", () => buildAttribution(ctx, buildDate, expand));
     reportNarrowTextBand(
       ctx,
       lettering.frameCut.length +
@@ -390,7 +390,7 @@ export async function bake(
             ]),
           );
     // A flat scene with nothing standing on it takes `batchedUnion`'s
-    // single-input path, which hands `carvedAssembly` straight back: the bake
+    // single-input path, which hands `carvedAssembly` straight back: the build
     // that has no terrain, no bridge and no tree is byte-identical to the one
     // this branch replaced.
     const assembly =
@@ -509,7 +509,7 @@ export async function bake(
       regions,
       merged,
       stats,
-      // The bake's own findings plus every rule that can be answered from the
+      // The build's own findings plus every rule that can be answered from the
       // finished meshes, in one ordered list (`audit/rules.ts`).
       findings: perfSpan("solid.audit", () =>
         auditPrintability({
@@ -543,10 +543,10 @@ export async function bake(
     };
   } finally {
     arena.dispose();
-    // The whole bake as one row, recorded on the way out so a bake that threw
+    // The whole build as one row, recorded on the way out so a build that threw
     // still reports what it spent. `started` is already this realm's
     // `performance.now()`, which is exactly what `perfRecord` wants.
-    perfRecord("engine.bake", started, performance.now() - started);
+    perfRecord("engine.build", started, performance.now() - started);
   }
 }
 
@@ -554,10 +554,10 @@ export async function bake(
  * The `PrintParams` echoed on `EngineResult.params`, and from there into every
  * export's persisted `print_params` (the .3mf metadata, the sidecar JSON):
  * every `{city}`-style token already substituted, agreeing with `resolvedText`
- * above, instead of the raw input still carrying the token. A line this bake
+ * above, instead of the raw input still carrying the token. A line this build
  * skipped (frame off, an empty token, a refusal) is dropped rather than left
- * showing text nothing was cut for -- the same rule `lib/bake.ts`'s removed
- * client-side `resolveParamsForBake` used, now applied from the engine's own
+ * showing text nothing was cut for -- the same rule `lib/exportFlow.ts`'s removed
+ * client-side `resolveParamsForExport` used, now applied from the engine's own
  * resolution instead of the client's prediction, so the two can never
  * disagree. See DECISIONS `[V3-P2-E4]`.
  *
@@ -597,11 +597,11 @@ function resolveParamsEcho(params: PrintParams, resolvedText: readonly ResolvedL
  *
  * The translation is computed once, from the union of every region's bounds,
  * and applied to all of them, so the regions cannot drift apart. It is a no-op
- * for a normal bake: the plate is built from z = 0 up and centred on the
+ * for a normal build: the plate is built from z = 0 up and centred on the
  * origin, and nothing but an underside pocket ever reaches below it.
  */
 function finishRegions(
-  ctx: BakeContext,
+  ctx: BuildContext,
   solids: Map<RegionName, Manifold>,
 ): BuiltRegion[] {
   const { wasm, arena, params } = ctx;
@@ -663,7 +663,7 @@ function colourTwin(params: EngineInput["params"], region: RegionName): RegionNa
  * relief AFTER `terrain_exaggeration`, so "raise the exaggeration" is visibly
  * the remedy.
  */
-function reportRelief(ctx: BakeContext, drape: Drape | null): void {
+function reportRelief(ctx: BuildContext, drape: Drape | null): void {
   if (drape === null || drape.reliefMm >= LOW_RELIEF_MM) return;
   addFinding(ctx, {
     id: "terrain-low-relief",
@@ -684,7 +684,7 @@ function reportRelief(ctx: BakeContext, drape: Drape | null): void {
 
 /** Report the heroes the repair could not honour, one finding each. */
 function reportHeroes(
-  ctx: BakeContext,
+  ctx: BuildContext,
   unknown: readonly string[],
   buried: readonly string[],
   dropped: readonly string[],
@@ -748,5 +748,5 @@ function emptyRegionMesh(): RegionMesh {
   };
 }
 
-/** Findings a caller can show without running a bake. Re-exported for the UI. */
+/** Findings a caller can show without running a build. Re-exported for the UI. */
 export type { AuditFinding, EngineResult, RegionMesh };

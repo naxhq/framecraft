@@ -1,7 +1,7 @@
 /**
  * The frame-off Chicago plate, judged by the reference validator's own rule.
  *
- * `[V3-P7-A11]` reported a bake that fails `services/bake`'s `min_wall` row at
+ * `[V3-P7-A11]` reported a build that fails `services/bake`'s `min_wall` row at
  * 0.1667 mm with the frame off, on a plate that passes with it on. The cause was
  * NOT the crop: it was `repair.residueParts` disagreeing with
  * `thicken._residue`. Clipper2 offsets exactly what it is given and GEOS
@@ -23,7 +23,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { defaultPrintParams, type PrintParams } from "../../contracts";
 import * as T from "../../transform";
-import { bake } from "../engine";
+import { buildModel } from "../engine";
 import type { EngineResult } from "../types";
 import { chicagoScene, solidFromMesh } from "./fixture";
 import { makeContext } from "./context";
@@ -83,7 +83,7 @@ describe("frame-off chicago, by the reference validator's min-wall rule", () => 
   let result: EngineResult;
 
   beforeAll(async () => {
-    result = await bake({ scene, params });
+    result = await buildModel({ scene, params });
   }, 180_000);
 
   /**

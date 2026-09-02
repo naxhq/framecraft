@@ -2,7 +2,7 @@
  * Preview geometry unit tests.
  *
  * These run against `fixtures/parity-scene.json` -- the same SceneGraph the
- * TS/Python parity test uses -- so a preview number that drifts from the bake
+ * TS/Python parity test uses -- so a preview number that drifts from the build
  * shows up as a failure here rather than as a wrong print.
  */
 
@@ -110,7 +110,7 @@ describe("buildBuildings", () => {
     expect(dims[1]).toBeCloseTo(120 * scale, 6);
   });
 
-  it("dilates thin footprints up to the minimum wall, like the bake does", () => {
+  it("dilates thin footprints up to the minimum wall, like the build does", () => {
     const params = p();
     const scale = T.scale_mm_per_m(params, T.radius_m_from_bounds(scene.bounds));
     const thresholds = T.thresholds_ground_m(params, scale);
@@ -237,7 +237,7 @@ describe("roads, water, green and trees", () => {
     expect(T.road_z_mm(p({ road_mode: "off" }))).toBeNull();
   });
 
-  it("drops sub-detail areas exactly where the bake drops them", () => {
+  it("drops sub-detail areas exactly where the build drops them", () => {
     const params = p({ plate_mm: 100, nozzle_mm: 0.6 });
     const scale = T.scale_mm_per_m(params, T.radius_m_from_bounds(scene.bounds));
     const thresholds = T.thresholds_ground_m(params, scale);
@@ -271,8 +271,8 @@ describe("roads, water, green and trees", () => {
     expect(buildTrees(scene, p({ trees: false }))).toHaveLength(0);
   });
 
-  it("hides exactly the trees the bake drops at a fat nozzle", () => {
-    // 04's plain 0.5 mm rule keeps trees the bake's nozzle-aware floor removes
+  it("hides exactly the trees the build drops at a fat nozzle", () => {
+    // 04's plain 0.5 mm rule keeps trees the build's nozzle-aware floor removes
     // (an 8-gon cone of circumradius r is only 2 r cos(pi/8) wide at its base),
     // so the preview has to apply the floor or it shows trees that never print.
     const fat = p({ nozzle_mm: 0.8, plate_mm: 256, frame: false });
@@ -413,8 +413,8 @@ describe("dilatedNotice, the HUD's minimum-wall line", () => {
     expect(checked).toBe(parity.cases.length);
   });
 
-  it("reads 18.9 m at a 0.4 mm nozzle and 9.4 m at 0.2 mm on the 1:23,571 bake", () => {
-    // The reported bake: 180 mm plate, frame on, radius 1980 m.
+  it("reads 18.9 m at a 0.4 mm nozzle and 9.4 m at 0.2 mm on the 1:23,571 build", () => {
+    // The reported build: 180 mm plate, frame on, radius 1980 m.
     const params = p({ plate_mm: 180, frame: true, nozzle_mm: 0.4 });
     const scale = T.scale_mm_per_m(params, 1980);
     expect(Math.round(1000 / scale)).toBe(23571);

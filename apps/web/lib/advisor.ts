@@ -2,7 +2,7 @@
  * The detail advisor, as the viewport sees it.
  *
  * `transform.detail_report` / `detail_recommendation` are the shared math (they
- * are mirrored in `services/bake/app/geom/transform.py` and the bake appends the
+ * are mirrored in `services/bake/app/geom/transform.py` and the build appends the
  * same sentence to `BakeResult.warnings` when the band is `poor`). This module
  * adds nothing to them but presentation and the two REAL actions the sentence
  * names: "use this radius" and "use this plate".
@@ -163,7 +163,7 @@ export interface AdvisorTarget {
  *
  * The radius goes through `setRadius` and then `generate`, which is precisely
  * what releasing the radius slider does (`Controls.createCommitGate` -> the
- * group's `onCommit`): the scene is marked stale, the finished bake is retired,
+ * group's `onCommit`): the scene is marked stale, the finished build is retired,
  * and one `POST /scene` follows. The plate is a plain `setParam`, because the
  * plate has never been a location change and must not become one.
  */

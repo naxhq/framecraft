@@ -67,12 +67,12 @@ export const DEFAULT_BUILDING_SKIRT_MM = 0.3;
  * The seam interpenetration every region carries (`BUILDING_OVERLAP_MM`,
  * 0.2 mm) plus the default building skirt (0.3 mm), and 0.05 mm of slack for
  * the float arithmetic that produced the bounding boxes. Use
- * `constructionOverlapMm` for a bake whose `building_skirt_mm` is not the
+ * `constructionOverlapMm` for a build whose `building_skirt_mm` is not the
  * default; `constructionOverlapFor` reads it off the params.
  */
 export const CONSTRUCTION_OVERLAP_MM = BUILDING_OVERLAP_MM + DEFAULT_BUILDING_SKIRT_MM + 0.05;
 
-/** The construction overlap for one bake's params (skirt + seam + slack). */
+/** The construction overlap for one build's params (skirt + seam + slack). */
 export function constructionOverlapFor(params: Pick<PrintParams, "regions">): number {
   const skirt = params.regions?.building_skirt_mm ?? DEFAULT_BUILDING_SKIRT_MM;
   return BUILDING_OVERLAP_MM + Math.max(0, skirt) + 0.05;

@@ -29,7 +29,7 @@ import {
   CUTTER_OVERSHOOT_MM,
   addFinding,
   finding,
-  type BakeContext,
+  type BuildContext,
 } from "./context";
 import type { Contour, Manifold } from "./manifold";
 import {
@@ -61,7 +61,7 @@ export interface HangerGeometry {
 
 /** A rectangle as a section, print mm. */
 function rectSection(
-  ctx: BakeContext,
+  ctx: BuildContext,
   x0: number,
   y0: number,
   x1: number,
@@ -73,7 +73,7 @@ function rectSection(
 
 /** Extrude a rectangle between two Z planes, tracked. */
 function box(
-  ctx: BakeContext,
+  ctx: BuildContext,
   x0: number,
   y0: number,
   x1: number,
@@ -89,19 +89,19 @@ function box(
 }
 
 /** How far below the base top the deepest surface region reaches, print mm. */
-function deepestRecessMm(ctx: BakeContext): number {
+function deepestRecessMm(ctx: BuildContext): number {
   return T.deepest_recess_mm(ctx.params);
 }
 
 /** Can the plate carry a pocket this deep cut from underneath? */
-function undersideFits(ctx: BakeContext, depthMm: number): boolean {
+function undersideFits(ctx: BuildContext, depthMm: number): boolean {
   return (
     depthMm + T.HANGER_MIN_ROOF_MM + deepestRecessMm(ctx) <=
     ctx.params.base_thickness_mm + 1e-9
   );
 }
 
-function refuse(ctx: BakeContext, kind: string, depthMm: number): void {
+function refuse(ctx: BuildContext, kind: string, depthMm: number): void {
   const needed = depthMm + T.HANGER_MIN_ROOF_MM + deepestRecessMm(ctx);
   addFinding(
     ctx,
@@ -121,7 +121,7 @@ function refuse(ctx: BakeContext, kind: string, depthMm: number): void {
 // ---------------------------------------------------------------------------
 
 /** The slot's north wall and its opening, in plate mm. */
-export function cleatSlotBounds(ctx: BakeContext): {
+export function cleatSlotBounds(ctx: BuildContext): {
   y0: number;
   y1: number;
   halfSpan: number;
@@ -145,7 +145,7 @@ export function cleatSlotBounds(ctx: BakeContext): {
  * and which is the surface the wall-side wedge bears on. Lowering the plate
  * onto a wedge screwed to the wall slides the two 45 faces together.
  */
-function buildCleat(ctx: BakeContext, out: HangerGeometry): void {
+function buildCleat(ctx: BuildContext, out: HangerGeometry): void {
   const { y0, y1, halfSpan, depthMm } = cleatSlotBounds(ctx);
   if (!undersideFits(ctx, depthMm)) {
     refuse(ctx, "cleat", depthMm);
@@ -236,7 +236,7 @@ function buildCleat(ctx: BakeContext, out: HangerGeometry): void {
 // ---------------------------------------------------------------------------
 
 /** Plan of the easel well and its socket, in plate mm. */
-export function easelPlan(ctx: BakeContext): {
+export function easelPlan(ctx: BuildContext): {
   legHalfLen: number;
   legHalfWidth: number;
   centreY: number;
@@ -261,7 +261,7 @@ export function easelPlan(ctx: BakeContext): {
  * prints unsupported - and it is stepped over {@link HANGER_SLABS} slabs like
  * the cleat's undercut.
  */
-function buildEasel(ctx: BakeContext, out: HangerGeometry): void {
+function buildEasel(ctx: BuildContext, out: HangerGeometry): void {
   const plan = easelPlan(ctx);
   if (!undersideFits(ctx, plan.wellDepthMm)) {
     refuse(ctx, "easel", plan.wellDepthMm);
@@ -356,7 +356,7 @@ function buildEasel(ctx: BakeContext, out: HangerGeometry): void {
  * `keyhole` and `magnets` are not here: they are pockets and nothing else, and
  * `solid/ornaments.ts` cuts them beside the underside mark.
  */
-export function buildHangers(ctx: BakeContext): HangerGeometry {
+export function buildHangers(ctx: BuildContext): HangerGeometry {
   const out: HangerGeometry = { baseCut: [], parts: [] };
   const hanger = ctx.params.hanger ?? "none";
   if (hanger === "cleat") buildCleat(ctx, out);

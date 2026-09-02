@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 
 import { defaultPrintParams, type PrintParams } from "../../contracts";
-import { bake } from "../engine";
+import { buildModel } from "../engine";
 import type { EngineResult, RegionName } from "../types";
 import { building, hillGrid, scene, solidFromMesh, square, squareHole } from "./fixture";
 import { loadManifold, outstandingWasmObjects } from "./manifold";
@@ -37,7 +37,7 @@ async function genusOf(result: EngineResult, name: RegionName): Promise<number> 
 
 describe("a single square building", () => {
   it("prints as one body on a base that fits it", async () => {
-    const result = await bake({
+    const result = await buildModel({
       scene: scene({
         radiusM: RADIUS_M,
         buildings: [building("w1", square(0, 0, 40), 30)],
@@ -78,7 +78,7 @@ describe("a single square building", () => {
 describe("two buildings separated by a sub-minimum gap", () => {
   it("merges them into one block and keeps the taller height", async () => {
     // The gap is 1 m, and at this scale the minimum printable gap is 1.43 m.
-    const merged = await bake({
+    const merged = await buildModel({
       scene: scene({
         radiusM: RADIUS_M,
         buildings: [
@@ -107,7 +107,7 @@ describe("two buildings separated by a sub-minimum gap", () => {
     expect(regionOf(merged, "buildings")?.bbox.max[2]).toBeCloseTo(expected, 3);
 
     // The same pair 10 m apart stays two blocks.
-    const apart = await bake({
+    const apart = await buildModel({
       scene: scene({
         radiusM: RADIUS_M,
         buildings: [
@@ -126,7 +126,7 @@ describe("two buildings separated by a sub-minimum gap", () => {
 
 describe("a building with a hole", () => {
   it("keeps the hole through the solid", async () => {
-    const result = await bake({
+    const result = await buildModel({
       scene: scene({
         radiusM: RADIUS_M,
         buildings: [building("w1", square(0, 0, 60), 30, [squareHole(0, 0, 20)])],
@@ -157,11 +157,11 @@ describe("a building with a hole", () => {
 });
 
 describe("a self-intersecting ring", () => {
-  it("bakes the positively wound part instead of failing", async () => {
+  it("builds the positively wound part instead of failing", async () => {
     // A bowtie: the diagonal crossing makes this ring invalid for any naive
     // extruder. 04's trap list is explicit that the fix is a validity repair,
     // never `buffer(0)`; here the `Positive` fill rule does the same job.
-    const result = await bake({
+    const result = await buildModel({
       scene: scene({
         radiusM: RADIUS_M,
         buildings: [
@@ -196,8 +196,8 @@ describe("a self-intersecting ring", () => {
 });
 
 describe("an empty scene", () => {
-  it("bakes the plate and the frame and says nothing is wrong", async () => {
-    const result = await bake({
+  it("builds the plate and the frame and says nothing is wrong", async () => {
+    const result = await buildModel({
       scene: scene({ radiusM: RADIUS_M }),
       params: defaultPrintParams(),
       date: "2026-08-30",
@@ -215,7 +215,7 @@ describe("an empty scene", () => {
     // the base rather than rest on a coincident face
     // (`context.PART_OVERLAP_MM`). (180^2 - 168^2) * 2.2, less the four copies
     // of the mandatory attribution engraved into the lip's inner walls
-    // (v3 phase 7, `solid/attribution.ts`): 28.08 mm3, cut on every bake.
+    // (v3 phase 7, `solid/attribution.ts`): 28.08 mm3, cut on every build.
     const ring = 180 * 180 - 168 * 168;
     expect(frame?.volumeMm3 ?? 0).toBeCloseTo(ring * 2.2 - 28.08, 0);
     expect(frame?.bbox.min[2] ?? 0).toBeCloseTo(3 - 0.2, 3);
@@ -227,7 +227,7 @@ describe("an empty scene", () => {
 
 describe("surface regions", () => {
   it("sinks water, floats nothing, and gives way in precedence order", async () => {
-    const result = await bake({
+    const result = await buildModel({
       scene: scene({
         radiusM: RADIUS_M,
         water: [{ ring: square(0, 0, 120), holes: [] }],
@@ -270,7 +270,7 @@ describe("surface regions", () => {
 
   it("says so when road_mode and the region placement disagree", async () => {
     const params: PrintParams = { ...defaultPrintParams(), road_mode: "emboss" };
-    const result = await bake({
+    const result = await buildModel({
       scene: scene({
         radiusM: RADIUS_M,
         roads: [
@@ -301,7 +301,7 @@ describe("hangers and underside text", () => {
       base_thickness_mm: 2,
       hanger: "keyhole",
     };
-    const result = await bake({
+    const result = await buildModel({
       scene: scene({ radiusM: RADIUS_M }),
       params,
       date: "2026-08-30",
@@ -316,12 +316,12 @@ describe("hangers and underside text", () => {
   }, 60_000);
 
   it("cuts a keyhole when the base can carry it", async () => {
-    const thin = await bake({
+    const thin = await buildModel({
       scene: scene({ radiusM: RADIUS_M }),
       params: { ...defaultPrintParams(), base_thickness_mm: 6 },
       date: "2026-08-30",
     });
-    const hung = await bake({
+    const hung = await buildModel({
       scene: scene({ radiusM: RADIUS_M }),
       params: { ...defaultPrintParams(), base_thickness_mm: 6, hanger: "keyhole" },
       date: "2026-08-30",
@@ -336,7 +336,7 @@ describe("hangers and underside text", () => {
   }, 60_000);
 
   it("refuses a mount it does not build instead of ignoring it", async () => {
-    const result = await bake({
+    const result = await buildModel({
       scene: scene({ radiusM: RADIUS_M }),
       params: { ...defaultPrintParams(), hanger: "cleat" },
       date: "2026-08-30",
@@ -354,12 +354,12 @@ describe("hangers and underside text", () => {
         { edge: "underside", text: "FrameCraft", mode: "engrave", size_mm: 6, font: "mono" },
       ],
     };
-    const plain = await bake({
+    const plain = await buildModel({
       scene: scene({ radiusM: RADIUS_M }),
       params: { ...defaultPrintParams(), base_thickness_mm: 4 },
       date: "2026-08-30",
     });
-    const marked = await bake({
+    const marked = await buildModel({
       scene: scene({ radiusM: RADIUS_M }),
       params,
       date: "2026-08-30",
@@ -377,12 +377,12 @@ describe("hangers and underside text", () => {
 describe("the terrain hook", () => {
   it("lifts the plate top, keeps the underside flat and stays one body", async () => {
     const sampler = hillGrid(RADIUS_M);
-    const flat = await bake({
+    const flat = await buildModel({
       scene: scene({ radiusM: RADIUS_M }),
       params: defaultPrintParams(),
       date: "2026-08-30",
     });
-    const hilly = await bake({
+    const hilly = await buildModel({
       scene: scene({ radiusM: RADIUS_M }),
       params: defaultPrintParams(),
       terrain: sampler,

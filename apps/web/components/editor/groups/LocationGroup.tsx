@@ -115,7 +115,7 @@ export function LocationGroup() {
         display={`${rotation_deg}°`}
         onChange={setRotation}
         onCommit={() => void generate()}
-        hint="Turns the crop before it is squared. The dashed square on the map is what prints. Server-side, so it refetches on release."
+        hint="Turns the crop before it is squared. The dashed square on the map is what prints. Releasing the slider refetches from OpenStreetMap and previews again."
       />
     </>
   );

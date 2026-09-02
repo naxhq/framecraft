@@ -2,7 +2,7 @@
 
 `<face>.metrics.json` and `<face>.glyphs.json` are produced by
 `services/bake/scripts/gen_font_assets.py` from the three OFL faces bundled with
-the bake service. Do not hand-edit them; regenerate with
+the reference service. Do not hand-edit them; regenerate with
 
 ```sh
 cd services/bake && uv run python scripts/gen_font_assets.py
@@ -10,7 +10,7 @@ cd services/bake && uv run python scripts/gen_font_assets.py
 
 `*.glyphs.json` is **font software**: the flattened outlines of 190 glyphs per
 face, in font units, served to the browser so the preview can draw the same
-letterforms the bake cuts. The SIL Open Font License 1.1 requires its text to
+letterforms the build cuts. The SIL Open Font License 1.1 requires its text to
 travel with the font software, so the same generator copies each licence into
 `apps/web/licences/`.
 

@@ -10,7 +10,7 @@
  * it; `TerrainGrid.source` carries the string.
  *
  * Everything in this module fails SOFT. A DEM that does not answer is a model
- * without a hill in it, never a bake that does not happen, so
+ * without a hill in it, never a build that does not happen, so
  * `fetchTerrainGrid` returns `null` for a refused fetch, a 404, a truncated
  * body, a PNG this decoder does not read, or a scene with no radius. The only
  * thing it does not swallow is a caller bug (a negative radius is still null,
@@ -125,7 +125,7 @@ interface Tile {
  * Decode a PNG body to RGBA.
  *
  * The browser has a hardware decoder behind `createImageBitmap`; Node has
- * neither it nor a canvas, and every engine test, the bake CLI and
+ * neither it nor a canvas, and every engine test, the export CLI and
  * `make validate` run in Node. `png.ts` is the fallback, and it is the path the
  * tests exercise, so the Node path is the one that is actually pinned.
  */
@@ -172,7 +172,7 @@ export interface TerrainOptions {
  * `null` means "no terrain", for every reason there is: the parameter is off,
  * the radius is not a radius, the network refused, a tile came back as
  * something this decoder does not read, or the crop needs more tiles than
- * `MAX_TILES`. The caller draws and bakes a flat plate and says nothing, which
+ * `MAX_TILES`. The caller draws and builds a flat plate and says nothing, which
  * is the behaviour the whole pipeline had before terrain existed.
  *
  * What comes back is in SCENE metres (rotation already applied through

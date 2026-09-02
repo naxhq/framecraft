@@ -8,13 +8,13 @@ import { perfSpan } from "@/lib/perf";
 
 /**
  * The real thing: every `RegionMesh` the browser engine (`lib/engine/engine.ts`
- * `bake()`) produced, rendered exactly as it will be exported -- same
+ * `buildModel()`) produced, rendered exactly as it will be exported -- same
  * triangles, same per-region colour, no instancing, no dilation, no flat
  * fills standing in for a groove. This is what `CityPreview.tsx` shows once a
  * fresh `EngineResult` lands (`state.engine.status === "ready" && !stale`);
  * while a newer one is computing it falls back to the fast instanced v1
  * preview instead of showing THESE meshes gone stale, so the picture on
- * screen never disagrees with the file a Bake would export.
+ * screen never disagrees with the file a Build would export.
  *
  * `RegionMesh.positions`/`indices` are already interleaved xyz triples / a
  * flat triangle index list in print millimetres, so each becomes exactly one

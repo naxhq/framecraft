@@ -1,11 +1,11 @@
-// Writing a tiled bake. Two shapes, and which one is used is decided by what
+// Writing a tiled build. Two shapes, and which one is used is decided by what
 // the receiving software can do with a multi-plate project:
 //
-// * a Bambu Studio project can hold many PLATES in one file, so a tiled bake
+// * a Bambu Studio project can hold many PLATES in one file, so a tiled build
 //   for a Bambu printer is ONE .3mf with one plate per tile, which is what a
 //   user wants to open, arrange and slice in one go (`bambu3mf.ts`);
 // * every other target is a single-object or single-build format with no
-//   concept of a second bed, so a tiled bake is a ZIP with one file per tile,
+//   concept of a second bed, so a tiled build is a ZIP with one file per tile,
 //   named by its grid reference, plus the attribution file.
 //
 // Both routes write exactly the geometry `solid/tiling.ts` produced: a tile is
@@ -18,7 +18,7 @@ import { sanitizeStem } from "./common";
 import { CREDITS_TEXT, MIME_ZIP } from "./stl";
 import { zipEntries, type ZipEntry } from "./zip";
 
-/** True when this bake was split into tiles that have to be written separately. */
+/** True when this build was split into tiles that have to be written separately. */
 export function isTiled(result: Pick<EngineResult, "tiles">): boolean {
   return (result.tiles?.length ?? 0) > 1;
 }
@@ -65,7 +65,7 @@ export interface TiledZipInput {
  * A zip with one entry per tile file, in grid order, plus `CREDITS.txt`.
  *
  * The zip is deterministic (`zipEntries` stamps one mtime), so two exports of
- * the same bake are the same bytes.
+ * the same build are the same bytes.
  */
 export function exportTiledZip(input: TiledZipInput): ExportFile {
   const entries: ZipEntry[] = [];

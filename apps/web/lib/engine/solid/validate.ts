@@ -38,7 +38,7 @@ import type { PrintParams, SceneGraph } from "../../contracts";
 import { resolveProfile } from "../../printers";
 import type { IslandReport } from "../audit/rules";
 import type { AuditFinding, RegionMesh, RegionName } from "../types";
-import { finding, type BakeContext } from "./context";
+import { finding, type BuildContext } from "./context";
 import { frameIsSeparate } from "./frame";
 import type { Manifold } from "./manifold";
 import { DEBRIS_MM3, UNION_DEBRIS_MM3 } from "./manifold";
@@ -73,11 +73,11 @@ export interface BuiltRegion {
  * `printer_profile` defaults to `custom`; every number and every test at
  * defaults is therefore exactly what it was.
  *
- * The same number reaches the reference validator through the bake sidecar's
+ * The same number reaches the reference validator through the build sidecar's
  * `max_height_mm` (`export/common.ts`), so the engine, the editor and the
  * validator all judge a model against one ceiling instead of three.
  */
-export function maxHeightMm(ctx: BakeContext): number {
+export function maxHeightMm(ctx: BuildContext): number {
   return resolveProfile(ctx.params).maxHeightMm;
 }
 
@@ -88,15 +88,15 @@ export function maxHeightMm(ctx: BakeContext): number {
  * (`[V3-P5-F4]`). This is not a weakened check and it is not a tolerance: the
  * count is derived from the parameters, each extra body is named, and a body
  * that is not one of them is still a `floating-island` error with its volume in
- * it. A bake with a separate frame and no easel that came out as three pieces
+ * it. A build with a separate frame and no easel that came out as three pieces
  * fails exactly as it did before.
  *
  * The reference validator in `services/bake` knows nothing about this: it reads
  * a FILE, and a file with a separate frame in it genuinely has two bodies, so
- * its `bodies` row reports 2 for such a bake. That is the documented exception,
+ * its `bodies` row reports 2 for such a build. That is the documented exception,
  * recorded in `docs/handoff/v3-05-frame.md` with the row it prints.
  */
-export function expectedBodies(ctx: BakeContext): Array<{ region: RegionName; why: string }> {
+export function expectedBodies(ctx: BuildContext): Array<{ region: RegionName; why: string }> {
   const out: Array<{ region: RegionName; why: string }> = [];
   if (frameIsSeparate(ctx)) {
     out.push({ region: "frame", why: "the frame is a separate part" });
@@ -126,11 +126,11 @@ export const MAX_ATTRIBUTED_ISLANDS = 12;
  * The largest body is the model; everything else is loose. Each loose body is
  * attributed to the region it shares the most volume with, so the finding can
  * say WHICH detail came away rather than "the model is in 4 pieces". Runs only
- * when there is more than one body, so a healthy bake pays one decomposition it
+ * when there is more than one body, so a healthy build pays one decomposition it
  * was going to pay for the connectivity check anyway.
  */
 export function islandReport(
-  ctx: BakeContext,
+  ctx: BuildContext,
   assembly: Manifold | null,
   regions: readonly BuiltRegion[],
 ): IslandReport[] {
@@ -176,7 +176,7 @@ export function islandReport(
 
 /** The region a loose body shares the most volume with, or null. */
 function attributeIsland(
-  ctx: BakeContext,
+  ctx: BuildContext,
   body: Manifold,
   regions: readonly BuiltRegion[],
 ): RegionName | null {
@@ -210,7 +210,7 @@ function attributeIsland(
  * measured on; it is null only for an empty scene.
  */
 export function validate(
-  ctx: BakeContext,
+  ctx: BuildContext,
   regions: readonly BuiltRegion[],
   assembly: Manifold | null,
   minWall: MinWallReport,

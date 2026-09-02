@@ -288,7 +288,7 @@ describe("app/globals.css declares every slot the preview reads", () => {
     }
   });
 
-  it("paints a hero in the exact filament the bake writes into the 3MF", () => {
+  it("paints a hero in the exact filament the build writes into the 3MF", () => {
     // DECISIONS [V2-P3] fixes the own-colour hero at `assemble.HERO_COLOR =
     // "#E3A72F"`. The preview's highlight has to BE that colour, in both
     // themes, or "own colour" shows the user something they will not print.

@@ -22,7 +22,7 @@
  * * **The engine composes the strings.** `EngineInput.attribution` is ignored
  *   (`[V3-P7-A1]`): a UI that could supply the attribution text is a UI that
  *   could supply an empty one. The mandatory text is built here from constants,
- *   the params and the bake date.
+ *   the params and the build date.
  * * **`underside_mark.enabled: false` turns off the USER's line only.** Their
  *   `template` is APPENDED to the mandatory text, never substituted for it.
  * * **Nothing here is ever refused for being small.** The lettering pipeline
@@ -43,7 +43,7 @@ import type { PreviewArea } from "../../preview";
 import { glyphAreas, placeArea } from "../../previewText";
 import * as T from "../../transform";
 import type { AuditFinding, ResolvedLine } from "../types";
-import { CUTTER_OVERSHOOT_MM, addFinding, finding, type BakeContext } from "./context";
+import { CUTTER_OVERSHOOT_MM, addFinding, finding, type BuildContext } from "./context";
 import { contoursFromAreas, deepestRecessMm, holeCount } from "./lettering";
 import {
   frameBottomMm,
@@ -97,9 +97,9 @@ export function osmCredit(face: string = ATTRIBUTION_FACE): string {
 /**
  * The text every mark carries: the product, the OSM credit, the date.
  *
- * `date` is the bake's own generation date (`EngineInput.date`, defaulting to
+ * `date` is the build's own generation date (`EngineInput.date`, defaulting to
  * today), the same string the `{date}` token expands to, so a mark and an
- * engraving made in the same bake never disagree about when it was made.
+ * engraving made in the same build never disagree about when it was made.
  */
 export function mandatoryText(date: string, face: string = ATTRIBUTION_FACE): string {
   return `${PRODUCT_NAME} ${osmCredit(face)} ${date}`;
@@ -358,7 +358,7 @@ export function placeBlock(
  * not a mark at all (`[V3-P7-A6]`).
  */
 function blockSection(
-  ctx: BakeContext,
+  ctx: BuildContext,
   asset: GlyphFace,
   block: MarkBlock,
   placements: readonly T.Placement[],
@@ -399,10 +399,10 @@ function blockSection(
  * carries six times the vertices its own chord error needs - and every one of
  * them becomes four triangles in the extrusion and then propagates through the
  * subtraction. Simplifying back to the asset's own 0.02 mm before extruding
- * takes 41 000 triangles off a default Chicago bake and moves no point further
+ * takes 41 000 triangles off a default Chicago build and moves no point further
  * than the flattening already had (`[V3-P7-A7]`).
  */
-function leanSection(ctx: BakeContext, section: CrossSection): CrossSection {
+function leanSection(ctx: BuildContext, section: CrossSection): CrossSection {
   const asset = loadedGlyphFace(ATTRIBUTION_FACE);
   const epsMm = asset?.flatten_tolerance_mm ?? 0;
   if (!(epsMm > 0)) return section;
@@ -415,7 +415,7 @@ function leanSection(ctx: BakeContext, section: CrossSection): CrossSection {
 }
 
 /** The dilation this block would need to reach a printable stroke, mm. */
-function dilationFor(ctx: BakeContext, block: MarkBlock): number {
+function dilationFor(ctx: BuildContext, block: MarkBlock): number {
   if (block.lines.length === 0) return 0;
   let widest = 0;
   for (const line of block.lines) {
@@ -428,7 +428,7 @@ function dilationFor(ctx: BakeContext, block: MarkBlock): number {
 }
 
 /** True when this block's strokes are under what the nozzle can resolve. */
-function underNozzle(ctx: BakeContext, block: MarkBlock): boolean {
+function underNozzle(ctx: BuildContext, block: MarkBlock): boolean {
   const target = T.text_stroke_target_mm(ctx.params, "engrave");
   for (const line of block.lines) {
     if (T.text_stem_em(ATTRIBUTION_FACE, line.text) * line.sizeMm < target) return true;
@@ -479,7 +479,7 @@ export function wallNormal(spinDeg: number): [number, number] {
  * one, which the caller turns into a second underside mark instead
  * (`[V3-P7-A5]`).
  */
-export function frameInnerWalls(ctx: BakeContext): WallFace[] {
+export function frameInnerWalls(ctx: BuildContext): WallFace[] {
   const frame = T.frame_geometry_mm(ctx.params);
   if (!frame.enabled) return [];
   const style = frameStyle(ctx.params);
@@ -517,7 +517,7 @@ function cornerSetbackMm(corner: FrameCorner, radiusMm: number): number {
 }
 
 /** The south outer side face of the base plate: where the microtext goes. */
-export function baseOuterFace(ctx: BakeContext): WallFace {
+export function baseOuterFace(ctx: BuildContext): WallFace {
   const half = ctx.plateHalfMm;
   const chamfer = Math.min(T.CHAMFER_MM, ctx.baseTopMm / 2, half / 2);
   return {
@@ -542,7 +542,7 @@ export function baseOuterFace(ctx: BakeContext): WallFace {
  * underside mark is mirrored.
  */
 function wallCutter(
-  ctx: BakeContext,
+  ctx: BuildContext,
   section: CrossSection,
   wall: WallFace,
   depthMm: number,
@@ -608,7 +608,7 @@ export interface UndersideLayout {
 }
 
 export function undersideLayout(
-  ctx: BakeContext,
+  ctx: BuildContext,
   date: string,
   expand: (text: string) => string,
   needsSecond: boolean,
@@ -673,7 +673,7 @@ export function undersideLayout(
  * each other.
  */
 export function undersideReserveMm(
-  ctx: BakeContext,
+  ctx: BuildContext,
   date: string,
   expand: (text: string) => string,
 ): number {
@@ -708,7 +708,7 @@ function layoutBlockToBand(
 }
 
 /** Depth of the underside mark on this plate, and whether it was clamped. */
-export function deepMarkDepthMm(ctx: BakeContext): { depthMm: number; clamped: boolean } {
+export function deepMarkDepthMm(ctx: BuildContext): { depthMm: number; clamped: boolean } {
   const budget = ctx.params.base_thickness_mm - deepestRecessMm(ctx);
   const roomy = budget - T.HANGER_MIN_ROOF_MM;
   if (roomy >= DEEP_MARK_DEPTH_MM) return { depthMm: DEEP_MARK_DEPTH_MM, clamped: false };
@@ -722,7 +722,7 @@ export function deepMarkDepthMm(ctx: BakeContext): { depthMm: number; clamped: b
 /**
  * The Z band the underside pockets occupy, for the min-wall probe to skip.
  *
- * The mandatory mark is cut on every bake, so this is never empty, which is
+ * The mandatory mark is cut on every build, so this is never empty, which is
  * exactly why it exists: a letter counter on the floor of a 0.5 mm pocket is an
  * island in a horizontal slice taken inside that pocket, and it persists upward
  * (the plate above it is solid), so the ordinary "is this a wall?" test calls it
@@ -730,21 +730,21 @@ export function deepMarkDepthMm(ctx: BakeContext): { depthMm: number; clamped: b
  * 2.5 mm thick there. The reference validator excludes the same band for the
  * same stated reason (`[V3-P7-A8]`).
  */
-export function undersideSkipBands(ctx: BakeContext): Array<[number, number]> {
+export function undersideSkipBands(ctx: BuildContext): Array<[number, number]> {
   const pockets = T.underside_band_mm(ctx.params);
   const deepest = Math.max(deepMarkDepthMm(ctx).depthMm, pockets === null ? 0 : pockets[1]);
   return deepest > 0 ? [[0, deepest]] : [];
 }
 
 /** The frame walls tall enough to carry a mark. Empty with no frame. */
-export function engravableWalls(ctx: BakeContext): WallFace[] {
+export function engravableWalls(ctx: BuildContext): WallFace[] {
   return frameInnerWalls(ctx).filter(
     (wall) => wall.z1Mm - wall.z0Mm >= WALL_MARK_MIN_HEIGHT_MM - 1e-9,
   );
 }
 
-/** True when this bake has a frame wall the mark can go on. */
-export function hasEngravableWall(ctx: BakeContext): boolean {
+/** True when this build has a frame wall the mark can go on. */
+export function hasEngravableWall(ctx: BuildContext): boolean {
   return engravableWalls(ctx).length > 0;
 }
 
@@ -772,7 +772,7 @@ function info(
 }
 
 /** The wording both "this mark is finer than the nozzle" findings share. */
-function fineStrokeDetail(ctx: BakeContext, what: string, sizeMm: number): string {
+function fineStrokeDetail(ctx: BuildContext, what: string, sizeMm: number): string {
   return (
     `${what} is cut at ${sizeMm.toFixed(2)} mm, so its strokes are under the ` +
     `${T.text_stroke_target_mm(ctx.params, "engrave").toFixed(2)} mm a ` +
@@ -786,11 +786,11 @@ function fineStrokeDetail(ctx: BakeContext, what: string, sizeMm: number): strin
  * Every mandatory mark, as cutters.
  *
  * `expand` is the caller's token expander (`tokens.expand_tokens` bound to this
- * bake's context), used ONLY for the user's appended line; nothing in the
+ * build's context), used ONLY for the user's appended line; nothing in the
  * mandatory text is tokenised.
  */
 export function buildAttribution(
-  ctx: BakeContext,
+  ctx: BuildContext,
   date: string,
   expand: (text: string) => string,
 ): AttributionGeometry {
@@ -814,7 +814,7 @@ export function buildAttribution(
         "attribution-not-cut",
         "error",
         "The attribution marks were not cut",
-        `The ${ATTRIBUTION_FACE} glyph asset was not loaded before the bake, so the ` +
+        `The ${ATTRIBUTION_FACE} glyph asset was not loaded before the build, so the ` +
           "mandatory attribution could not be engraved. This is a bug: report it rather " +
           "than sharing the file.",
         "base",
@@ -839,7 +839,7 @@ export function buildAttribution(
 
 /** The deep mark on the underside: mandatory text, then the user's line. */
 function cutUnderside(
-  ctx: BakeContext,
+  ctx: BuildContext,
   asset: GlyphFace,
   layout: UndersideLayout,
   out: AttributionGeometry,
@@ -905,7 +905,7 @@ function cutUnderside(
 
 /** One placed block as a pocket cut into the plate from below. */
 function cutBlock(
-  ctx: BakeContext,
+  ctx: BuildContext,
   asset: GlyphFace,
   block: MarkBlock,
   centreXMm: number,
@@ -931,7 +931,7 @@ function cutBlock(
  * without recutting the whole frame profile (`[V3-P7-A5]`).
  */
 function cutFrameWall(
-  ctx: BakeContext,
+  ctx: BuildContext,
   asset: GlyphFace,
   date: string,
   walls: readonly WallFace[],
@@ -1003,7 +1003,7 @@ function cutFrameWall(
  * the height where the strokes are.
  */
 function pushBand(
-  ctx: BakeContext,
+  ctx: BuildContext,
   out: AttributionGeometry,
   band: [number, number],
 ): void {
@@ -1018,7 +1018,7 @@ function inkBandMm(wall: WallFace, line: MarkLine): [number, number] {
 }
 
 /** The frame lip's own volume, as a solid to clip a wall cutter to. */
-function framePrism(ctx: BakeContext): Manifold | null {
+function framePrism(ctx: BuildContext): Manifold | null {
   const frame = T.frame_geometry_mm(ctx.params);
   if (!frame.enabled) return null;
   const ring = frameRingSection(ctx);
@@ -1035,7 +1035,7 @@ function framePrism(ctx: BakeContext): Manifold | null {
 }
 
 /** Say, in the Issues list, why there is a second underside mark. */
-function reportNoWall(ctx: BakeContext, date: string): void {
+function reportNoWall(ctx: BuildContext, date: string): void {
   if (!ctx.params.frame) {
     ctx.resolvedText.push(
       resolvedLine(
@@ -1079,7 +1079,7 @@ function reportNoWall(ctx: BakeContext, date: string): void {
 
 /** The second underside mark, cut when there is no frame wall to engrave. */
 function cutSecondUnderside(
-  ctx: BakeContext,
+  ctx: BuildContext,
   asset: GlyphFace,
   layout: UndersideLayout,
   out: AttributionGeometry,
@@ -1113,7 +1113,7 @@ function cutSecondUnderside(
 
 /** The 1.2 mm line on the base's outer side face. */
 function cutMicrotext(
-  ctx: BakeContext,
+  ctx: BuildContext,
   asset: GlyphFace,
   date: string,
   out: AttributionGeometry,

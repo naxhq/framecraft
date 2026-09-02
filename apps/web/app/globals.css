@@ -104,7 +104,7 @@
   --fc-preview-hero: #e3a72f;
   /* A hero picked while `hero_mode` does NOT grant it its own colour. It is
      still selected and still drawn taller, but painting it the filament orange
-     would promise a colour the bake is not going to print. Slate, so it reads
+     would promise a colour the build is not going to print. Slate, so it reads
      as "marked" rather than as a material. */
   --fc-preview-hero-pick: #7d8794;
   /* Where the keyboard building cursor is. Distinct from the hero colour, so
@@ -332,7 +332,7 @@ body {
   box-shadow: 0 -1px 0 color-mix(in srgb, var(--fc-plate-raised) 70%, transparent);
 }
 
-/* The bake bar when the server has not reported a percentage yet. */
+/* The export bar, which has no percentage to report. */
 @keyframes fc-indeterminate {
   0% {
     transform: translateX(-100%);

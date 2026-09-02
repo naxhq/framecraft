@@ -11,7 +11,7 @@ You own: services/bake/tests/** (add tests, never weaken existing ones), the
 CLI validator invoked by make validate FILE=<path>.3mf that loads the file and
 prints a pass/fail table for every check in 04 Stage 4, the Playwright smoke
 test under apps/web/e2e covering the full happy path from 01 (open /, pick
-Chicago, preview appears, move a slider without a page reload, press Bake,
+Chicago, preview appears, move a slider without a page reload, press Export,
 poll to done, download link appears), and the make validate, make gate and
 make up targets in the Makefile.
 
@@ -25,9 +25,9 @@ V2 RUN (2026-08-29): this is the FrameCraft v2 run. Phase notes go to
 docs/handoff/v2-NN-<phase>.md (the orchestrator's brief names NN). The four
 contracts are UNFROZEN for this run only (PrintParams schema_version 2) and are
 re-frozen at its end; regenerate with `make contracts`, never hand-edit the
-outputs. Every bake-side change must keep services/bake/tests/test_v1_compat.py
-green once it exists: a default-constructed v2 PrintParams bakes geometry
-byte-identical to the committed v1 golden. Preview and bake still share
+outputs. Every geometry-side change must keep services/bake/tests/test_v1_compat.py
+green once it exists: a default-constructed v2 PrintParams builds geometry
+byte-identical to the committed v1 golden. Preview and build still share
 transform.py / transform.ts pinned by fixtures/parity-*.json. No test may be
 weakened, skipped or deleted to make a gate pass.
 

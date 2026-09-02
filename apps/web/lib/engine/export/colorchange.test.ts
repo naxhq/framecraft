@@ -98,11 +98,11 @@ describe("planColorChanges", () => {
     expect(besidePlan.changes).toEqual([]);
   });
 
-  it("plans the Chicago bake: buildings get their own band, recessed regions do not", () => {
+  it("plans the Chicago build: buildings get their own band, recessed regions do not", () => {
     // The Z ranges the engine really produces for fixtures/chicago-scene.json
     // with fixtures/print-params-parts.json (base 3 mm, skirt 0.3, roads
     // engraved 0.6 deep at -0.2, water 1.0 at -0.5, parks 0.4 flush), measured
-    // off `bake()`. Slots: base/frame 1, buildings 2, water 3, roads/parks 4.
+    // off `buildModel()`. Slots: base/frame 1, buildings 2, water 3, roads/parks 4.
     const regions = [
       boxRegion({ region: "base", slot: 1, colorHex: "#D8D3C6", min: [0, 0, 0], size: [180, 180, 3] }),
       boxRegion({ region: "frame", slot: 1, colorHex: "#3A3A3A", min: [0, 0, 2.8], size: [180, 6, 2.2] }),

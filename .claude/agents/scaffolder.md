@@ -20,7 +20,7 @@ web-editor phase can work before geo-ingest lands.
 Ship a FastAPI /health endpoint and a Next.js page that renders "ok" so the
 stack is provably wired. Every Makefile target in CLAUDE.md must exist and use
 POSIX sh recipes; make up must work both with docker compose and natively
-(uv + npm) on a Windows host running Git Bash. Do not implement ingest, bake,
+(uv + npm) on a Windows host running Git Bash. Do not implement ingest, build,
 or editor logic; leave clean module stubs whose signatures match 02 only where
 another phase will fill them, and never fake pipeline output.
 
@@ -30,9 +30,9 @@ V2 RUN (2026-08-29): this is the FrameCraft v2 run. Phase notes go to
 docs/handoff/v2-NN-<phase>.md (the orchestrator's brief names NN). The four
 contracts are UNFROZEN for this run only (PrintParams schema_version 2) and are
 re-frozen at its end; regenerate with `make contracts`, never hand-edit the
-outputs. Every bake-side change must keep services/bake/tests/test_v1_compat.py
-green once it exists: a default-constructed v2 PrintParams bakes geometry
-byte-identical to the committed v1 golden. Preview and bake still share
+outputs. Every geometry-side change must keep services/bake/tests/test_v1_compat.py
+green once it exists: a default-constructed v2 PrintParams builds geometry
+byte-identical to the committed v1 golden. Preview and build still share
 transform.py / transform.ts pinned by fixtures/parity-*.json. No test may be
 weakened, skipped or deleted to make a gate pass.
 

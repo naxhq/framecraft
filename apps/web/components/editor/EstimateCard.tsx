@@ -20,7 +20,7 @@ const TIME_RANGE_LOW = 0.75;
 const TIME_RANGE_HIGH = 1.5;
 
 /**
- * The OUTPUT group's estimate block, ahead of the Bake button: per-slot
+ * The OUTPUT group's estimate block, ahead of the Export button: per-slot
  * filament (a colour dot, grams, metres), the total, and a print time range,
  * every number labelled an estimate, from `lib/engine/estimate.ts:estimate()`
  * run on the live engine result (`EngineResult.params`, the parameters that
@@ -30,7 +30,7 @@ const TIME_RANGE_HIGH = 1.5;
  *
  * Two states only, per the brief: a skeleton while a job is computing, and
  * nothing when there is no result yet. A STALE-but-present result still
- * renders (labelled "from the previous bake"), the same choice the stats
+ * renders (labelled "from the previous build"), the same choice the stats
  * card makes, rather than flashing empty on every keystroke.
  */
 export function EstimateCard() {
@@ -66,7 +66,7 @@ export function EstimateCard() {
     <div data-testid="estimate-card" className="rounded-plate border border-line bg-plate-sunken p-3">
       <h4 className="mb-2 flex items-baseline justify-between gap-2 font-display text-2xs font-semibold uppercase tracking-[0.14em] text-ink-faint">
         <span>Filament and time (estimate)</span>
-        {stale ? <span className="normal-case text-ink-faint">from the previous bake</span> : null}
+        {stale ? <span className="normal-case text-ink-faint">from the previous build</span> : null}
       </h4>
 
       <ul className="space-y-1" data-testid="estimate-slots">
