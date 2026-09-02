@@ -1,0 +1,24 @@
+# FrameCraft desktop shell (Tauri 2). Deliberately thin: the whole product
+# is the static web build in ../../web/out; the Rust side only adds what a
+# WebView cannot do itself (native save dialog, app data dir).
+[package]
+name = "framecraft-desktop"
+version = "3.0.0"
+description = "FrameCraft: turn a map location into a 3D-printable framed miniature city"
+authors = ["Vahid Alizadeh"]
+edition = "2021"
+
+[lib]
+name = "framecraft_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"

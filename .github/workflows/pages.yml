@@ -1,0 +1,75 @@
+# Deploys the static export of apps/web to GitHub Pages on every push to
+# main. Its own workflow, independent of ci.yml, kept deliberately simple:
+# the CI workflow is the quality gate; this one only publishes.
+#
+# The site is built with NEXT_PUBLIC_BASE_PATH=/framecraft because a project
+# Pages site is served under https://<owner>.github.io/framecraft/. The same
+# tree built with an empty base path is what the Tauri desktop app embeds.
+#
+# One-time repo setup: Settings -> Pages -> Source: "GitHub Actions".
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a newer push supersedes a queued one but does not
+# cancel a deploy already in flight.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: npm ci
+        working-directory: apps/web
+        run: npm ci
+
+      - name: next build (static export, sub-path base)
+        working-directory: apps/web
+        env:
+          NEXT_PUBLIC_BASE_PATH: /framecraft
+        run: npm run build
+
+      # Pages runs Jekyll by default, and Jekyll drops underscore-prefixed
+      # paths, which would eat the whole /_next tree. .nojekyll disables it.
+      - name: Disable Jekyll
+        run: touch apps/web/out/.nojekyll
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/web/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -156,7 +156,9 @@ for (const theme of ["light", "dark"] as const) {
     await expect(issuesBadge).toBeVisible({ timeout: WARMUP_BUDGET_MS });
     await issuesBadge.click();
     await expect(page.getByTestId("issues-drawer")).toBeVisible();
-    await expect(page.getByTestId("issue-fix-slot-beyond-profile")).toBeVisible();
+    await expect(page.getByTestId("issue-fix-slot-beyond-profile")).toBeVisible({
+      timeout: WARMUP_BUDGET_MS,
+    });
     await auditWithAxe(page, `${theme} / issues drawer open, with a fix button`);
     await issuesBadge.click();
     await page.locator("#colour_slot_buildings").selectOption("1");

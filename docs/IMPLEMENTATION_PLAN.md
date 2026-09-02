@@ -180,6 +180,6 @@ secrets when present), `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, tag
 | Build | `npm run build` (static export) |
 | E2E | `npm run test:e2e` (Overpass mocked from `tests/fixtures`) |
 | Reference service | `cd services/bake && uv run pytest` |
-| Browser engine file validity | `npm run bake:cli -- --preset chicago-loop` then `make validate FILE=artifacts/chicago-web.3mf` |
+| Browser engine file validity | `npm run bake:cli -- --scene fixtures/chicago-scene.json --params fixtures/print-params-default.json --target generic-3mf --out artifacts/chicago-web.3mf` then `make validate FILE=artifacts/chicago-web.3mf` |
 | Bambu load | `bambu-studio.exe --export-3mf` round trip on the exported project |
 | Full gate | `make gate` |

@@ -1,0 +1,146 @@
+# Release workflow: on a v* tag, build the Tauri desktop installers for the
+# three desktop platforms and attach them, plus a zip of the static web
+# build, to a GitHub Release for that tag.
+#
+# Code signing is OPTIONAL and entirely secrets-driven; with no secrets set,
+# every artifact is built unsigned (users see the usual OS warnings):
+#   TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#       Tauri updater artifact signing (only relevant if an updater is ever
+#       enabled; harmless to leave unset).
+#   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY,
+#   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
+#       macOS code signing and notarization (tauri-action picks these up
+#       from the environment when present).
+#   WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD
+#       Windows Authenticode signing (requires the matching signCommand /
+#       certificateThumbprint config in tauri.conf.json to be filled in;
+#       not configured in this repo, documented here for completeness).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Create the release up front with generated notes, so the matrix builds
+  # below only ever ATTACH to it (tauri-action finds it by tag) and the notes
+  # are not overwritten by whichever matrix job finishes last.
+  create-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub release with generated notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "FrameCraft ${GITHUB_REF_NAME}" \
+              --generate-notes
+
+  desktop:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: "--bundles msi,nsis"
+          - platform: macos-latest
+            args: "--target universal-apple-darwin --bundles dmg"
+          - platform: ubuntu-22.04
+            args: "--bundles appimage,deb"
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add macOS universal targets
+        if: matrix.platform == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Install Linux system dependencies (Tauri 2 / webkit2gtk 4.1)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf xdg-utils
+
+      - name: npm ci (web)
+        working-directory: apps/web
+        run: npm ci
+
+      - name: npm ci (desktop)
+        working-directory: apps/desktop
+        run: npm ci
+
+      # tauri.conf.json's beforeBuildCommand builds apps/web with an empty
+      # base path into apps/web/out, which frontendDist points at.
+      - name: Build and attach installers
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ github.ref_name }}
+          args: ${{ matrix.args }}
+
+  # The static web app as a plain zip (no source maps are emitted by this
+  # build config), for anyone who wants to self-host the exported site.
+  web-zip:
+    needs: create-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: npm ci
+        working-directory: apps/web
+        run: npm ci
+
+      - name: next build (static export, root base path)
+        working-directory: apps/web
+        run: npm run build
+
+      - name: Zip the static site (source-map free)
+        run: |
+          find apps/web/out -name '*.map' -delete
+          (cd apps/web/out && zip -qr "../../../framecraft-web-${GITHUB_REF_NAME}.zip" .)
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" "framecraft-web-${GITHUB_REF_NAME}.zip" --clobber

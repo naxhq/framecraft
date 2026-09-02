@@ -12,6 +12,7 @@ import {
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
+import { withBasePath } from "@/lib/basePath";
 import {
   circleRing,
   cropSquareRing,
@@ -58,7 +59,7 @@ const OSM_ATTRIBUTION = "© OpenStreetMap contributors";
  * Module scope is safe: this file is only ever imported client-side, behind
  * `MapPane.tsx`'s `dynamic(..., { ssr: false })`.
  */
-setWorkerUrl("/maplibre/maplibre-gl-worker.mjs");
+setWorkerUrl(withBasePath("/maplibre/maplibre-gl-worker.mjs"));
 const CIRCLE_SOURCE = "framecraft-radius";
 const CROP_SOURCE = "framecraft-crop";
 

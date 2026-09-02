@@ -1,400 +1,330 @@
 # FrameCraft architecture
 
-Written from the source as it exists today. Spec references (`01`..`04` at the repo
-root) are given where they explain intent; `DECISIONS.md` records every deviation.
+Written from the source as it exists at v3.0.0. Rulings that shaped it are
+`[V3-*]` lines in `DECISIONS.md`; per-phase builder notes live in
+`docs/handoff/v3-NN-*.md`. Section 9 records where v1/v2 differed.
 
 ## 1. System overview
 
-Two runtime pieces and one generated contracts package.
+FrameCraft is a fully client-side application. The Next.js app is a static
+export (`next.config.ts`: `output: "export"`); `next build` writes a complete
+`apps/web/out/` tree that any static file server, GitHub Pages, or the Tauri
+desktop shell serves as-is. Everything the product does, Overpass ingest,
+terrain fetch, solid geometry on the manifold WASM kernel, the printability
+audit, and every export file, runs in the browser.
 
-| Piece | Path | Stack | Port |
-|---|---|---|---|
-| Web editor | `apps/web/` | Next.js 15 App Router, React 19, TS strict, Tailwind 4, zustand 5, react-three-fiber 9 + drei, MapLibre GL 6 | 3000 |
-| Bake service | `services/bake/` | Python 3.12, FastAPI + uvicorn, shapely, pyproj, numpy, manifold3d, trimesh, httpx, pydantic v2, fontTools | 8000 |
+| Piece | Path | What it is |
+|---|---|---|
+| Web app | `apps/web/` | Next.js 15 App Router, React 19, TS strict, Tailwind 4, zustand 5, react-three-fiber 9 + drei, MapLibre GL 6, manifold-3d WASM, fflate |
+| Engine | `apps/web/lib/engine/` | The TypeScript bake pipeline: `osm/` (ingest), `terrain/`, `solid/` (geometry), `audit/`, `export/` (writers), plus `engine.ts`, `worker.ts`, `client.ts`, `protocol.ts` |
+| Reference | `services/bake/` | Python 3.12 FastAPI service: the reference implementation of the same pipeline and the CLI printability validator (`python -m app.cli validate`). Not a runtime dependency of the web app |
+| Contracts | `packages/contracts/` | JSON Schema source of truth (schema version 3), generating `apps/web/lib/contracts.ts` and `services/bake/app/contracts.py` |
+| Desktop | `apps/desktop/` | Tauri 2 shell embedding the same static export (section 8) |
 
-Flow: MapLibre picker -> `POST /scene` (OSM via Overpass -> SceneGraph in local ENU
-metres) -> live r3f preview -> `POST /bake` (manifold3d pipeline) -> `.3mf` / `.stl` from
-`GET /files/{name}`. The browser never runs a boolean and the server never renders a
-preview; both share one transform-math module mirrored in Python and TypeScript (3.1).
+The engine runs off the main thread in **two Web Workers**, one per job kind:
+`lib/engine/client.ts`'s `EngineClient` holds an ingest transport and a bake
+transport ("one per job kind, never shared", `EngineClientTransports`), each a
+`WorkerTransport` over `lib/engine/worker.ts` when `Worker` exists and an
+`InlineTransport` fallback otherwise (SSR, vitest, a browser that refuses
+worker creation). `lib/engine/protocol.ts` holds the message protocol and the
+job handlers (`runIngestJob`, `runBakeJob`, `cancelJob`), shared verbatim by
+the worker and the inline fallback so the two cannot drift. Bakes are
+single-flight: a request that arrives while one runs overwrites a single
+queued slot, so the worker is never more than one bake behind.
+
+The WASM binary is copied to `public/manifold/manifold.wasm` by
+`apps/web/scripts/copy-manifold-wasm.mjs` (`predev`/`prebuild`);
+`lib/engine/solid/manifold.ts:loadManifold` passes a `locateFile` override
+outside Node, and `next.config.ts` carries a client-only webpack
+`IgnorePlugin` for `node:` scheme imports in manifold's emscripten glue.
+
+`services/bake` still answers `/health`, `/presets`, `/scene`, `/bake`,
+`/bake/{id}`, `/files/{name}` on :8000, but nothing in the deployed app calls
+them. Its jobs today: `make gate` bakes the committed Chicago fixture through
+the browser engine's own CLI (`npm run bake:cli`) and judges the files with
+the Python validator; `tests/test_transform.py` and `lib/transform.test.ts`
+pin the shared transform math (`app/geom/transform.py` mirrored by
+`lib/transform.ts`) against `fixtures/parity-expected.json` to 0.01 mm.
 
 ### 1.1 Contracts
 
-`packages/contracts/schema/*.json` is the single source of truth for the four wire
-shapes: `scene_request.json`, `scene_graph.json`, `print_params.json`,
-`bake_result.json`. Two stdlib-only generators produce the bindings:
-`packages/contracts/gen_py.py` -> `services/bake/app/contracts.py` (pydantic v2,
-`extra="forbid"`, alias-aware for `3mf` and `class`) and `packages/contracts/gen_ts.py`
--> `apps/web/lib/contracts.ts` (interfaces, `DEFAULT_PRINT_PARAMS`,
-`defaultPrintParams()`, `PARAM_RANGES`, `PARAM_LIMITS`). `make contracts` regenerates
-both; neither is hand-edited. The package is frozen at schema version 2:
-`PrintParams.schema_version` is the literal `2`, every v2 field is optional with a
-v1-identical default, and `tests/test_v1_compat.py` pins a default v2 bake to the
-committed golden under `fixtures/v1-golden/`.
+`packages/contracts/schema/*.json` defines the four wire shapes
+(`scene_request`, `scene_graph`, `print_params`, `bake_result`).
+`PrintParams.schema_version` is `{enum: [2, 3], default: 3}`; every v3 group
+(`place`, `regions`, `colour`, `printer_profile`, `custom_profile`,
+`export_target`, `terrain`, `heights`, `bridges`, `height_exaggeration`,
+`hero_auto`, `tiling`, `frame_style`, `hanger_magnet`, plus the extended
+`hanger` enum and `Engraving` modes `inlay` / edge `underside`) is additive
+and optional with v2-identical defaults, pinned by
+`services/bake/tests/test_v1_compat.py` against `fixtures/v1-golden/`.
+`make contracts` runs `gen_ts.py` and `gen_py.py`; the outputs are never
+hand-edited. The SceneGraph schema itself is unchanged; the engine's extra
+layers ride on structural supersets (`lib/engine/osm/types.ts`:
+`EngineBuilding`, `EngineRoad`, `Rail`, `EngineSceneGraph`), assignable
+anywhere a plain `SceneGraph` is expected (`[V3-P2-E1]`).
 
-Top-level `PrintParams` fields: `schema_version`, `plate_mm`, `base_thickness_mm`,
-`nozzle_mm`, `small_scale`, `large_scale`, `terrain_exaggeration`, `road_mode`,
-`road_scale`, `trees`, `water`, `frame`, `city_label`, `color_mode`, `part_colors`,
-`engravings`, `north_arrow`, `scale_bar`, `hanger`, `underside_mark`,
-`hero_building_ids`, `hero_mode`.
+## 2. OSM ingest (`apps/web/lib/engine/osm/`)
 
-### 1.2 Make targets (`Makefile`, POSIX sh recipes)
+- `overpass.ts`: `buildQuery`/`bboxFor` byte-identical to the Python builder
+  (the Chicago preset query hashes to the committed fixture's own sha1).
+  `fetchOverpass` walks `DEFAULT_MIRRORS` (`overpass-api.de`,
+  `overpass.kumi.systems`, `overpass.private.coffee`) with 500 ms / 1 s / 2 s
+  backoff and a 60 s per-attempt timeout; 400/422 return at once (a verdict on
+  the query), any other failure advances to the next mirror. Responses cache
+  in `MemoryOverpassCache` / `IndexedDbOverpassCache`; every path fails soft.
+  An `AbortSignal` threads through so a superseded ingest stops its fetch.
+- `tmerc.ts` + `project.ts`: hand-rolled WGS84 ellipsoidal UTM (Kruger
+  n-series, validated against pyproj to sub-micron), `LocalFrame`
+  (WGS84 <-> local ENU with rotation), crop and clip. Coordinates past this
+  boundary are metres, x east, y north, origin at the pin; never Web Mercator.
+- `normalize.ts` / `geometry.ts`: classify, project once, the `03` hygiene
+  steps (make-valid, simplify, 1 mm snap, dedupe, dissolve, union of
+  overlapping footprints), crop, emit. Measured parity against the Python
+  `/scene` output on the 16k-element Chicago fixture: buildings 992 vs 994,
+  roads 5439 vs 5443, trees exact, pinned with the known exceptions in
+  `normalize.test.ts`. 496 ms warm in Node.
+- `heights.ts`: the height chain, tunable by `params.heights`:
+  `height`/`building:height` tags -> `building:levels * floor_height_m` plus
+  `roof:height` -> per-type defaults (`heights.type_defaults`) or
+  `unknown_default_m`, jittered by a sha1 of the OSM id, clamped; fallback
+  counts are tallied on the emitted list (`EngineStats.height_fallback_counts`).
+- v3 extras carried into the scene: building `name` and landmark hints
+  (`tourism`, `historic`, `wikidata`), a `rail` layer, and `bridge`/`layer`
+  tags on ways, which is what `solid/bridges.ts` builds decks from. The
+  committed `fixtures/chicago-scene.json` (Python-produced) has none of these;
+  the app's own ingest of the raw Overpass fixture carries 780 elevated ways,
+  which is why `bake-cli` grew `--overpass` (section 7c of
+  `docs/handoff/v3-03-geometry.md`).
+- `presets.ts`: the six frozen presets, city names read from
+  `apps/web/lib/presets.ts`. There is no `/presets` call.
 
-| Target | What it does |
-|---|---|
-| `install` | `uv sync` (bake), `npm ci` (web), `npx playwright install chromium` |
-| `contracts` | run both generators |
-| `up` / `down` / `dev` | start or stop both services; docker compose if present, else native uvicorn + `next dev` with pid files in `.run/` and logs in `artifacts/logs/`; `up` health-waits up to 120 s; `FRAMECRAFT_WEB_MODE=prod` serves `next build && next start` |
-| `test` | `pytest -q` then `vitest run` |
-| `gate` | G4/G7: static no-skip guard, pytest (fails on skip/xfail), eslint, `tsc --noEmit`, vitest, `next build`, `make up`, Playwright, checked `make down`, stray-fixture check |
-| `gate-v2` | G8 (v1 golden), G5 at plate 180 and 256 (`COLOR=parts`), G6 (`TEXT=all`), both composed; every output validated as `.3mf` and `.stl` |
-| `bake-fixture` | `python -m app.cli bake --preset chicago-loop`; `COLOR=parts`, `PLATE=<mm>`, `TEXT=all` compose into distinct stems |
-| `validate FILE=x` | `python -m app.cli validate <abs path>` |
-| `refresh-fixtures` | `python -m app.cli refresh-fixtures` |
-| `clean` | remove `.next`, baked artifacts, `.run`, logs |
+## 3. Geometry (`apps/web/lib/engine/solid/`, `engine.ts`)
 
-`docker-compose.yml` builds both images, mounts `./artifacts` and `./fixtures` into the
-bake container, and passes `NEXT_PUBLIC_BAKE_API_URL` as a build arg to the web image.
+`bake(input: EngineInput, options?)` returns an `EngineResult`: watertight
+`RegionMesh` solids (positions `Float64Array`), a welded `merged` solid,
+`stats`, `findings` (the audit), `resolvedText` (every lettering line with its
+resolved string or refusal), optional `tiles`, `buildingTints`,
+`buildingBands`, `attributionBands`. It never throws for a printability
+problem; refusals are findings.
 
-## 2. OSM ingest and the SceneGraph
+**Regions.** Colourable regions (`types.ts:COLOURABLE_REGION_NAMES`): `base`,
+`frame`, `matting`, `buildings`, `hero_building`, `roads`, `water`, `parks`,
+`rail`, `lettering`, `attribution`, `easel`; derived regions add `cleat` and
+`buildings_band_2..8` (height-gradient bands, split by equal count). Regions
+are separate watertight bodies that **interpenetrate at every seam by
+`PART_OVERLAP_MM` = 0.2 mm**, derived from the welded solid the way the Python
+parts mode does it (`[V3-P2-E2]` ruling): a surface region is extruded from
+its footprint grown 0.2 mm from 0.2 mm below its pocket floor, buildings reach
+`regions.building_skirt_mm` into the base, the frame lip starts 0.2 mm inside
+the plate, a lettering inlay reaches 0.2 mm past its pocket. Every extra lies
+inside material `merged` already has, so the union of the regions is the
+welded solid (measured 0.065 % boolean rounding apart). A flush partition was
+built first and rejected by the reference validator: flush parts union with
+seam slivers no tolerance sweep removed. Consequence: per-region
+`volumeMm3` values double-count the seams; totals and estimates read
+`EngineResult.merged.volumeMm3` only.
 
-### 2.1 Overpass client (`services/bake/app/ingest/overpass.py`)
+- `repair.ts`: Stage 1 in print millimetres on Clipper2: dilation,
+  widen-to-min-wall (erosion probe, since `4A/P` misreads long strips), the
+  closing pair, weighted-percentile block merge, appendage passes clipped
+  inside the loop.
+- `measure.ts`: the min-wall audit, question for question the reference
+  validator's rule: per connected region of a slice, widest inscribed disc by
+  erosion (`inscribedWidthMm`), only regions that persist one printed layer
+  upward, saturating at the minimum wall. A draped bake adds
+  `drapedSliceHeights`, a Z sweep between the flat probe planes, because a
+  hillside puts walls at heights no flat slice list samples; `ctx.terrain` is
+  null for flat bakes so they pay nothing. Declared attribution bands are
+  excluded (section 6).
+- `mesh.ts`: double-precision mesh repair on the way out (weld ladder, needle
+  split, `collapseNeedles`), transactional: a pass that opens an edge or moves
+  volume is discarded.
+- Terrain (`lib/engine/terrain/`, `solid/drape.ts`): Mapzen Terrarium PNG
+  tiles from AWS Open Data (`tiles.ts:fetchTerrainGrid`, zoom 12 to 14 from
+  the radius, at most 36 tiles, fail-soft to a flat base), box-blur
+  `terrain.smoothing`, exaggeration applied once in
+  `transform.terrain_z_scale`. The drape is a vertical shear applied to the
+  finished solids: the welded assembly is built flat and draped as one solid
+  (draping plate and grooves separately left floating hillside fragments),
+  buildings and trees are rigidly lifted by the lowest displacement under
+  their footprint, the underside and chamfer stay flat, and the plan taper
+  reaches zero across the frame band.
+- `bridges.ts`: `bridge=yes` or `layer > 0` segments leave their grade layer
+  and become decks `bridges.clearance_mm` above the local surface, with
+  diamond abutment columns; ungrounded decks are dropped and counted.
+  `trees.ts`: truncated cones joining the `parks` region, gated on printable
+  size (all 5762 Chicago trees fall under the 0.5 mm floor at plate 180; 1699
+  print at plate 256).
+- `frame.ts`: seven profiles as stacked `CrossSection` rings (plain, chamfer,
+  stepped, bevel-in, bullnose, ogee, floating), three corner styles, shadow
+  gap, matting (its own region), a separate frame part with snap or magnet
+  mating (lifted by the mount tolerance so it stays a second body), four face
+  textures, and the lettering keep-out. `hangers.ts`: keyhole, magnets, French
+  cleat, easel; the cleat wedge and easel leg print inside their own pockets
+  (`loose-part-in-place` finding). `validate.ts:expectedBodies` excuses
+  exactly the loose bodies the parameters ask for.
+- `lettering.ts` / `ornaments.ts`: frame-edge lines through the shared
+  `transform.lettering_layout`, engrave / emboss / inlay (the inlay is its own
+  `lettering` region filling exactly the pocket it cuts), underside lines laid
+  out locally and mirrored, north arrow, scale bar, refusals with measured
+  numbers. Tokens (`{city}`, `{coords}`, `{scale}`, `{hero}`, ...) are
+  resolved client-side (`lib/tokens.ts`); the engine echoes resolved strings
+  into the persisted params (`engine.ts:resolveParamsEcho`).
+- `tiling.ts`: `params.tiling` splits every region and `merged` on vertical
+  planes (up to 6 x 6), dovetail or pin joints with an exact-clearance socket,
+  the cut snapped to the cleanest line within 3 mm, remaining sub-nozzle fins
+  measured and removed (`tile-seam-trimmed`), an index mark per tile. Each
+  `TileResult` carries its own regions, welded `merged` and grid label.
+- `audit/rules.ts` + `audit/fixes.ts`: the finding catalogue
+  (`auditPrintability`: thin walls, floating islands, plate and height limits
+  against the active printer profile, overhangs, slot-beyond-profile, tile
+  findings) with one-click fixes; `applyFix` refuses any patch touching
+  `nozzle_mm`, and `fix.safe` means it can be applied blind.
+  `estimate.ts:estimate` turns `merged.volumeMm3` into grams, metres, layers
+  and a stated-assumptions time figure, per slot.
+- `printers.ts` (in `apps/web/lib/`): eight named profiles (Bambu H2S, P1S,
+  X1C, A1, A1 mini, Prusa MK4, Prusa Mini, Ender 3) plus `custom`, verified
+  against Bambu's own profile JSON; `resolveProfile(params)` is the one
+  reader, and the height ceiling everywhere is the active profile's.
 
-- `build_query(request)` renders `QUERY_TEMPLATE`, the verbatim `03` Overpass QL, with
-  one `{bbox}`: building ways and relations; highways matching
-  `motorway|trunk|primary|secondary|tertiary|residential|unclassified|service|pedestrian|footway`;
-  `natural=water` ways and relations; `waterway=riverbank`; landuse
-  `grass|forest|meadow|recreation_ground`; leisure `park|garden|pitch`; `natural=tree`
-  nodes; `out geom`, server timeout 180 s.
-- `bbox_for(request)` projects the crop square plus 15 % (`BBOX_MARGIN = 1.15`) from the
-  rotated local frame back to WGS84 via `LocalFrame.to_wgs84`, sampling edges and corners.
-- Endpoints `PRIMARY_ENDPOINT = https://overpass-api.de/api/interpreter` and
-  `MIRROR_ENDPOINT = https://overpass.kumi.systems/api/interpreter`; `_post` uses httpx
-  with 180 s read, 30 s connect, User-Agent `FrameCraft/0.1`.
-- `fetch_and_cache`: `MAX_ATTEMPTS = 3`, exponential backoff from `BACKOFF_BASE_S = 2.0`;
-  HTTP 429/504 or a 200 with a runtime-error / out-of-memory `remark` (`fatal_remark`)
-  switches the remaining attempts to the mirror. Error bodies are never cached.
-- Fixture cache: accepted raw responses go verbatim to `fixtures/<sha1 of query>.json`
-  (`query_sha1`, `fixture_path`) and `load_raw` reads the cache before any network call;
-  `FRAMECRAFT_OFFLINE=1` raises `OverpassOffline` on any network attempt and
-  `allow_network=False` raises `FixtureMissing` on a miss. `fixtures/presets-index.json`
-  (written by `app/cli.py refresh-fixtures`) maps each preset id to its fixture file,
-  fetch time, element count and byte size.
+## 4. Attribution (`solid/attribution.ts`)
 
-### 2.2 Presets (`app/ingest/presets.py`)
+Every bake carries engraved marks no parameter can remove: a deep underside
+mark spanning the plate, the same line on all four inner frame walls, 1.2 mm
+microtext on the base's south edge, and a second underside mark when the frame
+is off. The marks' Z bands are declared (`EngineResult.attributionBands`),
+written to the sidecar as `attribution_bands`, excluded from the structural
+min-wall probes on both sides, and guarded by the validator's own
+`attribution` row (band height, count, and material checks; it does not
+pretend to read glyphs). Every exporter writes one five-field provenance block
+(`export/common.ts:provenanceEntries`: author, licence, generator, source,
+generated). The user-facing statement of what this does and does not achieve
+is `LICENSE_AND_ATTRIBUTION.md`.
 
-Six frozen `Preset` dataclasses (`chicago-loop`, `new-york-midtown` at rotation 29,
-`paris-eiffel`, `tokyo-shinjuku`, `london-city`, `san-francisco-fidi`), all at
-`PRESET_RADIUS_M = 900`. `preset_requests()` is what `GET /presets` returns; labels are
-repeated client-side in `apps/web/lib/presets.ts`.
+## 5. Exporters (`apps/web/lib/engine/export/`)
 
-### 2.3 Projection and crop (`app/geom/project.py`)
+Pure writers, `(result, options) => files`, no manifold, no DOM, no network;
+`index.ts:exportForTarget` dispatches on `PrintParams.export_target`:
 
-`LocalFrame(lat, lon, rotation_deg)` picks the UTM zone from the centre (`utm_epsg`),
-builds pyproj transformers both ways, and `to_local` projects, recentres and rotates
-coordinate arrays in one vectorised pass (x east, y north, metres, origin at the request
-centre, rotation counter-clockwise so bearing `rotation_deg` points at +y). `to_wgs84`
-serves only the Overpass bbox. `crop_square`, `clip_polygon`, `clip_line`, `in_square`
-perform the axis-aligned crop of side `2 * radius_m`. Web Mercator is never used.
+| target | writer | what it writes |
+|---|---|---|
+| `bambu-3mf` | `bambu3mf.ts` | A Bambu Studio project: split layout (`3D/3dmodel.model` assembly of `p:path` components, `3D/Objects/object_N.model` meshes, `Metadata/model_settings.config` with per-part extruders, `project_settings.config` from the printer profile, `slice_info.config`, `plate_N.json`), verified line-by-line against `bbs_3mf.cpp` and the installed Bambu Studio |
+| `generic-3mf` | `generic3mf.ts` | Core-spec 3MF, the browser twin of `app/export/mf3.py`: `single` writes `EngineResult.merged` as one object, `parts` writes `<basematerials>` plus one object per region and one assembly; both pass the Python container rows |
+| `stl` / `stl-parts-zip` | `stl.ts` | One welded binary body, or a zip of per-region STLs plus `CREDITS.txt` |
+| `obj` | `obj.ts` | `o`/`usemtl` per region (per building body with tint on) plus `.mtl` |
+| `step` | `step.ts` | AP214 faceted B-rep, one `PRODUCT` per region, with a size note above 50k triangles |
+| `color-change-3mf` | `colorchange.ts` | The Bambu project on one extruder plus `custom_gcode_per_layer.xml` changes at separable Z bands; inseparable regions are reported, never guessed |
 
-### 2.4 Normalisation (`app/ingest/normalize.py`)
+A tiled result routes through `tiles.ts`: one multi-plate Bambu project (one
+plate per tile, at Bambu's own plate origins), or a zip of per-tile files.
+`common.ts` places every model in build space, writes the `<stem>.json`
+sidecar (`buildSidecarJson`: print params, provenance, `max_height_mm`,
+`attribution_bands`, stats) that `make validate` judges files against, and
+`CREDITS.txt` beside every export.
 
-`build_scene(raw, request)` classifies elements into building / road / water / green /
-tree (`_layer_of`), pools coordinates, projects once, applies the `03` hygiene steps
-(make_valid, 0.25 m simplify, 1 mm snap grid, 0.5 m centroid dedupe, union of overlapping
-footprints), crops, and emits the contract.
+## 6. Preview, store, validation
 
-- Heights (`resolve_height`, in order): `height` / `building:height` via `parse_length_m`
-  (metres, feet-inches, `ft`, multi-values) -> `building:levels * 3.2` plus `roof:height`
-  -> `TYPE_DEFAULT_HEIGHT_M` per building type (skyscraper 120, church 25, apartments 18,
-  house 7, garage 3, ...) or `DEFAULT_HEIGHT_M = 8`, both jittered plus or minus 6 % by a
-  sha1 of the OSM id (`jitter_factor`); clamped 2..600 m; `building:min_level` /
-  `min_height` set `min_height_m`; `is_tall` is `height_m >= 40`.
-- Roads: `road_width_m` takes the `width` tag, else `lanes * 3.5`, else `HIGHWAY_WIDTH_M`
-  (motorway 24, trunk 20, primary 16, secondary 12, tertiary 10, residential and
-  unclassified 8, pedestrian 6, service 5, footway 3), clamped 0.5..60 m. `HIGHWAY_CLASS`
-  maps the ten tags onto `motorway|primary|secondary|residential|service|path`.
-- Trees: `diameter_crown / 2`, else 4 m, clamped 0.5..20 m.
-- Coverage (`classify_coverage`): `empty` under 20 buildings, `good` at 150 or more
-  covering at least 4 % of the crop, else `sparse`.
+- `store/editor.ts` owns one module-scope `EngineClient`. `generate()` calls
+  `ingest()` (never a `/scene` POST); every scene-ready moment and every
+  `PrintParams` write schedules a debounced (~400 ms) engine job
+  (`scheduleEngineJob` / `runEngineJob`) into `state.engine`
+  (`EngineJobState`: `idle|computing|ready|error` plus `stale`).
+  `requestBake()` reuses a fresh result or runs one, then hands it to
+  `lib/bake.ts:runExport`, which calls the exporter and yields Blob download
+  URLs. Store setters never touch `fetch`; `store/editor.test.ts` enforces it.
+- `components/scene/CityPreview.tsx` keeps the `previewDeps` discipline: every
+  `useMemo` is keyed on named primitives read off `params`, never the object,
+  so a slider rewrites only the layer that reads it, and
+  `CityPreview.test.ts` walks every contract key against the dep lists.
+- `lib/enginePreview.ts:freshEngineResult` is the swap rule:
+  `components/scene/RegionMeshes.tsx` (one `BufferGeometry` per `RegionMesh`)
+  replaces every approximate instanced/flat-fill layer the moment the engine
+  result is `ready` and not `stale`; while a newer job computes, the instanced
+  preview stays up with an "Updating model..." badge, and
+  `InstancedBuildings.tsx` stays mounted invisibly so hero raycast picking
+  keeps working. The same `EngineResult` feeds the preview, the filament
+  mapper (`lib/colourMap.ts`: `colourRows`, `deltaE76`, `planMergeToSlots`)
+  and every exporter, so the three cannot disagree.
+- Workflow: Nominatim forward and reverse geocoding (`lib/geocode.ts`, one
+  shared 1 rps queue, caches, fail soft) with `components/map/SearchBox.tsx`;
+  `.framecraft.json` project files (`lib/project.ts`, full params, validated
+  by the same `parsePrintParams` as links); deflate-compressed `?s=v3.` share
+  links (`lib/share.ts`, 8000-char limit, still decodes v2); recent designs
+  (`lib/recent.ts`); undo/redo (`store/history.ts`, reference-diff subscriber,
+  800 ms coalescing, cap 100). Warnings surface only through the Issues badge.
+- Validation is layered: the engine's own gate (`solid/validate.ts` plus
+  `auditPrintability`) runs on every bake in the app; the Python validator
+  cross-checks exported files independently of the TypeScript that wrote them
+  (all 04 stage 4 rows, the container rows, and the sidecar-driven
+  `max_height_mm` and `attribution` rows); and `make gate` ties them together
+  (see `RUNBOOK.md` for the eight steps and current numbers). CI
+  (`.github/workflows/ci.yml`) mirrors the gate: pytest, the static no-skip
+  guard, lint/typecheck/vitest/build, both `bake:cli` bakes judged by the
+  validator, and the Playwright suite with `E2E_BUDGET_FACTOR=3`.
 
-### 2.5 SceneGraph shape
+## 7. Fonts and shared math
 
-Top-level keys: `bounds` (`min_x`, `min_y`, `max_x`, `max_y`), `center` (`lat`, `lon`,
-the only degrees in the document), `buildings` (`id`, `ring`, `holes`, `height_m`,
-`height_source` in `tag|levels|default`, `min_height_m`, `is_tall`), `roads` (`id`,
-`path`, `width_m`, `class`), `water` and `green` (`ring`, `holes`), `trees` (`x`, `y`,
-`radius_m`), `stats` (`building_count`, `coverage`, `height_tag_ratio`). Metres, local
-ENU, origin (0,0); rings unclosed, exteriors CCW, holes CW.
+Glyph outlines for preview and engine come from committed assets
+(`apps/web/lib/fonts/<face>.glyphs.json`, three OFL faces, generated by
+`services/bake/scripts/gen_font_assets.py`); the layout lives in the shared
+transform pair, so the preview draws text at the exact printed positions.
+`lib/transform.ts` and `app/geom/transform.py` stay mirrored function for
+function (scale, thresholds, Z placement, lettering layout, height
+exaggeration curve and its true inverse, terrain scale), pinned by
+`fixtures/parity-expected.json` and `fixtures/tokens-expected.json`.
 
-### 2.6 Endpoints (`app/main.py`)
+## 8. Distribution (`docs/handoff/v3-08-dist.md`)
 
-`GET /health`; `GET /presets`; `POST /scene` -> `build_scene(request)`, where
-`_resolve_request` serves an unmodified preset from its fixture with the network off and
-anything else cache-then-network, cached under `artifacts/cache/scene/<sha256>.json` for
-24 h plus a six-entry in-process LRU (Overpass failure 502, offline 503).
-`POST /bake` -> 202 `{job_id}`; `_run_bake` builds the scene through the same
-`build_scene`, then runs `bake.bake_job` in a worker thread behind a two-slot semaphore.
-`GET /bake/{job_id}` returns the `BakeResult` (`queued|running|done|failed`, `progress`,
-`warnings`, `error`, `files`, `stats`). `GET /files/{name}` serves `artifacts/` with
-path-traversal checks. CORS allows `http://localhost:3000`.
+- **Static site.** One build-time knob, `NEXT_PUBLIC_BASE_PATH` (empty for a
+  domain root and the desktop app, `/framecraft` for GitHub Pages), feeds
+  `basePath`/`assetPrefix` and `apps/web/lib/basePath.ts`, which prefixes the
+  two runtime-constructed URLs Next cannot rewrite (the MapLibre worker URL
+  and the manifold WASM fetch, via `installWasmBasePathFetchShim`).
+  `apps/web/scripts/serve-static.mjs` serves `out/` locally, with `--base`
+  reproducing the Pages sub-path exactly. `.github/workflows/pages.yml`
+  deploys on every push to main.
+- **Desktop.** `apps/desktop/` is a Tauri 2 shell around the same `out/` tree
+  (empty base path). No `@tauri-apps/*` JS is bundled: `apps/web/lib/platform.ts`
+  detects Tauri and calls `window.__TAURI__.core.invoke` for the two Rust
+  commands, `save_export` (native save dialog) and `cache_dir`.
+  `.github/workflows/release.yml` builds installers on a `v*` tag (Windows
+  msi+nsis, macOS universal dmg, Linux appimage+deb) and attaches them plus a
+  zip of the static site to a GitHub Release; signing is secrets-driven and
+  currently absent, so every artifact ships unsigned.
 
-## 3. Geometry generation (the bake)
+## 9. History
 
-`app/bake.py:run_pipeline` is `04` end to end: coverage guard (`EmptySceneError`) ->
-60 mm guard (`predicted_top_mm`) -> lettering build -> Stage 1 repair -> detail advice ->
-Stage 2 assemble -> `manifold_to_trimesh` (float64) -> triangle budget -> Stage 3 export
--> Stage 4 validate -> sidecar and `CREDITS.txt`. A failed validator moves the outputs to
-`artifacts/debug/<job_id>/` and returns `status: failed` naming the check. `JobRegistry`
-is the in-process job dict; `bake_job` publishes `STAGE_PROGRESS` per stage.
-`app/cli.py` exposes `refresh-fixtures`, `scene`, `bake` (`--preset` or
-`--lat/--lon/--radius`, `--params JSON`, `--out`) and `validate` (`.3mf` or `.stl`,
-judged against the `<stem>.json` sidecar beside it).
+Through v1 and v2 the bake ran server-side: the browser POSTed a
+`SceneRequest` to `services/bake`, which fetched Overpass, built the
+SceneGraph, ran the manifold3d pipeline in a worker thread and served the
+files, under the rule "the browser never runs booleans". `[V3-A1]` retired
+that rule; `lib/api.ts` and the polling bake state machine were deleted in
+phase 2 (`docs/handoff/v3-02-integration.md`). The v2 architecture is
+preserved in git history (v1 baseline commit `da9ab83`, the v2 tree at the
+start of the v3 run) and in `docs/handoff/v2-*.md`.
 
-### 3.1 Shared transform math (`app/geom/transform.py`, `apps/web/lib/transform.ts`)
+## 10. Known limitations
 
-Pure stdlib Python, mirrored function for function with the same snake_case names in
-TypeScript. `tests/test_transform.py` and `lib/transform.test.ts` both assert against
-`fixtures/parity-expected.json` (built from `fixtures/parity-scene.json`) within 0.01 mm.
-Key functions: scale (`usable_span_mm` = plate minus 2 x 6 mm frame, `scale_mm_per_m`,
-`radius_m_from_bounds`, `content_extents_mm`, `frame_geometry_mm`); thresholds
-(`min_wall_mm = 2 * nozzle`, `min_gap_mm = 1.5 * nozzle`, `min_detail_mm = nozzle`,
-`thresholds_ground_m`); heights and Z (`building_top_mm` with the 0.6 mm clamp,
-`road_z_mm`, `water_z_mm` -0.5, `green_z_mm` +0.3, `predicted_top_mm`,
-`model_too_tall`); heroes (`hero_ids`, `hero_true_height`, `hero_own_color`,
-`building_top_mm_for`, `parts_mode`); trees (`tree_min_radius_mm`,
-`select_tree_indices_for`, cap 2000, 8 sides); lettering layout (`fit_text`,
-`edge_placement`, `lettering_layout` returning `EngravingLayout`, `NorthArrowLayout`,
-`ScaleBarLayout`, `UndersideMarkLayout` and warnings, `scale_bar_auto_length_m`,
-`underside_min_base_mm`, `keyhole_center_mm`, `magnet_centers_mm`); advisor
-(`detail_report`, `recommend_radius_m`, `recommend_plate_mm`, `detail_recommendation`).
-
-`app/geom/tokens.py` and `apps/web/lib/tokens.ts` are the same kind of pair: the eight
-tokens `{city}`, `{lat}`, `{lon}`, `{coords}`, `{scale}`, `{radius}`, `{date}`,
-`{buildings}` with hand-rolled formatting, pinned by `fixtures/tokens-expected.json`.
-
-### 3.2 Stage 1, printability repair (`app/geom/thicken.py`)
-
-Ground metres on shapely, before any extrusion. `repair_scene` runs `repair_buildings`
-(make_valid, hole shrink, dilate thin footprints to a full min wall, merge blocks at an
-area-weighted 80th-percentile height, drop sub-detail), `repair_areas` for water then
-green, `repair_roads` (centreline buffer to the clamped width), `merge_recess_ridges`,
-`select_trees`. Every threshold comes from `transform`; `MIN_WALL_PROBE_FACTOR = 0.45`
-and `MIN_WALL_FAIL_FACTOR = 0.9` are shared with the Stage 4 `min_wall` validator so the
-repair and the gate cannot drift. Output is a `RepairedScene` plus warnings.
-
-### 3.3 Stage 2, solids and assembly
-
-`app/geom/extrude.py` is the only place ground metres become print millimetres
-(`contours_mm`). Polygons become `manifold3d.CrossSection` objects and are extruded
-(`extrude_polygons`, `building_solids`, `slab`, `tree_cone`); `base_plate` carries the
-0.6 mm bottom chamfer, `frame_lip` the 6 x 2 mm lip. Parts mode adds `inlay_slab`,
-`inlay_claim`, `recess_pocket`, `frame_lip_part`.
-
-`app/geom/assemble.py:assemble` does one `batched_union` (batches of 200, then pairwise)
-of the additive solids (base, lip, buildings, green, embossed roads, trees, embossed
-text), subtracts the cutters (engraved roads, water recess, engraved text, north arrow,
-scale bar, underside pockets) with `Manifold.batch_boolean(..., OpType.Subtract)`, runs
-`finalize` (sliver sweep, debris prune, checked vertex weld) and translates the solid to
-z = 0 centred on X and Y. manifold3d is the only boolean engine; trimesh is used only at
-the export boundary (`export/stl.py:to_trimesh`, `process=False`) and in the validators.
-
-Parts mode (`color_mode = "parts"`): `color_parts` cuts the same geometry into one solid
-per layer in `PART_ORDER` (`base`, `frame`, `buildings`, `hero:<id>`, `roads`, `water`,
-`green`, `trees`). Additive parts pass through the local `carved()` helper, which
-subtracts single mode's cutters from each part; a recess becomes an inlay under its own
-floor with the base pocketed 0.2 mm shallower. Parts interpenetrate by
-`PART_OVERLAP_MM = 0.2` and their union (`Assembly.parts_union`) is kept so the gate can
-prove it equals the single-mode solid. Own-colour heroes get `HERO_COLOR = "#E3A72F"`.
-
-### 3.4 Lettering and ornaments (`app/geom/lettering.py`)
-
-Glyph outlines come from fontTools over three bundled OFL faces (`FACE_FILES`: `sans`
-Inter, `serif` Source Serif 4, `mono` JetBrains Mono under `app/fonts/<face>/`),
-flattened at `FLATTEN_TOLERANCE_MM = 0.02`. `build(params, ctx, rotation_deg)` consumes
-`transform.lettering_layout` and, per piece: outlines at the fitted size ->
-`repair_text` (Stage 1 rules in print mm) -> `place` and clip to `lip_keep_region` ->
-`merge_stroke_ridges` for engraved text -> measure the narrowest stroke and counter and
-refuse the piece if the gate would fail it. It returns a `LetteringGeometry` with `cut`
-(engraved text, `north_arrow_polygon` turned back by the scene rotation,
-`scale_bar_polygons` with rules and label), `emboss` (embossed text) and `underside_cut`
-(`underside_pocket_polygons`: the mono underside mark, `keyhole_polygon`,
-`magnet_polygons`). `BaseTooThinError` refuses a base too thin for its pockets before
-anything is built.
-
-### 3.5 Stage 4, the gate (`app/validate/checks.py`, `app/validate/container.py`)
-
-`checks.validate(mesh, params, manifold=...)` yields one `Check` row per `04` rule:
-`manifold`, `watertight`, `volume`, `self_intersection`, `bounding_box` (plate plus
-0.01 mm, Z under `MAX_HEIGHT_MM = 60`), `sits_at_zero`, `min_wall` (12 seeded Z slices
-plus one per recess band, `Manifold.slice` when available), `triangle_budget`
-(2,000,000, decimated to 1,500,000 by `enforce_triangle_budget`), `degenerate_faces`.
-Lettering adds `lettering` and `base_floor` (`validate_lettering`,
-`validate_base_floor`). Single mode adds `bodies` (`single_body_check`); parts mode adds
-`bodies`, `part_meshes`, `parts_union` (`validate_parts`). `container.py` audits the
-package itself, in the bake and the CLI alike: `3mf_parts`, `3mf_model_xml`, `3mf_unit`,
-`3mf_objects`, `3mf_build_items`, `3mf_attribution`, `3mf_counts`, plus
-`3mf_components`, `3mf_materials`, `3mf_color_mode` for a parts file.
-
-## 4. The 3D preview (`apps/web`)
-
-### 4.1 Geometry (`lib/preview.ts`)
-
-Pure functions, no three.js, no booleans, no maths of its own: every scale, threshold
-and Z comes from `lib/transform.ts`. `buildBuildings` turns each footprint into a
-minimum-area oriented rectangle (`convexHull`, `minAreaRect`) dilated by the same
-`building_dilation_m` the bake uses and counts what the bake would widen or drop;
-`buildingInstanceMatrices` writes straight into an `InstancedMesh` buffer. `buildRoads`
-triangulates flat ribbons, `buildAreas` converts water and green rings to `PreviewArea`
-records, `buildTrees` / `treeInstanceMatrices` follow `select_tree_indices_for`;
-`buildPreview` bundles them into a `PreviewModel`.
-
-### 4.2 Components (`components/scene/`)
-
-- `PreviewPane.tsx` loads `CityPreview` via `next/dynamic` with `ssr: false`.
-- `CityPreview.tsx` owns the r3f `Canvas`, one root-group rotation for three.js's Y-up,
-  and the `previewDeps` table: every `useMemo` is keyed on primitives read off `params`
-  (never the object) so a height slider rewrites only the building matrices (`scale`:
-  `plate_mm`, `frame`; `thresholds`: scale, `nozzle_mm`; `roads`: plus `road_scale`,
-  `road_mode`; `water`: `water`; `trees`: `trees`; `height`: `predictedTopDeps`; `text`:
-  `textParamsKey`, rotation, date, loaded-face count). It also renders the HUD spec strip
-  (`lib/hud.ts:specStrip`: scale ratio, predicted height, min wall), the adjustments chip
-  (`lib/adjustments.ts`), the advisor chip (`lib/advisor.ts`) and hero picking by raycast
-  and keyboard (`lib/heroes.ts`, `lib/heroCursor.ts`).
-- `InstancedBuildings.tsx`: one `InstancedMesh` of a unit box with per-instance colour;
-  `matrixDeps` keys the upload on base thickness, the two multipliers and `heroHeightKey`.
-- `RoadRibbons.tsx`: one `BufferGeometry` updated in place when the vertex count is
-  unchanged, drawn at `road_z_mm` above the base rather than cut.
-- `AreaSurfaces.tsx`: earcut via `ShapeUtils.triangulateShape`, one merged geometry per
-  layer, at `water_z_mm` and `green_z_mm`.
-- `BasePlate.tsx`: slab and four lip bars from `plate_extents_mm`, `frame_geometry_mm`,
-  `base_top_mm` (no chamfer); `TreeInstances.tsx`: one `InstancedMesh` of an 8-sided cone.
-
-### 4.3 Lettering preview (`lib/previewText.ts`, `lib/fontGlyphs.ts`, `lib/fonts/*`)
-
-`buildPreviewText` takes the same `transform.lettering_layout` the bake cuts from,
-expands tokens through `textTokenContext`, and turns glyph outlines (`glyphAreas`, with
-the layout's dilation applied by `offsetRing`), `northArrowArea`, `scaleBarAreas`,
-`keyholeArea` and `magnetAreas` into `PreviewArea` records placed by `placeArea`. Pieces
-carry a tone (`engraved|embossed|pocket`) and a face (`top|bottom`); `textLayers` and
-`textPieceZMm` put them on the lip or the underside as flat fills. What the layout
-refuses is not drawn. `lib/fonts/<face>.glyphs.json` (font units, flattened at the 8 mm
-maximum) and `<face>.metrics.json` are generated by
-`services/bake/scripts/gen_font_assets.py`; `fontGlyphs.ts` imports a face lazily the
-first time a layout names it (`loadGlyphFace`, `loadedGlyphFace`, `facesNeeded`).
-
-### 4.4 State (`store/editor.ts`)
-
-One zustand store: `location` (`lat`, `lon`, `radius_m`, `rotation_deg`, `preset_id`),
-`params` (a full `PrintParams`), `scene` (`status`, `graph`, `request`, `stale`,
-`message`), `bake` (`BakeState`), `presets`, `theme`, `presetChosen`, `heroCapHit`,
-`adjustmentsOpen`, `shareNotice`. Only `setPin`, `setRadius`, `setRotation` and
-`applyPreset` can lead to a network call, and they only mark the scene `stale`; the
-`POST /scene` happens in `generate()` when the user asks. Every `setParam` /
-`setNested` / `toggleHero` write is local: the preview recomputes from the SceneGraph in
-memory and a finished bake is marked stale (`markBakeStale`) so its download is
-withdrawn; `store/editor.test.ts` fails if any `setParam` touches `fetch`.
-`requestBake` runs `warnings.bakeBlockReason` (coverage, 60 mm ceiling, underside base
-floor) and refuses locally before calling `startBake`.
-
-### 4.5 API client and bake flow (`lib/api.ts`, `lib/bake.ts`)
-
-`BAKE_API_URL = process.env.NEXT_PUBLIC_BAKE_API_URL ?? "http://localhost:8000"` is the
-one base URL; `fetchPresets`, `fetchScene`, `startBake`, `fetchBakeResult` and `fileUrl`
-wrap the five endpoints and raise `ApiError` with status and path. `lib/bake.ts` is the
-pure job state machine: `bakeStarted`, `reduceBake` (ignores a foreign job id, keeps
-progress monotonic), `shouldPoll`, `markBakeStale`, `bakeDownloadLinks` (3MF first,
-nothing while stale). The store polls `GET /bake/{id}` every `POLL_INTERVAL_MS = 1000`
-until `done` or `failed`.
-
-### 4.6 Sharing, warnings, presets, map
-
-- `lib/share.ts`: `?s=v2.<base64url(JSON)>.<fnv1a32 hex>` where the JSON is
-  `{"r": SceneRequest, "p": PrintParams fields that differ from default}`; `encodeShare`,
-  `decodeShare` (validates every field against `PRINT_PARAM_SPEC`, refuses unknown
-  versions and bad checksums), `shareUrl`, `readShareParam`. Applying a link marks the
-  scene stale and never fetches.
-- `lib/warnings.ts`: `sceneWarnings` yields `info|warn|block` rows (coverage under
-  `MIN_BUILDINGS_TO_BAKE = 20`, estimated heights under `ESTIMATED_HEIGHT_RATIO = 0.15`,
-  widened/dropped counts, the 60 mm ceiling via `predictedTopMm`, the hanger base floor
-  via `undersideBlockMessage`); `lib/adjustments.ts:collectAdjustments` folds the
-  informational ones into the Issues chip; `bakeBlockReason` disables Bake.
-- `lib/presets.ts`: `PRESET_LABELS` (id -> label), `PRESET_ORDER`, `presetLabel(id)`,
-  `sortPresets(list)`. The preset objects are the `SceneRequest`s from `GET /presets`
-  (`lat`, `lon`, `radius_m`, `rotation_deg`, `preset_id`).
-- `components/map/LocationPicker.tsx` renders OSM raster tiles from `tile.openstreetmap.org` only; there is no geocoder.
-
-## 5. The 3MF, STL and sidecar
-
-`app/export/mf3.py` writes a core-spec 3MF: an OPC zip with exactly
-`[Content_Types].xml`, `_rels/.rels` and `3D/3dmodel.model`, namespace
-`http://schemas.microsoft.com/3dmanufacturing/core/2015/02`, `unit="millimeter"`,
-vertices at twelve fixed decimals. There is no vendor extension, no production or slice
-extension, and no Bambu Studio or PrusaSlicer project metadata; only the reserved core
-metadata names are used (`RESERVED_METADATA`), and `build_metadata` fills `Title`,
-`Designer`, `Description` (attribution, location, every PrintParams value, the font
-licence line when text was cut), `Copyright`, `LicenseTerms`, `Application`,
-`CreationDate`.
-
-- Single mode (`write_3mf`): one `<object id="1" type="model">` with `<mesh>`, one
-  `<build><item objectid="1"/>`.
-- Parts mode (`write_3mf_parts`, `parts_model_xml`): `<basematerials id="1">` with one
-  `<base name displaycolor="#RRGGBBAA">` per part (`normalize_color`), one `<object>` per
-  part with `pid="1"` and its `pindex`, one container object named `FrameCraft` whose
-  `<components>` list every part, and a single build item for that container.
-
-`app/export/stl.py:write_stl` writes binary STL through trimesh; in both modes the STL is
-the single welded body. `app/export/__init__.py` writes `CREDITS.txt` (ODbL attribution
-plus `FONT_CREDITS`) and the `<stem>.json` sidecar (`sidecar_payload`): `attribution`,
-`license`, `generator`, `created_at`, the exact `scene_request` and `print_params`, the
-full `bake_result`, `scene_stats`, the `validation` report (every check row with value
-and threshold) and `timings_s`. `make validate` judges a file against that sidecar.
-
-## 6. Test harness
-
-- **pytest** (`services/bake/tests/`, `uv run pytest`): `conftest.py` exports
-  `FRAMECRAFT_OFFLINE=1` for every test. `test_contracts.py` (generators, schema bounds),
-  `test_ingest.py` (fixtures -> SceneGraph), `test_transform.py` and `test_tokens.py`
-  (the parity fixtures), `test_bake.py` (golden Chicago, Stage 1, assembly, export,
-  validators, API), `test_lettering.py` (fonts, layout, ornaments,
-  `fixtures/lettering-expected.json`), `test_v1_compat.py` (G8 golden),
-  `test_validate_cli.py` (the CLI on real and corrupted files), `test_qa_verification.py`
-  (independent re-derivations). Parity fixtures regenerate with `FRAMECRAFT_WRITE_PARITY=1`.
-- **vitest** (`apps/web/vitest.config.ts`, `npm test`): node environment, `**/*.test.ts(x)`
-  beside the code under `lib/`, `store/`, `components/scene/`, `components/editor/`; `e2e/` excluded.
-- **Playwright** (`apps/web/playwright.config.ts`, `npm run test:e2e`): one chromium
-  worker, no retries, no mocking, `webServer` entries that start uvicorn and `next dev`
-  when the stack is down (`reuseExistingServer`), results to
-  `artifacts/e2e/results.json`. Specs: `smoke.spec.ts` (01's A1..A5: preset preview under
-  5 s warm, open-water pin blocks Bake, sliders make no server call, Chicago bakes to a
-  download in under 90 s through the live service, and the downloaded `.3mf` passes
-  `python -m app.cli validate`), `ui.spec.ts` (self-hosted fonts, groups, engravings,
-  hanger refusal, hero picking, breakpoints, keyboard), `share.spec.ts` (link round trip
-  across contexts, refusals), `a11y.spec.ts` (axe-core in both themes, Tab order).
-- **`make gate`** chains them: static no-skip guard over every test source, pytest with a
-  skip/xfail check, eslint, `tsc --noEmit`, vitest with a skip/todo check, `next build`
-  (before the stack is up), `make up`, Playwright with a `results.json` skip and
-  `test.fail` check, a checked `make down` with a port probe, and a check that the e2e
-  left no stray `fixtures/<sha1>.json`. `make gate-v2` covers the geometry gates
-  separately because they take several minutes of manifold3d.
-
-## 7. Known limits
-
-- The preview never runs booleans: buildings are oriented boxes, the repair is a
-  per-footprint dilation (neighbours the bake merges are still drawn apart), engraved
-  roads, water and lettering are flat fills on the surface, and the chamfer is not drawn
-  (`CityPreview.tsx`, `docs/handoff/v2-06-preview.md`).
-- The browser never writes the 3MF; every file comes from the bake service via `GET /files/{name}`.
-- The lettering layout predicts printability from glyph metrics while the bake measures
-  the finished groove; they can disagree, always with the bake refusing
-  (`docs/handoff/v2-03-lettering.md` section 8).
-- No Nominatim or reverse geocoding: `{city}` is only ever the typed `city_label`
-  (`DECISIONS.md` [V2-P2]).
-- The parts export is core-spec 3MF only: no slicer project metadata, so filament
-  assignment happens in the slicer, and slicer import is a manual check
-  (`docs/handoff/v2-02-color.md` section 8).
-- Terrain is flat: `terrain_exaggeration` is carried through both transforms but
-  `terrain_z_mm` is always 0 (`01` out of scope). Bake jobs live in one process
-  (`JobRegistry`, 64 entries, two concurrent bakes); there is no persistent queue.
-- The Next app has no API routes or server-only code (`apps/web/app` holds only
-  `layout.tsx`, `page.tsx`, `globals.css` and icons; `next.config.ts` is empty), and
-  `NEXT_PUBLIC_BAKE_API_URL` is inlined at build time, binding a build to one bake origin.
+- **Draped thin walls.** Steep terrain can shear base walls under the printable
+  minimum; the in-app audit warns (`wall-too-thin`, with the draped slice
+  sweep) and offers the safe fixes, but the model is the user's call.
+- **Tint is preview and OBJ only.** `colour.tint` is data, never geometry;
+  3MF/STL/STEP colour by region (`[V3-P5-F8]`).
+- **STEP is a faceted B-rep** (planar triangle faces, AP214), not smooth CAD
+  surfaces; the export notes its size above 50k triangles (`[V3-A6]`).
+- **Unsigned installers.** SmartScreen and Gatekeeper warn on first launch
+  until signing secrets exist (`release.yml` header documents the hooks).
+- **Loose-part bakes fail the reference `bodies` row by design.** A separate
+  frame, cleat wedge or easel leg is a deliberate second body; the engine's
+  own gate excuses exactly the expected ones (`expectedBodies`), but the file
+  validator counts what is there. The `expected_bodies` sidecar field that
+  would teach it is designed but not built (`docs/handoff/v3-05-frame.md`).
+- **Frame-off Chicago fixture.** `frame: false` on the committed fixture fails
+  the validator's `min_wall` row (0.167 mm in one merged block), and
+  `degenerate_faces` at plate 256; pre-existing in the crop/merge path,
+  reproduced independent of attribution (`[V3-P7-A11]`).
+- **Per-region volumes double-count the 0.2 mm seams** (+5.18 % on Chicago);
+  anything summing them instead of `merged.volumeMm3` is wrong.
+- **Colour-change is band-limited.** Regions sharing Z layers with another
+  slot cannot get their colour on one nozzle; the plan reports them as
+  inseparable rather than pretending.

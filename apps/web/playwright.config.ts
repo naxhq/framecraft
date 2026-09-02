@@ -19,8 +19,10 @@ import { defineConfig, devices } from "@playwright/test";
  * that stays in the foreground, and it spawns through the platform shell --
  * cmd.exe on this Windows host, which does not have `make` on PATH.
  *
- * FRAMECRAFT_WEB_MODE=prod serves the production build (`next build && next
- * start`) instead of `next dev`, mirroring the same switch in `make up`.
+ * FRAMECRAFT_WEB_MODE=prod serves the production build (`next build`, then
+ * the exported `out/` tree through `scripts/serve-static.mjs`; `output:
+ * "export"` retired `next start`) instead of `next dev`, mirroring the same
+ * switch in `make up`.
  *
  * ---------------------------------------------------------------------------
  * ORDER OF OPERATIONS -- read this before running the two together
@@ -122,7 +124,11 @@ export default defineConfig({
       stderr: "pipe",
     },
     {
-      command: PROD_WEB ? "npm run build && npm run start" : "npm run dev",
+      // `output: "export"` (v3 P8) retired `next start`; prod mode now serves
+      // the exported `out/` tree the way GitHub Pages / Tauri will.
+      command: PROD_WEB
+        ? "npm run build && node scripts/serve-static.mjs --dir out --port 3000"
+        : "npm run dev",
       cwd: path.join(REPO_ROOT, "apps", "web"),
       url: WEB_URL,
       reuseExistingServer: true,

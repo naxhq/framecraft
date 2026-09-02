@@ -1,9 +1,13 @@
 # FrameCraft
 
-Web app that turns a map location into a 3D-printable framed miniature city:
-MapLibre picker -> `POST /scene` (OSM via Overpass -> SceneGraph, meters in a
-local ENU frame) -> live react-three-fiber preview -> `POST /bake` (manifold3d
-solid pipeline per `04_PRINTABILITY_SPEC.md`) -> `.3mf` / `.stl` download.
+Web app that turns a map location into a 3D-printable framed miniature city.
+Since v3 the whole pipeline runs client-side: MapLibre picker -> Overpass fetch
+and normalize in a worker (`apps/web/lib/engine/osm`) -> SceneGraph (meters,
+local ENU) -> manifold3d WASM solid engine (`lib/engine/solid`, second worker)
+-> one EngineResult feeding the r3f preview, the filament mapper and every
+exporter (Bambu project 3MF, generic 3MF, STL, OBJ, STEP, colour-change) ->
+Blob or Tauri save. `services/bake` is the Python reference implementation and
+CLI validator (`make validate`), not a runtime dependency.
 
 Specs are the source of truth: `01_PRODUCT_SPEC.md`, `02_TECH_SPEC.md`,
 `03_GEODATA_SPEC.md`, `04_PRINTABILITY_SPEC.md`, `05_AGENT_TEAM.md`.
@@ -27,14 +31,15 @@ docker-compose.yml  Makefile  RUNBOOK.md
 
 ## Hard rules
 
-- `packages/contracts/` is FROZEN at **schema version 2** (re-frozen 2026-08-30;
-  v1 fields unchanged, v2 fields optional with v1-identical defaults, pinned by
-  `tests/test_v1_compat.py` against `fixtures/v1-golden/`). No rename/removal
+- `packages/contracts/` is FROZEN at **schema version 3** (re-frozen 2026-09-02;
+  v1/v2 fields unchanged, v3 fields optional with v2-identical defaults, pinned
+  by `tests/test_v1_compat.py` against `fixtures/v1-golden/`). No rename/removal
   without a `DECISIONS.md` line. `make contracts` regenerates both outputs;
   never hand-edit `contracts.ts` / `contracts.py`.
-- Boolean engine is `manifold3d`. The browser never runs booleans; the server
-  never runs the preview. Preview and bake share one transform-math signature
-  (Python + TS mirror, parity test within 0.01 mm).
+- Boolean engine is `manifold3d`, running as WASM in the browser engine
+  (`apps/web/lib/engine`); the Python service uses the same kernel as the
+  reference validator. Preview, mapper and exports read one EngineResult, and
+  shared transform math stays mirrored (Python + TS, parity fixtures).
 - SceneGraph coordinates are meters, local ENU, center at (0,0). No lat/lon
   past that boundary. Never Web Mercator for geometry.
 - OSM only (Overpass + OSM raster tiles). Google/Apple/Bing sources are forbidden.
@@ -55,8 +60,8 @@ docker-compose.yml  Makefile  RUNBOOK.md
 
 ## Ports
 
-Web `localhost:3000`, bake API `localhost:8000` (`/health`, `/presets`,
-`/scene`, `/bake`, `/bake/{id}`, `/files/{name}`).
+Web `localhost:3000` (standalone since v3); reference bake API
+`localhost:8000` (optional, only for the Python service's own API and tests).
 
 ## Git authorship
 

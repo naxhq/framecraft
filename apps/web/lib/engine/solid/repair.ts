@@ -113,6 +113,27 @@ export const RESIDUE_EDGE_TOLERANCE = 0.02;
 export const RESIDUE_AREA_RATIO = 0.25;
 
 /**
+ * Vertex simplification applied to the ERODED ring before it is grown back,
+ * as a fraction of the opening radius.
+ *
+ * This is JTS/GEOS' own `BufferOp.SIMPLIFY_FACTOR`, and it is here because the
+ * reference gets it for free and this engine did not. GEOS simplifies a buffer's
+ * input at `0.01 * distance`; Clipper2 offsets exactly what it is given. An
+ * erosion leaves needles - three vertices spanning a few microns where two
+ * boundary segments nearly meet - and a MITRE join on such a needle fires a
+ * spike whose length is bounded only by {@link RESIDUE_MITRE_LIMIT}. That spike
+ * is material the opening claims to reach and cannot, so the wing it lies
+ * across stops being residue and neither the repair nor the gate can see it.
+ *
+ * Measured on the frame-off Chicago plate, on the one block the reference
+ * validator failed: the opening escaped its own component by 0.199 mm2 and
+ * swallowed a 0.0595 mm2 wing whole. Simplifying the eroded ring first brings
+ * the escape to 0.0505 mm2 against GEOS' 0.0532 and finds the same wing to
+ * four figures of area (`[V3-P7-fix]`).
+ */
+export const RESIDUE_SIMPLIFY_FACTOR = 0.01;
+
+/**
  * Repair-and-remeasure rounds for the appendage passes.
  *
  * Repairing a wing exposes a second one where it met the body - widening fills
@@ -367,6 +388,21 @@ export function appendageWidthMm(section: CrossSection, minWall: number): number
  * region's own inscribed width LOWERED by every appendage's, and the two must
  * find the same wings or the repair and the gate disagree about what a wall is.
  * The caller owns what comes back and must drop it.
+ *
+ * The eroded ring is SIMPLIFIED at {@link RESIDUE_SIMPLIFY_FACTOR} before it is
+ * grown back, and that one step exists only to make Clipper2 answer what GEOS
+ * answers, because `thicken._residue` is the rule the reference validator judges
+ * by (`[V3-P7-fix]`). GEOS simplifies every buffer input at that factor and
+ * Clipper2 simplifies none.
+ *
+ * `thicken._opening` also clips the dilation back to what it opened, and that
+ * step is deliberately NOT mirrored. The residue is `component - tolerated`, so
+ * material the dilation put OUTSIDE the component cannot change it; what the
+ * clip would move is a band no wider than `RESIDUE_EDGE_TOLERANCE` of a wall
+ * where the re-grown boundary crosses the component's own. It was measured at
+ * about a second of Clipper2 work on the Chicago plate against a 15 s bake
+ * budget, and it changed no validator number on any of the six bakes in
+ * `docs/handoff/v3-07-fix.md`.
  */
 export function residueParts(
   ctx: BakeContext,
@@ -377,8 +413,10 @@ export function residueParts(
   const { arena } = ctx;
   const eroded = offsetSection(arena, component, -radius, MITRE, 0, RESIDUE_MITRE_LIMIT);
   if (eroded === null) return null;
-  const opened = offsetSection(arena, eroded, radius, MITRE, 0, RESIDUE_MITRE_LIMIT);
+  const lean = arena.keep(eroded.simplify(RESIDUE_SIMPLIFY_FACTOR * radius));
   arena.drop(eroded);
+  const opened = offsetSection(arena, lean, radius, MITRE, 0, RESIDUE_MITRE_LIMIT);
+  arena.drop(lean);
   if (opened === null) return null;
   const tolerated = offsetSection(
     arena,
@@ -465,6 +503,36 @@ export function widenThinParts(
 }
 
 /**
+ * The appendages of `component` that are themselves too narrow to print
+ * (`thicken.thin_parts`).
+ *
+ * `null` carries `residueParts`' own meaning: the component is narrower than
+ * the probe everywhere, so there is no body to hang an appendage off and the
+ * caller must judge the whole of it instead. An empty list means it is clean.
+ * The caller owns what comes back and must drop it.
+ */
+export function thinParts(
+  ctx: BakeContext,
+  component: CrossSection,
+  areaFloorMm2?: number,
+): CrossSection[] | null {
+  const { arena } = ctx;
+  const { minWall, minDetail } = ctx.thresholdsMm;
+  if (!(minWall > 0)) return [];
+  const areaFloor = areaFloorMm2 ?? RESIDUE_AREA_RATIO * minDetail * minDetail;
+  const parts = residueParts(ctx, component, MIN_WALL_PROBE_FACTOR * minWall, areaFloor);
+  if (parts === null) return null;
+  const thin = parts.filter(
+    (part) =>
+      hydraulicWidthMm(part) < 2 * minWall && appendageWidthMm(part, minWall) < minWall,
+  );
+  for (const part of parts) {
+    if (!thin.includes(part)) arena.drop(part);
+  }
+  return thin;
+}
+
+/**
  * The same measurement, used the other way round: CUT the thin appendages off.
  *
  * A raised layer's thin limb is a wall no nozzle can lay down, and unlike a
@@ -478,22 +546,14 @@ export function stripThinParts(
   rounds: number = APPENDAGE_ROUNDS,
 ): CrossSection | null {
   const { arena, wasm } = ctx;
-  const { minWall, minDetail } = ctx.thresholdsMm;
+  const { minWall } = ctx.thresholdsMm;
   if (!(minWall > 0)) return component;
-  const areaFloor = RESIDUE_AREA_RATIO * minDetail * minDetail;
   let current: CrossSection = component;
   for (let round = 0; round < rounds; round += 1) {
-    const parts = residueParts(ctx, current, MIN_WALL_PROBE_FACTOR * minWall, areaFloor);
-    if (parts === null) {
+    const thin = thinParts(ctx, current);
+    if (thin === null) {
       if (current !== component) arena.drop(current);
       return null;
-    }
-    const thin = parts.filter(
-      (part) =>
-        hydraulicWidthMm(part) < 2 * minWall && appendageWidthMm(part, minWall) < minWall,
-    );
-    for (const part of parts) {
-      if (!thin.includes(part)) arena.drop(part);
     }
     if (thin.length === 0) break;
     const cutter = unionSections(wasm, arena, thin);

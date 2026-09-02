@@ -200,6 +200,18 @@ frame-off path.
 
 ### The frame-off Chicago bake fails, and it is not this phase
 
+> **STATUS 2026-09-01: mostly fixed, see [`v3-07-fix.md`](v3-07-fix.md).** Plate
+> 180 reads ALL CHECKS PASS in both colour modes (`min_wall` 0.8688 single,
+> 0.9061 parts). The diagnosis below guessed the crop and the guess was wrong:
+> the cause was `repair.residueParts` disagreeing with `thicken._residue`,
+> because GEOS simplifies every buffer input at `0.01 * distance` and Clipper2
+> does not, so a mitre spike off a needle in the eroded ring swallowed the wing
+> the opening existed to isolate. Plate 256 is much improved and NOT closed:
+> `min_wall` 0.1035 -> 0.7972 single and 0.1015 -> 0.2998 parts, and the
+> `degenerate_faces` 7 turns out not to be frame-off-specific at all (the
+> frame-ON 256 bake fails the same row with 6). Both residuals are in
+> `FAILURES.md`. `[V3-P7-fix-1]` to `[V3-P7-fix-6]`.
+
 `fixtures/chicago-scene.json` with `frame: false` fails `min_wall` at 0.1667 mm
 (five regions, one merged building block at x 154 to 164, y 118 to 124 in build
 space, at every height from z = 4.5 to 16.7) and, at `plate_mm: 256`, also

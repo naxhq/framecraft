@@ -177,7 +177,7 @@ test("happy path: Chicago preset previews, sliders stay local, bake downloads a 
       intervals: [20],
     })
     .toBe(chicagoBuildings);
-  await expect(canvas).toBeVisible();
+  await expect(canvas).toBeVisible({ timeout: WARMUP_BUDGET_MS });
   const previewMs = Date.now() - startedAt;
   log(`A1 warm preset click -> preview: ${(previewMs / 1000).toFixed(2)} s (01/A1 budget ${A1_BUDGET_MS / 1000} s)`);
   expect(previewMs).toBeLessThan(A1_BUDGET_MS);
@@ -235,7 +235,7 @@ test("happy path: Chicago preset previews, sliders stay local, bake downloads a 
       () => (window as unknown as Record<string, string>).__framecraftE2E,
     ),
   ).toBe("alive");
-  await expect(previewStats).toBeVisible();
+  await expect(previewStats).toBeVisible({ timeout: WARMUP_BUDGET_MS });
 
   // ---- 5b. A3's frame rate: the preview keeps rendering, measured and
   //          reported, asserted by waiting for progress rather than by

@@ -15,7 +15,12 @@
  * narrowing: at runtime `self` really is the worker's global scope.
  */
 
+import { installWasmBasePathFetchShim } from "../basePath";
 import { cancelJob, runBakeJob, runIngestJob, type Post, type WorkerRequest, type WorkerResponse } from "./protocol";
+
+// Under a sub-path deployment (NEXT_PUBLIC_BASE_PATH set) the manifold WASM
+// fetch needs its prefix; installed before any job can run. No-op otherwise.
+installWasmBasePathFetchShim();
 
 interface WorkerSelf {
   postMessage(message: WorkerResponse, transfer?: Transferable[]): void;

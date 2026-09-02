@@ -8,7 +8,7 @@ help:
 	@echo "  install           uv sync (services/bake) + npm ci (apps/web) + playwright chromium"
 	@echo "  contracts         regenerate contracts.py and contracts.ts from packages/contracts/schema"
 	@echo "  up                start bake (:8000) and web (:3000); docker compose if available, else native"
-	@echo "                    (FRAMECRAFT_WEB_MODE=prod serves next build + next start instead of next dev)"
+	@echo "                    (FRAMECRAFT_WEB_MODE=prod serves the static export: next build + scripts/serve-static.mjs)"
 	@echo "  dev               native foreground dev, both services, Ctrl-C stops both"
 	@echo "  down              stop both services"
 	@echo "  test              pytest (services/bake) + vitest (apps/web)"
@@ -73,7 +73,7 @@ up:
 				echo "building the production web bundle (FRAMECRAFT_WEB_MODE=prod)"; \
 				( cd apps/web && npm run build ) || exit 1; \
 			fi; \
-			start_native web 3000 apps/web npm run start; \
+			start_native web 3000 apps/web node scripts/serve-static.mjs --dir out --port 3000; \
 		else \
 			start_native web 3000 apps/web npm run dev; \
 		fi; \

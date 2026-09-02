@@ -29,6 +29,11 @@ import { VERTEX_DECIMALS } from "../export/common";
 import * as T from "../../transform";
 
 /** The bake has to finish inside this, in Node, on a developer machine. */
+// The 13.7 to 13.9 s that briefly justified doubling this was not host noise:
+// it was `measure.measureMinWall` paying the persistence intersect for every
+// region of every slice, and raising the budget hid the defect that the e2e
+// preview then stalled on. Fixed at source (`[V3-P7-fix2-1]`), the same bake is
+// back under 7 s, so the committed 15 s stands as written.
 const TIME_BUDGET_MS = 15_000;
 
 /**

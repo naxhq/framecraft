@@ -172,6 +172,16 @@ export function inscribedWidthMm(
  * same reason `widenThinParts` uses it: a region with no thin limb has a
  * hydraulic diameter well over a wall, and asking Clipper for its appendages
  * costs four offsets that will find nothing.
+ *
+ * It is NOT what `thicken.narrowest_width` does, and it is a known gap
+ * (`[V3-P7-fix]`). `4A/P` never UNDER-reports a long strip, which is what makes
+ * it safe on a WING; it says nothing about a fat region that happens to carry
+ * one, and a merged Chicago block measures 4A/P = 6.4 mm while carrying a
+ * 0.17 mm one. Removing it was measured: it takes the default bake from 6 s to
+ * over 16 s against a 15 s budget, and it turns three draped fixtures from
+ * clean into `wall-too-thin` at 0.158 mm - findings that may well be real, and
+ * that nobody has judged. Both belong to the same piece of work as
+ * `measureMinWall`'s own flat blind spot, not to this fix.
  */
 export function narrowestWidthMm(
   ctx: BakeContext,
@@ -434,12 +444,37 @@ export function measureMinWall(
       // and only what does not is worth searching.
       components.push(...lean.decompose());
       for (const piece of components) {
-        // On a FLAT bake only a region that vanishes under the erosion probe is
-        // worth measuring: Stage 1 removed every thin appendage in 2D, so a
-        // region that holds a full disc holds it everywhere. A DRAPED bake is
-        // cut obliquely through those same footprints and grows wings the 2D
-        // repair never saw, so every persisting region is measured there, and
-        // measured by the appendage-aware rule (`[V3-P3-G16]`).
+        // On a FLAT bake only a region that VANISHES under the erosion probe is
+        // measured, and this is a known blind spot rather than a claim
+        // (`[V3-P7-fix]`). The old comment argued that Stage 1 removes every
+        // thin appendage in 2D so a region holding a full disc holds it
+        // everywhere; the frame-off Chicago plate disproved it - one merged
+        // block held a 3.37 mm disc and carried a 0.17 mm wing, and the gate
+        // saturated at 0.80 mm while the reference validator failed the file at
+        // 0.1667 mm. That wing is now removed at source (`repair.residueParts`
+        // finds it, so `widenThinParts` widens it), but the gate would still not
+        // SEE the next one. Measuring every persisting region by the
+        // appendage-aware rule is what the reference validator does and what
+        // this should do; it was measured at 13.4 s against the 15 s budget on
+        // the default Chicago bake (5.3 s today), and the cost is the residue
+        // probe itself, four offsets per region per slice, not the width search
+        // behind it. Closing it needs a cheaper appendage probe, and that is a
+        // piece of work of its own rather than a line here.
+        //
+        // A DRAPED bake is cut obliquely through those same footprints and grows
+        // wings the 2D repair never saw, so every persisting region is measured
+        // there, and measured by the appendage-aware rule (`[V3-P3-G16]`).
+        //
+        // This probe runs BEFORE the persistence test below, and the order is
+        // load-bearing for the wall clock rather than for the answer - both are
+        // `continue` filters, so the set they pass through is the same either
+        // way (`[V3-P7-fix2-1]`). The erosion offsets one REGION, which is small
+        // and costs 0.04 ms; the persistence test intersects that region with
+        // the whole unsimplified slice one layer up, which on the Chicago plate
+        // is tens of thousands of vertices and costs 4.2 ms whatever the region
+        // is. Measured at plate 200 (1930 regions over 15 slices): erosion first
+        // spends 85 ms and hands the intersect almost nothing, persistence first
+        // spends 8162 ms on 1930 intersects. Do not swap them.
         if (draped === null) {
           const eroded = piece.offset(-probe, ROUND, 2, OPENING_SEGMENTS);
           const thin = eroded.isEmpty();

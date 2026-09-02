@@ -12,6 +12,7 @@
  */
 
 import type { SceneGraph } from "./contracts";
+import { isTauri, saveFileWithDialog } from "./platform";
 import { buildSidecarJson, sanitizeStem } from "./engine/export/common";
 import { exportForTarget, type ExportOutput, type ExportTarget, type SourceLocation } from "./engine/export";
 import type { ColorChangePlan } from "./engine/export/colorchange";
@@ -206,4 +207,27 @@ export function bakeStatusLabel(state: BakeState): string {
 
 export function isTerminal(phase: BakePhase): boolean {
   return phase === "done" || phase === "failed";
+}
+
+export type SaveOutcome = "browser" | "saved" | "cancelled" | "failed";
+
+/**
+ * Route one finished download through the right door for the platform.
+ *
+ * In a browser this returns "browser" without doing anything: the caller's
+ * `<a download href="blob:...">` is the download, and the anchor's default
+ * behaviour should proceed. Inside the Tauri desktop shell (where WebView
+ * anchor downloads do not exist) the caller prevents the anchor's default
+ * and this reads the Blob back out of the object URL and hands the bytes to
+ * the native save dialog (`lib/platform.ts:saveFileWithDialog`).
+ */
+export async function saveDownloadFile(file: DownloadFile): Promise<SaveOutcome> {
+  if (!isTauri()) return "browser";
+  try {
+    const response = await fetch(file.href);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return (await saveFileWithDialog(file.filename, bytes)) ? "saved" : "cancelled";
+  } catch {
+    return "failed";
+  }
 }

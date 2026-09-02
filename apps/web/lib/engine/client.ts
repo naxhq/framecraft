@@ -36,6 +36,7 @@
  * took over", not as a failure to report.
  */
 
+import { installWasmBasePathFetchShim } from "../basePath";
 import type { PrintParams, SceneRequest } from "../contracts";
 import type { OverpassFetchError } from "./osm/overpass";
 import type { EngineSceneGraph } from "./osm/types";
@@ -160,7 +161,12 @@ class InlineTransport implements Transport {
 }
 
 function createDefaultTransport(): Transport {
-  if (typeof Worker === "undefined") return new InlineTransport();
+  if (typeof Worker === "undefined") {
+    // The engine will run on THIS thread, so this scope's fetch needs the
+    // sub-path WASM shim the worker installs for itself (no-op at the root).
+    installWasmBasePathFetchShim();
+    return new InlineTransport();
+  }
   try {
     const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
     return new WorkerTransport(worker);
@@ -168,6 +174,7 @@ function createDefaultTransport(): Transport {
     // Worker creation itself can throw (e.g. a restrictive CSP, or a test
     // environment that stubs `Worker` as a constructor that always fails):
     // fail soft into the same fallback the "no Worker at all" branch uses.
+    installWasmBasePathFetchShim();
     return new InlineTransport();
   }
 }

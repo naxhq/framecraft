@@ -6,7 +6,9 @@ import {
   BAKE_STALE_NOTE,
   bakeDownloadLinks,
   bakeStatusLabel,
+  saveDownloadFile,
 } from "@/lib/bake";
+import { isTauri } from "@/lib/platform";
 import { buildProject, downloadProject, parseProject } from "@/lib/project";
 import { textTokenContext } from "@/lib/previewText";
 import { recentDesignName, recordRecent } from "@/lib/recent";
@@ -428,6 +430,14 @@ export function OutputPanel({
                     key={link.filename}
                     href={link.href}
                     download={link.filename}
+                    onClick={(event) => {
+                      // Inside the Tauri desktop shell an anchor download is
+                      // inert; go through the native save dialog instead. In
+                      // a browser this is a no-op and the anchor proceeds.
+                      if (!isTauri()) return;
+                      event.preventDefault();
+                      void saveDownloadFile(link);
+                    }}
                     className="flex-1 rounded-milled border border-positive px-3 py-1.5 text-center text-2xs font-medium text-positive transition-colors hover:bg-positive-soft"
                   >
                     Download {link.label}

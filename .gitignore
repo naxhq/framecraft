@@ -5,6 +5,10 @@ apps/web/out/
 apps/web/.turbo/
 apps/web/next-env.d.ts
 
+# Tauri desktop build output (apps/desktop)
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+
 # Python
 .venv/
 services/bake/.venv/
