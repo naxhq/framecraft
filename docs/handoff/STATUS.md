@@ -33,3 +33,14 @@ Legend: PENDING, IN PROGRESS, PASS, DEGRADED (gate failed after 3 fix attempts; 
 | V2-P8 | orchestrator | G1-G8 | RUNBOOK, CLAUDE.md schema v2, re-freeze, summary | PASS - final `make gate-v2` 144 s + `make gate` 510 s (601 pytest, 537 vitest, 26 e2e, 0 skipped) on 2026-08-30; G1/G2/G3 PASS same day; RUNBOOK + CLAUDE.md updated; contracts re-frozen at schema version 2; nothing DEGRADED |
 
 Every builder phase is followed by an adversarial audit (docs/handoff/v2-NN-audit.md) and, when the audit finds defects, a fixer pass.
+
+## v3 run (2026-08-30 to 2026-09-02, public release)
+
+Phases 0 to 8 all PASS; full narrative in DECISIONS.md `[V3-*]`, per-phase notes
+in `docs/handoff/v3-*.md`, working memory in the orchestrator's task_plan.md
+(not committed). Final gate on the release tree: pytest 697, vitest 1387,
+Playwright 48, 0 skipped, reference validator ALL CHECKS PASS in single and
+parts modes. Shipped: commit 4becd5e, tag v3.0.0, Pages deploy
+https://naxhq.github.io/framecraft/, release installers via
+`.github/workflows/release.yml`. Known limitations: RUNBOOK.md section
+"limitations" and docs/handoff/FAILURES.md.
