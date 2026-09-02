@@ -94,18 +94,27 @@ jobs:
 
       # tauri.conf.json's beforeBuildCommand builds apps/web with an empty
       # base path into apps/web/out, which frontendDist points at.
+      # An env var set to an empty string still counts as "present" to the
+      # bundler, which then tries to codesign with a certificate that does not
+      # exist. Export the signing variables only when the secret is non-empty,
+      # so builds without signing secrets stay unsigned instead of failing.
+      - name: Export signing secrets when present
+        shell: bash
+        run: |
+          add() { if [ -n "$2" ]; then echo "$1=$2" >> "$GITHUB_ENV"; fi; }
+          add TAURI_SIGNING_PRIVATE_KEY '${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}'
+          add TAURI_SIGNING_PRIVATE_KEY_PASSWORD '${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}'
+          add APPLE_CERTIFICATE '${{ secrets.APPLE_CERTIFICATE }}'
+          add APPLE_CERTIFICATE_PASSWORD '${{ secrets.APPLE_CERTIFICATE_PASSWORD }}'
+          add APPLE_SIGNING_IDENTITY '${{ secrets.APPLE_SIGNING_IDENTITY }}'
+          add APPLE_ID '${{ secrets.APPLE_ID }}'
+          add APPLE_PASSWORD '${{ secrets.APPLE_PASSWORD }}'
+          add APPLE_TEAM_ID '${{ secrets.APPLE_TEAM_ID }}'
+
       - name: Build and attach installers
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
