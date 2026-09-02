@@ -12,6 +12,7 @@
  */
 
 import type { SceneGraph } from "./contracts";
+import { perfMark, perfSpan } from "./perf";
 import { isTauri, saveFileWithDialog } from "./platform";
 import { buildSidecarJson, sanitizeStem } from "./engine/export/common";
 import { exportForTarget, type ExportOutput, type ExportTarget, type SourceLocation } from "./engine/export";
@@ -126,6 +127,12 @@ export interface RunExportOutcome {
  * store write. `bakeDone` turns the result into `DownloadFile[]`.
  */
 export function runExport(result: EngineResult, target: ExportTarget, scene: SceneGraph, options: RunExportOptions = {}): RunExportOutcome {
+  // The whole export as the user experiences it: the writer plus the sidecar.
+  // `export.<target>` inside it is the writer alone (`export/index.ts`).
+  return perfSpan("export.run", () => writeExport(result, target, scene, options));
+}
+
+function writeExport(result: EngineResult, target: ExportTarget, scene: SceneGraph, options: RunExportOptions): RunExportOutcome {
   const created = new Date();
   const stem = options.stem ?? stemForResult(result);
   const output = exportForTarget(result, target, {
@@ -135,20 +142,27 @@ export function runExport(result: EngineResult, target: ExportTarget, scene: Sce
     source: options.source,
     layerHeightMm: options.layerHeightMm,
   });
-  const sidecar = buildSidecarJson({
-    result,
-    target,
-    // The sidecar's provenance block names the same place the FILES do
-    // (`[V3-P7-A10]`); passing it here is what keeps the two from disagreeing.
-    source: options.source ?? null,
-    files: output.files,
-    notes: output.notes,
-    scene,
-    elapsedS: result.stats.elapsedMs / 1000,
-    created,
-    printerProfileId: resolveProfile(result.params).id,
+  const sidecarBytes = perfSpan("export.sidecar", () => {
+    const sidecar = buildSidecarJson({
+      result,
+      target,
+      // The sidecar's provenance block names the same place the FILES do
+      // (`[V3-P7-A10]`); passing it here is what keeps the two from disagreeing.
+      source: options.source ?? null,
+      files: output.files,
+      notes: output.notes,
+      scene,
+      elapsedS: result.stats.elapsedMs / 1000,
+      created,
+      printerProfileId: resolveProfile(result.params).id,
+    });
+    return new TextEncoder().encode(`${JSON.stringify(sidecar, null, 2)}\n`);
   });
-  const sidecarBytes = new TextEncoder().encode(`${JSON.stringify(sidecar, null, 2)}\n`);
+  // A mark, not a span: what matters about an export payload is its SIZE, and
+  // the report's bytes column is where a 40 MB STEP file makes itself obvious.
+  let bytes = sidecarBytes.byteLength;
+  for (const file of output.files) bytes += file.bytes.byteLength;
+  perfMark("export.bytes", { bytes });
   return { output, sidecarBytes, sidecarName: `${stem}.json` };
 }
 

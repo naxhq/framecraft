@@ -38,6 +38,7 @@
 
 import { installWasmBasePathFetchShim } from "../basePath";
 import type { PrintParams, SceneRequest } from "../contracts";
+import { perfEnabled, perfMergeTimings, perfRecord, perfSpan } from "../perf";
 import type { OverpassFetchError } from "./osm/overpass";
 import type { EngineSceneGraph } from "./osm/types";
 import { allocateJobId, cancelJob, runBakeJob, runIngestJob } from "./protocol";
@@ -221,10 +222,17 @@ export class EngineClient {
     const id = allocateJobId();
     this.currentIngestId = id;
     if (options.onProgress) this.progress.set(id, options.onProgress);
-    return new Promise<IngestOutcome>((resolve, reject) => {
-      this.pendingIngest.set(id, { id, resolve, reject });
-      this.ingestTransport.postMessage({ kind: "ingest", id, request, params });
-    });
+    // The span covers the whole round trip as the CALLER experiences it: post,
+    // worker work, structured clone back. `engine.ingest` inside the worker is
+    // the same job without the two hops. Perf off: `perfSpan` is a boolean read.
+    return perfSpan(
+      "engine.ingest.client",
+      () =>
+        new Promise<IngestOutcome>((resolve, reject) => {
+          this.pendingIngest.set(id, { id, resolve, reject });
+          this.ingestTransport.postMessage({ kind: "ingest", id, request, params, perf: perfEnabled() });
+        }),
+    );
   }
 
   /** `EngineInput` (terrain included, phase 3) -> `EngineResult`, off the main thread on its OWN worker. */
@@ -234,10 +242,14 @@ export class EngineClient {
     const id = allocateJobId();
     this.currentBakeId = id;
     if (options.onProgress) this.progress.set(id, options.onProgress);
-    return new Promise<EngineResult>((resolve, reject) => {
-      this.pendingBake.set(id, { id, resolve, reject });
-      this.bakeTransport.postMessage({ kind: "bake", id, input });
-    });
+    return perfSpan(
+      "engine.bake.client",
+      () =>
+        new Promise<EngineResult>((resolve, reject) => {
+          this.pendingBake.set(id, { id, resolve, reject });
+          this.bakeTransport.postMessage({ kind: "bake", id, input, perf: perfEnabled() });
+        }),
+    );
   }
 
   /** Tear the client down: terminate both workers (a no-op for the inline transport) and reject every job still in flight. */
@@ -285,7 +297,32 @@ export class EngineClient {
     job.reject(new EngineClientError("cancelled", "a newer bake request superseded this one"));
   }
 
+  /**
+   * Fold a worker's own marks into the page's perf report, and measure the
+   * hop itself.
+   *
+   * `engine.post` is stamped by `worker.ts` immediately before `postMessage`,
+   * so the difference between its `epochMs` and the moment this handler runs
+   * IS the structured-clone/transfer cost of the result -- which for a bake is
+   * a pile of `Float64Array` region buffers and the one number no in-worker
+   * measurement can see. `perfMergeTimings` rebases the rest onto the page
+   * clock (a worker's time origin is its own creation, not the document's).
+   */
+  private absorbTimings(message: WorkerResponse): void {
+    if (!perfEnabled()) return;
+    const timings = "timings" in message ? message.timings : undefined;
+    if (timings === undefined || timings.length === 0) return;
+    const receivedEpochMs = performance.timeOrigin + performance.now();
+    const posted = timings.find((timing) => timing.name === "engine.post");
+    perfMergeTimings(timings);
+    if (posted !== undefined) {
+      const durationMs = Math.max(0, receivedEpochMs - posted.epochMs);
+      perfRecord("engine.transfer", performance.now() - durationMs, durationMs);
+    }
+  }
+
   private handleMessage(message: WorkerResponse): void {
+    this.absorbTimings(message);
     switch (message.kind) {
       case "ingest-progress":
       case "bake-progress":

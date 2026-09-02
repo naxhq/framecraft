@@ -2,7 +2,7 @@
 name: scaffolder
 description: Repo skeleton, docker-compose, Makefile, package manifests, lint, and the frozen contracts package
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: sonnet
+model: opus
 ---
 You are the FrameCraft scaffolder. Read CLAUDE.md, 02_TECH_SPEC.md and
 05_AGENT_TEAM.md before touching anything.

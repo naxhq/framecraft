@@ -35,6 +35,7 @@
  */
 
 import type { Engraving, PrintParams } from "../contracts";
+import { perfRecord, perfSpan } from "../perf";
 import * as T from "../transform";
 import { textTokenContext } from "../previewText";
 import { expand_tokens } from "../tokens";
@@ -132,7 +133,7 @@ export async function bake(
 ): Promise<EngineResult> {
   const started = performance.now();
   const wasm = await loadManifold();
-  await loadFaces(input.params);
+  await perfSpan("solid.fonts", () => loadFaces(input.params));
 
   const arena = new Arena();
   try {
@@ -149,14 +150,14 @@ export async function bake(
     // The displacement field, or null for a flat bake. EVERY terrain decision
     // in the pipeline reads this one object, so the base, the layers, the
     // bridges and the trees cannot end up on four different surfaces.
-    const drape = makeDrape(ctx);
+    const drape = perfSpan("solid.drape", () => makeDrape(ctx));
     reportRelief(ctx, drape);
 
     const solids = new Map<RegionName, Manifold>();
 
     // --- buildings ------------------------------------------------------
     const heroIds = input.heroIds ?? T.hero_ids(input.params);
-    const repaired = repairBuildings(ctx, heroIds);
+    const repaired = perfSpan("solid.repair", () => repairBuildings(ctx, heroIds));
     reportHeroes(ctx, repaired.heroUnknown, repaired.heroBuried, repaired.heroDropped);
 
     // --- the four surface layers ----------------------------------------
@@ -168,26 +169,28 @@ export async function bake(
     // out of them: the assembly is draped as ONE solid (see below), so the
     // region solids can only be draped after it, and `drapeSolid` consumes what
     // it is given.
-    const surfaces = buildSurfaceRegions(ctx, repaired.footprint);
+    const surfaces = perfSpan("solid.surfaces", () => buildSurfaceRegions(ctx, repaired.footprint));
 
-    const buildings = buildBuildings(ctx, repaired, drape);
+    const buildings = perfSpan("solid.buildings", () => buildBuildings(ctx, repaired, drape));
     for (const band of buildings.bands) solids.set(band.region, band.solid);
     if (buildings.hero !== null) solids.set("hero_building", buildings.hero);
 
     // --- bridges and trees ----------------------------------------------
     // Both join a region that already exists rather than making one of their
     // own: a deck prints in its own road's filament, a tree in the parkland's.
-    const bridges = buildBridges(ctx, repaired.footprint, drape);
+    const bridges = perfSpan("solid.bridges", () => buildBridges(ctx, repaired.footprint, drape));
     // A tree gives way to the buildings and to every surface layer that is not
     // parkland: 04's "does not intersect a building or road footprint", with
     // parks left out of it because parkland is where trees belong.
-    const trees = buildTrees(
-      ctx,
-      [
-        repaired.footprint,
-        ...surfaces.filter((s) => s.region !== "parks").map((s) => s.section),
-      ],
-      drape,
+    const trees = perfSpan("solid.trees", () =>
+      buildTrees(
+        ctx,
+        [
+          repaired.footprint,
+          ...surfaces.filter((s) => s.region !== "parks").map((s) => s.section),
+        ],
+        drape,
+      ),
     );
 
     // --- text, ornaments and the mandatory attribution -------------------
@@ -200,14 +203,16 @@ export async function bake(
     const bakeDate = input.date ?? new Date().toISOString().slice(0, 10);
     const tokens = textTokenContext(input.scene, input.params, bakeDate);
     const expand = (text: string): string => expand_tokens(text, tokens);
-    const lettering = buildLettering(
-      ctx,
-      tokens,
-      input.rotationDeg ?? 0,
-      undersideReserveMm(ctx, bakeDate, expand),
+    const lettering = perfSpan("solid.lettering", () =>
+      buildLettering(
+        ctx,
+        tokens,
+        input.rotationDeg ?? 0,
+        undersideReserveMm(ctx, bakeDate, expand),
+      ),
     );
-    const ornaments = buildOrnaments(ctx, lettering.layout);
-    const attribution = buildAttribution(ctx, bakeDate, expand);
+    const ornaments = perfSpan("solid.ornaments", () => buildOrnaments(ctx, lettering.layout));
+    const attribution = perfSpan("solid.attribution", () => buildAttribution(ctx, bakeDate, expand));
     reportNarrowTextBand(
       ctx,
       lettering.frameCut.length +
@@ -218,7 +223,7 @@ export async function bake(
     );
     // The cleat and the easel: a pocket in the underside AND a separate
     // printable piece that prints inside it (`solid/hangers.ts`).
-    const hangers = buildHangers(ctx);
+    const hangers = perfSpan("solid.hangers", () => buildHangers(ctx));
     for (const part of hangers.parts) solids.set(part.region, part.solid);
     const inlay = batchedUnion(wasm, arena, lettering.inlay);
     if (inlay !== null) solids.set("lettering", inlay);
@@ -226,47 +231,56 @@ export async function bake(
     // --- the frame's own neighbourhood ------------------------------------
     // Built before the plate is carved: the shadow gap and the magnet pockets
     // are cutters INTO the plate, and the snap ridge is material ON it.
-    const shadowGap = buildShadowGap(ctx);
-    const matting = buildMatting(ctx);
-    const mating = buildFrameMating(ctx);
-    const frameTexture = buildFrameTexture(ctx, lettering.layout);
+    // Four calls under one perf name: the report folds same-named spans into a
+    // single row (count 4, summed ms), which is the frame's real cost here.
+    const shadowGap = perfSpan("solid.frame", () => buildShadowGap(ctx));
+    const matting = perfSpan("solid.frame", () => buildMatting(ctx));
+    const mating = perfSpan("solid.frame", () => buildFrameMating(ctx));
+    const frameTexture = perfSpan("solid.frame", () => buildFrameTexture(ctx, lettering.layout));
 
     // --- the plate, carved by everything --------------------------------
-    const plate = buildPlate(ctx);
+    const plate = perfSpan("solid.base", () => buildPlate(ctx));
     const withRidge = batchedUnion(wasm, arena, [plate, ...mating.baseAdd]) ?? plate;
-    const carved = carveBase(ctx, withRidge, [
-      ...buildings.socket,
-      ...surfaces.map((s) => s.cutter),
-      ...lettering.baseCut,
-      ...ornaments.baseCut,
-      ...attribution.baseCut,
-      ...hangers.baseCut,
-      ...mating.baseCut,
-      shadowGap,
-    ]);
+    const carved = perfSpan("solid.base", () =>
+      carveBase(ctx, withRidge, [
+        ...buildings.socket,
+        ...surfaces.map((s) => s.cutter),
+        ...lettering.baseCut,
+        ...ornaments.baseCut,
+        ...attribution.baseCut,
+        ...hangers.baseCut,
+        ...mating.baseCut,
+        shadowGap,
+      ]),
+    );
     // Carve flat, then drape. `warp(plate - cutters)` and
     // `warp(plate) - warp(cutters)` are the same set because the drape is a
     // bijection of space, so this is exactly the model a draped carve would
     // give, for one refinement instead of one per cutter.
-    const base = drape === null ? carved : (drapeSolid(ctx, drape, carved) ?? carved);
+    const base =
+      drape === null
+        ? carved
+        : perfSpan("solid.drape.base", () => drapeSolid(ctx, drape, carved) ?? carved);
     solids.set("base", base);
 
     // --- the frame ------------------------------------------------------
-    const lip = buildFrameLip(ctx);
+    const lip = perfSpan("solid.frame", () => buildFrameLip(ctx));
     // Additive first, then the cutters, in the reference implementation's
     // order: an embossed letter has to meet the same engraving cutter the rest
     // of the lip does.
     const raisedFrame =
       lip === null ? null : (batchedUnion(wasm, arena, [lip, ...lettering.frameAdd]) ?? lip);
     if (raisedFrame !== null) {
-      const frame = subtractSolids(wasm, arena, raisedFrame, [
-        ...lettering.frameCut,
-        ...lettering.inlayCut,
-        ...ornaments.frameCut,
-        ...attribution.frameCut,
-        ...mating.frameCut,
-        frameTexture,
-      ]);
+      const frame = perfSpan("solid.frame", () =>
+        subtractSolids(wasm, arena, raisedFrame, [
+          ...lettering.frameCut,
+          ...lettering.inlayCut,
+          ...ornaments.frameCut,
+          ...attribution.frameCut,
+          ...mating.frameCut,
+          frameTexture,
+        ]),
+      );
       solids.set("frame", frame);
     }
     if (matting !== null) solids.set("matting", matting);
@@ -352,25 +366,29 @@ export async function bake(
       // A region flush with the base top (`proud_mm = 0`) is invisible in a
       // single-colour model: it is level with the surface it sits in.
     }
-    const raised = batchedUnion(wasm, arena, [...additive, ...(drape === null ? rigid : [])]);
+    const raised = perfSpan("solid.weld", () =>
+      batchedUnion(wasm, arena, [...additive, ...(drape === null ? rigid : [])]),
+    );
     // An inlay is flush too, so its pocket and its plug cancel; neither is here.
     const carvedAssembly =
       raised === null
         ? null
-        : subtractSolids(wasm, arena, raised, [
-            ...grooves,
-            ...lettering.frameCut,
-            ...ornaments.frameCut,
-            ...attribution.frameCut,
-            ...lettering.baseCut,
-            ...ornaments.baseCut,
-            ...attribution.baseCut,
-            ...hangers.baseCut,
-            ...mating.frameCut,
-            ...mating.baseCut,
-            shadowGap,
-            frameTexture,
-          ]);
+        : perfSpan("solid.weld", () =>
+            subtractSolids(wasm, arena, raised, [
+              ...grooves,
+              ...lettering.frameCut,
+              ...ornaments.frameCut,
+              ...attribution.frameCut,
+              ...lettering.baseCut,
+              ...ornaments.baseCut,
+              ...attribution.baseCut,
+              ...hangers.baseCut,
+              ...mating.frameCut,
+              ...mating.baseCut,
+              shadowGap,
+              frameTexture,
+            ]),
+          );
     // A flat scene with nothing standing on it takes `batchedUnion`'s
     // single-input path, which hands `carvedAssembly` straight back: the bake
     // that has no terrain, no bridge and no tree is byte-identical to the one
@@ -378,13 +396,16 @@ export async function bake(
     const assembly =
       carvedAssembly === null
         ? null
-        : batchedUnion(wasm, arena, [
-            drape === null
-              ? carvedAssembly
-              : (drapeSolid(ctx, drape, carvedAssembly) ?? carvedAssembly),
-            ...(drape === null ? [] : rigid),
-            ...standing,
-          ]);
+        : perfSpan("solid.weld", () =>
+            batchedUnion(wasm, arena, [
+              drape === null
+                ? carvedAssembly
+                : (perfSpan("solid.drape.assembly", () => drapeSolid(ctx, drape, carvedAssembly)) ??
+                  carvedAssembly),
+              ...(drape === null ? [] : rigid),
+              ...standing,
+            ]),
+          );
 
     // --- the surface regions, now that the assembly has its flat copies ---
     // Each is warped on its own, which is safe here in a way it was not for the
@@ -407,14 +428,18 @@ export async function bake(
     }
 
     // --- sanitation, sit at zero, meshes --------------------------------
-    const built = finishRegions(ctx, solids);
+    const built = perfSpan("solid.meshes", () => finishRegions(ctx, solids));
     const minWall =
-      assembly === null ? null : measureMinWall(ctx, assembly, undersideSkipBands(ctx));
-    for (const item of validate(
-      ctx,
-      built,
-      assembly,
-      minWall ?? { measuredMm: null, atZMm: null, slices: 0, thinRegions: 0 },
+      assembly === null
+        ? null
+        : perfSpan("solid.measure", () => measureMinWall(ctx, assembly, undersideSkipBands(ctx)));
+    for (const item of perfSpan("solid.validate", () =>
+      validate(
+        ctx,
+        built,
+        assembly,
+        minWall ?? { measuredMm: null, atZMm: null, slices: 0, thinRegions: 0 },
+      ),
     )) {
       addFinding(ctx, item);
     }
@@ -423,16 +448,20 @@ export async function bake(
 
     // The single-object formats need ONE solid, not a pile of touching shells.
     const cleanAssembly =
-      assembly === null ? null : pruneDebris(wasm, arena, assembly, UNION_DEBRIS_MM3).solid;
+      assembly === null
+        ? null
+        : perfSpan("solid.merged", () => pruneDebris(wasm, arena, assembly, UNION_DEBRIS_MM3).solid);
     const merged =
       cleanAssembly === null
         ? emptyRegionMesh()
-        : toRegionMesh(
-            cleanAssembly,
-            "base",
-            regionSlot(input.params, "base"),
-            regionColor(input.params, "base"),
-            countBodies(cleanAssembly, UNION_DEBRIS_MM3).real,
+        : perfSpan("solid.merged", () =>
+            toRegionMesh(
+              cleanAssembly,
+              "base",
+              regionSlot(input.params, "base"),
+              regionColor(input.params, "base"),
+              countBodies(cleanAssembly, UNION_DEBRIS_MM3).real,
+            ),
           );
 
     // --- islands and tiles ----------------------------------------------
@@ -445,7 +474,7 @@ export async function bake(
       slot: region.mesh.slot,
       colorHex: region.mesh.colorHex,
     }));
-    const tiles = buildTiles(ctx, sources, cleanAssembly);
+    const tiles = perfSpan("solid.tiling", () => buildTiles(ctx, sources, cleanAssembly));
     const grid = tileGridSpec(input.params);
 
     const regions = built.map((region) => region.mesh);
@@ -482,17 +511,19 @@ export async function bake(
       stats,
       // The bake's own findings plus every rule that can be answered from the
       // finished meshes, in one ordered list (`audit/rules.ts`).
-      findings: auditPrintability({
-        params: input.params,
-        scene: input.scene,
-        radiusM: ctx.radiusM,
-        regions,
-        merged,
-        stats,
-        built: ctx.findings,
-        islands,
-        ...(tiles.length === 0 ? {} : { tiles }),
-      }),
+      findings: perfSpan("solid.audit", () =>
+        auditPrintability({
+          params: input.params,
+          scene: input.scene,
+          radiusM: ctx.radiusM,
+          regions,
+          merged,
+          stats,
+          built: ctx.findings,
+          islands,
+          ...(tiles.length === 0 ? {} : { tiles }),
+        }),
+      ),
       resolvedText: ctx.resolvedText,
       params: resolveParamsEcho(input.params, ctx.resolvedText),
       attributionBands: ctx.markBands,
@@ -512,6 +543,10 @@ export async function bake(
     };
   } finally {
     arena.dispose();
+    // The whole bake as one row, recorded on the way out so a bake that threw
+    // still reports what it spent. `started` is already this realm's
+    // `performance.now()`, which is exactly what `perfRecord` wants.
+    perfRecord("engine.bake", started, performance.now() - started);
   }
 }
 

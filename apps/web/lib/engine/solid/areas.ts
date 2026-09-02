@@ -21,6 +21,7 @@
  * base standing between them (DECISIONS `[V3-P2-E2]`).
  */
 
+import { perfSpan } from "../../perf";
 import type { BakeContext, Placement } from "./context";
 import {
   PART_OVERLAP_MM,
@@ -446,7 +447,10 @@ export function buildSurfaceRegions(
   const repaired: RepairedSurface[] = [];
   const blockers: Blocker[] = [{ section: buildingFootprint, separate: false }];
   for (const region of SURFACE_ORDER) {
-    const built = buildSurfaceRegion(ctx, region, blockers);
+    // One perf row per layer (`solid.water`, `solid.rail`, `solid.roads`,
+    // `solid.parks`), so a slow preview names the layer that cost it rather
+    // than one lump called "surfaces". No-op with perf mode off.
+    const built = perfSpan(`solid.${region}`, () => buildSurfaceRegion(ctx, region, blockers));
     if (built === null) continue;
     repaired.push(built);
     blockers.push({ section: built.section, separate: false });

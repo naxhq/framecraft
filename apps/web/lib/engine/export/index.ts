@@ -2,6 +2,7 @@
 // `(result, options) => ExportFile | ExportFile[]`, no manifold, no DOM.
 
 import type { PrintParams } from "../../contracts";
+import { perfSpan } from "../../perf";
 import { resolveProfile, type PrinterProfile } from "../../printers";
 import type { EngineResult, ExportFile } from "../types";
 import { exportBambu3mf, type Bambu3mfOptions } from "./bambu3mf";
@@ -66,6 +67,14 @@ export interface ExportOutput {
  * have to discover by opening it (`[V3-P4-E5]`).
  */
 export function exportForTarget(result: EngineResult, target: ExportTarget, options: ExportForTargetOptions = {}): ExportOutput {
+  // One perf row per exporter (`export.bambu-3mf`, `export.stl`, ...). A tiled
+  // bake recurses through here once per tile, so the row's count is the number
+  // of files this export actually wrote. No-op with perf mode off
+  // (`lib/perf.ts`), which keeps `runExport` a pure function either way.
+  return perfSpan(`export.${target}`, () => writeForTarget(result, target, options));
+}
+
+function writeForTarget(result: EngineResult, target: ExportTarget, options: ExportForTargetOptions): ExportOutput {
   const tiles = result.tiles ?? [];
   if (isTiled(result)) {
     const profile = options.profile ?? resolveProfile(result.params);

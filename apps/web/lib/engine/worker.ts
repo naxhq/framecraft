@@ -16,6 +16,7 @@
  */
 
 import { installWasmBasePathFetchShim } from "../basePath";
+import { perfDrainTimings, perfEnabled, perfMark, setPerfEnabled } from "../perf";
 import { cancelJob, runBakeJob, runIngestJob, type Post, type WorkerRequest, type WorkerResponse } from "./protocol";
 
 // Under a sub-path deployment (NEXT_PUBLIC_BASE_PATH set) the manifold WASM
@@ -29,7 +30,22 @@ interface WorkerSelf {
 
 const ctx = self as unknown as WorkerSelf;
 
+/**
+ * Perf mode (`lib/perf.ts`): a worker cannot read `?perf=1` or `localStorage`,
+ * so the page's flag arrives on the job message and the terminal response
+ * carries this realm's marks back on `timings`. `engine.post` is stamped
+ * immediately before `postMessage`, which is what lets `client.ts` measure the
+ * structured-clone hop itself. With perf off, both branches below are one
+ * boolean read and the wire is byte-identical to what it was before.
+ */
 const post: Post = (message, transfer) => {
+  if (
+    perfEnabled() &&
+    (message.kind === "ingest-done" || message.kind === "bake-done" || message.kind === "bake-error")
+  ) {
+    perfMark("engine.post");
+    message.timings = perfDrainTimings();
+  }
   ctx.postMessage(message, transfer);
 };
 
@@ -40,9 +56,11 @@ ctx.onmessage = (event) => {
       cancelJob(msg);
       return;
     case "ingest":
+      setPerfEnabled(msg.perf === true);
       void runIngestJob(msg, post);
       return;
     case "bake":
+      setPerfEnabled(msg.perf === true);
       void runBakeJob(msg, post);
       return;
     default: {

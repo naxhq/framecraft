@@ -58,6 +58,7 @@ import type { GeocodeResult } from "@/lib/geocode";
 import { RADIUS_MAX_M, RADIUS_MIN_M, snapRadius } from "@/lib/geo";
 import { autoHeroIds, heroCandidates, toggleHeroId } from "@/lib/heroes";
 import { applyFix, applySafeFixes, type FixApplication } from "@/lib/issues";
+import { perfFlush } from "@/lib/perf";
 import { presetCityName } from "@/lib/presets";
 import { profileApplyPatch, type PrinterProfileId } from "@/lib/printers";
 import { decodeShare, readShareParam } from "@/lib/share";
@@ -480,6 +481,9 @@ async function runEngineJob(get: Get, set: Set): Promise<EngineResult | null> {
       terrain: terrainGrid,
     });
     set({ engine: { status: "ready", result, error: null, stale: false } });
+    // Perf mode only: console table plus a HUD update, once per finished job
+    // (`lib/perf.ts`). Returns null and does nothing at all when it is off.
+    perfFlush("engine job");
     return result;
   } catch (error) {
     if (error instanceof EngineClientError && error.code === "cancelled") return null;
@@ -995,6 +999,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
           bake: markBakeStale(state.bake),
         }));
         scheduleEngineJob(get, set);
+        perfFlush("ingest");
       } else {
         set((state) => ({
           scene: {
@@ -1061,6 +1066,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         },
       });
       set((state) => ({ bake: bakeDone(state.bake, target, outcome, result.findings) }));
+      perfFlush("export");
     } catch (error) {
       set((state) => ({ bake: bakeFailedLocally(state.bake, errorMessage(error)) }));
     }

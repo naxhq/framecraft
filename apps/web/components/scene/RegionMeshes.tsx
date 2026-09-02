@@ -4,6 +4,7 @@ import { useEffect, useMemo } from "react";
 import { BufferAttribute, BufferGeometry } from "three";
 
 import type { RegionMesh } from "@/lib/engine/types";
+import { perfSpan } from "@/lib/perf";
 
 /**
  * The real thing: every `RegionMesh` the browser engine (`lib/engine/engine.ts`
@@ -39,11 +40,16 @@ export function buildGeometry(region: RegionMesh): BufferGeometry {
 }
 
 export function RegionMeshes({ regions }: { regions: readonly RegionMesh[] }) {
+  // The float64 -> float32 copy, the normals and the bounding sphere for every
+  // region, on the main thread: the one preview cost the engine's own timings
+  // cannot see. `perfSpan` is a boolean read with perf mode off (`lib/perf.ts`).
   const built = useMemo(
     () =>
-      regions
-        .filter((region) => region.indices.length >= 3 && region.positions.length >= 9)
-        .map((region) => ({ region, geometry: buildGeometry(region) })),
+      perfSpan("preview.geometry", () =>
+        regions
+          .filter((region) => region.indices.length >= 3 && region.positions.length >= 9)
+          .map((region) => ({ region, geometry: buildGeometry(region) })),
+      ),
     [regions],
   );
 

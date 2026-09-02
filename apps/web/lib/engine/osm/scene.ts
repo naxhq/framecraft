@@ -5,6 +5,7 @@
  * these two functions assemble.
  */
 import type { PrintParams, SceneRequest } from "../../contracts";
+import { perfSpan } from "../../perf";
 import { heightRulesFrom } from "./heights";
 import { sceneFromOverpass as buildEngineScene, type OverpassResponse } from "./normalize";
 import { fetchOverpass, type FetchOverpassOptions, type OverpassFetchError } from "./overpass";
@@ -36,8 +37,14 @@ export async function buildScene(
   params?: PrintParams,
   options: FetchOverpassOptions = {},
 ): Promise<BuildSceneResult> {
-  const fetched = await fetchOverpass(request, options);
+  // The two halves of an ingest, split so a slow preview can be blamed on the
+  // right one: `overpass.fetch` is the network (or the IndexedDB cache hit)
+  // and `osm.normalize` is the 03 hygiene pipeline over the response. Both are
+  // no-ops with perf mode off (`lib/perf.ts`).
+  const fetched = await perfSpan("overpass.fetch", () => fetchOverpass(request, options));
   if (!fetched.ok) return fetched;
-  const scene = sceneFromOverpass(fetched.data as OverpassResponse, request, params);
+  const scene = perfSpan("osm.normalize", () =>
+    sceneFromOverpass(fetched.data as OverpassResponse, request, params),
+  );
   return { ok: true, scene, fromCache: fetched.fromCache };
 }

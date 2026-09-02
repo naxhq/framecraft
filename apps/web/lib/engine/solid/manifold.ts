@@ -33,6 +33,7 @@ import type {
 } from "manifold-3d";
 
 import type { Point } from "../../contracts";
+import { perfEnabled, perfRecord, perfSpan } from "../../perf";
 import type { Bbox3, RegionMesh, RegionName } from "../types";
 import { cleanMesh } from "./mesh";
 
@@ -97,12 +98,37 @@ export async function loadManifold(): Promise<ManifoldToplevel> {
           locateFile: (path?: string): string =>
             `${MANIFOLD_WASM_PUBLIC_PATH.replace(/[^/]*$/, "")}${path ?? "manifold.wasm"}`,
         });
-    modulePromise = modulePromiseSource.then((wasm) => {
-      wasm.setup();
+    // Perf mode splits the one await into the three costs it actually hides:
+    // `wasm.instantiate` (emscripten's own fetch + compile + instantiate),
+    // `wasm.setup` (binding the classes), and `wasm.fetch`, read back out of
+    // Resource Timing so the report carries the transferred byte count the
+    // promise itself cannot report. All three are skipped when perf is off.
+    modulePromise = perfSpan("wasm.instantiate", () => modulePromiseSource).then((wasm) => {
+      perfSpan("wasm.setup", () => {
+        wasm.setup();
+      });
+      recordWasmFetch();
       return wasm;
     });
   }
   return modulePromise;
+}
+
+/** The `manifold.wasm` resource entry, as a span with its transferred bytes. */
+function recordWasmFetch(): void {
+  if (!perfEnabled() || typeof performance.getEntriesByType !== "function") return;
+  try {
+    const entries = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
+    for (const entry of entries) {
+      if (!/manifold\.wasm(?:\?|$)/.test(entry.name)) continue;
+      perfRecord("wasm.fetch", entry.startTime, entry.duration, {
+        bytes: entry.transferSize > 0 ? entry.transferSize : entry.decodedBodySize,
+      });
+      return;
+    }
+  } catch {
+    // No Resource Timing in this realm (Node): `wasm.instantiate` still stands.
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@
  */
 
 import type { PrintParams, SceneRequest } from "../contracts";
+import type { PerfTiming } from "../perf";
 import { hasIndexedDb, IndexedDbOverpassCache, MemoryOverpassCache, type OverpassCache, type OverpassFetchError } from "./osm/overpass";
 import { buildScene } from "./osm/scene";
 import type { EngineSceneGraph } from "./osm/types";
@@ -35,14 +36,34 @@ import type { EngineInput, EngineResult } from "./types";
  */
 export type BakeWireInput = EngineInput;
 
-export interface IngestJobMessage {
+/**
+ * Perf mode is a PAGE decision (`?perf=1` / `localStorage`), and a worker can
+ * read neither, so the flag rides on every job message and `worker.ts` sets
+ * its own realm from it before the handler runs (`lib/perf.ts`). Absent or
+ * false means the worker records nothing at all.
+ */
+export interface PerfJobFlag {
+  perf?: boolean;
+}
+
+/**
+ * Timings recorded inside the worker while this job ran, drained by
+ * `worker.ts` onto the result message and merged into the page's report by
+ * `client.ts`. Additive and optional: a message without it is exactly the
+ * message this protocol carried before perf mode existed.
+ */
+export interface PerfTimingsField {
+  timings?: PerfTiming[];
+}
+
+export interface IngestJobMessage extends PerfJobFlag {
   kind: "ingest";
   id: number;
   request: SceneRequest;
   params?: PrintParams;
 }
 
-export interface BakeJobMessage {
+export interface BakeJobMessage extends PerfJobFlag {
   kind: "bake";
   id: number;
   input: BakeWireInput;
@@ -62,7 +83,7 @@ export interface IngestProgressMessage {
   message: string;
 }
 
-export interface IngestDoneMessage {
+export interface IngestDoneMessage extends PerfTimingsField {
   kind: "ingest-done";
   id: number;
   ok: true;
@@ -70,7 +91,7 @@ export interface IngestDoneMessage {
   fromCache: boolean;
 }
 
-export interface IngestFailedMessage {
+export interface IngestFailedMessage extends PerfTimingsField {
   kind: "ingest-done";
   id: number;
   ok: false;
@@ -83,13 +104,13 @@ export interface BakeProgressMessage {
   message: string;
 }
 
-export interface BakeDoneMessage {
+export interface BakeDoneMessage extends PerfTimingsField {
   kind: "bake-done";
   id: number;
   result: EngineResult;
 }
 
-export interface BakeErrorMessage {
+export interface BakeErrorMessage extends PerfTimingsField {
   kind: "bake-error";
   id: number;
   message: string;

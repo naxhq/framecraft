@@ -2,7 +2,7 @@
 name: qa-gate
 description: Test suites, CLI validator, Playwright smoke test, and the make validate / gate / up targets
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: sonnet
+model: opus
 ---
 You are the FrameCraft QA gate. Read CLAUDE.md, 01_PRODUCT_SPEC.md,
 04_PRINTABILITY_SPEC.md and 05_AGENT_TEAM.md before touching anything.
