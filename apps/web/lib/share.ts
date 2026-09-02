@@ -4,38 +4,48 @@
  * Format, and why:
  *
  * ```
- * ?s=v2.<base64url(JSON)>.<fnv1a32 of the JSON, 8 hex digits>
- *        └ {"r": SceneRequest, "p": the PrintParams that differ from default}
+ * ?s=v3.<base64url(deflate-raw(JSON))>.<fnv1a32 of the JSON, 8 hex digits>
+ *                                       └ {"r": SceneRequest, "p": the PrintParams that differ from default}
  * ```
  *
- * - **Versioned first.** `v2` is `PrintParams.schema_version`, so a link made
- *   against a future schema is refused by name rather than silently
- *   half-applied. An unknown version is the one failure a user can actually act
- *   on ("this link was made by a newer FrameCraft").
+ * - **Versioned first.** The tag names the PAYLOAD FORMAT, not
+ *   `PrintParams.schema_version` (those two have drifted since v3 landed
+ *   optional schema_version 3 fields onto what was still a "v2" link format
+ *   -- DECISIONS [V3-P6]): a link made against a future FORMAT is refused by
+ *   name rather than silently half-applied. `v2` links (uncompressed, from
+ *   before this phase) still decode: `SHARE_VERSION` is what `encodeShare`
+ *   WRITES, but `decodeShare` reads both, so a link already sitting in
+ *   someone's chat history keeps working (`decodeVersion`, `DECODABLE_VERSIONS`).
  * - **The diff, not the object.** Only the fields that differ from
- *   `DEFAULT_PRINT_PARAMS` travel, so a default configuration is 141-148
- *   characters and a link stays legible in a chat message. Anything absent is
- *   filled from `defaultPrintParams()` on the way back in, which is exactly what
- *   the wire contract already does (every v2 field is optional and defaulted).
- * - **Base64url, not compression.** DECISIONS [V2-P6]: `CompressionStream
- *   ("deflate-raw")` would make encode and decode asynchronous and would put a
- *   browser-support cliff (Safari 16.4) in front of a Copy button, to save a
- *   payload that is already a diff. Measured at the contract's REAL maxima
- *   (every string 64 characters, eight engravings, twelve 64-character hero
- *   ids, every other field off its default): **4,011 characters for ASCII and
- *   5,718 for three-byte CJK** -- comfortably inside Chrome's ~32 k address bar
- *   and inside what Firefox and Safari will navigate to, and past the 2,083 a
- *   legacy IE/Edge or a chat client truncates at, which is precisely what the
- *   checksum below exists to NAME. (An earlier comment here said 2,319; it was
- *   measured on a configuration that was not at the maxima -- audit v2-06
- *   finding 4.)
- * - **Checksummed.** A truncated or hand-edited payload usually still base64
- *   -decodes into *something*; the FNV-1a digest is what turns that into a named
- *   refusal instead of a half-restored editor.
- *
- * Everything decoded is validated against the frozen contract's own shapes and
- * bounds before it reaches the store: a link is untrusted input.
+ *   `DEFAULT_PRINT_PARAMS` travel, so a default configuration stays a link
+ *   that fits a chat message. Anything absent is filled from
+ *   `defaultPrintParams()` on the way back in, which is exactly what the wire
+ *   contract already does (every v2/v3 field is optional and defaulted).
+ * - **Compressed with fflate's raw DEFLATE** (`deflateSync`/`inflateSync`,
+ *   [V3-P6], superseding the v2 decision at DECISIONS [V2-P6] now that v3's
+ *   fourteen extra top-level groups pushed a maximal payload well past what
+ *   base64-of-plain-JSON alone keeps comfortable): fflate is already a runtime
+ *   dependency (the exporters' zip writer), the call is SYNCHRONOUS (no
+ *   `CompressionStream` browser-support cliff), and raw deflate carries no
+ *   zlib/gzip header -- there is nothing in the 3-byte payload to check before
+ *   the checksum already does the one check that matters.
+ * - **Checksummed over the DECOMPRESSED text**, not the compressed bytes: the
+ *   digest is computed from the same JSON string on both sides regardless of
+ *   version, so `checksum()` itself never needed to change, and a truncated
+ *   compressed blob is caught two ways -- `inflateSync` throwing on a cut-off
+ *   stream, or (rarer) inflating to SOMETHING whose checksum then disagrees.
+ *   Either way the refusal names the same thing: "damaged", "edited or
+ *   truncated". A link is untrusted input either way; everything decoded is
+ *   still validated against the frozen contract's own shapes and bounds
+ *   before it reaches the store.
+ * - **A length guard for the Copy-link UI, not this module.** Even compressed,
+ *   a configuration built to the contract's real maxima can still exceed a
+ *   sane URL length; there is no server to hand out a short id for one
+ *   instead (`[V3-P6]` DECISIONS: no share-id backend exists by design, so
+ *   past the guard the UI offers a project-file save instead of a link).
  */
+
+import { deflateSync, inflateSync } from "fflate";
 
 import {
   DEFAULT_PRINT_PARAMS,
@@ -49,11 +59,36 @@ import { RADIUS_MAX_M, RADIUS_MIN_M } from "./geo";
 /** The query parameter the payload rides in. */
 export const SHARE_PARAM = "s";
 
-/** The only payload version this build understands. */
-export const SHARE_VERSION = "v2";
+/** The payload format this build WRITES. */
+export const SHARE_VERSION = "v3";
+
+/**
+ * Every payload format `decodeShare` can still READ, oldest first. `v2` links
+ * made before this phase carry plain (uncompressed) base64url JSON; `v3`
+ * links carry raw-deflated JSON. A version outside this set is refused by
+ * name as "a different version of FrameCraft" -- the one case a user can
+ * actually act on (open it in the version that made it, or ask for a fresh
+ * link).
+ */
+export const DECODABLE_VERSIONS = ["v2", "v3"] as const;
+type DecodableVersion = (typeof DECODABLE_VERSIONS)[number];
+
+function isDecodableVersion(value: string): value is DecodableVersion {
+  return (DECODABLE_VERSIONS as readonly string[]).includes(value);
+}
+
+/**
+ * A share link past this length is not refused -- it would still decode --
+ * but the Copy-link UI treats it as too large for a link at all: this design
+ * really does need `lib/project.ts`'s file-based round trip instead. Chosen
+ * well under the ~32 k Chrome keeps happy and under the URL length several
+ * chat clients and older browsers still choke on, so "too large" fires long
+ * before the link would actually fail to open somewhere.
+ */
+export const SHARE_LINK_LENGTH_LIMIT = 8000;
 
 // ---------------------------------------------------------------------------
-// base64url over UTF-8
+// base64url over raw bytes
 // ---------------------------------------------------------------------------
 
 function bytesToBase64Url(bytes: Uint8Array): string {
@@ -621,7 +656,7 @@ export function paramsDiff(params: PrintParams): Record<string, unknown> {
   return out;
 }
 
-/** `v2.<base64url>.<checksum>` for one editor state. */
+/** `v3.<base64url(deflate-raw)>.<checksum>` for one editor state. */
 export function encodeShare(request: SceneRequest, params: PrintParams): string {
   const body = JSON.stringify({
     r: {
@@ -633,7 +668,8 @@ export function encodeShare(request: SceneRequest, params: PrintParams): string 
     },
     p: paramsDiff(params),
   });
-  return `${SHARE_VERSION}.${bytesToBase64Url(new TextEncoder().encode(body))}.${checksum(body)}`;
+  const compressed = deflateSync(new TextEncoder().encode(body), { level: 9 });
+  return `${SHARE_VERSION}.${bytesToBase64Url(compressed)}.${checksum(body)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -660,18 +696,21 @@ export function decodeShare(payload: string): ShareDecode {
     return { ok: false, reason: "this shared link is damaged and was not applied" };
   }
   const [version, encoded, digest] = parts;
-  if (version !== SHARE_VERSION) {
+  if (!isDecodableVersion(version)) {
     return {
       ok: false,
       reason:
         `this link was made by a different version of FrameCraft (${version}); ` +
-        `this one reads ${SHARE_VERSION} links`,
+        `this one reads ${DECODABLE_VERSIONS.join(" and ")} links`,
     };
   }
 
   let body: string;
   try {
-    body = new TextDecoder().decode(base64UrlToBytes(encoded));
+    const raw = base64UrlToBytes(encoded);
+    // v2 links carry the JSON bytes plain; v3 links carry them raw-deflated.
+    const jsonBytes = version === "v3" ? inflateSync(raw) : raw;
+    body = new TextDecoder().decode(jsonBytes);
   } catch {
     return { ok: false, reason: "this shared link is damaged and was not applied" };
   }
@@ -693,13 +732,14 @@ export function decodeShare(payload: string): ShareDecode {
   }
 
   const holder = parsed as Record<string, unknown>;
+  let request: SceneRequest;
   try {
     const rawRequest = holder.r;
     if (rawRequest === null || typeof rawRequest !== "object" || Array.isArray(rawRequest)) {
       fail("it carries no location");
     }
     const requestFields = rawRequest as Record<string, unknown>;
-    const request: SceneRequest = {
+    request = {
       lat: validate(requestFields.lat, SCENE_REQUEST_SPEC.lat, "latitude") as number,
       lon: validate(requestFields.lon, SCENE_REQUEST_SPEC.lon, "longitude") as number,
       radius_m: validate(
@@ -721,35 +761,65 @@ export function decodeShare(payload: string): ShareDecode {
               "preset",
             ) as string),
     };
+  } catch (error) {
+    const detail = error instanceof ShareError ? error.message : String(error);
+    return { ok: false, reason: `this shared link is not valid (${detail}), so it was not applied` };
+  }
 
-    const rawParams = holder.p ?? {};
-    if (rawParams === null || typeof rawParams !== "object" || Array.isArray(rawParams)) {
-      fail("its settings block is not a group of settings");
-    }
-    const params = defaultPrintParams();
-    const store = params as unknown as Record<string, unknown>;
+  const parsedParams = parsePrintParams(holder.p ?? {});
+  if (!parsedParams.ok) {
+    return { ok: false, reason: `this shared link ${parsedParams.reason}, so it was not applied` };
+  }
+  return { ok: true, request, params: parsedParams.params };
+}
+
+// ---------------------------------------------------------------------------
+// PrintParams parsing, shared between a share link's diff and a project
+// file's whole object ([V3-P6]: `lib/project.ts` is the other caller)
+// ---------------------------------------------------------------------------
+
+export type ParamsParseResult =
+  | { ok: true; params: PrintParams }
+  | { ok: false; reason: string };
+
+/**
+ * Validate an untrusted object against `PRINT_PARAM_SPEC` and merge it over
+ * `defaultPrintParams()`. Works equally for a share link's DIFF (only the
+ * fields that differ) and a project file's WHOLE `PrintParams` object (every
+ * key present): either way this only ever writes keys the object actually
+ * names, so a diff fills the rest from the default and a full object simply
+ * names all of them.
+ */
+export function parsePrintParams(rawParams: unknown): ParamsParseResult {
+  if (rawParams === null || typeof rawParams !== "object" || Array.isArray(rawParams)) {
+    return { ok: false, reason: "is not valid (its settings block is not a group of settings)" };
+  }
+  const params = defaultPrintParams();
+  const store = params as unknown as Record<string, unknown>;
+  try {
     for (const [key, value] of Object.entries(rawParams as Record<string, unknown>)) {
       const spec = specFor(PRINT_PARAM_SPEC, key);
       if (spec === undefined) {
         return {
           ok: false,
-          reason: `this shared link names a setting this version does not have (${key}), so it was not applied`,
+          reason: `names a setting this version does not have (${key})`,
         };
       }
       const checked = validate(value, spec, key);
       // A nested group is MERGED over its default rather than replacing it: a
-      // hand-made link that sets only `north_arrow.enabled`, or only one of the
-      // seven `part_colors`, must still leave a complete object behind, because
-      // every consumer from `paletteFor` to the wire contract assumes one.
+      // hand-made payload that sets only `north_arrow.enabled`, or only one of
+      // the seven `part_colors`, must still leave a complete object behind,
+      // because every consumer from `paletteFor` to the wire contract assumes
+      // one.
       store[key] =
         spec.kind === "object"
           ? { ...(store[key] as Record<string, unknown>), ...(checked as object) }
           : checked;
     }
-    return { ok: true, request, params };
+    return { ok: true, params };
   } catch (error) {
     const detail = error instanceof ShareError ? error.message : String(error);
-    return { ok: false, reason: `this shared link is not valid (${detail}), so it was not applied` };
+    return { ok: false, reason: `is not valid (${detail})` };
   }
 }
 

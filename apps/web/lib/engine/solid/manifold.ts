@@ -689,16 +689,28 @@ export function toRegionMesh(
   slot: number,
   colorHex: string,
   bodies?: number,
+  /**
+   * Extra mesh repairs this mesh needs and the ordinary ones do not.
+   *
+   * Today there is one: `collapseNeedles`, which `solid/tiling.ts` asks for
+   * because a tile is a trim, a union and three subtractions deep and leaves
+   * needles the whole-mesh weld ladder cannot reach (`mesh.NEEDLE_COLLAPSE_MM`,
+   * `[V3-P7-A9]`).
+   */
+  clean: { collapseNeedles?: boolean } = {},
 ): RegionMesh {
   const mesh = solid.getMesh();
-  const clean = cleanMesh({
-    positions: doublePositions(solid, mesh.vertProperties, mesh.numProp),
-    indices: new Uint32Array(mesh.triVerts),
-  });
+  const cleaned = cleanMesh(
+    {
+      positions: doublePositions(solid, mesh.vertProperties, mesh.numProp),
+      indices: new Uint32Array(mesh.triVerts),
+    },
+    clean,
+  );
   return {
     region,
-    positions: clean.mesh.positions,
-    indices: clean.mesh.indices,
+    positions: cleaned.mesh.positions,
+    indices: cleaned.mesh.indices,
     volumeMm3: solid.volume(),
     bbox: bboxOf(solid),
     bodies: bodies ?? bodyCount(solid),

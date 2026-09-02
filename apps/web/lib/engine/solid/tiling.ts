@@ -56,6 +56,7 @@ import {
   unionSections,
 } from "./manifold";
 import { OPENING_SEGMENTS, sliceHeights } from "./measure";
+import { undersideSkipBands } from "./attribution";
 import { MIN_WALL_PROBE_FACTOR, RESIDUE_AREA_RATIO, residueParts } from "./repair";
 
 // ---------------------------------------------------------------------------
@@ -806,7 +807,13 @@ function buildTile(
   for (const source of sources) {
     const solid = tileSolid(ctx, source.solid, box, males, sockets, indexCut, slivers);
     if (solid === null) continue;
-    const mesh = toRegionMesh(solid, source.region, source.slot, source.colorHex);
+    // `collapseNeedles`: a tile is a trim by up to four planes, a union with
+    // its keys and three subtractions deep, and each of those can leave a
+    // needle the whole-mesh weld ladder cannot reach (`mesh.NEEDLE_COLLAPSE_MM`,
+    // `[V3-P7-A9]`). An untiled bake never needs it and never asks for it.
+    const mesh = toRegionMesh(solid, source.region, source.slot, source.colorHex, undefined, {
+      collapseNeedles: true,
+    });
     regions.push(mesh);
     bbox = mergeBbox(bbox, mesh.bbox);
     arena.drop(solid);
@@ -817,7 +824,14 @@ function buildTile(
   if (merged !== null) {
     const solid = tileSolid(ctx, merged, box, males, sockets, indexCut, slivers);
     if (solid !== null) {
-      tile.merged = toRegionMesh(solid, "base", regions[0].slot, regions[0].colorHex);
+      tile.merged = toRegionMesh(
+        solid,
+        "base",
+        regions[0].slot,
+        regions[0].colorHex,
+        undefined,
+        { collapseNeedles: true },
+      );
       arena.drop(solid);
     }
   }
@@ -895,8 +909,19 @@ export function sliverHeights(ctx: BakeContext, topMm: number): number[] {
   const span = Math.max(0, topMm - baseTop);
   const eps = 0.05;
   const regions = ctx.params.regions;
+  // The underside pockets are excluded here for a HARDER reason than they are
+  // in `measure.measureMinWall`: a sliver found at one height is cut out of the
+  // whole model, at every height (see `sliverCutter`'s own note on cumulative
+  // passes). A letter counter on the floor of the attribution mark reads as a
+  // 0.4 mm island in a slice taken inside that pocket, and taking it out would
+  // punch a hole clean through the tile. It is not a sliver: it is the
+  // underside of a plate 2.5 mm thick there (`[V3-P7-A8]`).
+  // EVERY mark band, not just the underside one: the frame inner-wall mark
+  // notches the lip, and a notch's neighbouring ridge read as a sliver at
+  // z = base top + 1 mm would be cut out of the whole model.
+  const skipBands = ctx.markBands.length > 0 ? ctx.markBands : undersideSkipBands(ctx);
   const wanted = [
-    ...sliceHeights(ctx, topMm),
+    ...sliceHeights(ctx, topMm, skipBands),
     // Just above the base top, where every building's own plan shape is, and
     // one more inside the towers for anything that starts higher up.
     baseTop + eps,
@@ -910,7 +935,12 @@ export function sliverHeights(ctx: BakeContext, topMm: number): number[] {
     ),
     ...(ctx.params.frame ? [baseTop + T.FRAME_LIP_MM + eps] : []),
   ];
-  return [...new Set(wanted)].filter((z) => z > 0 && z < topMm).sort((a, b) => a - b);
+  return [...new Set(wanted)]
+    .filter(
+      (z) =>
+        z > 0 && z < topMm && !skipBands.some(([low, high]) => z >= low && z <= high),
+    )
+    .sort((a, b) => a - b);
 }
 
 /**

@@ -22,6 +22,7 @@ import {
   orderedRegions,
   placeInBuildSpace,
   placeMerged,
+  provenanceLines,
   resolveOptions,
   sourceLine,
   type ExportOptions,
@@ -57,6 +58,10 @@ export function exportObj(result: EngineResult, options: ExportOptions = {}): Ex
     `Scale 1:${result.stats.scaleDenominator}`,
     ...(resolved.source ? [`Source: ${sourceLine(resolved.source)}`] : []),
     "Units: millimetres, z up",
+    // The provenance block every format carries, verbatim
+    // (`common.provenanceEntries`, `[V3-P7-A10]`). It repeats two lines above
+    // it on purpose: the block is looked for as a block.
+    ...provenanceLines(result, resolved),
   ];
 
   const obj: string[] = [commentBlock(header), `mtllib ${mtlName}\n`];

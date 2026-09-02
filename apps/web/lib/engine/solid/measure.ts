@@ -237,11 +237,32 @@ export function survivesOpening(
  * buildings. A wall that is thin only between two of these is thin over a
  * vanishing height and is not what the check is for.
  */
-export function sliceHeights(ctx: BakeContext, topMm: number): number[] {
+/**
+ * A Z range this measurement must not judge: `[low, high]`, print mm.
+ *
+ * There is one kind of them, and `solid/attribution.ts` produces it: the band
+ * the UNDERSIDE POCKETS occupy. See {@link measureMinWall}.
+ */
+export type SkipBand = readonly [number, number];
+
+/** True when `z` falls inside one of the skipped bands. */
+function skipped(z: number, bands: readonly SkipBand[]): boolean {
+  return bands.some(([low, high]) => z >= low && z <= high);
+}
+
+export function sliceHeights(
+  ctx: BakeContext,
+  topMm: number,
+  skipBands: readonly SkipBand[] = [],
+): number[] {
   const baseTop = ctx.baseTopMm;
   const eps = 0.05;
+  // The bottom-most sample moves ABOVE the deepest underside pocket rather than
+  // being dropped: the plate under the marks still has to be measured, and just
+  // over their floor is where it is thinnest.
+  const floorTop = skipBands.reduce((high, band) => Math.max(high, band[1]), 0);
   const out = new Set<number>([
-    eps,
+    floorTop + eps,
     baseTop / 2,
     baseTop - eps,
     baseTop + eps,
@@ -264,7 +285,9 @@ export function sliceHeights(ctx: BakeContext, topMm: number): number[] {
       out.add(baseTop + span * t);
     }
   }
-  return [...out].filter((z) => z > 0 && z < topMm).sort((a, b) => a - b);
+  return [...out]
+    .filter((z) => z > 0 && z < topMm && !skipped(z, skipBands))
+    .sort((a, b) => a - b);
 }
 
 /**
@@ -351,9 +374,13 @@ export interface MinWallReport {
  * `null` when the solid has no area at any sampled height, which only happens
  * for an empty scene.
  */
-export function measureMinWall(ctx: BakeContext, solid: Manifold): MinWallReport {
+export function measureMinWall(
+  ctx: BakeContext,
+  solid: Manifold,
+  skipBands: readonly SkipBand[] = [],
+): MinWallReport {
   const bbox = solid.boundingBox();
-  const flat = sliceHeights(ctx, bbox.max[2]);
+  const flat = sliceHeights(ctx, bbox.max[2], skipBands);
   /** The printed relief, or null for a flat bake. Every terrain branch reads it. */
   const draped =
     ctx.terrain === null
@@ -379,6 +406,16 @@ export function measureMinWall(ctx: BakeContext, solid: Manifold): MinWallReport
   const probe = MIN_WALL_KEEP_FACTOR * ctx.thresholdsMm.minWall;
   const persist = WALL_PERSIST_PER_NOZZLE * ctx.params.nozzle_mm;
   for (const z of heights) {
+    // A pocket cut into the BOTTOM face is not a wall, and the ridges and
+    // counters it leaves are not free-standing: the plate above them is solid,
+    // so they persist upward perfectly and would be measured as walls they are
+    // not. The reference validator excludes the same band for the same reason
+    // (`app/validate/checks.py::_min_wall_probe`, `skip_bands`) and hands it to
+    // its purpose-built `base_floor` row, which asks the question that actually
+    // matters there: is there still a millimetre of plate over the pocket?
+    // Here that question is `attribution.deepMarkDepthMm`'s own clamp, which
+    // refuses to cut deeper than the plate can carry (`[V3-P7-A8]`).
+    if (skipped(z, skipBands)) continue;
     const section = solid.slice(z);
     const lean = section.simplify(SLICE_SIMPLIFY_MM);
     const above = solid.slice(z + persist);

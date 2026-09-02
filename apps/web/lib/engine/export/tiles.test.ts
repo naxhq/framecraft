@@ -245,8 +245,23 @@ describe("an untiled bake", () => {
     // `custom_profile.max_height_mm`'s default went 250 -> 60 in phase 4. If it
     // moves again, re-run that old-versus-new import before touching it - a
     // changed default is a legitimate reason, a changed writer is not.
+    //
+    // It moved a second time in v3 phase 7, and that time the WRITER changed on
+    // purpose: `bambuMetadata` gained the five-entry provenance block every
+    // format now carries (`common.provenanceEntries`, `[V3-P7-A10]`) and lost
+    // its stand-alone `framecraft:generator`, which the block repeats and which
+    // 3MF forbids twice in one element. The diff was checked entry by entry on
+    // the unzipped `3D/3dmodel.model` before this number was touched: nothing
+    // outside the `<metadata>` list moved, and the mesh, the plate, the config
+    // parts and the zip framing are byte for byte what they were.
     const digest = createHash("sha256").update(file.bytes).digest("hex");
-    expect(digest).toBe("b475962f8c784960712e5aba539259ecdbede537cde7df1ca9dc08840a2ee867");
+    expect(digest).toBe("ddc4a39f8d2364de89c799fb594167ba571326efa9734964aef2fb487e89f008");
+    // The block is there, once each, so a future edit that drops it fails here
+    // as well as on the hash.
+    const model = unzipText(file.bytes, "3D/3dmodel.model");
+    for (const key of ["author", "license", "generator", "source", "generated"]) {
+      expect(model.split(`name="framecraft:${key}"`)).toHaveLength(2);
+    }
   });
 
   it("goes through the ordinary single-file route", () => {

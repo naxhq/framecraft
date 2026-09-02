@@ -1354,6 +1354,7 @@ def validate(
     slices: int = MIN_WALL_SLICES,
     self_intersection_sample: bool = True,
     max_height_mm: float | None = None,
+    attribution_bands: Sequence[tuple[float, float]] | None = None,
 ) -> ValidationReport:
     """Run every 04 stage 4 validator.  All must pass for a job to be ``done``.
 
@@ -1366,6 +1367,24 @@ def validate(
     ``max_height_mm`` when the file has one, so a taller bake validates against
     the printer it was made for and everything without a sidecar keeps the
     figure it has always been judged against.
+
+    ``attribution_bands`` is the same arrangement for the MANDATORY ATTRIBUTION
+    MARKS the browser engine cuts into every model (``apps/web/lib/engine/solid/
+    attribution.ts``, DECISIONS ``[V3-P7-A8]``), read from the sidecar's
+    ``attribution_bands``.  Two things happen to a declared band: the structural
+    ``min_wall`` probe does not judge it, and the new ``attribution`` row does.
+
+    The reason is the one ``skip_bands`` already carries for the underside
+    pockets, one step further.  A mark on a 2 mm frame wall is cut at 1.8 mm cap
+    height and a mark on a plate edge at 1.2 mm, because that is what those
+    surfaces hold; at those sizes the ridge between two strokes is 0.11 mm, and
+    ``min_wall`` measures it as a 0.11 mm wall.  It is not a wall: it is surface
+    texture 0.4 mm deep in the face of a 6 mm block, with the whole block behind
+    it, and nothing about it can fail to print except the mark itself - which is
+    provenance rather than a feature and is cut whether or not the nozzle can
+    resolve it.  The bake says so in its own ``info`` findings.  Nothing else is
+    excluded: the bands are the marks' INK extents, a millimetre or two each,
+    and a file with no sidecar field is judged exactly as it always was.
     """
     checks: list[Check] = []
 
@@ -1504,6 +1523,8 @@ def validate(
     recess_zs = recess_probe_zs(params, min_wall_mm)
     underside = T.underside_band_mm(params)
     skip_bands = [underside] if underside is not None else []
+    marks = _clean_bands(attribution_bands)
+    skip_bands = skip_bands + marks
     smallest, failing, measured, skipped = _min_wall_probe(
         mesh,
         min_wall_mm,
@@ -1529,8 +1550,14 @@ def validate(
                 f"narrowest wall {reported:.3f} mm over {measured} regions on "
                 f"{slice_count} slices"
                 + (
-                    f" ({skipped} slice(s) in the underside pocket band are judged "
-                    f"by base_floor and lettering instead)"
+                    (
+                        f" ({skipped} slice(s) in the underside pocket band and the "
+                        f"attribution bands are judged by base_floor, lettering and "
+                        f"attribution instead)"
+                        if marks
+                        else f" ({skipped} slice(s) in the underside pocket band are "
+                        f"judged by base_floor and lettering instead)"
+                    )
                     if skipped
                     else ""
                 )
@@ -1581,4 +1608,131 @@ def validate(
         )
     )
 
+    row = _attribution_check(mesh, marks, manifold)
+    if row is not None:
+        checks.append(row)
+
     return ValidationReport(checks=checks)
+
+
+# --------------------------------------------------------------------------
+# The mandatory attribution marks (v3 phase 7)
+# --------------------------------------------------------------------------
+
+#: Tallest single Z band a bake may ask ``min_wall`` to skip for a mark, mm.
+#:
+#: The marks are one line of text each, and the tallest of them is the frame
+#: inner-wall mark at about 1.8 mm of ink.  Two and a half millimetres is that
+#: with room to spare and nowhere near enough to hide a structural problem
+#: behind: the shallowest recess the contract allows is 0.2 mm and the base is
+#: at least 2 mm, so a band this size cannot cover a plate.
+ATTRIBUTION_BAND_MAX_MM = 2.5
+
+#: Most bands a bake may declare.
+#:
+#: Four: the underside pocket band (which holds one or two marks), the frame
+#: opening's inner wall, the plate's outer edge, and one spare.  A count cap and
+#: a per-band cap together bound the exclusion in ABSOLUTE millimetres, which a
+#: share of the model height cannot do: a flat plate with a frame is 5 mm tall
+#: and 3.5 mm of legitimate mark bands is 70 per cent of it, while the same
+#: three bands on a city with towers are 10 per cent.  The exclusion is the same
+#: exclusion either way, so the ceiling has to be too.
+ATTRIBUTION_BAND_MAX_COUNT = 4
+
+#: Total Z the declared bands may cover, mm: the two caps above, multiplied.
+#:
+#: Not a rule of its own - four bands of 2.5 mm cannot add up to more than this
+#: - but the number a reader wants when they ask how much of a model this row
+#: lets ``min_wall`` skip in the worst case.
+ATTRIBUTION_BAND_MAX_TOTAL_MM = ATTRIBUTION_BAND_MAX_COUNT * ATTRIBUTION_BAND_MAX_MM
+
+
+def _clean_bands(bands: Sequence[tuple[float, float]] | None) -> list[tuple[float, float]]:
+    """The declared bands, as ordered finite ``(low, high)`` pairs.
+
+    Anything malformed is dropped rather than raising: a sidecar is data from
+    another program, and a validator that crashes on a bad field is worse than
+    one that judges the file as if the field were absent.
+    """
+    out: list[tuple[float, float]] = []
+    for band in bands or ():
+        try:
+            low, high = float(band[0]), float(band[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not (math.isfinite(low) and math.isfinite(high)):
+            continue
+        if high <= low:
+            continue
+        out.append((low, high))
+    return sorted(out)
+
+
+def _attribution_check(
+    mesh: trimesh.Trimesh,
+    bands: Sequence[tuple[float, float]],
+    manifold: Any = None,
+) -> Check | None:
+    """The ``attribution`` row: what ``min_wall`` was allowed not to judge.
+
+    This row exists because :func:`validate` lets a bake exclude Z bands from
+    the structural minimum-wall probe (see that function's docstring), and an
+    exclusion nobody checks is a hole in the gate.  It does not try to read the
+    glyphs - a validator cannot tell "FrameCraft (c) OpenStreetMap contributors"
+    from a scratch, and pretending otherwise would be worse than saying nothing.
+    What it does check is that the exclusion is SMALL, INSIDE THE MODEL and over
+    MATERIAL, and it prints the excluded heights so a reader can see exactly
+    what was skipped:
+
+    * no single band over :data:`ATTRIBUTION_BAND_MAX_MM`;
+    * no more than :data:`ATTRIBUTION_BAND_MAX_COUNT` of them, which with the
+      cap above puts a hard ceiling of :data:`ATTRIBUTION_BAND_MAX_TOTAL_MM` on
+      everything this row lets ``min_wall`` skip;
+    * every band inside the model's own Z extent, with material at its middle.
+
+    That the marks are actually CUT is checked where it can be: the bake's
+    sidecar carries a ``resolved_text`` entry per mark with its status, and
+    ``apps/web/lib/engine/solid/attribution.test.ts`` measures the volume each
+    one removes from a real bake.
+
+    Returns ``None`` - no row at all - for a file that declares no bands, so
+    nothing without a sidecar changes.
+    """
+    if not bands:
+        return None
+    z_lo = float(mesh.bounds[0][2])
+    z_hi = float(mesh.bounds[1][2])
+    height = z_hi - z_lo
+    bad: list[str] = []
+    for low, high in bands:
+        if high - low > ATTRIBUTION_BAND_MAX_MM + 1e-9:
+            bad.append(f"band {low:.2f}-{high:.2f} mm is over {ATTRIBUTION_BAND_MAX_MM} mm tall")
+        if low < z_lo - 1e-6 or high > z_hi + 1e-6:
+            bad.append(f"band {low:.2f}-{high:.2f} mm is outside the model ({z_lo:.2f}-{z_hi:.2f})")
+    total = sum(high - low for low, high in bands)
+    share = total / height if height > 0 else 1.0
+    if len(bands) > ATTRIBUTION_BAND_MAX_COUNT:
+        bad.append(f"{len(bands)} bands, over the {ATTRIBUTION_BAND_MAX_COUNT} allowed")
+    slicer = make_slicer(mesh, manifold)
+    for low, high in bands:
+        mid = (low + high) / 2.0
+        if not (z_lo < mid < z_hi):
+            continue
+        if not slicer(mid):
+            bad.append(f"band {low:.2f}-{high:.2f} mm has no material at its middle")
+    where = ", ".join(f"{low:.2f}-{high:.2f}" for low, high in bands)
+    passed = not bad
+    return Check(
+        name="attribution",
+        passed=passed,
+        value=f"{len(bands)} band(s), {total:.2f} mm ({share * 100:.1f} % of height)",
+        threshold=(
+            f"at most {ATTRIBUTION_BAND_MAX_COUNT}, each <= {ATTRIBUTION_BAND_MAX_MM} mm, "
+            f"together <= {ATTRIBUTION_BAND_MAX_TOTAL_MM:.1f} mm, inside the model"
+        ),
+        message=(
+            f"attribution marks at z {where} mm; min_wall did not judge those heights"
+            if passed
+            else "; ".join(bad)
+        ),
+    )

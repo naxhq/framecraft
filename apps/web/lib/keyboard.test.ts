@@ -59,6 +59,28 @@ describe("shortcutFor", () => {
     expect(shortcutFor({ key: "?", target: input("text") })).toBeNull();
   });
 
+  it("maps Ctrl+Z to undo and Ctrl+Shift+Z to redo", () => {
+    expect(shortcutFor({ key: "z", ctrlKey: true })).toBe("undo");
+    expect(shortcutFor({ key: "Z", ctrlKey: true })).toBe("undo");
+    expect(shortcutFor({ key: "z", ctrlKey: true, shiftKey: true })).toBe("redo");
+  });
+
+  it("maps Cmd+Z (metaKey) to undo/redo the same way, for Mac", () => {
+    expect(shortcutFor({ key: "z", metaKey: true })).toBe("undo");
+    expect(shortcutFor({ key: "z", metaKey: true, shiftKey: true })).toBe("redo");
+  });
+
+  it("refuses Ctrl+Z with Alt held, which is not the accelerator on any platform", () => {
+    expect(shortcutFor({ key: "z", ctrlKey: true, altKey: true })).toBeNull();
+  });
+
+  it("does not hijack a text field's own native undo", () => {
+    expect(shortcutFor({ key: "z", ctrlKey: true, target: input("text") })).toBeNull();
+    expect(
+      shortcutFor({ key: "z", ctrlKey: true, shiftKey: true, target: input("text") }),
+    ).toBeNull();
+  });
+
   it("still works with a slider focused, because arrows are its keys", () => {
     // A range input is not a typing target: G/B/R must work from it, and the
     // arrow keys it does answer to are not shortcuts.
@@ -94,7 +116,7 @@ describe("the shortcut sheet's own list", () => {
       ),
     );
     expect([...documented].sort()).toEqual(
-      ["bake", "dismiss", "generate", "help", "reset"].sort(),
+      ["bake", "dismiss", "generate", "help", "redo", "reset", "undo"].sort(),
     );
   });
 

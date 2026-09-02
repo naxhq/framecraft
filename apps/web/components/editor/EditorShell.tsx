@@ -9,6 +9,8 @@ import { shortcutFor, type TargetLike } from "@/lib/keyboard";
 import { SHARE_PARAM } from "@/lib/share";
 import { bakeBlockReason } from "@/lib/warnings";
 import { useEditorStore } from "@/store/editor";
+import { initHistory, redoHistory, undoHistory, useHistoryStore } from "@/store/history";
+import HistoryChip from "./HistoryChip";
 import ParamPanel from "./ParamPanel";
 import PresetRow from "./PresetRow";
 import ShortcutSheet from "./ShortcutSheet";
@@ -45,10 +47,17 @@ export function EditorShell() {
    * Read through a ref rather than a dependency so the listener is attached
    * once and never re-bound mid-keystroke.
    */
-  const overlayRef = useRef({ sheet: false, drawer: false, issues: false });
+  const overlayRef = useRef({ sheet: false, drawer: false, issues: false, history: false });
   const adjustmentsOpen = useEditorStore((state) => state.adjustmentsOpen);
   const issuesOpen = useEditorStore((state) => state.issuesOpen);
-  overlayRef.current = { sheet: shortcutsOpen, drawer: adjustmentsOpen, issues: issuesOpen };
+  const historyOpen = useHistoryStore((state) => state.open);
+  const setHistoryOpen = useHistoryStore((state) => state.setOpen);
+  overlayRef.current = {
+    sheet: shortcutsOpen,
+    drawer: adjustmentsOpen,
+    issues: issuesOpen,
+    history: historyOpen,
+  };
 
   const dispatchShortcut = useCallback((event: KeyboardEvent) => {
     const action = shortcutFor({
@@ -62,19 +71,32 @@ export function EditorShell() {
     if (action === null) return;
 
     const state = useEditorStore.getState();
-    const { sheet, drawer, issues } = overlayRef.current;
+    const { sheet, drawer, issues, history } = overlayRef.current;
 
     // Escape always gets through, and closes what is open, outermost last.
     if (action === "dismiss") {
       if (drawer) state.setAdjustmentsOpen(false);
       if (issues) state.setIssuesOpen(false);
+      if (history) setHistoryOpen(false);
       if (sheet) setShortcutsOpen(false);
+      return;
+    }
+    // Undo/redo are exempt from the "nothing else acts while an overlay is
+    // up" rule below: Ctrl+Z with the shortcut sheet or the Issues drawer open
+    // is still a request to undo, not a request that got swallowed by
+    // whatever else happens to be on screen.
+    if (action === "undo") {
+      undoHistory();
+      return;
+    }
+    if (action === "redo") {
+      redoHistory();
       return;
     }
     // Nothing else acts while an overlay is up. `help` included: the sheet is
     // already open, and re-opening it would be a no-op that hides the fact
     // that the key did nothing.
-    if (sheet || drawer || issues) return;
+    if (sheet || drawer || issues || history) return;
 
     switch (action) {
       case "generate": {
@@ -104,7 +126,7 @@ export function EditorShell() {
         return;
       }
     }
-  }, []);
+  }, [setHistoryOpen]);
 
   useEffect(() => {
     window.addEventListener("keydown", dispatchShortcut);
@@ -112,7 +134,8 @@ export function EditorShell() {
   }, [dispatchShortcut]);
 
   /**
-   * A shared configuration in the URL (`?s=v2.…`).
+   * A shared configuration in the URL (`?s=v3.…`, a v2 link from before
+   * [V3-P6] still restores too -- `lib/share.ts:decodeShare`).
    *
    * Read once, after mount -- the payload cannot be read during render without
    * a hydration mismatch, and it must not be read on the server at all. It
@@ -142,6 +165,20 @@ export function EditorShell() {
   /** Prefill the Author field from localStorage, once, after mount. */
   useEffect(() => {
     useEditorStore.getState().initAuthor();
+  }, []);
+
+  /**
+   * Start recording undo/redo history, once, after mount -- and, by React's
+   * own "effects run in declaration order" rule, after the share-link effect
+   * above has already applied (or refused) whatever `?s=` named. A restored
+   * link therefore becomes the STARTING point of history, not an undoable
+   * step over the plain Chicago default nobody watching the page ever saw
+   * rendered: the first thing a keyboard-only Ctrl+Z can reach is the
+   * restored configuration itself, which is the state the user actually
+   * opened.
+   */
+  useEffect(() => {
+    initHistory();
   }, []);
 
   /**
@@ -187,6 +224,14 @@ export function EditorShell() {
           </div>
 
           <div className="flex shrink-0 items-center gap-1.5">
+            {/*
+              [V3-P6]: undo/redo lives in the header, not inside
+              `CityPreview`'s scene-gated chip stack -- a parameter change is
+              recorded into history from the very first slider move, before
+              anything has ever been generated, so this has to be reachable
+              then too.
+            */}
+            <HistoryChip />
             <button
               type="button"
               data-testid="shortcuts-button"

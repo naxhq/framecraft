@@ -27,6 +27,7 @@ import {
   orderedRegions,
   placeMerged,
   placeInBuildSpace,
+  provenanceEntries,
   resolveOptions,
   type ExportOptions,
   type ResolvedExportOptions,
@@ -103,8 +104,12 @@ export function genericMetadata(result: EngineResult, resolved: ResolvedExportOp
     ["Application", APPLICATION],
     ["CreationDate", isoDate(resolved.created)],
     ["framecraft:attribution", ATTRIBUTION],
-    ["framecraft:generator", APPLICATION],
     ["framecraft:scale", `1:${result.stats.scaleDenominator}`],
+    // The provenance block, verbatim and in the same order as every other
+    // format writes it (`common.provenanceEntries`, `[V3-P7-A10]`).
+    ...provenanceEntries(result, resolved).map(
+      ([key, value]) => [`framecraft:${key}`, value] as [string, string],
+    ),
   ];
   if (resolved.source) {
     entries.push(["framecraft:lat", String(resolved.source.lat)]);

@@ -420,6 +420,48 @@ def _max_height_from_sidecar(path: Path) -> float | None:
     return float(value) if value > 0 else None
 
 
+def _attribution_bands_from_sidecar(path: Path) -> list[tuple[float, float]] | None:
+    """The Z bands the bake's mandatory attribution marks occupy, or ``None``.
+
+    The same arrangement as :func:`_max_height_from_sidecar` and for the same
+    reason: the fact belongs to the BAKE and the validator judges a file.  The
+    browser engine cuts an attribution mark into the base underside, the frame's
+    inner wall and the plate's outer edge on every model
+    (``apps/web/lib/engine/solid/attribution.ts``), at the cap heights those
+    surfaces hold - 1.2 to 1.8 mm, which is finer than a 0.4 mm nozzle by
+    construction, because the marks are provenance rather than printed features.
+    ``checks.validate`` excludes the declared heights from the structural
+    ``min_wall`` probe and judges them by its ``attribution`` row instead
+    (DECISIONS ``[V3-P7-A8]``).
+
+    Anything missing, unreadable or malformed leaves the list empty, so a file
+    with no sidecar is judged exactly as it always was.
+    """
+    sidecar = path.with_suffix(".json")
+    if not sidecar.is_file():
+        return None
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get("attribution_bands")
+    if not isinstance(raw, list):
+        return None
+    out: list[tuple[float, float]] = []
+    for item in raw:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            continue
+        low, high = item
+        if isinstance(low, bool) or isinstance(high, bool):
+            continue
+        if not isinstance(low, (int, float)) or not isinstance(high, (int, float)):
+            continue
+        out.append((float(low), float(high)))
+    return out
+
+
 def _index_stl_triangle_soup(mesh: "trimesh.Trimesh") -> tuple["trimesh.Trimesh", int]:
     """Weld the *exactly* coincident vertices of an STL triangle soup.
 
@@ -620,7 +662,10 @@ def _validate_parts_file(path: Path, args: argparse.Namespace) -> int:
         # 04 stage 4 judges what PRINTS, and what prints is the union of the
         # parts - not their concatenation, which is self-intersecting by design.
         report = validators.validate(
-            union, params, max_height_mm=_max_height_from_sidecar(path)
+            union,
+            params,
+            max_height_mm=_max_height_from_sidecar(path),
+            attribution_bands=_attribution_bands_from_sidecar(path),
         )
     else:
         report = validators.ValidationReport(checks=[])
@@ -720,7 +765,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
             "a binary STL has no vertex index)"
         )
     print()
-    report = validators.validate(mesh, params, max_height_mm=_max_height_from_sidecar(path))
+    report = validators.validate(
+        mesh,
+        params,
+        max_height_mm=_max_height_from_sidecar(path),
+        attribution_bands=_attribution_bands_from_sidecar(path),
+    )
     if sidecar_error is not None:
         # The file's own record of how it was printed is broken, so every row
         # below it is being judged against parameters that may not be the ones

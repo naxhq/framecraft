@@ -123,6 +123,17 @@ export interface BakeContext {
   readonly recessClipHalfMm: number;
   readonly findings: AuditFinding[];
   readonly resolvedText: ResolvedLine[];
+  /**
+   * Z bands the mandatory attribution marks occupy, `[low, high]` mm.
+   *
+   * Filled by `solid/attribution.ts` while it cuts them and read by everything
+   * that measures the finished model: the minimum-wall probe, the tile sliver
+   * search and the export sidecar. It is a CHANNEL, like `findings` and
+   * `resolvedText`, and for the same reason - the bands depend on the fitted
+   * cap height of each mark, so they are known once the marks are laid out and
+   * nowhere earlier (`[V3-P7-A8]`).
+   */
+  readonly markBands: Array<[number, number]>;
 }
 
 export interface ContextInit {
@@ -172,6 +183,7 @@ export function makeContext(init: ContextInit): BakeContext {
     recessClipHalfMm: params.frame ? cropHalfMm : plateHalfMm + 4 * SIMPLIFY_EPS_MM,
     findings: [],
     resolvedText: [],
+    markBands: [],
   };
 }
 

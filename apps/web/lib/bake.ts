@@ -137,6 +137,9 @@ export function runExport(result: EngineResult, target: ExportTarget, scene: Sce
   const sidecar = buildSidecarJson({
     result,
     target,
+    // The sidecar's provenance block names the same place the FILES do
+    // (`[V3-P7-A10]`); passing it here is what keeps the two from disagreeing.
+    source: options.source ?? null,
     files: output.files,
     notes: output.notes,
     scene,

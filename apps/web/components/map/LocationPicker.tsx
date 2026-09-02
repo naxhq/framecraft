@@ -22,6 +22,7 @@ import {
 } from "@/lib/geo";
 import { useEditorStore } from "@/store/editor";
 import { readMapPalette } from "./palette";
+import SearchBox from "./SearchBox";
 
 /**
  * The 2D location picker.
@@ -248,6 +249,7 @@ export function LocationPicker() {
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" data-testid="map" />
+      <SearchBox />
       <p
         data-testid="map-hint"
         className="pointer-events-none absolute left-2 top-2 max-w-[92%] rounded-milled border border-line bg-plate/95 px-2 py-1 text-2xs leading-snug text-ink-muted shadow-raised"

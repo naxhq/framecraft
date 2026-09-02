@@ -213,9 +213,11 @@ describe("an empty scene", () => {
     // The 6 mm lip, 2 mm proud - plus the 0.2 mm it reaches DOWN into the
     // plate, because the lip is its own colour part and must interpenetrate
     // the base rather than rest on a coincident face
-    // (`context.PART_OVERLAP_MM`). (180^2 - 168^2) * 2.2.
+    // (`context.PART_OVERLAP_MM`). (180^2 - 168^2) * 2.2, less the four copies
+    // of the mandatory attribution engraved into the lip's inner walls
+    // (v3 phase 7, `solid/attribution.ts`): 28.08 mm3, cut on every bake.
     const ring = 180 * 180 - 168 * 168;
-    expect(frame?.volumeMm3 ?? 0).toBeCloseTo(ring * 2.2, 0);
+    expect(frame?.volumeMm3 ?? 0).toBeCloseTo(ring * 2.2 - 28.08, 0);
     expect(frame?.bbox.min[2] ?? 0).toBeCloseTo(3 - 0.2, 3);
     expect(result.stats.buildings).toBe(0);
     expect(result.findings.filter((f) => f.severity === "error")).toEqual([]);

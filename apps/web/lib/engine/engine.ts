@@ -37,6 +37,7 @@
 import type { Engraving, PrintParams } from "../contracts";
 import * as T from "../transform";
 import { textTokenContext } from "../previewText";
+import { expand_tokens } from "../tokens";
 import type {
   AuditFinding,
   EngineInput,
@@ -49,6 +50,11 @@ import type {
 import { REGION_NAMES } from "./types";
 import { auditPrintability } from "./audit/rules";
 import { samplerFromGrid } from "./terrain/heightfield";
+import {
+  buildAttribution,
+  undersideReserveMm,
+  undersideSkipBands,
+} from "./solid/attribution";
 import { buildSurfaceRegions } from "./solid/areas";
 import { buildPlate, carveBase, cutterTopMm } from "./solid/base";
 import { buildBridges } from "./solid/bridges";
@@ -184,14 +190,24 @@ export async function bake(
       drape,
     );
 
-    // --- text and ornaments ---------------------------------------------
-    const tokens = textTokenContext(
-      input.scene,
-      input.params,
-      input.date ?? new Date().toISOString().slice(0, 10),
+    // --- text, ornaments and the mandatory attribution -------------------
+    //
+    // The attribution is NOT an option and NOT an input: `EngineInput`'s own
+    // `attribution` field is ignored (`[V3-P7-A1]`), the strings are composed
+    // from constants and this bake's date, and every mark is cut on every bake.
+    // It is laid out BEFORE the lettering, because the user's own underside
+    // lines have to be stacked clear of it.
+    const bakeDate = input.date ?? new Date().toISOString().slice(0, 10);
+    const tokens = textTokenContext(input.scene, input.params, bakeDate);
+    const expand = (text: string): string => expand_tokens(text, tokens);
+    const lettering = buildLettering(
+      ctx,
+      tokens,
+      input.rotationDeg ?? 0,
+      undersideReserveMm(ctx, bakeDate, expand),
     );
-    const lettering = buildLettering(ctx, tokens, input.rotationDeg ?? 0);
     const ornaments = buildOrnaments(ctx, lettering.layout);
+    const attribution = buildAttribution(ctx, bakeDate, expand);
     reportNarrowTextBand(
       ctx,
       lettering.frameCut.length +
@@ -223,6 +239,7 @@ export async function bake(
       ...surfaces.map((s) => s.cutter),
       ...lettering.baseCut,
       ...ornaments.baseCut,
+      ...attribution.baseCut,
       ...hangers.baseCut,
       ...mating.baseCut,
       shadowGap,
@@ -246,6 +263,7 @@ export async function bake(
         ...lettering.frameCut,
         ...lettering.inlayCut,
         ...ornaments.frameCut,
+        ...attribution.frameCut,
         ...mating.frameCut,
         frameTexture,
       ]);
@@ -343,8 +361,10 @@ export async function bake(
             ...grooves,
             ...lettering.frameCut,
             ...ornaments.frameCut,
+            ...attribution.frameCut,
             ...lettering.baseCut,
             ...ornaments.baseCut,
+            ...attribution.baseCut,
             ...hangers.baseCut,
             ...mating.frameCut,
             ...mating.baseCut,
@@ -388,7 +408,8 @@ export async function bake(
 
     // --- sanitation, sit at zero, meshes --------------------------------
     const built = finishRegions(ctx, solids);
-    const minWall = assembly === null ? null : measureMinWall(ctx, assembly);
+    const minWall =
+      assembly === null ? null : measureMinWall(ctx, assembly, undersideSkipBands(ctx));
     for (const item of validate(
       ctx,
       built,
@@ -474,6 +495,7 @@ export async function bake(
       }),
       resolvedText: ctx.resolvedText,
       params: resolveParamsEcho(input.params, ctx.resolvedText),
+      attributionBands: ctx.markBands,
       ...(tiles.length === 0 ? {} : { tiles }),
       ...(buildings.tints.length === 0 ? {} : { buildingTints: buildings.tints }),
       ...(buildings.bands.length > 1

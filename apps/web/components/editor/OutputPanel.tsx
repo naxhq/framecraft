@@ -1,21 +1,24 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   BAKE_STALE_NOTE,
   bakeDownloadLinks,
   bakeStatusLabel,
 } from "@/lib/bake";
+import { buildProject, downloadProject, parseProject } from "@/lib/project";
 import { textTokenContext } from "@/lib/previewText";
+import { recentDesignName, recordRecent } from "@/lib/recent";
 import { resolvedOutputLines, type ResolvedLine as PredictedLine } from "@/lib/resolvedOutput";
-import { shareUrl } from "@/lib/share";
+import { SHARE_LINK_LENGTH_LIMIT, encodeShare, shareUrl } from "@/lib/share";
 import type { ResolvedLine as EngineResolvedLine } from "@/lib/engine/types";
 import { bakeBlockReason, heightCeilingMm, predictedTopMm, warningDeps } from "@/lib/warnings";
 import { locationToRequest, useEditorStore } from "@/store/editor";
 import { Note } from "./Controls";
 import EstimateCard from "./EstimateCard";
 import ExportMenu from "./ExportMenu";
+import RecentDesigns from "./RecentDesigns";
 import StatsCard from "./StatsCard";
 
 /**
@@ -118,7 +121,7 @@ export function OutputPanel({
     replaceState from an earlier copy cannot leak into a later one.
   */
   const [href, setHref] = useState<string | null>(null);
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "manual">("idle");
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "manual" | "too-large">("idle");
   useEffect(() => setHref(window.location.href), []);
   const link = useMemo(
     () => (href === null ? null : shareUrl(href, locationToRequest(location), params)),
@@ -128,21 +131,85 @@ export function OutputPanel({
   // "Copied".
   useEffect(() => setCopyState("idle"), [link]);
 
+  /**
+   * A recent design is the exact share payload (`lib/recent.ts`), recorded on
+   * a successful Copy-link and (below) a successful bake -- the two moments
+   * the brief names, and, not coincidentally, the two moments a design is
+   * demonstrably "finished enough to be worth keeping" rather than mid-edit.
+   */
+  const recordCurrentAsRecent = (): void => {
+    recordRecent(recentDesignName(params.city_label ?? ""), encodeShare(locationToRequest(location), params));
+  };
+
   const copyLink = async (): Promise<void> => {
     if (link === null) return;
+    // [V3-P6]: even compressed, a configuration at the contract's real
+    // maxima can exceed a sane URL length, and there is no server to hand out
+    // a short id for one instead (no share-id backend exists by design). Past
+    // the guard the dialog explains that and points at the project file
+    // instead, rather than copying a link several chat clients would mangle.
+    if (link.length > SHARE_LINK_LENGTH_LIMIT) {
+      setCopyState("too-large");
+      return;
+    }
     // The address bar becomes the link, without a navigation: the browser's own
     // copy-URL and bookmark then carry the configuration too.
     window.history.replaceState(null, "", link);
     try {
       await navigator.clipboard.writeText(link);
       setCopyState("copied");
+      recordCurrentAsRecent();
     } catch {
       // Permission denied, or an insecure origin. The field below is the
       // fallback, and it is why the link is in the DOM at all rather than only
       // on a clipboard we cannot verify.
       setCopyState("manual");
+      recordCurrentAsRecent();
     }
   };
+
+  // --- project file (lib/project.ts, [V3-P6]) -------------------------------
+  const [projectError, setProjectError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const saveProject = (): void => {
+    downloadProject(buildProject(location, params));
+  };
+
+  const openLoadDialog = (): void => {
+    setProjectError(null);
+    fileInputRef.current?.click();
+  };
+
+  const onProjectFileChosen = async (event: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = event.target.files?.[0] ?? null;
+    // The input is cleared regardless of outcome: choosing the SAME file
+    // twice in a row (fix a typo, load it again) must fire `onChange` again,
+    // which a browser will not do if the value never changed.
+    event.target.value = "";
+    if (!file) return;
+    const text = await file.text();
+    const result = parseProject(text);
+    if (!result.ok) {
+      setProjectError(result.reason);
+      return;
+    }
+    setProjectError(null);
+    useEditorStore.getState().applyProject(result.location, result.params);
+  };
+
+  /**
+   * Every SUCCESSFUL bake records a recent design too, not just Copy-link.
+   * `[bake]` (the whole state object, a fresh reference on every phase
+   * transition) as the effect's only dependency means this fires exactly
+   * once per completed bake -- never once per render of an unchanged "done"
+   * state, and never for `bakeExporting`/`bakeFailedLocally`'s own phases.
+   */
+  useEffect(() => {
+    if (bake.phase !== "done") return;
+    recordCurrentAsRecent();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bake]);
 
   const primary =
     "rounded-milled bg-primary px-3 py-2 text-sm font-medium text-primary-ink transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-40";
@@ -195,7 +262,64 @@ export function OutputPanel({
         </button>
       </div>
 
-      {copyState !== "idle" && link !== null ? (
+      {/*
+        Save/Load a `.framecraft.json` project ([V3-P6]). A second, quieter
+        row: this is not the primary flow (Generate/Bake/Export are), but it
+        needs to live in the OUTPUT group beside them, not behind a menu that
+        would hide "your work has a Save button" from a first-time user.
+      */}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          data-testid="save-project-button"
+          onClick={saveProject}
+          title="Download this whole design as a .framecraft.json file"
+          className={`flex-1 ${secondary}`}
+        >
+          Save project
+        </button>
+        <button
+          type="button"
+          data-testid="load-project-button"
+          onClick={openLoadDialog}
+          title="Load a .framecraft.json file, replacing every setting"
+          className={`flex-1 ${secondary}`}
+        >
+          Load project
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".json,application/json"
+          aria-label="Load a FrameCraft project file"
+          data-testid="load-project-input"
+          className="hidden"
+          onChange={(event) => void onProjectFileChosen(event)}
+        />
+      </div>
+      {projectError !== null ? (
+        <Note tone="warn" testId="project-error">
+          {projectError}
+        </Note>
+      ) : null}
+
+      {copyState === "too-large" && link !== null ? (
+        <Note tone="warn" testId="share-too-large">
+          This design is too large for a link ({link.length} characters). Use
+          Save project instead --{" "}
+          <button
+            type="button"
+            data-testid="share-too-large-save-project"
+            onClick={saveProject}
+            className="font-medium underline underline-offset-2"
+          >
+            save a project file
+          </button>{" "}
+          and share that.
+        </Note>
+      ) : null}
+
+      {(copyState === "copied" || copyState === "manual") && link !== null ? (
         <div className="space-y-1">
           <label htmlFor="share-link" className="block text-2xs text-ink-faint">
             {copyState === "copied"
@@ -326,6 +450,7 @@ export function OutputPanel({
 
         {showResults ? <ResolvedOutputCard lines={lines} fresh={fresh} /> : null}
         {showResults ? <StatsCard /> : null}
+        {showResults ? <RecentDesigns /> : null}
       </div>
     </div>
   );
@@ -338,14 +463,37 @@ interface DisplayLine {
   text: string;
   cut: boolean;
   reason: string | null;
+  /**
+   * A mandatory attribution line the engine cuts itself (`attribution-*` ids,
+   * [V3-P7]): the FrameCraft/OpenStreetMap underside mark, the frame's inner
+   * wall mark, the base-edge microtext. Distinguished in the row so it does
+   * not read like text the USER typed -- nothing here is editable either
+   * way (this panel has no edit affordance for any row), but an unlabelled
+   * line of text nobody remembers writing is confusing on its own.
+   */
+  mandatory: boolean;
 }
 
 function fromPredictedLine(line: PredictedLine): DisplayLine {
-  return { id: line.id, surface: line.surface, text: line.text, cut: line.status === "cut", reason: line.reason };
+  return {
+    id: line.id,
+    surface: line.surface,
+    text: line.text,
+    cut: line.status === "cut",
+    reason: line.reason,
+    mandatory: false,
+  };
 }
 
 function fromEngineLine(line: EngineResolvedLine): DisplayLine {
-  return { id: line.id, surface: line.surface, text: line.text, cut: line.status === "cuts", reason: line.reason ?? null };
+  return {
+    id: line.id,
+    surface: line.surface,
+    text: line.text,
+    cut: line.status === "cuts",
+    reason: line.reason ?? null,
+    mandatory: line.id.startsWith("attribution-"),
+  };
 }
 
 /**
@@ -375,7 +523,18 @@ function ResolvedOutputCard({ lines, fresh }: { lines: readonly DisplayLine[]; f
             className="rounded-milled border border-line bg-plate-sunken px-2 py-1.5 text-2xs"
           >
             <div className="flex items-baseline justify-between gap-2">
-              <span className="text-ink-faint">{line.surface}</span>
+              <span className="flex items-center gap-1 text-ink-faint">
+                {line.surface}
+                {line.mandatory ? (
+                  <span
+                    data-testid={`resolved-output-row-${line.id}-mandatory`}
+                    title="Every FrameCraft model carries this; it is not something you typed."
+                    className="rounded-milled border border-line px-1 py-px text-[0.6rem] uppercase tracking-wide text-ink-faint"
+                  >
+                    mandatory
+                  </span>
+                ) : null}
+              </span>
               <span className={line.cut ? "text-positive" : "text-ink-faint"}>
                 {line.cut ? "cuts" : "skipped"}
               </span>

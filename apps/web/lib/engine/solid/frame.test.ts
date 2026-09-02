@@ -662,6 +662,12 @@ describe("per-building tints", () => {
 // The default is untouched
 // ---------------------------------------------------------------------------
 
+/**
+ * Volume the four inner-wall attribution marks take out of the plain 6 mm lip,
+ * mm3 (v3 phase 7). Measured on this bake; see the note in the test below.
+ */
+const ATTRIBUTION_WALL_CUT_MM3 = 27.6;
+
 describe("the default bake", () => {
   it("is what it was: one body, one region set, plain 6 mm lip", async () => {
     const result = await bakeScene({ scene: smallScene(), params: params() });
@@ -676,11 +682,16 @@ describe("the default bake", () => {
     // The extrusion planes are on the engine's own 1/4096 mm Z grid
     // (`manifold.snapZ`), so the underside reads 2.80005, not 2.8.
     expect(frame.bbox.min[2]).toBeCloseTo(geometry.bottom_mm - 0.2, 3);
-    // The plain lip's volume is the ring times its height, to the Z grid: the
-    // 2.2 mm of extrusion lands on 2.19995, which is 0.2 mm3 of 9 187.
+    // The plain lip's volume is the ring times its height, to the Z grid (the
+    // 2.2 mm of extrusion lands on 2.19995, which is 0.2 mm3 of 9 187), LESS
+    // the four copies of the mandatory attribution engraved into its inner
+    // walls (v3 phase 7, `solid/attribution.ts`). That mark is cut on every
+    // bake and is not a parameter, so the plain lip is 27.60 mm3 lighter than
+    // it was in phase 5 - which is the number below, measured on this bake and
+    // re-measurable from it: `ring - frame.volumeMm3`.
     const ring = (180 * 180 - 168 * 168) * (frame.bbox.max[2] - frame.bbox.min[2]);
-    expect(frame.volumeMm3).toBeCloseTo(ring, 6);
-    expect(frame.volumeMm3).toBeCloseTo(4176 * 2.2, 0);
+    expect(ring - frame.volumeMm3).toBeCloseTo(ATTRIBUTION_WALL_CUT_MM3, 2);
+    expect(frame.volumeMm3).toBeCloseTo(4176 * 2.2 - ATTRIBUTION_WALL_CUT_MM3, 0);
     expect(frameStyle(result.params).profile).toBe("plain");
   });
 });

@@ -23,6 +23,21 @@ export const APPLICATION = "FrameCraft 3.0.0";
 export const GENERATOR_NAME = "FrameCraft";
 export const GENERATOR_VERSION = "3.0.0";
 
+/**
+ * The one licence sentence every format carries verbatim (v3 phase 7).
+ *
+ * One string, in one place, because it is a licence notice and a licence notice
+ * that says a slightly different thing in each of four files is not a notice,
+ * it is four claims. `LICENSE_LINE` above is the longer prose form the 3MF's
+ * reserved `LicenseTerms` field already carried and keeps carrying.
+ */
+export const MODEL_DATA_LICENCE = "Model data © OpenStreetMap contributors, ODbL 1.0";
+
+/** `place.author`, trimmed; "" when the user never set one. */
+export function authorOf(result: EngineResult): string {
+  return (result.params.place?.author ?? "").trim();
+}
+
 export interface SourceLocation {
   lat: number;
   lon: number;
@@ -56,7 +71,11 @@ export function resolveOptions(result: EngineResult, options: ExportOptions): Re
   const label = (result.params.city_label ?? "").trim();
   return {
     title: options.title ?? (label !== "" ? `FrameCraft ${label}` : "FrameCraft"),
-    designer: options.designer ?? GENERATOR_NAME,
+    // The person who made it, when they said who they are: that is what a 3MF
+    // reader shows and what a STEP header's author field means. Blank-safe -
+    // an unset `place.author` leaves the generator's own name, which is what
+    // every file said before v3 phase 7.
+    designer: options.designer ?? (authorOf(result) || GENERATOR_NAME),
     created: options.created ?? new Date(),
     source: options.source ?? null,
     stem: sanitizeStem(options.stem ?? "framecraft"),
@@ -253,6 +272,52 @@ export function paramsLine(params: PrintParams): string {
   return JSON.stringify(params);
 }
 
+/**
+ * The provenance block every exporter writes, as `[key, value]` pairs.
+ *
+ * Five facts, in one order, in every format (v3 phase 7, `[V3-P7-A10]`): who
+ * made it, what licence the map data is under, what made it, where on the Earth
+ * it is, and when it was generated. The 3MF writers turn it into `<metadata>`,
+ * OBJ into header comments, STEP into its `FILE_DESCRIPTION`, and the sidecar
+ * carries the same pairs as an object - so a file separated from this program
+ * still says where it came from even if every engraved mark has been sanded
+ * off. `author` is written even when it is empty: a uniform block is one a
+ * reader can look for, and an absent key is indistinguishable from a stripped
+ * one.
+ */
+export function provenanceEntries(
+  result: EngineResult,
+  resolved: ResolvedExportOptions,
+): Array<[string, string]> {
+  const source = resolved.source;
+  const entries: Array<[string, string]> = [
+    ["author", authorOf(result)],
+    ["license", MODEL_DATA_LICENCE],
+    ["generator", APPLICATION],
+    ["source", sourceLine(source)],
+    ["generated", isoTimestamp(resolved.created)],
+  ];
+  return entries;
+}
+
+/** The same block as `Key: value` lines, for a comment header. */
+export function provenanceLines(
+  result: EngineResult,
+  resolved: ResolvedExportOptions,
+): string[] {
+  return provenanceEntries(result, resolved).map(
+    ([key, value]) => `${key.charAt(0).toUpperCase()}${key.slice(1)}: ${value}`,
+  );
+}
+
+/** The same block as a sidecar object. */
+export function provenanceJson(
+  result: EngineResult,
+  resolved: ResolvedExportOptions,
+): Record<string, string> {
+  return Object.fromEntries(provenanceEntries(result, resolved));
+}
+
 /** The Description every format carries: attribution, location, then the parameters. */
 export function description(result: EngineResult, resolved: ResolvedExportOptions): string {
   const location = sourceLine(resolved.source);
@@ -293,6 +358,8 @@ export const FALLBACK_SLOT_COLORS = ["#FFFFFF", "#00AE42", "#0086D6", "#F5A623",
  */
 export interface SidecarInput {
   result: EngineResult;
+  /** Location the scene was cut from, for the provenance block. */
+  source?: SourceLocation | null;
   /** `PrintParams.export_target` this sidecar describes. */
   target: string;
   files: ReadonlyArray<{ name: string; bytes: Uint8Array }>;
@@ -317,6 +384,15 @@ export function buildSidecarJson(input: SidecarInput): Record<string, unknown> {
     license: "ODbL 1.0",
     generator: "FrameCraft web bake",
     created_at: isoTimestamp(created),
+    // The same five facts every exported FILE carries, so a sidecar read on its
+    // own says exactly what the model beside it says (`[V3-P7-A10]`).
+    provenance: provenanceJson(result, {
+      title: "",
+      designer: authorOf(result) || GENERATOR_NAME,
+      created,
+      source: input.source ?? null,
+      stem: "",
+    }),
     scene_request: null,
     print_params: result.params,
     bake_result: {
@@ -364,5 +440,18 @@ export function buildSidecarJson(input: SidecarInput): Record<string, unknown> {
     max_height_mm: resolveProfile(result.params).maxHeightMm,
     resolved_text: result.resolvedText,
     findings: result.findings,
+    /**
+     * The Z bands the mandatory attribution marks occupy, mm.
+     *
+     * Read by `services/bake/app/cli.py` exactly the way `max_height_mm` is
+     * (`[V3-P4-E9]`, now `[V3-P7-A8]`): the reference validator's structural
+     * `min_wall` row skips them and its `attribution` row judges them instead.
+     * The marks are engraved at 1.2 to 1.8 mm cap height because that is what a
+     * plate edge and a 2 mm frame wall hold, which puts their strokes and the
+     * ridges between them under one nozzle by construction; they are provenance,
+     * not a printed feature, and a file with no such field is judged exactly as
+     * it always was.
+     */
+    attribution_bands: result.attributionBands ?? [],
   };
 }

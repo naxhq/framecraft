@@ -20,6 +20,7 @@ import {
   placeInBuildSpace,
   placeMerged,
   resolveOptions,
+  provenanceLines,
   sourceLine,
   triangleCount,
   type ExportOptions,
@@ -185,7 +186,7 @@ export interface StepDocument {
   skippedTriangles: number;
 }
 
-export function stepDocument(regions: readonly RegionMesh[], meta: { fileName: string; title: string; author: string; created: Date; sourceLine: string }): StepDocument {
+export function stepDocument(regions: readonly RegionMesh[], meta: { fileName: string; title: string; author: string; created: Date; sourceLine: string; provenance?: readonly string[] }): StepDocument {
   if (regions.length === 0) {
     throw new Error("a STEP export needs at least one region with triangles");
   }
@@ -223,7 +224,7 @@ export function stepDocument(regions: readonly RegionMesh[], meta: { fileName: s
 
   const header =
     "ISO-10303-21;\nHEADER;\n" +
-    `FILE_DESCRIPTION((${stepString(`${meta.title}: FrameCraft framed miniature city, faceted B-rep`)},${stepString(`${ATTRIBUTION}, ODbL 1.0`)}${meta.sourceLine ? `,${stepString(meta.sourceLine)}` : ""}),'2;1');\n` +
+    `FILE_DESCRIPTION((${stepString(`${meta.title}: FrameCraft framed miniature city, faceted B-rep`)},${stepString(`${ATTRIBUTION}, ODbL 1.0`)}${meta.sourceLine ? `,${stepString(meta.sourceLine)}` : ""}${(meta.provenance ?? []).map((line) => `,${stepString(line)}`).join("")}),'2;1');\n` +
     `FILE_NAME(${stepString(meta.fileName)},${stepString(isoTimestamp(meta.created))},(${stepString(meta.author)}),(${stepString("FrameCraft")}),${stepString(APPLICATION)},${stepString(APPLICATION)},'');\n` +
     "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n";
   const text = header + w.lines.join("\n") + "\nENDSEC;\nEND-ISO-10303-21;\n";
@@ -246,6 +247,9 @@ export function exportStep(result: EngineResult, options: StepOptions = {}): Ste
     author,
     created: resolved.created,
     sourceLine: sourceLine(resolved.source),
+    // The provenance block every format carries, one descriptive string each
+    // (`common.provenanceEntries`, `[V3-P7-A10]`).
+    provenance: provenanceLines(result, resolved),
   });
   const notes: string[] = [];
   const triangles = triangleCount(shells);

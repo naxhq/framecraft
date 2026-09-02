@@ -237,6 +237,14 @@ function sidecar(args: Args, result: EngineResult, files: Array<{ name: string; 
   return buildSidecarJson({
     result,
     target: args.target ?? result.params.export_target ?? "bambu-3mf",
+    // The scene's own centre, so the sidecar's provenance block names the place
+    // the exported files name (`[V3-P7-A10]`).
+    source: {
+      lat: scene.center.lat,
+      lon: scene.center.lon,
+      radius_m: args.radiusM,
+      rotation_deg: args.rotationDeg,
+    },
     files,
     notes,
     scene,

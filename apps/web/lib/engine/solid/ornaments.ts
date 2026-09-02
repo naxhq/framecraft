@@ -146,61 +146,15 @@ export function buildOrnaments(
     engraveLip(areas, `scale bar (${bar.label})`, bar.thickness_mm);
   }
 
-  // --- underside mark --------------------------------------------------
-  const mark = layout.underside_mark;
-  if (mark.enabled && mark.fit !== null) {
-    const needed = neededBaseMm(ctx, mark.depth_mm);
-    if (mark.fit.refused) {
-      ctx.resolvedText.push(
-        line("underside-mark", mark.fit.text, "Underside", "skipped", mark.depth_mm, mark.fit.size_mm, mark.fit.reason),
-      );
-    } else if (needed > params.base_thickness_mm + 1e-9) {
-      const reason = `the underside mark needs a base of at least ${needed.toFixed(2)} mm`;
-      ctx.resolvedText.push(
-        line("underside-mark", mark.fit.text, "Underside", "skipped", mark.depth_mm, mark.fit.size_mm, reason),
-      );
-      addFinding(
-        ctx,
-        finding("hanger-refused", "warning", "The underside mark was not cut", reason, "base"),
-      );
-    } else {
-      const asset = loadedGlyphFace(mark.fit.face);
-      const areas =
-        asset === null
-          ? []
-          : glyphAreas(asset, mark.fit.text, mark.fit.size_mm, 0).map((area) =>
-              placeArea(area, mark.placement),
-            );
-      const repaired =
-        areas.length === 0 ? null : repairText(ctx, areas, mark.fit.dilation_mm, target, null);
-      if (repaired !== null && repaired.lostCounters === 0) {
-        const solid = extrudeSection(
-          wasm,
-          arena,
-          repaired.section,
-          -CUTTER_OVERSHOOT_MM,
-          mark.depth_mm,
-        );
-        if (solid !== null) out.baseCut.push(solid);
-        ctx.resolvedText.push(
-          line("underside-mark", mark.fit.text, "Underside", "cuts", mark.depth_mm, mark.fit.size_mm),
-        );
-      } else {
-        ctx.resolvedText.push(
-          line(
-            "underside-mark",
-            mark.fit.text,
-            "Underside",
-            "skipped",
-            mark.depth_mm,
-            mark.fit.size_mm,
-            "widening it to a full minimum wall closed a counter",
-          ),
-        );
-      }
-      if (repaired !== null) arena.drop(repaired.section);
-    }
-  }
+  // --- the underside mark ----------------------------------------------
+  //
+  // NOT here any more (v3 phase 7, DECISIONS `[V3-P7-A2]`). The user's
+  // `underside_mark.template` is no longer a mark of its own: it is APPENDED to
+  // the mandatory attribution, which is cut on every bake whether the switch is
+  // on or off, and `solid/attribution.ts` owns the whole underside block so the
+  // two can never be laid out on top of each other. `underside_mark.enabled`
+  // now decides only whether the user's own line joins that block; it can never
+  // silence the attribution.
 
   // --- hangers ---------------------------------------------------------
   const hanger = params.hanger ?? "none";

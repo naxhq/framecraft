@@ -314,7 +314,19 @@ export interface EngineInput {
   rotationDeg?: number;
   /** ISO date the `{date}` token expands to. Defaults to today. */
   date?: string;
-  /** Attribution strings that must be cut (phase 7); the engine never lets the UI remove them. */
+  /**
+   * @deprecated IGNORED since v3 phase 7 (DECISIONS `[V3-P7-A1]`).
+   *
+   * It was going to be "the attribution strings the UI hands the engine", which
+   * is the one thing this field must never be: a caller that can SUPPLY the
+   * attribution is a caller that can supply an empty one, and the whole point
+   * of the marks is that nothing outside `solid/attribution.ts` decides what
+   * they say. The engine composes them from its own constants, the params and
+   * the bake date, and reads nothing from here.
+   *
+   * Kept, rather than removed, so every existing caller still typechecks; it is
+   * accepted and discarded. It will be deleted in a later phase.
+   */
   attribution?: { underside: string; frameWall: string; microtext: string };
 }
 
@@ -387,6 +399,17 @@ export interface EngineResult {
   buildingBands?: BuildingBandSummary[];
   /** Echo of the params the meshes were built from. */
   params: PrintParams;
+  /**
+   * Z bands the mandatory attribution marks occupy, `[low, high]` mm (v3 phase
+   * 7). Never empty for a real bake: every model carries the marks.
+   *
+   * Written into the export sidecar as `attribution_bands` and read back by the
+   * reference validator, which excludes them from its STRUCTURAL minimum-wall
+   * probe and judges them by its own `attribution` row: the marks are
+   * deliberately finer than the nozzle, because they are provenance rather than
+   * a printed feature (`solid/attribution.ts`, DECISIONS `[V3-P7-A8]`).
+   */
+  attributionBands?: Array<[number, number]>;
 }
 
 /** Exporters take an EngineResult and return file bytes; they never touch manifold. */

@@ -93,10 +93,10 @@ test("a copied link restores the whole editor in a fresh browser", async ({
   const copy = page.getByTestId("copy-link-button");
   await copy.click();
   const link = (await copy.getAttribute("data-share-url")) ?? "";
-  expect(link, "the Copy link button carries no URL").toContain("s=v2.");
+  expect(link, "the Copy link button carries no URL").toContain("s=v3.");
   log(`link is ${link.length} characters`);
   // The address bar became the link, without a navigation.
-  expect(page.url()).toContain("s=v2.");
+  expect(page.url()).toContain("s=v3.");
   // ...and it is in the DOM for a browser that refuses the clipboard.
   await expect(page.getByTestId("share-link")).toHaveValue(link);
   const clipboard = await page.evaluate(() => navigator.clipboard.readText());

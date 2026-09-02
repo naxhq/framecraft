@@ -1687,3 +1687,73 @@ def test_pipeline_token_context_comes_from_the_scene_and_the_params() -> None:
 
     today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
     assert bake_pipeline.token_context(scene, p).date == today
+
+
+# ---------------------------------------------------------------------------
+# The attribution row (v3 phase 7, DECISIONS [V3-P7-A8])
+# ---------------------------------------------------------------------------
+
+
+def test_validator_has_no_attribution_row_without_a_sidecar_field() -> None:
+    """A file that declares no bands is judged exactly as it always was."""
+    p = params(base_thickness_mm=5.0)
+    report = validators.validate(lip_model(p), p)
+    assert report.get("attribution") is None
+    assert "attribution" not in report.get("min_wall").message
+
+
+def test_validator_attribution_row_bounds_what_min_wall_may_skip() -> None:
+    """The row is the guard on the exclusion, not a rubber stamp for it.
+
+    The browser engine declares the Z bands its mandatory attribution marks
+    occupy and ``min_wall`` does not judge them (the marks are cut at 1.2 to
+    1.8 mm cap height, which puts their strokes under one nozzle by
+    construction).  An exclusion nobody checks is a hole in the gate, so this
+    row fails a band that is too tall, a set of bands that covers too much of
+    the model, and a band that is not inside the model at all.
+    """
+    p = params(base_thickness_mm=5.0)
+    mesh = lip_model(p)
+    z_hi = float(mesh.bounds[1][2])
+
+    ok = validators.validate(mesh, p, attribution_bands=[(0.0, 0.5), (3.2, 4.8)])
+    row = ok.get("attribution")
+    assert row is not None and row.passed, row.message
+    assert "3.20-4.80" in row.message
+    # ... and the min_wall row says which heights it did not judge.
+    assert "attribution bands" in ok.get("min_wall").message
+
+    tall = validators.validate(
+        mesh, p, attribution_bands=[(0.0, validators.ATTRIBUTION_BAND_MAX_MM + 1.0)]
+    )
+    assert not tall.get("attribution").passed
+    assert "over" in tall.get("attribution").message
+
+    outside = validators.validate(mesh, p, attribution_bands=[(z_hi + 1.0, z_hi + 2.0)])
+    assert not outside.get("attribution").passed
+    assert "outside the model" in outside.get("attribution").message
+
+    many = validators.validate(mesh, p, attribution_bands=[(z, z + 0.2) for z in range(6)])
+    assert not many.get("attribution").passed
+    assert "over the 4 allowed" in many.get("attribution").message
+
+    # The two caps together are what bound the exclusion: four bands of 2.5 mm
+    # is 10 mm and there is no fifth band and no taller one.
+    assert (
+        validators.ATTRIBUTION_BAND_MAX_TOTAL_MM
+        == validators.ATTRIBUTION_BAND_MAX_COUNT * validators.ATTRIBUTION_BAND_MAX_MM
+    )
+
+
+def test_validator_ignores_a_malformed_attribution_band() -> None:
+    """A sidecar is data from another program; a bad field is not a crash."""
+    p = params(base_thickness_mm=5.0)
+    mesh = lip_model(p)
+    report = validators.validate(
+        mesh,
+        p,
+        attribution_bands=[(0.5, 0.0), (float("nan"), 1.0), (0.0, 0.5)],
+    )
+    row = report.get("attribution")
+    assert row is not None and row.passed, row.message
+    assert row.value.startswith("1 band")

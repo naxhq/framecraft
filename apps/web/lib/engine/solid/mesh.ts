@@ -80,6 +80,35 @@ export const WELD_LADDER_MM = [WELD_EPSILON_MM, 1e-5, 1e-4];
 /** How many split-and-remeasure rounds the needle repair runs. */
 export const REPAIR_ROUNDS = 4;
 
+/**
+ * Longest edge a needle's LOCAL collapse may close, mm.
+ *
+ * The last resort, and the narrowest tool in this file: it welds the two ends
+ * of one degenerate triangle's shortest edge and touches nothing else in the
+ * mesh. The whole-mesh weld above cannot always do that job, because it is
+ * all-or-nothing at its epsilon - the rung coarse enough to close a 1.4e-5 mm
+ * needle in a tile of the Chicago plate also merges pairs a boolean meant to
+ * keep apart somewhere else on that tile, the mesh comes back open, and the
+ * acceptance test correctly throws the whole rung away. `splitNeedles` cannot
+ * do it either when the needle's long edge is met by TWO triangles on the far
+ * side, because then no single neighbour holds the twin to split.
+ *
+ * The same 0.1 micrometre as the ladder's coarsest rung, and subject to the
+ * same acceptance test plus one of its own: closed, oriented, the same volume
+ * to a nanolitre, and no more connected bodies than the mesh came in with (a
+ * pinch is all three of the first and still two objects where there was one).
+ *
+ * OPT IN, and off by default (`cleanMesh`'s `collapseNeedles` option). The
+ * ladder above clears every degenerate face an untiled bake produces on its
+ * own, at a coarser rung than this repair would let it reach, and a mesh that
+ * is already clean must not be touched by a repair it does not need: with this
+ * on for everything, the Chicago plate's merged mesh stopped one rung early on
+ * a mesh that welded to one body only at the NEXT rung. `solid/tiling.ts` turns
+ * it on, because a tile is five booleans deep and does produce needles the
+ * whole-mesh weld cannot reach (`[V3-P7-A9]`).
+ */
+export const NEEDLE_COLLAPSE_MM = 1e-4;
+
 export interface Mesh {
   positions: Float64Array;
   indices: Uint32Array;
@@ -265,6 +294,84 @@ function weld(mesh: Mesh, epsilon: number): { mesh: Mesh; welded: number } {
 }
 
 /**
+ * Close the shortest edge of every degenerate triangle, and nothing else.
+ *
+ * One pass, union-find so a chain of needles collapses onto one representative,
+ * and no vertex moves: the survivor keeps its own position and the triangles
+ * that referenced its partner reference it instead. A triangle left with a
+ * repeated index is dropped, exactly as `weld` drops one, which is what leaves
+ * the mesh closed: the needle's two long edges are twins of each other once its
+ * short edge is gone.
+ *
+ * See {@link NEEDLE_COLLAPSE_MM} for why this exists beside `weld`.
+ */
+function collapseNeedles(
+  mesh: Mesh,
+  threshold: number,
+  maxEdgeMm: number,
+): { mesh: Mesh; collapsed: number } {
+  const { positions: p, indices } = mesh;
+  const parent = new Int32Array(p.length / 3);
+  for (let v = 0; v < parent.length; v += 1) parent[v] = v;
+  const find = (v: number): number => {
+    let root = v;
+    while (parent[root] !== root) root = parent[root];
+    let walk = v;
+    while (parent[walk] !== root) {
+      const next = parent[walk];
+      parent[walk] = root;
+      walk = next;
+    }
+    return root;
+  };
+
+  let collapsed = 0;
+  for (let i = 0; i + 2 < indices.length; i += 3) {
+    const a = indices[i];
+    const b = indices[i + 1];
+    const c = indices[i + 2];
+    if (triangleAreaMm2(p, a, b, c) >= threshold) continue;
+    const edges: Array<[number, number]> = [
+      [a, b],
+      [b, c],
+      [c, a],
+    ];
+    let bestPair: [number, number] | null = null;
+    let bestLength = Infinity;
+    for (const [u, v] of edges) {
+      const length = edgeLength(p, u, v);
+      if (length < bestLength) {
+        bestLength = length;
+        bestPair = [u, v];
+      }
+    }
+    if (bestPair === null || !(bestLength <= maxEdgeMm)) continue;
+    const ra = find(bestPair[0]);
+    const rb = find(bestPair[1]);
+    if (ra === rb) continue;
+    // The lower index survives, so the remap is stable whatever order the
+    // triangles come in.
+    if (ra < rb) parent[rb] = ra;
+    else parent[ra] = rb;
+    collapsed += 1;
+  }
+  if (collapsed === 0) return { mesh, collapsed: 0 };
+
+  const out: number[] = [];
+  for (let i = 0; i + 2 < indices.length; i += 3) {
+    const a = find(indices[i]);
+    const b = find(indices[i + 1]);
+    const c = find(indices[i + 2]);
+    if (a === b || b === c || c === a) continue;
+    out.push(a, b, c);
+  }
+  return {
+    mesh: { positions: p, indices: Uint32Array.from(out) },
+    collapsed,
+  };
+}
+
+/**
  * Resolve T-junctions: split the neighbour across a needle's long edge.
  *
  * The needle `(v0, v1, v2)` whose longest edge is `v2 -> v0` has `v1` sitting
@@ -348,6 +455,69 @@ function splitNeedles(mesh: Mesh, threshold: number): { mesh: Mesh; split: numbe
   return { mesh: { positions: mesh.positions, indices: Uint32Array.from(out) }, split };
 }
 
+/**
+ * Connected surface components of a mesh: triangles joined across shared EDGES.
+ *
+ * The number a slicer reports as "objects", and the number `trimesh.body_count`
+ * (which the reference validator's `bodies` row reads) computes. Shared VERTEX
+ * adjacency is NOT the same question and is the wrong one here: two shells that
+ * meet at a single point are one vertex-connected set and two objects, and that
+ * pinch is exactly what {@link NEEDLE_COLLAPSE_MM} can create - merging two
+ * vertices a tenth of a micrometre apart that belong to two different sheets of
+ * the surface leaves a mesh that is still closed, still oriented and still the
+ * same volume, and is simply three objects where there was one. Measured: the
+ * default Chicago plate left the exporter as three bodies before this check was
+ * here, while the solid it came from was one.
+ */
+export function componentCount(mesh: Mesh): number {
+  const faces = Math.floor(mesh.indices.length / 3);
+  if (faces === 0) return 0;
+  const parent = new Int32Array(faces);
+  for (let f = 0; f < faces; f += 1) parent[f] = f;
+  const find = (f: number): number => {
+    let root = f;
+    while (parent[root] !== root) root = parent[root];
+    let walk = f;
+    while (parent[walk] !== root) {
+      const next = parent[walk];
+      parent[walk] = root;
+      walk = next;
+    }
+    return root;
+  };
+  // Faces per undirected edge, then a union across the edges that have exactly
+  // TWO. That last restriction is the whole point: an edge shared by three or
+  // more faces is not a surface join, it is a non-manifold seam, and it is
+  // where a pinch shows up. `trimesh.body_count` - which is what the reference
+  // validator's `bodies` row reads - builds its face adjacency the same way,
+  // so this function answers the question that row will ask.
+  const edges = new Map<string, number[]>();
+  for (let f = 0; f < faces; f += 1) {
+    const a = mesh.indices[f * 3];
+    const b = mesh.indices[f * 3 + 1];
+    const c = mesh.indices[f * 3 + 2];
+    for (const [u, v] of [
+      [a, b],
+      [b, c],
+      [c, a],
+    ]) {
+      const key = u < v ? `${u},${v}` : `${v},${u}`;
+      const bucket = edges.get(key);
+      if (bucket === undefined) edges.set(key, [f]);
+      else bucket.push(f);
+    }
+  }
+  for (const bucket of edges.values()) {
+    if (bucket.length !== 2) continue;
+    const ra = find(bucket[0]);
+    const rb = find(bucket[1]);
+    if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+  }
+  const roots = new Set<number>();
+  for (let f = 0; f < faces; f += 1) roots.add(find(f));
+  return roots.size;
+}
+
 function edgeLength(p: ArrayLike<number>, ia: number, ib: number): number {
   const a = ia * 3;
   const b = ib * 3;
@@ -364,13 +534,20 @@ function edgeLength(p: ArrayLike<number>, ia: number, ib: number): number {
  */
 export function cleanMesh(
   input: Mesh,
-  options: { epsilonMm?: number; threshold?: number } = {},
+  options: { epsilonMm?: number; threshold?: number; collapseNeedles?: boolean } = {},
 ): { mesh: Mesh; report: MeshReport } {
   const epsilon = options.epsilonMm ?? WELD_EPSILON_MM;
   const threshold = options.threshold ?? REPAIR_AREA_MM2;
   const before = meshVolumeMm3(input);
   const beforeDegenerate = degenerateFaces(input, threshold);
   const beforeOpen = openEdges(input);
+  // Only ever needed by the needle collapse below, and only when there is
+  // something to repair, so it is computed behind the early return.
+  let beforeBodiesCache: number | null = null;
+  const beforeBodiesOf = (): number => {
+    if (beforeBodiesCache === null) beforeBodiesCache = componentCount(input);
+    return beforeBodiesCache;
+  };
 
   if (beforeDegenerate === 0) {
     return {
@@ -441,6 +618,30 @@ export function cleanMesh(
       candidateDegenerate = degenerate;
       candidateOpen = open;
       candidateSplit += attempt.split;
+    }
+
+    // The local collapse, last: it is the narrowest repair here and the only
+    // one that can close a needle the whole-mesh weld had to give up on.
+    if (options.collapseNeedles === true && candidateDegenerate > 0) {
+      const attempt = collapseNeedles(candidate, threshold, NEEDLE_COLLAPSE_MM);
+      if (attempt.collapsed > 0) {
+        const open = openEdges(attempt.mesh);
+        const degenerate = degenerateFaces(attempt.mesh, threshold);
+        // The extra guard this repair needs and the other two do not: see
+        // `componentCount`. A pinch is closed, oriented and volume-preserving,
+        // and it is still three objects where there was one.
+        const bodies = componentCount(attempt.mesh);
+        if (
+          degenerate < candidateDegenerate &&
+          bodies <= beforeBodiesOf() &&
+          acceptable(attempt.mesh, open, degenerate)
+        ) {
+          candidate = attempt.mesh;
+          candidateDegenerate = degenerate;
+          candidateOpen = open;
+          candidateWelded += attempt.collapsed;
+        }
+      }
     }
 
     if (candidateDegenerate < bestDegenerate) {

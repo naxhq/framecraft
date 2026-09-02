@@ -37,6 +37,7 @@ import {
   isoDate,
   orderedRegions,
   placeInBuildSpace,
+  provenanceEntries,
   resolveOptions,
   slotColors,
   triangleCount,
@@ -254,7 +255,6 @@ export function bambuMetadata(result: EngineResult, resolved: ResolvedExportOpti
     ["Origin", ""],
     ["Title", resolved.title],
     ["framecraft:attribution", ATTRIBUTION],
-    ["framecraft:generator", "FrameCraft 3.0.0"],
     ["framecraft:scale", `1:${result.stats.scaleDenominator}`],
     ...(resolved.source
       ? ([
@@ -262,6 +262,11 @@ export function bambuMetadata(result: EngineResult, resolved: ResolvedExportOpti
           ["framecraft:lon", String(resolved.source.lon)],
         ] as Array<[string, string]>)
       : []),
+    // The provenance block, verbatim and in the same order as every other
+    // format writes it (`common.provenanceEntries`, `[V3-P7-A10]`).
+    ...provenanceEntries(result, resolved).map(
+      ([key, value]) => [`framecraft:${key}`, value] as [string, string],
+    ),
   ];
 }
 

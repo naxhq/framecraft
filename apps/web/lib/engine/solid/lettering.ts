@@ -107,7 +107,10 @@ export function facesFor(params: PrintParams): string[] {
     }
   }
   if (params.frame && params.scale_bar?.enabled) out.add(T.SCALE_BAR_FACE);
-  if (params.underside_mark?.enabled) out.add(T.UNDERSIDE_MARK_FACE);
+  // The mandatory attribution is cut on EVERY bake (`solid/attribution.ts`), in
+  // the underside mark's own face, so that face is always needed -- with the
+  // switch off as much as with it on (`[V3-P7-A2]`).
+  out.add(T.UNDERSIDE_MARK_FACE);
   // The tile index marks (`solid/tiling.ts`) are cut in the underside mark's
   // own face, and they are cut long after `loadFaces` has run.
   if (params.tiling?.enabled === true && params.tiling.index_mark !== false) {
@@ -484,10 +487,17 @@ function reportLayoutWarnings(ctx: BakeContext, warnings: readonly string[]): vo
   );
 }
 
+/**
+ * @param reservedUndersideMm how much of the underside the MANDATORY
+ * attribution block takes (`solid/attribution.ts`'s `undersideReserveMm`). The
+ * user's own `edge: "underside"` lines are stacked below it, so the two can
+ * never be laid out on top of each other (`[V3-P7-A2]`).
+ */
 export function buildLettering(
   ctx: BakeContext,
   tokens: TokenContext,
   rotationDeg = 0,
+  reservedUndersideMm = 0,
 ): LetteringGeometry {
   const { params } = ctx;
   const { edges, underside } = splitEngravings(params);
@@ -573,12 +583,10 @@ export function buildLettering(
       ),
     );
   }
-  const markLayout = layout.underside_mark;
-  const reserved =
-    markLayout.enabled && markLayout.fit !== null
-      ? UNDERSIDE_LINE_PITCH * markLayout.fit.size_mm
-      : 0;
-  const placements = undersideColumn(ctx, undersideFits, reserved);
+  // The attribution block, not the v2 underside mark: that mark no longer
+  // exists on its own, and what the user's lines have to clear is the whole
+  // mandatory block (`[V3-P7-A2]`).
+  const placements = undersideColumn(ctx, undersideFits, reservedUndersideMm);
   for (let i = 0; i < underside.length; i += 1) {
     const { engraving, index: sourceIndex } = underside[i];
     const fit = undersideFits[i];

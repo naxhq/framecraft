@@ -150,7 +150,15 @@ describe("ornaments", () => {
       north_arrow: { enabled: true, corner: "ne", size_mm: 4 },
       scale_bar: { enabled: true, edge: "bottom", length_mode: "auto", length_m: 500 },
     });
-    expect(result.resolvedText.filter((line) => line.status === "cuts")).toEqual([]);
+    // Nothing the PARAMETERS asked for is cut. The mandatory attribution marks
+    // are not parameters: they are cut on every bake, with a second underside
+    // mark standing in for the frame-wall one when there is no frame
+    // (v3 phase 7, `solid/attribution.ts`), so they are excluded here and
+    // checked on their own in `attribution.test.ts`.
+    const requested = result.resolvedText.filter((line) => !line.id.startsWith("attribution-"));
+    expect(requested.filter((line) => line.status === "cuts")).toEqual([]);
+    expect(result.resolvedText.filter((line) => line.id.startsWith("attribution-")).length)
+      .toBeGreaterThan(0);
     expect(regionOf(result, "frame")).toBeUndefined();
   }, 60_000);
 });

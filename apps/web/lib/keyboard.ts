@@ -18,7 +18,7 @@
  * while G/B/R still work with a slider focused.
  */
 
-export type Shortcut = "generate" | "bake" | "reset" | "help" | "dismiss";
+export type Shortcut = "generate" | "bake" | "reset" | "help" | "dismiss" | "undo" | "redo";
 
 /**
  * Rendered by the shortcut sheet, and the single source of the key map.
@@ -39,6 +39,8 @@ export const SHORTCUTS: readonly ShortcutSpec[] = [
   { action: "generate", keys: "G", description: "Generate the scene for this location" },
   { action: "bake", keys: "B", description: "Bake the printable model" },
   { action: "reset", keys: "R", description: "Reset every parameter to its default" },
+  { action: "undo", keys: "Ctrl+Z", description: "Undo the last change (Cmd+Z on Mac)" },
+  { action: "redo", keys: "Ctrl+Shift+Z", description: "Redo (Cmd+Shift+Z on Mac)" },
   { action: "help", keys: "?", description: "Show this list" },
   { action: "dismiss", keys: "Esc", description: "Close the drawer, sheet or dialog" },
   { action: null, keys: "Tab", description: "Move between controls, including the preview" },
@@ -101,10 +103,21 @@ export function isTypingTarget(target: TargetLike | null | undefined): boolean {
  * `?` is reported for both "?" and "/" so the sheet opens on a keyboard where
  * the question mark needs a shifted slash and the browser reports the unshifted
  * key -- but only when Shift is actually held, so "/" alone stays free.
+ *
+ * Ctrl+Z / Ctrl+Shift+Z (and Cmd on Mac, [V3-P6]) is the one deliberate
+ * exception to "never a chord": undo/redo. It is still refused inside a
+ * typing target (checked first, same as every other shortcut) so this never
+ * hijacks a text field's own native undo, and refused with Alt held, which is
+ * not the accelerator on any platform.
  */
 export function shortcutFor(event: KeyEventLike): Shortcut | null {
-  if (event.altKey || event.ctrlKey || event.metaKey) return null;
   if (isTypingTarget(event.target)) return null;
+
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "z") {
+    return event.shiftKey ? "redo" : "undo";
+  }
+
+  if (event.altKey || event.ctrlKey || event.metaKey) return null;
 
   if (event.key === "Escape") return "dismiss";
   if (event.key === "?") return "help";

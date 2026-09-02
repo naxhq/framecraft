@@ -620,6 +620,16 @@ export function FrameTextGroup() {
                 </p>
               );
             })()}
+            {/*
+              [V3-P6]: the standing copy the engine's attribution work
+              enforces (`lib/engine/solid/attribution.ts`) -- this text is
+              APPENDED after the mandatory credit, never a replacement for
+              it, whatever this template resolves to.
+            */}
+            <p className="text-2xs leading-snug text-ink-faint">
+              This text is appended to the FrameCraft and OpenStreetMap credit
+              that every model carries underneath, whatever you write here.
+            </p>
           </div>
         ) : null}
       </Field>

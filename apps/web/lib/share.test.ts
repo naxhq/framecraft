@@ -17,6 +17,7 @@
  *     restored editor.
  */
 
+import { deflateSync } from "fflate";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -28,7 +29,9 @@ import {
 import type { Engraving, PrintParams, SceneRequest } from "./contracts";
 import { RADIUS_MAX_M, RADIUS_MIN_M } from "./geo";
 import {
+  DECODABLE_VERSIONS,
   PRINT_PARAM_SPEC,
+  SHARE_LINK_LENGTH_LIMIT,
   SHARE_PARAM,
   SHARE_VERSION,
   checksum,
@@ -341,15 +344,29 @@ function randomV3Params(random: () => number): Pick<
  *
  * Hand-made rather than encoded through `encodeShare`, because the point of
  * most of the refusal suite is a body that `encodeShare` would never produce.
+ * Deflate-compressed and versioned exactly like a real `v3` link -- the
+ * checksum is still computed over the plain JSON text either way ([V3-P6]).
  */
 function payloadOf(body: unknown): string {
+  const text = JSON.stringify(body);
+  const compressed = deflateSync(new TextEncoder().encode(text), { level: 9 });
+  const encoded = Buffer.from(compressed)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  return `${SHARE_VERSION}.${encoded}.${checksum(text)}`;
+}
+
+/** The v2 (uncompressed, plain base64url JSON) payload shape, for back-compat tests. */
+function v2PayloadOf(body: unknown): string {
   const text = JSON.stringify(body);
   const encoded = Buffer.from(text, "utf8")
     .toString("base64")
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
-  return `${SHARE_VERSION}.${encoded}.${checksum(text)}`;
+  return `v2.${encoded}.${checksum(text)}`;
 }
 
 function randomRequest(random: () => number): SceneRequest {
@@ -520,6 +537,45 @@ describe("encodeShare / decodeShare", () => {
     expect(decoded.ok).toBe(true);
     if (!decoded.ok) return;
     expect(decoded.params).toEqual(params);
+  });
+});
+
+// ==========================================================================
+// v2 back-compat ([V3-P6])
+// ==========================================================================
+
+describe("a v2 (uncompressed) link still decodes", () => {
+  it("restores a plain, hand-made v2 payload", () => {
+    const decoded = decodeShare(
+      v2PayloadOf({ r: REQUEST, p: { city_label: "Bergen", plate_mm: 200 } }),
+    );
+    expect(decoded.ok).toBe(true);
+    if (!decoded.ok) return;
+    expect(decoded.request).toEqual(REQUEST);
+    expect(decoded.params.city_label).toBe("Bergen");
+    expect(decoded.params.plate_mm).toBe(200);
+  });
+
+  it("still refuses a v2 payload whose checksum was computed over nonsense", () => {
+    const decoded = decodeShare(v2PayloadOf({ r: { lat: "north" }, p: {} }));
+    expect(decoded.ok).toBe(false);
+    if (decoded.ok) return;
+    expect(decoded.reason).toContain("latitude is not a number");
+  });
+
+  it("still refuses a tampered v2 payload as edited or truncated", () => {
+    const valid = v2PayloadOf({ r: REQUEST, p: { city_label: "Bergen" } });
+    const [version, body, digest] = valid.split(".");
+    const tampered = `${body.slice(0, 5)}${body[5] === "A" ? "B" : "A"}${body.slice(6)}`;
+    const decoded = decodeShare(`${version}.${tampered}.${digest}`);
+    expect(decoded.ok).toBe(false);
+    if (decoded.ok) return;
+    expect(decoded.reason).toContain("edited or truncated");
+  });
+
+  it("a fresh encode always writes v3, never v2", () => {
+    const payload = encodeShare(REQUEST, defaultPrintParams());
+    expect(payload.startsWith("v3.")).toBe(true);
   });
 });
 
@@ -764,29 +820,36 @@ describe("the payload is a diff", () => {
   });
 
   it("stays inside a browser URL even at the contract's maxima", () => {
-    // Measured on this host, with this REQUEST, once the v3 groups joined the
-    // maximum ([V3-P1]: 14 more top-level fields, most of them nested objects
-    // of their own): 6,828 characters of payload for an all-ASCII maximum and
-    // 9,218 for three-byte CJK (the new largest fill: latin-1 and the astral
-    // plane both land at 8,023), against 148 for a default configuration (141
-    // with no preset id). The bound is 16 kB, and it is the claim: comfortably
-    // inside Chrome's ~32 k address bar and Firefox's and Safari's far larger
-    // limits, while being past the 2,083 that legacy IE/Edge and some chat
-    // clients truncate at -- which is precisely the failure the checksum
-    // exists to NAME rather than to prevent. (v1/v2's bound here was 8 kB,
-    // measured at 4,011 ASCII / 5,718 CJK before the v3 groups existed.)
+    // Measured on this host, with this REQUEST, once encoding switched to
+    // raw-deflate ([V3-P6], superseding [V2-P6]'s plain-base64 numbers now
+    // that the maximal fixture repeats long runs of one filler character,
+    // which deflate crushes almost regardless of how many UTF-8 bytes that
+    // character takes): **1,766 characters for an all-ASCII maximum**, 1,795
+    // for latin-1, 1,811 for three-byte CJK and 1,803 for the astral plane --
+    // all four within a few percent of each other, because compression, not
+    // the source alphabet, now dominates the size of a payload this
+    // repetitive. Against 134 for a default configuration. The bound is
+    // 16 kB, and it is the claim: comfortably inside Chrome's ~32 k address
+    // bar and Firefox's and Safari's far larger limits, while being past the
+    // 2,083 that legacy IE/Edge and some chat clients truncate at -- which is
+    // precisely the failure the checksum exists to NAME rather than to
+    // prevent. (Plain base64-of-JSON, pre-[V3-P6], measured 6,828 ASCII /
+    // 9,218 CJK at this same maximum; a real user's own text, being far less
+    // repetitive than `fill.repeat(...)`, compresses less dramatically than
+    // this fixture does, which is why the guard below still matters for the
+    // Copy-link UI even though this laboratory maximum clears it easily.)
     const lengths: Record<string, number> = {};
     for (const [name, fill] of FILLS) {
       const payload = encodeShare(REQUEST, maximal(fill));
       lengths[name] = payload.length;
       expect(payload.length, `${name}: ${payload.length} characters`).toBeLessThan(16384);
     }
-    // Not vacuous: a non-ASCII maximum really is bigger than the ASCII one, and
-    // both are far bigger than the 2,319 the old comment claimed.
-    expect(lengths.ascii).toBeGreaterThan(3500);
+    // Not vacuous: every alphabet actually produced a payload, and none of
+    // them collapsed to something suspiciously tiny.
+    expect(lengths.ascii).toBeGreaterThan(1000);
     expect(lengths["cjk 3 byte"]).toBeGreaterThan(lengths.ascii);
     // ...and a default configuration is still a link a person can paste.
-    expect(encodeShare(REQUEST, defaultPrintParams()).length).toBeLessThan(160);
+    expect(encodeShare(REQUEST, defaultPrintParams()).length).toBeLessThan(200);
   });
 });
 
@@ -806,15 +869,22 @@ describe("a link is untrusted input", () => {
   it("refuses a version it does not read, and names it", () => {
     const [, body, digest] = valid.split(".");
     expect(rejected(`v1.${body}.${digest}`)).toContain("different version");
-    expect(rejected(`v3.${body}.${digest}`)).toContain("v3");
+    expect(rejected(`v1.${body}.${digest}`)).toContain("v1");
+    expect(rejected(`v4.${body}.${digest}`)).toContain("v4");
   });
 
   it("refuses a truncated or hand-edited payload", () => {
     const [version, body, digest] = valid.split(".");
-    // One character flipped in the middle: it still base64-decodes, and often
-    // still parses, which is exactly why the digest is there.
+    // One character flipped in the middle: it still base64-decodes. [V3-P6]:
+    // a v3 body is deflate-compressed, so a flipped bit usually breaks the
+    // compressed STREAM outright (refused as "damaged") rather than inflating
+    // to different bytes whose checksum then disagrees ("edited or
+    // truncated") -- both are the same promise, a NAMED refusal rather than a
+    // half-applied editor, so either message is accepted here.
     const tampered = `${body.slice(0, 10)}${body[10] === "A" ? "B" : "A"}${body.slice(11)}`;
-    expect(rejected(`${version}.${tampered}.${digest}`)).toContain("edited or truncated");
+    expect(rejected(`${version}.${tampered}.${digest}`)).toMatch(
+      /edited or truncated|damaged/,
+    );
     expect(rejected(`${version}.${body.slice(0, body.length - 4)}.${digest}`)).toBeTruthy();
     expect(rejected(valid.slice(0, valid.length - 3))).toBeTruthy();
   });
@@ -995,6 +1065,18 @@ describe("PRINT_PARAM_SPEC", () => {
 // ==========================================================================
 // URLs
 // ==========================================================================
+
+describe("DECODABLE_VERSIONS / SHARE_LINK_LENGTH_LIMIT", () => {
+  it("writes v3 and reads both v2 and v3", () => {
+    expect(SHARE_VERSION).toBe("v3");
+    expect(DECODABLE_VERSIONS).toEqual(["v2", "v3"]);
+  });
+
+  it("names a concrete character bound the UI can compare a link against", () => {
+    expect(SHARE_LINK_LENGTH_LIMIT).toBeGreaterThan(1000);
+    expect(SHARE_LINK_LENGTH_LIMIT).toBeLessThan(16384);
+  });
+});
 
 describe("shareUrl and readShareParam", () => {
   it("sets the payload on the current page and drops the fragment", () => {

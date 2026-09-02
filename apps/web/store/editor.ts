@@ -299,6 +299,26 @@ export interface EditorState {
   toggleHero: (id: string) => void;
   clearHeroes: () => void;
 
+  // --- undo/redo ([V3-P6]: `store/history.ts` calls this, never a fetch) ---
+  /**
+   * Restore a `{ location, params }` snapshot from the undo/redo stack.
+   * Deliberately never itself a fetch, same discipline as `applyShared`: the
+   * scene is marked stale ONLY when the location actually differs from what
+   * is on screen now, so stepping through a run of pure-parameter edits never
+   * re-triggers Overpass, while stepping across a pin move or a preset click
+   * does mark it stale (Generate is still the user's own move either way).
+   */
+  applyHistorySnapshot: (snapshot: { location: LocationState; params: PrintParams }) => void;
+
+  // --- project file ([V3-P6]: unlike a share restore, this DOES re-ingest) ---
+  /**
+   * Apply a `.framecraft.json` project's `{ location, params }` (already
+   * parsed and validated by `lib/project.ts:parseProject`) and generate the
+   * scene for it immediately -- a project file is a deliberate "open this"
+   * action, not a link that might sit unopened in a background tab.
+   */
+  applyProject: (location: LocationState, params: PrintParams) => void;
+
   // --- shared configuration (a URL payload; still never a fetch) ---
   applyShared: (request: SceneRequest, params: PrintParams) => void;
   /**
@@ -822,6 +842,49 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   clearHeroes: () => {
     set({ heroCapHit: false });
     get().setParam("hero_building_ids", []);
+  },
+
+  applyHistorySnapshot: (snapshot) => {
+    // Captured BEFORE the write: after `set()`, `get().location` IS
+    // `snapshot.location` (same reference), so comparing against it there
+    // would always read "unchanged".
+    const locationChanged = JSON.stringify(get().location) !== JSON.stringify(snapshot.location);
+    const paramsChanged = get().params !== snapshot.params;
+    set((state) => ({
+      location: snapshot.location,
+      params: snapshot.params,
+      scene: locationChanged ? { ...state.scene, stale: true } : state.scene,
+      engine: locationChanged || paramsChanged ? markEngineStale(state.engine) : state.engine,
+      bake: locationChanged || paramsChanged ? markBakeStale(state.bake) : state.bake,
+    }));
+    // The (WASM, in-page) engine job, never Overpass: harmless to schedule
+    // whether or not anything actually moved, unlike `generate()`.
+    scheduleEngineJob(get, set);
+    if (locationChanged) scheduleTerrainJob(get, set);
+  },
+
+  applyProject: (location, params) => {
+    set((state) => ({
+      location,
+      params,
+      scene: { ...state.scene, stale: true },
+      engine: markEngineStale(state.engine),
+      bake: markBakeStale(state.bake),
+      terrain: { ...initialTerrainState },
+      presetChosen: false,
+      heroCapHit: false,
+      placeDetect: {
+        status: "idle",
+        source: "none",
+        detectedCity: null,
+        overridden: (params.city_label ?? "") !== "",
+      },
+    }));
+    scheduleTerrainJob(get, set);
+    // Unlike a share restore, opening a project file is a deliberate "load
+    // this design" action -- it re-ingests immediately rather than leaving
+    // the scene stale for the user to Generate themselves.
+    void get().generate();
   },
 
   /**
