@@ -15,7 +15,7 @@
  *
  *  - **The page.** `perfReport()` reads Navigation Timing, Resource Timing and
  *    the paint entries, and merges them with whatever spans this module
- *    recorded (`overpass`, `export`, preview geometry upload, ...).
+ *    recorded (`overpass`, `export`, preview geometry build, ...).
  *  - **The engine workers.** A worker has `performance.now()` and its own
  *    resource entries but no `window`; `worker.ts` switches perf mode on from
  *    the flag `client.ts` puts on the job message, and drains this module's
@@ -23,8 +23,28 @@
  *    (`lib/engine/protocol.ts`). A worker's `performance.timeOrigin` is the
  *    moment the worker was created, NOT the document's, so every timing also
  *    carries `epochMs` and `perfMergeTimings` rebases it onto the page clock.
- *  - **Node** (`build:cli`, vitest). `perfEnabled()` is false there unless a
+ *  - **Node** (`export:cli`, vitest). `perfEnabled()` is false there unless a
  *    caller sets it, and nothing installs an observer.
+ *
+ * Two shapes the report has that a flat list of numbers does not:
+ *
+ *  - **Runs.** Everything recorded between two `perfFlush` calls is one run
+ *    with its own id. Rows fold within a run and never across one, so a second
+ *    build cannot double the first one's `count` and `totalMs`, and the HUD
+ *    can show any of the last `MAX_RUNS` on its own.
+ *  - **A tree.** `solid.roads` is recorded inside `solid.surfaces`, so its
+ *    milliseconds are already part of the parent's. Every row carries `parent`,
+ *    `depth` and `selfMs`; only rows at depth 0 may be summed for a total,
+ *    which is what `perfTotalMs` does.
+ *
+ * Turning the mode on: `?perf=1` on the URL, or `localStorage.setItem(
+ * "framecraft.perf", "1")`. The stored flag is the durable one and the only
+ * one the desktop shell can use. The query parameter does not survive
+ * everything the app does to the address bar -- copying a share link replaces
+ * the URL with the encoded link (`components/editor/OutputPanel.tsx`), which
+ * correctly does not hand perf mode to whoever receives the link, but also
+ * means a reload after copying one starts with perf mode off unless the stored
+ * flag is set.
  *
  * Nothing in this module throws. A browser without `PerformanceObserver`,
  * without `longtask` support, or with a full mark buffer degrades to fewer
@@ -49,21 +69,59 @@ export interface PerfTiming {
   epochMs: number;
   /** Bytes this timing accounts for (a WASM fetch, an export payload). */
   bytes?: number;
+  /**
+   * Which run this timing belongs to. Optional on the wire: a worker numbers
+   * its own runs and `perfMergeTimings` re-stamps every incoming timing with
+   * the page's current run, which is the only numbering the report uses.
+   */
+  runId?: number;
+  /** The span this one was recorded inside, if any. */
+  parent?: string;
+  /** How many spans deep this one sits. 0 is top level. */
+  depth?: number;
 }
 
-/** One line of the report: every timing sharing a name, folded together. */
+/**
+ * One line of the report: every timing sharing a name WITHIN ONE RUN, folded
+ * together.
+ *
+ * Rows are a tree, not a list: `solid.roads` is recorded inside
+ * `solid.surfaces`, so its milliseconds are already part of the parent's. Sum
+ * `totalMs` over rows with `depth === 0` for the run's wall time, or sum
+ * `selfMs` over every row; summing `totalMs` over every row double counts the
+ * nesting, which is exactly what the flat table used to invite.
+ */
 export interface PerfRow {
   name: string;
   scope: PerfScope;
+  /** The run this row belongs to. Rows never fold across runs. */
+  runId: number;
   count: number;
-  /** Sum of the durations, 0 for a row of pure marks. */
+  /** Sum of the durations, 0 for a row of pure marks. Children included. */
   totalMs: number;
+  /** `totalMs` minus the total of the rows nested inside this one. */
+  selfMs: number;
+  /** The row this one is nested inside, or null at top level. */
+  parent: string | null;
+  /** Nesting depth, 0 at top level: what the indentation renders from. */
+  depth: number;
   /** The most recent duration, or null when the row holds only marks. */
   lastMs: number | null;
   /** Sum of the bytes, or null when no timing in the row carried any. */
   bytes: number | null;
   /** Start of the earliest timing in the row, on the page clock. */
   startMs: number;
+}
+
+/** One run: everything recorded between two `perfFlush` calls. */
+export interface PerfRunInfo {
+  id: number;
+  /** The flush label that closed the run, or "current" while it is open. */
+  label: string;
+  /** Page clock milliseconds at which the run closed, or was first seen. */
+  atMs: number;
+  /** False for the one run still accepting timings. */
+  closed: boolean;
 }
 
 export type PerfResourceKind =
@@ -108,8 +166,10 @@ export interface PerfNavigation {
   htmlMs: number;
   htmlTransferBytes: number;
   htmlDecodedBytes: number;
-  domContentLoadedMs: number;
-  loadMs: number;
+  /** Null until the `DOMContentLoaded` event has actually fired. */
+  domContentLoadedMs: number | null;
+  /** Null until the `load` event has actually fired. */
+  loadMs: number | null;
   domInteractiveMs: number;
   firstPaintMs: number | null;
   firstContentfulPaintMs: number | null;
@@ -131,6 +191,10 @@ export interface PerfReport {
   label: string;
   /** Page clock milliseconds at which the report was built. */
   atMs: number;
+  /** The run this report is about: the one just closed, or the open one. */
+  runId: number;
+  /** Every run still held, oldest first, the open one last. */
+  runs: PerfRunInfo[];
   rows: PerfRow[];
   spans: PerfTiming[];
   navigation: PerfNavigation | null;
@@ -161,6 +225,9 @@ const RESOURCE_KINDS: readonly PerfResourceKind[] = [
 
 /** How many timings the buffer holds before the oldest are dropped. */
 const MAX_TIMINGS = 4000;
+
+/** How many closed runs the buffer keeps before the oldest is dropped. */
+export const MAX_RUNS = 10;
 
 /** How many resources a report lists individually. */
 export const REPORT_RESOURCE_LIMIT = 10;
@@ -235,6 +302,10 @@ export function perfEnabled(): boolean {
  */
 export function setPerfEnabled(value: boolean | null): void {
   override = value;
+  // Turning the mode off takes the observer and the window hook with it: a
+  // page that is no longer measuring should have nothing of this module
+  // installed in it.
+  if (!perfEnabled()) perfUninstall();
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +313,55 @@ export function setPerfEnabled(value: boolean | null): void {
 // ---------------------------------------------------------------------------
 
 const timings: PerfTiming[] = [];
+
+/**
+ * Runs.
+ *
+ * Every timing carries the id of the run it was recorded in, and a run ends
+ * when `perfFlush` reports it. Rows fold within a run and never across one, so
+ * a second build cannot fold into the first one's row and double its `count`
+ * and `totalMs` -- which is what made the published tables depend on an
+ * operator remembering to press Clear between runs.
+ */
+let currentRunId = 1;
+const closedRuns: PerfRunInfo[] = [];
+
+/** One open span, while it is open: what nests the spans recorded inside it. */
+interface SpanFrame {
+  name: string;
+  depth: number;
+  parent: string | undefined;
+}
+
+const spanStack: SpanFrame[] = [];
+
+function openFrame(name: string): SpanFrame {
+  const frame: SpanFrame = {
+    name,
+    depth: spanStack.length,
+    parent: spanStack[spanStack.length - 1]?.name,
+  };
+  spanStack.push(frame);
+  return frame;
+}
+
+/**
+ * Close one frame by identity, not by popping.
+ *
+ * An asynchronous span stays open until its promise settles, and two of those
+ * can settle out of order; removing the exact frame keeps the rest of the
+ * stack intact instead of unwinding somebody else's span.
+ */
+function closeFrame(frame: SpanFrame): void {
+  const index = spanStack.lastIndexOf(frame);
+  if (index !== -1) spanStack.splice(index, 1);
+}
+
+/** Where a mark or a recorded span sits in the current span tree. */
+function currentNesting(): { parent?: string; depth: number } {
+  const top = spanStack[spanStack.length - 1];
+  return top === undefined ? { depth: 0 } : { parent: top.name, depth: top.depth + 1 };
+}
 
 function nowMs(): number {
   return performance.now();
@@ -260,7 +380,7 @@ function isWorkerRealm(): boolean {
 }
 
 function record(timing: PerfTiming): void {
-  timings.push(timing);
+  timings.push({ ...timing, runId: currentRunId });
   if (timings.length > MAX_TIMINGS) timings.splice(0, timings.length - MAX_TIMINGS);
 }
 
@@ -278,6 +398,7 @@ export function perfMark(name: string, options: { bytes?: number } = {}): void {
     startMs,
     durationMs: null,
     epochMs: timeOriginMs() + startMs,
+    ...currentNesting(),
     ...(options.bytes === undefined ? {} : { bytes: options.bytes }),
   });
   try {
@@ -302,19 +423,22 @@ export function perfRecord(
     startMs,
     durationMs,
     epochMs: timeOriginMs() + startMs,
+    ...currentNesting(),
     ...(options.bytes === undefined ? {} : { bytes: options.bytes }),
   });
 }
 
-function finish(name: string, startMs: number, bytes?: number): void {
+function finish(name: string, startMs: number, frame: SpanFrame): void {
   const endMs = nowMs();
+  closeFrame(frame);
   record({
     name,
     scope: scope(),
     startMs,
     durationMs: endMs - startMs,
     epochMs: timeOriginMs() + startMs,
-    ...(bytes === undefined ? {} : { bytes }),
+    depth: frame.depth,
+    ...(frame.parent === undefined ? {} : { parent: frame.parent }),
   });
   try {
     performance.measure(name, { start: startMs, end: endMs });
@@ -343,12 +467,13 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
  */
 export function perfSpan<T>(name: string, fn: () => T): T {
   if (!perfEnabled()) return fn();
+  const frame = openFrame(name);
   const startMs = nowMs();
   let value: T;
   try {
     value = fn();
   } catch (error) {
-    finish(name, startMs);
+    finish(name, startMs, frame);
     throw error;
   }
   if (isThenable(value)) {
@@ -357,16 +482,16 @@ export function perfSpan<T>(name: string, fn: () => T): T {
     // exactly T's own contract to its caller.
     return value.then(
       (resolved) => {
-        finish(name, startMs);
+        finish(name, startMs, frame);
         return resolved;
       },
       (error: unknown) => {
-        finish(name, startMs);
+        finish(name, startMs, frame);
         throw error;
       },
     ) as unknown as T;
   }
-  finish(name, startMs);
+  finish(name, startMs, frame);
   return value;
 }
 
@@ -379,6 +504,7 @@ export function perfSpan<T>(name: string, fn: () => T): T {
 export function perfDrainTimings(): PerfTiming[] {
   const drained = timings.slice();
   timings.length = 0;
+  clearUserTiming(drained);
   return drained;
 }
 
@@ -402,12 +528,79 @@ export function perfMergeTimings(incoming: readonly PerfTiming[]): void {
   }
 }
 
-/** Drop every recorded timing. The HUD's Clear button, and test setup. */
+/**
+ * Bound the browser's own User Timing buffer.
+ *
+ * `perfMark`/`finish` also call `performance.mark`/`measure`, so a DevTools
+ * timeline shows the same spans. Nothing ever reads those entries back, so
+ * once this module has harvested a batch they are dropped by name -- by name,
+ * not with a bare `clearMarks()`, because Next.js and React put their own
+ * entries in the same buffer.
+ */
+function clearUserTiming(harvested: readonly PerfTiming[]): void {
+  const names = new Set(harvested.map((timing) => timing.name));
+  for (const name of names) {
+    try {
+      performance.clearMarks?.(name);
+      performance.clearMeasures?.(name);
+    } catch {
+      // A runtime without User Timing: there was nothing to clear anyway.
+    }
+  }
+}
+
+/**
+ * Drop every recorded timing and every run. The HUD's Clear button, and test
+ * setup.
+ */
 export function perfReset(): void {
+  clearUserTiming(timings);
   timings.length = 0;
+  spanStack.length = 0;
+  closedRuns.length = 0;
+  currentRunId = 1;
   longTaskCount = 0;
   longTaskLongestMs = 0;
   longTaskTotalMs = 0;
+}
+
+/** Every run still held, oldest first, the open one last. */
+export function perfRuns(): PerfRunInfo[] {
+  const open: PerfRunInfo = {
+    id: currentRunId,
+    label: "current",
+    atMs: openRunStartMs(),
+    closed: false,
+  };
+  return [...closedRuns, open];
+}
+
+/** When the open run's first timing landed, or now if it holds none yet. */
+function openRunStartMs(): number {
+  for (const timing of timings) {
+    if (timing.runId === currentRunId) return timing.startMs;
+  }
+  return nowMs();
+}
+
+/**
+ * Close the open run under `label` and open the next one.
+ *
+ * Only the last `MAX_RUNS` runs are kept; the timings of anything older go
+ * with them, which is what stops a long session from growing without bound.
+ */
+function closeRun(label: string, atMs: number): number {
+  const closedId = currentRunId;
+  closedRuns.push({ id: closedId, label, atMs, closed: true });
+  currentRunId += 1;
+  if (closedRuns.length > MAX_RUNS) {
+    closedRuns.splice(0, closedRuns.length - MAX_RUNS);
+    const oldestKept = closedRuns[0].id;
+    const kept = timings.filter((timing) => (timing.runId ?? oldestKept) >= oldestKept);
+    timings.length = 0;
+    for (const timing of kept) timings.push(timing);
+  }
+  return closedId;
 }
 
 /** Test-only: forget the cached auto-detection so a new environment is read. */
@@ -426,8 +619,23 @@ let longTaskCount = 0;
 let longTaskLongestMs = 0;
 let longTaskTotalMs = 0;
 
+/**
+ * Whether this browser really delivers `longtask` entries.
+ *
+ * `observe({ type: "longtask" })` is not the test: Firefox does not throw on
+ * an entry type it does not implement, it warns and delivers nothing, and the
+ * report would then claim a measured zero. `supportedEntryTypes` is the only
+ * honest answer, and a browser too old to have it is one that has no
+ * `longtask` either.
+ */
+function longTaskEntryTypeSupported(): boolean {
+  if (typeof PerformanceObserver === "undefined") return false;
+  const types = PerformanceObserver.supportedEntryTypes;
+  return Array.isArray(types) && types.includes("longtask");
+}
+
 function startLongTaskObserver(): void {
-  if (longTaskObserver !== null || typeof PerformanceObserver === "undefined") return;
+  if (longTaskObserver !== null || !longTaskEntryTypeSupported()) return;
   try {
     const observer = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
@@ -506,12 +714,21 @@ function navigationTiming(): PerfNavigation | null {
     htmlTransferBytes: entry.transferSize,
     htmlDecodedBytes: entry.decodedBodySize,
     domInteractiveMs: entry.domInteractive,
-    domContentLoadedMs: entry.domContentLoadedEventEnd,
-    loadMs: entry.loadEventEnd,
+    // Both of these read 0 until their event fires, and a report built from
+    // the HUD's mount effect is often earlier than that. 0 would render as an
+    // instant load; null renders as "n/a", the treatment paint timing already
+    // gets, and the HUD re-reads the report on `load`.
+    domContentLoadedMs: eventTime(entry.domContentLoadedEventEnd),
+    loadMs: eventTime(entry.loadEventEnd),
     firstPaintMs,
     firstContentfulPaintMs,
     type: entry.type,
   };
+}
+
+/** A navigation event field, or null while the event has not fired. */
+function eventTime(value: number): number | null {
+  return typeof value === "number" && value > 0 ? value : null;
 }
 
 function emptyTotals(): PerfResourceTotals {
@@ -520,17 +737,37 @@ function emptyTotals(): PerfResourceTotals {
   return { count: 0, transferBytes: 0, decodedBytes: 0, byKind };
 }
 
+/** A row's identity: one name, in one realm, in one run. */
+function rowKey(runId: number, scope: PerfScope, name: string): string {
+  return `${runId}|${scope}|${name}`;
+}
+
+/**
+ * Fold timings into rows: one row per name, per scope, PER RUN.
+ *
+ * Two things come out of this that the flat fold could not express. Rows never
+ * cross a run boundary, so a second build starts a new `engine.build` row
+ * instead of doubling the first one's count and milliseconds. And a row
+ * recorded inside another keeps its `parent` and `depth`, so the report reads
+ * as the tree it always was: `selfMs` is the row's own time with its children
+ * taken out, and only `depth === 0` rows may be summed for a total.
+ */
 function foldRows(source: readonly PerfTiming[]): PerfRow[] {
   const byKey = new Map<string, PerfRow>();
   for (const timing of source) {
-    const key = `${timing.scope} ${timing.name}`;
+    const runId = timing.runId ?? 1;
+    const key = rowKey(runId, timing.scope, timing.name);
     const existing = byKey.get(key);
     if (existing === undefined) {
       byKey.set(key, {
         name: timing.name,
         scope: timing.scope,
+        runId,
         count: 1,
         totalMs: timing.durationMs ?? 0,
+        selfMs: timing.durationMs ?? 0,
+        parent: timing.parent ?? null,
+        depth: timing.depth ?? 0,
         lastMs: timing.durationMs,
         bytes: timing.bytes ?? null,
         startMs: timing.startMs,
@@ -539,11 +776,78 @@ function foldRows(source: readonly PerfTiming[]): PerfRow[] {
     }
     existing.count += 1;
     existing.totalMs += timing.durationMs ?? 0;
+    existing.selfMs += timing.durationMs ?? 0;
     if (timing.durationMs !== null) existing.lastMs = timing.durationMs;
     if (timing.bytes !== undefined) existing.bytes = (existing.bytes ?? 0) + timing.bytes;
     if (timing.startMs < existing.startMs) existing.startMs = timing.startMs;
   }
-  return [...byKey.values()].sort((a, b) => a.startMs - b.startMs);
+
+  const rows = [...byKey.values()].sort((a, b) => a.runId - b.runId || a.startMs - b.startMs);
+  for (const row of rows) {
+    if (row.parent === null) continue;
+    if (row.parent === row.name) {
+      // A span recorded inside another span of the same name (a tiled export
+      // calls its own writer per tile) folds into ONE row, and a row cannot be
+      // its own child: it is the top of its own recursion.
+      row.parent = null;
+      row.depth = 0;
+      continue;
+    }
+    const parent = byKey.get(rowKey(row.runId, row.scope, row.parent));
+    if (parent === undefined) {
+      // The parent span is not in this buffer (an older run, or the cap), so
+      // this row is the top of what is left rather than an orphan child.
+      row.parent = null;
+      row.depth = 0;
+      continue;
+    }
+    parent.selfMs -= row.totalMs;
+  }
+  return orderTree(rows);
+}
+
+/**
+ * Depth-first order: every row directly under its parent, siblings by start.
+ *
+ * Sorting by start alone gets this right for a strictly sequential pipeline
+ * but not for two spans that overlap, and the indentation has to hold either
+ * way.
+ */
+function orderTree(rows: readonly PerfRow[]): PerfRow[] {
+  const children = new Map<string, PerfRow[]>();
+  const roots: PerfRow[] = [];
+  for (const row of rows) {
+    if (row.parent === null) {
+      roots.push(row);
+      continue;
+    }
+    const key = rowKey(row.runId, row.scope, row.parent);
+    const siblings = children.get(key);
+    if (siblings === undefined) children.set(key, [row]);
+    else siblings.push(row);
+  }
+  const ordered: PerfRow[] = [];
+  const seen = new Set<PerfRow>();
+  const walk = (row: PerfRow): void => {
+    // A cycle in the parent links would otherwise recurse for ever, and a
+    // diagnostic overlay must not be the thing that hangs the page.
+    if (seen.has(row)) return;
+    seen.add(row);
+    ordered.push(row);
+    for (const child of children.get(rowKey(row.runId, row.scope, row.name)) ?? []) walk(child);
+  };
+  for (const root of roots) walk(root);
+  // Anything a cycle kept out of the walk is still a measurement, so it goes
+  // at the end rather than disappearing from the table.
+  for (const row of rows) if (!seen.has(row)) ordered.push(row);
+  return ordered;
+}
+
+/** The wall time of one run: its top-level rows, with no double counting. */
+export function perfTotalMs(rows: readonly PerfRow[]): number {
+  let total = 0;
+  for (const row of rows) if (row.depth === 0) total += row.totalMs;
+  return total;
 }
 
 /**
@@ -552,13 +856,18 @@ function foldRows(source: readonly PerfTiming[]): PerfRow[] {
  * about the load. Safe to call with perf mode off, where it returns an empty
  * report with `enabled: false`.
  */
-export function perfReport(label = "report"): PerfReport {
+export function perfReport(label = "report", runId?: number): PerfReport {
   const enabled = perfEnabled();
+  // `perfFlush` closes its run before it builds the report, so it names the
+  // run it is reporting on; every other caller is looking at the open one.
+  const reportRunId = runId ?? currentRunId;
   if (!enabled) {
     return {
       enabled: false,
       label,
       atMs: nowMs(),
+      runId: reportRunId,
+      runs: [],
       rows: [],
       spans: [],
       navigation: null,
@@ -597,6 +906,8 @@ export function perfReport(label = "report"): PerfReport {
     enabled: true,
     label,
     atMs: nowMs(),
+    runId: reportRunId,
+    runs: perfRuns(),
     rows: foldRows(timings),
     spans: timings.slice(),
     navigation: navigationTiming(),
@@ -632,6 +943,11 @@ function ms(value: number): string {
   return value.toFixed(1);
 }
 
+/** A milliseconds field that may not have happened yet. */
+function msOrNa(value: number | null): string {
+  return value === null ? "n/a" : `${ms(value)} ms`;
+}
+
 /** `1.2 MB` / `812 kB` / `96 B`, decimal units, matching what DevTools shows. */
 export function perfBytes(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)} MB`;
@@ -650,16 +966,27 @@ export function perfText(report: PerfReport): string {
   if (nav !== null) {
     lines.push(
       `navigation (${nav.type}): html ${ms(nav.htmlMs)} ms ${perfBytes(nav.htmlTransferBytes)}, ` +
-        `interactive ${ms(nav.domInteractiveMs)} ms, DOMContentLoaded ${ms(nav.domContentLoadedMs)} ms, ` +
-        `load ${ms(nav.loadMs)} ms, FCP ${nav.firstContentfulPaintMs === null ? "n/a" : `${ms(nav.firstContentfulPaintMs)} ms`}`,
+        `interactive ${ms(nav.domInteractiveMs)} ms, DOMContentLoaded ${msOrNa(nav.domContentLoadedMs)}, ` +
+        `load ${msOrNa(nav.loadMs)}, FCP ${msOrNa(nav.firstContentfulPaintMs)}`,
     );
   }
-  lines.push("");
-  lines.push("name\tscope\tcount\tms\tbytes");
-  for (const row of report.rows) {
-    lines.push(
-      `${row.name}\t${row.scope}\t${row.count}\t${ms(row.totalMs)}\t${row.bytes === null ? "" : row.bytes}`,
-    );
+  // One block per run, because rows from two runs must never be added
+  // together, and inside a block the `ms` of a child is already inside the
+  // `ms` of its parent: `self` is the column that may be summed freely, and
+  // the total line sums only the rows at depth 0.
+  for (const run of report.runs) {
+    const rows = report.rows.filter((row) => row.runId === run.id);
+    if (rows.length === 0) continue;
+    lines.push("");
+    lines.push(`run ${run.id}: ${run.label} at ${ms(run.atMs)} ms`);
+    lines.push("name\tscope\tcount\tms\tbytes\tself");
+    for (const row of rows) {
+      lines.push(
+        `${"  ".repeat(row.depth)}${row.name}\t${row.scope}\t${row.count}\t${ms(row.totalMs)}\t` +
+          `${row.bytes === null ? "" : row.bytes}\t${ms(row.selfMs)}`,
+      );
+    }
+    lines.push(`total (top level)\t\t\t${ms(perfTotalMs(rows))}`);
   }
   if (report.resources.length > 0) {
     lines.push("");
@@ -701,19 +1028,26 @@ function consoleLike(): ConsoleLike | null {
  */
 export function perfFlush(label: string): PerfReport | null {
   if (!perfEnabled()) return null;
-  const report = perfReport(label);
+  const runId = closeRun(label, nowMs());
+  const report = perfReport(label, runId);
+  const runRows = report.rows.filter((row) => row.runId === runId);
   const out = consoleLike();
   if (out !== null) {
     const group = out.groupCollapsed;
-    if (typeof group === "function") group.call(out, `FrameCraft perf: ${label}`);
-    else out.log(`FrameCraft perf: ${label}`);
+    const heading = `FrameCraft perf: ${label} (run ${runId})`;
+    if (typeof group === "function") group.call(out, heading);
+    else out.log(heading);
     if (typeof out.table === "function") {
+      // This run only, indented by depth: a child's ms is part of its
+      // parent's, so `self` is the column that adds up to the total.
       out.table(
-        report.rows.map((row) => ({
-          name: row.name,
+        runRows.map((row) => ({
+          name: `${"  ".repeat(row.depth)}${row.name}`,
           scope: row.scope,
           count: row.count,
           ms: Number(row.totalMs.toFixed(2)),
+          self: Number(row.selfMs.toFixed(2)),
+          parent: row.parent,
           bytes: row.bytes,
         })),
       );
@@ -734,6 +1068,9 @@ export function perfFlush(label: string): PerfReport | null {
     const end = out.groupEnd;
     if (typeof end === "function") end.call(out);
   }
+  // The run is harvested into `report` now, so the browser's own mark and
+  // measure buffer can let it go. This module's copy is what the HUD reads.
+  clearUserTiming(report.spans.filter((span) => span.runId === runId));
   for (const listener of listeners) listener(report);
   return report;
 }
@@ -772,6 +1109,33 @@ export function perfInstall(): void {
     flush: perfFlush,
     reset: perfReset,
   };
+}
+
+/**
+ * Undo `perfInstall`: disconnect the long-task observer and take
+ * `window.__framecraftPerf` back off the global.
+ *
+ * Perf mode is a diagnostic mode, not a permanent tenant of the page. This is
+ * called when the HUD unmounts and whenever `setPerfEnabled` turns the mode
+ * off, so nothing installed for a measurement outlives the measurement.
+ * Idempotent, and safe in a realm that never installed anything.
+ */
+export function perfUninstall(): void {
+  // A realm that never installed anything -- every engine worker, and every
+  // page with perf mode off -- leaves on two reads.
+  if (!installed && longTaskObserver === null) return;
+  installed = false;
+  if (longTaskObserver !== null) {
+    try {
+      longTaskObserver.disconnect();
+    } catch {
+      // A disconnect that throws still leaves nothing to disconnect.
+    }
+    longTaskObserver = null;
+  }
+  longTaskSupported = false;
+  const holder = globalThis as { __framecraftPerf?: PerfGlobal };
+  delete holder.__framecraftPerf;
 }
 
 /** Test-only: forget that `perfInstall` already ran. */

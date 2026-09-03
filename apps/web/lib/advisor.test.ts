@@ -181,7 +181,18 @@ describe("detailAdvice", () => {
       // The visible label is short; the accessible name says what changes.
       expect(action.ariaLabel.length).toBeGreaterThan(action.label.length);
       expect(action.ariaLabel).toContain(String(action.value));
+      // The two user actions are Preview and Export ([V3.1-O3]). "Generate"
+      // is retired, and an accessible name is where a retired verb survives
+      // longest because only a screen reader ever says it out loud.
+      expect(action.ariaLabel.toLowerCase()).not.toContain("generate");
     }
+  });
+
+  it("says 'preview again' in the radius button's accessible name", () => {
+    const advice = detailAdvice(DAMAGED, params({ plate_mm: 100 }), 3000);
+    const radius = advice?.actions.find((action) => action.kind === "radius");
+    expect(radius, "the damaged case is meant to offer a smaller radius").toBeDefined();
+    expect(radius?.ariaLabel).toBe(`Use a ${radius?.value} m radius and preview again`);
   });
 });
 

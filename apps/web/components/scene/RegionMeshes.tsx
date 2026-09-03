@@ -3,8 +3,12 @@
 import { useEffect, useMemo } from "react";
 import { BufferAttribute, BufferGeometry } from "three";
 
+import PerfFrameMark from "@/components/scene/PerfFrameMark";
 import type { RegionMesh } from "@/lib/engine/types";
 import { perfSpan } from "@/lib/perf";
+
+/** Identity counter for `built`: what re-arms the on-screen mark. */
+let buildCounter = 0;
 
 /**
  * The real thing: every `RegionMesh` the browser engine (`lib/engine/engine.ts`
@@ -40,24 +44,34 @@ export function buildGeometry(region: RegionMesh): BufferGeometry {
 }
 
 export function RegionMeshes({ regions }: { regions: readonly RegionMesh[] }) {
-  // The float64 -> float32 copy, the normals and the bounding sphere for every
-  // region, on the main thread: the one preview cost the engine's own timings
-  // cannot see. `perfSpan` is a boolean read with perf mode off (`lib/perf.ts`).
-  const built = useMemo(
-    () =>
-      perfSpan("preview.geometry", () =>
+  // `preview.geometryBuild` is CPU time and only CPU time: the float64 ->
+  // float32 copy, the index attribute, the vertex normals and the bounding
+  // sphere for every region, on the main thread -- the one preview cost the
+  // engine's own timings cannot see. Nothing here touches the GPU. three.js
+  // uploads a buffer lazily, on the first render that binds it, which is after
+  // this span has closed; `preview.geometryOnScreen` below is that frame.
+  // `perfSpan` is a boolean read with perf mode off (`lib/perf.ts`).
+  //
+  // The build carries an id as well as the meshes: it counts up once per fresh
+  // EngineResult, and keying the probe below on it is what re-arms the
+  // on-screen mark for each new set of geometries.
+  const built = useMemo(() => {
+    buildCounter += 1;
+    return {
+      id: buildCounter,
+      meshes: perfSpan("preview.geometryBuild", () =>
         regions
           .filter((region) => region.indices.length >= 3 && region.positions.length >= 9)
           .map((region) => ({ region, geometry: buildGeometry(region) })),
       ),
-    [regions],
-  );
+    };
+  }, [regions]);
 
   // Every geometry this memo built is this component's own to dispose, the
   // moment `regions` changes identity (a fresh EngineResult) or it unmounts.
   useEffect(
     () => () => {
-      for (const { geometry } of built) geometry.dispose();
+      for (const { geometry } of built.meshes) geometry.dispose();
     },
     [built],
   );
@@ -72,7 +86,10 @@ export function RegionMeshes({ regions }: { regions: readonly RegionMesh[] }) {
   // `page.evaluate`), not a DOM query.
   return (
     <group data-testid="region-meshes">
-      {built.map(({ region, geometry }) => (
+      {/* Perf mode only: the first frame that actually renders these meshes,
+          which is where three.js uploads the buffers this component built. */}
+      <PerfFrameMark key={built.id} name="preview.geometryOnScreen" />
+      {built.meshes.map(({ region, geometry }) => (
         <mesh
           key={region.region}
           data-testid={`region-mesh-${region.region}`}

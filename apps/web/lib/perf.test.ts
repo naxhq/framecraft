@@ -21,11 +21,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  MAX_RUNS,
   PERF_STORAGE_KEY,
   perfBytes,
   perfDrainTimings,
   perfEnabled,
   perfFlush,
+  perfInstall,
   perfMark,
   perfMergeTimings,
   perfRecord,
@@ -36,11 +38,21 @@ import {
   perfSpan,
   perfSubscribe,
   perfText,
+  perfTotalMs,
+  perfUninstall,
   setPerfEnabled,
   type PerfTiming,
 } from "./perf";
 
 type Mutable = Record<string, unknown>;
+
+/** Burn wall time so a span has a duration a test can compare. */
+function spin(ms: number): void {
+  const end = performance.now() + ms;
+  while (performance.now() < end) {
+    // Spin: `setTimeout` would not extend a SYNCHRONOUS span.
+  }
+}
 
 function installLocation(search: string): void {
   (globalThis as Mutable).location = { search, href: `http://localhost/${search}` };
@@ -55,9 +67,43 @@ function installStorage(value: string | null): void {
 function clearEnvironment(): void {
   delete (globalThis as Mutable).location;
   delete (globalThis as Mutable).localStorage;
+  delete (globalThis as Mutable).document;
+  delete (globalThis as Mutable).__framecraftPerf;
+  if (originalObserver === undefined) delete (globalThis as Mutable).PerformanceObserver;
+  else (globalThis as Mutable).PerformanceObserver = originalObserver;
+}
+
+const originalObserver = (globalThis as Mutable).PerformanceObserver;
+
+interface FakeObserverCalls {
+  observed: PerformanceObserverInit[];
+  disconnects: number;
+}
+
+/**
+ * A `PerformanceObserver` that reports exactly the entry types it is given.
+ *
+ * Firefox is the case that matters: it does NOT throw on
+ * `observe({ type: "longtask" })`, it warns and delivers nothing, so throwing
+ * is not the test for support and this fake does not throw either.
+ */
+function installObserver(supported: readonly string[]): FakeObserverCalls {
+  const calls: FakeObserverCalls = { observed: [], disconnects: 0 };
+  class FakeObserver {
+    static supportedEntryTypes: readonly string[] = supported;
+    observe(options: PerformanceObserverInit): void {
+      calls.observed.push(options);
+    }
+    disconnect(): void {
+      calls.disconnects += 1;
+    }
+  }
+  (globalThis as Mutable).PerformanceObserver = FakeObserver;
+  return calls;
 }
 
 beforeEach(() => {
+  perfUninstall();
   clearEnvironment();
   perfResetDetectionForTest();
   perfResetInstallForTest();
@@ -65,6 +111,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  perfUninstall();
   clearEnvironment();
   perfResetDetectionForTest();
   perfResetInstallForTest();
@@ -285,6 +332,208 @@ describe("perfReport", () => {
   });
 });
 
+/**
+ * Nesting. `solid.roads` is recorded INSIDE `solid.surfaces`, so its
+ * milliseconds are already part of the parent's; a flat table of both invites
+ * a sum that exceeds the build it describes (baseline audit, finding 2).
+ */
+describe("nested spans", () => {
+  beforeEach(() => {
+    setPerfEnabled(true);
+  });
+
+  it("records a parent and its two children as a tree, not as three siblings", () => {
+    perfSpan("parent", () => {
+      perfSpan("child.a", () => spin(2));
+      perfSpan("child.b", () => spin(2));
+    });
+
+    const rows = perfReport("tree").rows;
+    expect(rows.map((row) => row.name)).toEqual(["parent", "child.a", "child.b"]);
+
+    const [parent, a, b] = rows;
+    expect(parent.depth).toBe(0);
+    expect(parent.parent).toBeNull();
+    expect(a.depth).toBe(1);
+    expect(a.parent).toBe("parent");
+    expect(b.depth).toBe(1);
+    expect(b.parent).toBe("parent");
+
+    // The parent's own time is what is left after the children are taken out.
+    expect(parent.selfMs).toBeCloseTo(parent.totalMs - a.totalMs - b.totalMs, 6);
+    expect(a.selfMs).toBeCloseTo(a.totalMs, 6);
+
+    // The total counts the top level only, so it is the parent's wall time and
+    // not the inflated sum of every row.
+    expect(perfTotalMs(rows)).toBeCloseTo(parent.totalMs, 6);
+    const flat = rows.reduce((total, row) => total + row.totalMs, 0);
+    expect(flat).toBeGreaterThan(perfTotalMs(rows));
+  });
+
+  it("keeps the nesting of a grandchild, and of a mark recorded inside a span", () => {
+    perfSpan("outer", () => {
+      perfSpan("middle", () => {
+        perfSpan("inner", () => spin(1));
+        perfMark("inner.mark", { bytes: 8 });
+      });
+    });
+    const rows = perfReport().rows;
+    const depths = new Map(rows.map((row) => [row.name, row.depth]));
+    expect(depths.get("outer")).toBe(0);
+    expect(depths.get("middle")).toBe(1);
+    expect(depths.get("inner")).toBe(2);
+    expect(depths.get("inner.mark")).toBe(2);
+    expect(rows.find((row) => row.name === "inner.mark")?.parent).toBe("middle");
+  });
+
+  it("closes the frame that settled, not whichever one is on top", async () => {
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const firstOpen = perfSpan("first.open", () => sleep(1));
+    const stillOpen = perfSpan("second.open", () => sleep(40));
+    await firstOpen;
+    // `second.open` is the one still running, so this mark belongs to it. A
+    // stack that just popped would have closed `second.open` here instead.
+    perfMark("during");
+    await stillOpen;
+    perfSpan("after", () => spin(1));
+
+    const rows = perfReport().rows;
+    expect(rows.find((row) => row.name === "during")?.parent).toBe("second.open");
+    expect(rows.find((row) => row.name === "after")?.depth).toBe(0);
+  });
+
+  it("does not tangle when a span recurses into itself", () => {
+    // `export/index.ts` calls the target's own writer once per tile from
+    // inside the span named for that target. One row, at the top, not a row
+    // that is its own child.
+    const writeTiles = (remaining: number): void => {
+      perfSpan("export.stl", () => {
+        if (remaining > 0) writeTiles(remaining - 1);
+      });
+    };
+    writeTiles(2);
+
+    const rows = perfReport().rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].count).toBe(3);
+    expect(rows[0].parent).toBeNull();
+    expect(rows[0].depth).toBe(0);
+  });
+
+  it("indents children and prints a self column in the copied text", () => {
+    perfSpan("parent", () => {
+      perfSpan("child.a", () => spin(2));
+    });
+    const text = perfText(perfReport("copy"));
+    expect(text).toContain("name\tscope\tcount\tms\tbytes\tself");
+    expect(text).toMatch(/\n {2}child\.a\t/);
+    expect(text).toMatch(/\nparent\t/);
+    expect(text).toContain("total (top level)");
+  });
+});
+
+/**
+ * Runs. Every flush closes one, and rows never fold across a boundary, so a
+ * second build cannot double the first one's numbers (audit, finding 9).
+ */
+describe("runs", () => {
+  beforeEach(() => {
+    setPerfEnabled(true);
+  });
+
+  it("gives each flush its own run id", () => {
+    perfRecord("engine.build", 10, 100);
+    const first = perfFlush("engine job");
+    perfRecord("export.run", 200, 20);
+    const second = perfFlush("export");
+    expect(first?.runId).toBe(1);
+    expect(second?.runId).toBe(2);
+    expect(second?.runs.map((run) => run.label)).toEqual(["engine job", "export", "current"]);
+    expect(second?.runs.map((run) => run.closed)).toEqual([true, true, false]);
+  });
+
+  it("does not fold a second build into the first one's row", () => {
+    perfRecord("engine.build", 10, 100);
+    perfFlush("engine job");
+    perfRecord("engine.build", 500, 300);
+    const report = perfFlush("engine job");
+    const builds = report?.rows.filter((row) => row.name === "engine.build") ?? [];
+    expect(builds).toHaveLength(2);
+    expect(builds.map((row) => row.runId)).toEqual([1, 2]);
+    expect(builds.map((row) => row.count)).toEqual([1, 1]);
+    expect(builds.map((row) => row.totalMs)).toEqual([100, 300]);
+  });
+
+  it("prints only the run it just closed to the console", () => {
+    const table = vi.spyOn(console, "table").mockImplementation(() => undefined);
+    const group = vi.spyOn(console, "groupCollapsed").mockImplementation(() => undefined);
+    const groupEnd = vi.spyOn(console, "groupEnd").mockImplementation(() => undefined);
+    try {
+      perfRecord("ingest.first", 1, 5);
+      perfFlush("ingest");
+      table.mockClear();
+      perfRecord("export.second", 10, 5);
+      perfFlush("export");
+      const printed = table.mock.calls[0][0] as { name: string }[];
+      expect(printed.map((row) => row.name.trim())).toEqual(["export.second"]);
+      expect(group).toHaveBeenLastCalledWith("FrameCraft perf: export (run 2)");
+    } finally {
+      table.mockRestore();
+      group.mockRestore();
+      groupEnd.mockRestore();
+    }
+  });
+
+  it(`keeps the last ${MAX_RUNS} runs and drops what falls off the end`, () => {
+    const table = vi.spyOn(console, "table").mockImplementation(() => undefined);
+    const group = vi.spyOn(console, "groupCollapsed").mockImplementation(() => undefined);
+    const groupEnd = vi.spyOn(console, "groupEnd").mockImplementation(() => undefined);
+    try {
+      for (let run = 1; run <= MAX_RUNS + 2; run += 1) {
+        perfRecord(`step.${run}`, run, 1);
+        perfFlush(`run ${run}`);
+      }
+      const report = perfReport("after");
+      // The last MAX_RUNS closed runs, plus the open one.
+      expect(report.runs).toHaveLength(MAX_RUNS + 1);
+      expect(report.runs[0].id).toBe(3);
+      expect(report.rows.map((row) => row.name)).not.toContain("step.1");
+      expect(report.rows.map((row) => row.name)).toContain(`step.${MAX_RUNS + 2}`);
+    } finally {
+      table.mockRestore();
+      group.mockRestore();
+      groupEnd.mockRestore();
+    }
+  });
+
+  it("starts over at run 1 when the HUD's Clear button resets", () => {
+    perfRecord("engine.build", 10, 100);
+    perfFlush("engine job");
+    perfReset();
+    expect(perfReport("cleared").runs).toEqual([
+      expect.objectContaining({ id: 1, label: "current", closed: false }),
+    ]);
+    expect(perfReport("cleared").rows).toEqual([]);
+  });
+
+  it("stamps merged worker timings with the page's run, not the worker's", () => {
+    perfRecord("page.first", 1, 1);
+    perfFlush("engine job");
+    perfMergeTimings([
+      {
+        name: "solid.buildings",
+        scope: "worker",
+        startMs: 10,
+        durationMs: 5,
+        epochMs: performance.timeOrigin + 10,
+        runId: 1,
+      },
+    ]);
+    const merged = perfReport().rows.find((row) => row.name === "solid.buildings");
+    expect(merged?.runId).toBe(2);
+  });
+});
+
 describe("perfMergeTimings", () => {
   beforeEach(() => {
     setPerfEnabled(true);
@@ -378,7 +627,9 @@ describe("perfFlush", () => {
       const report = perfFlush("engine job");
       expect(report?.label).toBe("engine job");
       expect(table).toHaveBeenCalled();
-      expect(group).toHaveBeenCalledWith("FrameCraft perf: engine job");
+      // The heading names the run, because the table under it is that run's
+      // rows and nobody else's.
+      expect(group).toHaveBeenCalledWith("FrameCraft perf: engine job (run 1)");
       expect(groupEnd).toHaveBeenCalled();
       expect(listener).toHaveBeenCalledTimes(1);
       expect(listener.mock.calls[0][0]).toBe(report);
@@ -440,5 +691,153 @@ describe("perfReset", () => {
     perfMark("two");
     perfReset();
     expect(perfReport().rows).toEqual([]);
+  });
+});
+
+/** The long-task observer, the window hook, and taking both back off again. */
+describe("perfInstall", () => {
+  beforeEach(() => {
+    setPerfEnabled(true);
+  });
+
+  it("observes long tasks where the entry type exists", () => {
+    const observer = installObserver(["longtask", "mark"]);
+    perfInstall();
+    expect(observer.observed).toEqual([{ type: "longtask", buffered: true }]);
+    expect(perfReport().longTasks.observed).toBe(true);
+  });
+
+  it("reports long tasks as unobserved where the entry type does not exist", () => {
+    // Firefox: `observe` does not throw for an unsupported type, it warns and
+    // delivers nothing. A confident `observed: true, count: 0` would render as
+    // a measured zero.
+    const observer = installObserver(["mark", "measure", "resource"]);
+    perfInstall();
+    expect(observer.observed).toEqual([]);
+    expect(perfReport().longTasks).toEqual({
+      count: 0,
+      longestMs: 0,
+      totalMs: 0,
+      observed: false,
+    });
+    expect(perfText(perfReport())).toContain("long tasks: not observed in this browser");
+  });
+
+  it("publishes the window hook and takes it back when perf mode is turned off", () => {
+    const observer = installObserver(["longtask"]);
+    perfInstall();
+    expect((globalThis as Mutable).__framecraftPerf).toBeDefined();
+
+    setPerfEnabled(false);
+    expect(observer.disconnects).toBe(1);
+    expect("__framecraftPerf" in globalThis).toBe(false);
+  });
+
+  it("uninstalls without a fuss in a realm that never installed anything", () => {
+    installObserver(["longtask"]);
+    expect(() => {
+      perfUninstall();
+    }).not.toThrow();
+    expect("__framecraftPerf" in globalThis).toBe(false);
+  });
+});
+
+/**
+ * Navigation Timing. `domContentLoadedEventEnd` and `loadEventEnd` are 0 until
+ * their events fire, and the HUD's mount effect is usually earlier than that:
+ * 0 would read as an instant load rather than as not-yet (audit, finding 18).
+ */
+describe("navigation timing", () => {
+  interface FakeNavigation {
+    loadEventEnd: number;
+    domContentLoadedEventEnd: number;
+  }
+
+  function installNavigation(fields: FakeNavigation): void {
+    (globalThis as Mutable).document = { readyState: "loading" };
+    const entry = {
+      responseEnd: 120,
+      requestStart: 20,
+      transferSize: 38_352,
+      decodedBodySize: 120_000,
+      domInteractive: 300,
+      type: "navigate",
+      ...fields,
+    };
+    vi.spyOn(performance, "getEntriesByType").mockImplementation((type: string) =>
+      type === "navigation" ? ([entry] as unknown as PerformanceEntryList) : [],
+    );
+  }
+
+  beforeEach(() => {
+    setPerfEnabled(true);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("reports an event that has not fired as null, not as zero", () => {
+    installNavigation({ loadEventEnd: 0, domContentLoadedEventEnd: 0 });
+    const nav = perfReport("early").navigation;
+    expect(nav?.loadMs).toBeNull();
+    expect(nav?.domContentLoadedMs).toBeNull();
+    expect(nav?.domInteractiveMs).toBe(300);
+    expect(perfText(perfReport("early"))).toContain("load n/a");
+  });
+
+  it("reports the real figures once the events have fired", () => {
+    installNavigation({ loadEventEnd: 2_400, domContentLoadedEventEnd: 1_100 });
+    const nav = perfReport("loaded").navigation;
+    expect(nav?.loadMs).toBe(2_400);
+    expect(nav?.domContentLoadedMs).toBe(1_100);
+    expect(perfText(perfReport("loaded"))).toContain("load 2400.0 ms");
+  });
+});
+
+/**
+ * The browser's own User Timing buffer. `perfMark` and `finish` also call
+ * `performance.mark`/`measure` so a DevTools timeline shows the same spans;
+ * nothing reads those back, so a long session would accumulate entries for
+ * ever (audit, finding 20).
+ */
+describe("User Timing buffer", () => {
+  beforeEach(() => {
+    setPerfEnabled(true);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("clears the entries of the run it just harvested, by name", () => {
+    const clearMarks = vi.spyOn(performance, "clearMarks").mockImplementation(() => undefined);
+    const clearMeasures = vi
+      .spyOn(performance, "clearMeasures")
+      .mockImplementation(() => undefined);
+    const table = vi.spyOn(console, "table").mockImplementation(() => undefined);
+    const group = vi.spyOn(console, "groupCollapsed").mockImplementation(() => undefined);
+    const groupEnd = vi.spyOn(console, "groupEnd").mockImplementation(() => undefined);
+
+    perfMark("export.bytes", { bytes: 2_048 });
+    perfSpan("export.run", () => spin(1));
+    perfFlush("export");
+
+    expect(clearMarks).toHaveBeenCalledWith("export.bytes");
+    expect(clearMarks).toHaveBeenCalledWith("export.run");
+    expect(clearMeasures).toHaveBeenCalledWith("export.run");
+    // By name, never a bare clearMarks(): Next.js and React put their own
+    // entries in the same buffer.
+    for (const call of clearMarks.mock.calls) expect(call[0]).toBeTypeOf("string");
+    expect(table).toHaveBeenCalled();
+    group.mockRestore();
+    groupEnd.mockRestore();
+  });
+
+  it("clears the entries a worker drains onto its job result", () => {
+    const clearMarks = vi.spyOn(performance, "clearMarks").mockImplementation(() => undefined);
+    perfMark("solid.buildings");
+    expect(perfDrainTimings()).toHaveLength(1);
+    expect(clearMarks).toHaveBeenCalledWith("solid.buildings");
   });
 });

@@ -178,7 +178,7 @@ Preset click to the engine meshes on screen: **13,232 / 13,046 / 13,964 ms**.
 | `wasm.fetch` | 4.0 | 3.9 | 5.9 |
 | `wasm.instantiate` | 12.3 | 10.0 | 12.4 |
 | `wasm.setup` | 0.3 | 0.2 | 0.7 |
-| `engine.bake` (whole bake, in the worker) | 11,520 | 11,250 | 11,834 |
+| `engine.build` (whole bake, in the worker) | 11,520 | 11,250 | 11,834 |
 | `solid.fonts` | 4.1 | 4.0 | 4.3 |
 | `solid.repair` | 136 | 134 | 149 |
 | `solid.surfaces` | 914 | 908 | 919 |
@@ -220,7 +220,7 @@ Network, not mocked, single run, `overpass-api.de`:
 | `overpass.fetch` | 3,857 |
 | `osm.normalize` | 681 |
 | `engine.ingest.client` | 4,556 |
-| `engine.bake` | 11,873 |
+| `engine.build` | 11,873 |
 | wall, click to preview | 17,340 |
 
 The live fetch costs **3.65 s more** than the mocked one. Every other number in
@@ -235,7 +235,7 @@ Bake button to the download link, three runs:
 | `bambu-3mf` | 13,418 / 13,044 / 24,761 ms | 1,033 / 1,009 / 1,096 ms | 1,031 ms | 1 ms | 4,509,098 |
 | `generic-3mf` | 12,911 / 12,456 / 14,719 ms | 673 / 660 / 694 ms | 672 ms | 0.4 ms | 2,937,229 |
 
-The wall times are dominated by a full engine re-bake (`engine.bake` 11,749 ms
+The wall times are dominated by a full engine re-bake (`engine.build`, recorded as `engine.bake` before the Task 3 rename, 11,749 ms
 median for Bambu, 11,637 ms for generic): changing `export_target` is a
 `PrintParams` write, which marks the engine result stale, so `requestBake` runs
 the bake again before it can export. The writer itself is 1.0 s and 0.67 s.

@@ -47,11 +47,18 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         {/*
           The OSM attribution is a licence obligation, not decoration: it is in
           the layout so it survives every route, and it is also written into the
-          3MF metadata and CREDITS.txt by the export.
+          3MF metadata and CREDITS.txt by the export. Photon and Nominatim join
+          it here ([V3-P9]) because the app queries both by name: Photon for the
+          type-ahead, Nominatim for the reverse lookup that names a dropped pin.
+          The same line appears in the search popover's own footer, where the
+          two services are actually being used.
         */}
         <footer className="fc-scored flex items-center justify-center gap-2 bg-bench px-4 py-2 text-2xs text-ink-faint">
           <span aria-hidden="true" className="h-px w-6 bg-line-strong" />
-          <span>Map data © OpenStreetMap contributors</span>
+          <span>
+            Search by Photon (komoot), geocoding by Nominatim, map data © OpenStreetMap
+            contributors
+          </span>
           <span aria-hidden="true" className="h-px w-6 bg-line-strong" />
         </footer>
       </body>

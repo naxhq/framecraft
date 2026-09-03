@@ -45,8 +45,9 @@ docker-compose.yml  Makefile  RUNBOOK.md
 - OSM only (Overpass + OSM raster tiles). Google/Apple/Bing sources are forbidden.
   Attribution `© OpenStreetMap contributors` in the footer, 3MF metadata, CREDITS.txt.
 - No placeholder deliverables. Stubs only for items listed out of scope in `01`.
-- Vocabulary (v3.1): the two user actions are **Preview** (build or rebuild the
-  model from location and settings) and **Export** (write the model file in the
+- Vocabulary (v3.1): the two user actions are **Preview** (fetch the current
+  location and build the model from it; settings changes rebuild the model on
+  their own, incrementally) and **Export** (write the model file in the
   selected format). "Bake" survives only in `services/bake` (reference
   implementation internals) and the frozen `BakeResult` schema; see
   `DECISIONS.md` `[V3.1-O3]`. Export produces a printable model file, never

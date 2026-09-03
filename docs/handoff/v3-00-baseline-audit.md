@@ -522,3 +522,74 @@ for it in sections a and c. The bundle tables are exact to the byte and deserve
 to be trusted; the pipeline table needs a parent column and the note needs an
 editing pass before Task 1 optimises against it. Fix finding 1 and findings 2
 through 5, and this becomes the solid baseline it claims to be.
+
+---
+
+## Fixes
+
+Closed by the perf-mode fixer, wave 2. Scope: `apps/web/lib/perf.ts`,
+`lib/perf.test.ts`, `components/editor/PerfHud.tsx` and the smallest edits in
+`components/scene/` for findings 5 and 8, plus `lib/advisor.ts` and
+`lib/advisor.test.ts` for the two rename-audit items at the end. Findings 3, 4,
+6, 7 and 14 belong to the engine agent and are untouched here; finding 1 and
+the note's own numbers (10 to 13) are a documentation pass and are untouched
+too.
+
+`cd apps/web && npm run lint && npm run typecheck && npm test`: 83 files, 1533
+tests, all passing, none skipped, on the tree as these changes landed (13:33).
+A later run of the same suite fails inside `lib/engine/**` and its consumers:
+`lib/engine/solid/lettering.ts:509` calls `withEngravings`, which
+`lib/engine/solid/context.ts:199` exports and `lettering.ts` does not import.
+That is the engine agent's file, mid-edit, and nothing to do with these fixes;
+`lib/perf.test.ts`, `components/scene/PerfFrameMark.test.tsx` and
+`components/scene/RegionMeshes.test.tsx` are green either way (60 tests). Lint
+and typecheck report nothing against any file listed below; what the tree
+reports at the time of writing is confined to `lib/engine/**`. Playwright was
+not run (another agent holds the build lock this wave).
+
+| finding | fix | where | test |
+|---|---|---|---|
+| 2 | Spans are a tree. `perfSpan` keeps a frame stack, so every timing carries `parent` and `depth`; rows carry `selfMs`; `perfTotalMs` sums the top level only. The console table, the copied text and the HUD indent children, print `self` beside `ms`, and total only depth 0. | `lib/perf.ts:338` `:361` `:755` `:816` `:847`, `PerfHud.tsx:201` `:232` `:253` | `lib/perf.test.ts` "nested spans": a parent with two children, the flat sum proven larger than the top-level total, a grandchild, a mark inside a span, indentation in `perfText` |
+| 5 | `preview.geometry` is now `preview.geometryBuild`, named for the CPU work it actually does (float64 to float32, index, normals, bounding sphere). The upload it was credited with gets its own mark, `preview.geometryOnScreen`, on the first frame that renders the new meshes. | `RegionMeshes.tsx:47` `:62` `:91` | `components/scene/RegionMeshes.test.tsx`: the span name, the absence of the old one, `buildGeometry` proven CPU-only, one on-screen mark per build |
+| 8 | The first-frame probe moved into `PerfFrameMark`, which decides BEFORE subscribing: with perf mode off nothing renders and `useFrame` is never called, so the render loop is untouched. With it on, the probe unmounts itself after its one mark, which is how r3f unsubscribes. | `PerfFrameMark.tsx:23`, `CityPreview.tsx:636`, `RegionMeshes.tsx:91` | `components/scene/PerfFrameMark.test.tsx`: no frame callback registered with perf off (verified failing against the old unguarded component), one with it on, one mark however many frames run |
+| 9 | Runs. Every `perfFlush` closes one and opens the next, timings carry their run id, and rows fold within a run and never across one, so a second build cannot double the first one's `count` and `totalMs`. The last 10 runs are kept, older ones are dropped with their timings, the console prints the closed run only, and the HUD has a run picker plus the Clear button it already had. | `lib/perf.ts:230` `:568` `:592` `:1029`, `PerfHud.tsx:179` | `lib/perf.test.ts` "runs": ids per flush, two builds proven not to fold, the console table proven to hold one run, the cap at `MAX_RUNS`, Clear back to run 1, worker timings re-stamped with the page's run |
+| 17 | `longtask` support is read from `PerformanceObserver.supportedEntryTypes`, not inferred from `observe` not throwing. Firefox does not throw; it warns and delivers nothing, and the report used to call that a measured zero. | `lib/perf.ts:631` | `lib/perf.test.ts` "perfInstall": observed true where the entry type exists, `observed: false` and "not observed in this browser" where it does not |
+| 18 | `domContentLoadedMs` and `loadMs` are `number \| null`, null while the event has not fired, rendered as `n/a` like paint timing already was. The HUD re-reads the report once on `load` when it mounted before it. | `lib/perf.ts:730`, `PerfHud.tsx:76` `:166` | `lib/perf.test.ts` "navigation timing": null and "load n/a" before the events, the real figures after |
+| 19 | `perfUninstall` disconnects the long-task observer and deletes `window.__framecraftPerf`. It runs when the HUD unmounts and whenever `setPerfEnabled` turns the mode off. The `load` listener is removed in the same cleanup. | `lib/perf.ts:303` `:1123`, `PerfHud.tsx:83` | `lib/perf.test.ts` "perfInstall": the hook published, then disconnected and gone after `setPerfEnabled(false)`; a no-op in a realm that never installed |
+| 20 | `performance.clearMarks`/`clearMeasures` are called for the names of each harvested batch, at both harvest points (`perfFlush` on the page, `perfDrainTimings` in a worker). By name, never a bare `clearMarks()`, because Next.js and React share that buffer. | `lib/perf.ts:540` `:504` `:1029` | `lib/perf.test.ts` "User Timing buffer": cleared by name on flush and on drain |
+| 23 | Confirmed, not changed: `OutputPanel.tsx:159` replaces the address bar with the encoded share link, so the copied link does NOT carry `?perf=1` to whoever receives it, which is the behaviour to keep. The cost is that a reload after copying starts with perf mode off; the `localStorage` flag is the durable switch and is now documented as such in the module docstring. | `lib/perf.ts:40` | none (no behaviour change) |
+
+Two more from `docs/handoff/v3-03-vocabulary-audit.md`, both in files nobody
+else held this wave.
+
+| finding | fix | where | test |
+|---|---|---|---|
+| vocabulary audit, `advisor.ts:113` | The radius button's accessible name said "generate again", the retired verb. It says "preview again" now, which is what the button does (`[V3.1-O3]`). Only a screen reader ever reads that string aloud, which is why it outlived the rename everywhere else. | `lib/advisor.ts:113` | `lib/advisor.test.ts:191` asserts the whole label, and the button-voice test above it now also asserts that no action's accessible name contains "generate" |
+| vocabulary audit, `perf.ts:26` | The module docstring named an npm script `build:cli` that does not exist; the script is `export:cli` (`apps/web/package.json`). | `lib/perf.ts:26` | none (a comment) |
+
+Two things a reader of the next baseline should know.
+
+**The HUD shows every kept run by default, grouped by run, rather than only the
+latest one.** `e2e/perf.spec.ts` requires the ingest, build and export rows to
+be on screen and on the clipboard together (`:87`, `:92-99`, `:153-155`), and
+those three are three separate flushes; a latest-run-only default would fail
+three assertions that may not be weakened. The defect finding 9 describes is
+fixed at the source instead: rows never fold across runs, so two builds are two
+rows, never one row with a doubled count. The picker narrows to a single run.
+
+**The copied text keeps `name\tscope\tcount\tms\tbytes` as its leading columns**
+and appends `self` after them, rather than putting `self` beside `ms`, because
+`e2e/perf.spec.ts:152` asserts that exact header. Child rows are indented two
+spaces per level in the name column, and each run is its own block with a
+`total (top level)` line.
+
+**Still open in the note itself** (finding 1's owner): `v3-00-baseline.md:85`,
+`:207` and `:246` still name `preview.geometry` and still describe it as an
+upload.
+
+Checked against `e2e/perf.spec.ts` by reading it, not by running it: every test
+id it uses (`perf-hud`, `perf-navigation`, `perf-row` with `data-perf-name` /
+`data-perf-scope` / `data-perf-ms`, `perf-resource`, `perf-copy`, `perf-clear`,
+`perf-toggle`) is unchanged, and the new elements (`perf-run-select`,
+`perf-run-head`, `perf-total`) carry test ids of their own so none of them can
+be mistaken for a `perf-row`.

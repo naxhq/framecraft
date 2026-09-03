@@ -110,7 +110,7 @@ export function detailAdvice(
         kind: "radius",
         value: radius,
         label: `Use ${radius} m`,
-        ariaLabel: `Use a ${radius} m radius and generate again`,
+        ariaLabel: `Use a ${radius} m radius and preview again`,
       });
     }
     const plate = T.recommend_plate_mm(graph, params, radius_m);

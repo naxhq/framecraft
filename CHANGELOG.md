@@ -33,7 +33,7 @@ First public release.
 
 ### Added
 
-- Client-side build engine: the full OSM-to-solid pipeline (Overpass ingest,
+- Client-side bake engine: the full OSM-to-solid pipeline (Overpass ingest,
   normalisation, extrusion, booleans on manifold WASM) runs in a Web Worker in
   the browser; preview and export share the same meshes.
 - Bambu Studio project 3MF export with per-region filament slot mapping,
@@ -62,7 +62,7 @@ First public release.
 
 ### Changed
 
-- The Python service became the reference implementation and release
+- The Python bake service became the reference implementation and release
   validator; the web app no longer calls it at runtime.
 - Contracts schema advanced to version 3 (additive, defaults identical to v2).
 - Undo/redo now covers every editor action.
@@ -83,5 +83,5 @@ printability advisor; share links; the editor UI redesign.
 ## [1.0.0] - 2026-08-29
 
 Internal milestone, not distributed. The original MVP: map picker, Overpass
-ingest to SceneGraph, server-side manifold3d build, live preview, 3MF and STL
+ingest to SceneGraph, server-side manifold3d bake, live preview, 3MF and STL
 download.

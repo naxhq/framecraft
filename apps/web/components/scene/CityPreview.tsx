@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Grid, OrbitControls } from "@react-three/drei";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Canvas, useThree } from "@react-three/fiber";
 import type { PerspectiveCamera } from "three";
 
 import AdjustmentsChip from "@/components/editor/AdjustmentsChip";
 import IssuesBadge from "@/components/editor/IssuesBadge";
+import PerfFrameMark from "@/components/scene/PerfFrameMark";
 import { collectAdjustments } from "@/lib/adjustments";
 import {
   advisorDeps,
@@ -23,7 +24,6 @@ import { freshEngineResult as engineFresh } from "@/lib/enginePreview";
 import { loadGlyphFace, loadedGlyphFace } from "@/lib/fontGlyphs";
 import { autoHeroIds, heroCandidates, heroCapMessage } from "@/lib/heroes";
 import { mergeIssues } from "@/lib/issues";
-import { perfMark } from "@/lib/perf";
 import {
   cursorLabel,
   cursorOrder,
@@ -631,7 +631,9 @@ export function CityPreview() {
         />
         <directionalLight position={[-160, 120, -140]} intensity={0.4} />
 
-        <PerfFirstFrame />
+        {/* Perf mode only: with it off this renders nothing and registers no
+            per-frame callback at all (`PerfFrameMark`). */}
+        <PerfFrameMark name="preview.firstFrame" />
         <FitView plateMm={params.plate_mm} trigger={graph} />
 
         {/* Print space is z-up; three is y-up. One rotation, once. */}
@@ -1008,23 +1010,6 @@ function PreviewSkeleton() {
       </p>
     </div>
   );
-}
-
-/**
- * Perf mode's "the viewport is live" mark: the first frame react-three-fiber
- * actually renders, which is the moment the user can see and orbit the model.
- * `useFrame` runs inside the render loop, so this is the frame itself and not
- * the mount that scheduled it. One mark, then the ref short-circuits every
- * later frame; with perf mode off `perfMark` returns on a boolean read.
- */
-function PerfFirstFrame() {
-  const marked = useRef(false);
-  useFrame(() => {
-    if (marked.current) return;
-    marked.current = true;
-    perfMark("preview.firstFrame");
-  });
-  return null;
 }
 
 /** Frame the plate whenever a new scene arrives or the plate size changes. */

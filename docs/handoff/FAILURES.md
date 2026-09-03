@@ -227,3 +227,26 @@ Recorded here so the next phase does not re-investigate them:
   `--plate-mm`) tells it the plate size. That is the validator working, not a
   bug; the smoke test downloads the sidecar next to the `.3mf` for exactly this
   reason.
+
+---
+
+## Open: nightly export matrix defects found by the Task 14 CI diet (2026-09-02)
+
+Found by `scripts/ci-export-matrix.sh` and `scripts/ci-preset-matrix.sh` (the
+new `nightly.yml` jobs, also `make gate-nightly`) on the first local run against
+the Task 3 tree. Owner: `lib/engine/solid` and `lib/engine/export` (the geometry
+and perf wave). The checks were not weakened.
+
+1. `stl` target on the Chicago fixture fails the validator's `degenerate_faces`
+   row with 1 face, while the `generic-3mf` of the same build passes.
+2. `--tiling 2x2`: tile A1 fails `min_wall` (0.037 mm) and `bodies` (one water
+   debris shell); tiles A2, B1, B2 pass.
+3. Presets Paris, Tokyo and London (through `--overpass fixtures/<sha1>.json`)
+   each produce a `.3mf` that passes and an `.stl` that fails `manifold`,
+   `watertight` and `self_intersection`. Chicago, New York and San Francisco
+   pass both. Since both files are written from `EngineResult.merged`, the
+   suspect is the STL writer's handling of the merged mesh (or the validator
+   reading a binary STL differently from the 3MF), to be settled by diffing
+   the two meshes before touching geometry.
+
+Status: OPEN, queued for the Task 7 geometry wave after the pipeline lands.

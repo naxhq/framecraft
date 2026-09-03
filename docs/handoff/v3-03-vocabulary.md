@@ -289,3 +289,14 @@ six `.claude/agents/*.md`.
   "Server-side, so it refetches on release". There has been no server since v3.
   It now says "Releasing the slider refetches from OpenStreetMap and previews
   again", which is what the `onCommit` handler actually does.
+
+## Orchestrator note on commit 511f3ea (2026-09-02)
+
+The rename agent's claim above that CLAUDE.md and the v3-0x handoff notes were
+left untouched is true of the agent's own edits. The commit that carries them,
+511f3ea, also carries two orchestrator edits made in the same wave: CLAUDE.md
+gained the make-target rename and the vocabulary rule (the orchestrator owns
+that file), and docs/handoff/v3-00-baseline.md was reconciled per findings 1
+and 10 to 13 of v3-00-baseline-audit.md. The audit of this commit
+(v3-03-vocabulary-audit.md) records the discrepancy; its two majors are fixed
+in the next commit (advisor.ts aria-label, perf.ts script name).
