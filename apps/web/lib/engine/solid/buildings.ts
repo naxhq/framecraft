@@ -34,6 +34,7 @@ import type { BuildingSolid, RepairedBuildings } from "./repair";
 import type { Manifold } from "./manifold";
 import { batchedUnion, extrudeSection } from "./manifold";
 import { buildingTints } from "./tint";
+import { baseOsmIdOfBuilding, overrideGroups, tintOverrides, type OverrideGroup } from "./overrides";
 
 /** One band of the height gradient, or the whole buildings region. */
 export interface BuildingBand {
@@ -55,7 +56,16 @@ export interface BuiltBuildings {
   buildings: Manifold | null;
   /** The buildings region, split by height when `colour.gradient.enabled`. */
   bands: BuildingBand[];
-  /** Per-building tints when `colour.tint.enabled`, else an empty list. */
+  /**
+   * One band per override group that claimed buildings (v3.1 Task 11), region
+   * `override_N`. Empty when no override asked a building for a filament of its
+   * own, which is the default and the case where the whole feature is invisible.
+   */
+  overrideBands: BuildingBand[];
+  /**
+   * Per-building tints from `colour.tint` and from the per-object `tint`
+   * overrides, else an empty list.
+   */
   tints: BuildingTint[];
   /** Every hero the user picked that produced a solid of its own. */
   hero: Manifold | null;
@@ -140,6 +150,25 @@ export function buildBuildings(
   const plain: Array<{ solid: Manifold; topMm: number; source: BuildingSolid }> = [];
   const heroes: Manifold[] = [];
   const ownerIds: Record<number, string> = {};
+  // v3.1 Task 11. A building the user gave its own filament leaves the band
+  // split entirely: the region IS the colour partition, so it cannot be
+  // coloured while it is inside `buildings`. A HERO outranks it - a hero is
+  // already its own region with its own slot, and moving it again would undo
+  // the thing the user asked for first.
+  const grouping = overrideGroups(ctx.params);
+  const namedTints = tintOverrides(ctx.params);
+  const baseIdOf = new Map<string, string>();
+  if (grouping.byId.size > 0 || namedTints.size > 0) {
+    for (const building of ctx.scene.buildings) baseIdOf.set(String(building.id), baseOsmIdOfBuilding(building));
+  }
+  const overridden = new Map<OverrideGroup, Array<{ solid: Manifold; topMm: number; source: BuildingSolid }>>();
+  const groupOf = (solid: BuildingSolid): OverrideGroup | null => {
+    if (grouping.byId.size === 0) return null;
+    const baseId = baseIdOf.get(solid.id);
+    if (baseId === undefined) return null;
+    const group = grouping.byId.get(baseId);
+    return group !== undefined && group.layer === "building" ? group : null;
+  };
   // A stacked tower has to rise from the roof of the block it stands on, and
   // that block was lifted by ITS OWN lowest ground, which is at or below the
   // tower's. Looking the lift up by the block rather than re-measuring it under
@@ -169,23 +198,55 @@ export function buildBuildings(
     const own = placed.originalID();
     const originals = own >= 0 ? [own] : Array.from(placed.getMesh().runOriginalID);
     for (const originalId of originals) ownerIds[originalId] = solid.heroId ?? solid.id;
-    if (solid.heroId !== null) heroes.push(placed);
-    else plain.push({ solid: placed, topMm: z1, source: solid });
+    if (solid.heroId !== null) {
+      heroes.push(placed);
+      continue;
+    }
+    const group = groupOf(solid);
+    if (group === null) {
+      plain.push({ solid: placed, topMm: z1, source: solid });
+      continue;
+    }
+    const list = overridden.get(group);
+    const entry = { solid: placed, topMm: z1, source: solid };
+    if (list === undefined) overridden.set(group, [entry]);
+    else list.push(entry);
   }
 
   const bands = splitIntoBands(ctx, plain);
+  const overrideBands: BuildingBand[] = [];
+  for (const [group, members] of overridden) {
+    const solid = batchedUnion(wasm, arena, members.map((item) => item.solid));
+    if (solid === null) continue;
+    const tops = members.map((item) => item.topMm);
+    overrideBands.push({
+      region: group.region,
+      solid,
+      topRangeMm: [Math.min(...tops), Math.max(...tops)],
+      count: members.length,
+    });
+  }
   const hero = batchedUnion(wasm, arena, heroes);
+  // The tint list covers every building the user can see a shade on, which is
+  // the ordinary ones AND the ones an override moved into their own region: a
+  // named tint is a preview shade, not a filament, so moving the body does not
+  // take it away.
+  const shaded = [...plain, ...[...overridden.values()].flat()];
+  const tinted = shaded.map((item) => ({ id: item.source.id, centroidMm: item.source.centroidMm }));
+  const namedByEntityId = new Map<string, string>();
+  for (const item of tinted) {
+    const baseId = baseIdOf.get(item.id);
+    const hex = baseId === undefined ? undefined : namedTints.get(baseId);
+    if (hex !== undefined) namedByEntityId.set(item.id, hex);
+  }
   return {
     buildings: bands[0]?.solid ?? null,
     bands,
-    tints: buildingTints(
-      ctx.params,
-      regionColor(ctx.params, "buildings"),
-      plain.map((item) => ({ id: item.source.id, centroidMm: item.source.centroidMm })),
-    ),
+    overrideBands,
+    tints: buildingTints(ctx.params, regionColor(ctx.params, "buildings"), tinted, namedByEntityId),
     hero,
     socket: [],
-    count: plain.length + heroes.length,
+    count: shaded.length + heroes.length,
     ownerIds,
   };
 }

@@ -22,14 +22,14 @@ import { StageCache, runPipeline, stableJson, type PipelineJob, type RunOptions 
 import type { Snapshot } from "./matrix.assert";
 import { OSM_FIXTURE_REQUEST, overpassFetchImpl } from "./fixtures/overpassBlock";
 import type { ExportRequest } from "./stage";
-import { blockScene, bridgeScene, railScene, terrainScene } from "./testScenes";
+import { blockScene, bridgeScene, labelledScene, railScene, terrainScene } from "./testScenes";
 
 /**
  * The scenes a probe may ask for. `osm` is the Overpass-shaped fixture: only a
  * run that starts at `fetch` re-normalises, and `heights.*` is read by
  * `normalise` and nowhere else.
  */
-export type MatrixScene = "block" | "rail" | "bridge" | "terrain" | "osm";
+export type MatrixScene = "block" | "rail" | "bridge" | "terrain" | "osm" | "labelled";
 
 /** Fixed so nothing in a written file moves because the clock did. */
 export const MATRIX_DATE = "2026-09-02";
@@ -75,6 +75,8 @@ function sceneSetup(scene: MatrixScene): SceneSetup {
         options: {},
       };
     }
+    case "labelled":
+      return { job: { source: { kind: "scene", scene: labelledScene(), key: "labelled" }, terrain: null }, options: {} };
     case "osm":
       return {
         job: { source: { kind: "request", request: OSM_FIXTURE_REQUEST }, terrain: null },

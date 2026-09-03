@@ -10,6 +10,7 @@ import {
   type HardenReport,
 } from "../solid/mesh";
 import type { RegionMesh } from "../types";
+import { APPLICATION } from "./common";
 import { FIXED_DATE, boxRegion, makeResult, sampleResult } from "./fixtures";
 import { STAGE_4_FINDING_IDS, blockingFindings } from "./gate";
 import {
@@ -41,7 +42,12 @@ describe("exportStl", () => {
     expect(header.startsWith("solid")).toBe(false);
     expect(header).toContain("(c) OpenStreetMap contributors");
     expect(stlHeaderText("x".repeat(200))).toHaveLength(80);
-    expect(stlHeaderText("©")).toBe("FrameCraft 3.0.0 | (c) OpenStreetMap contributors | ?");
+    // From `APPLICATION` (`lib/version.ts`), never a literal; see the note in
+    // `generic3mf.test.ts`. The 80-byte cap above still holds whatever the
+    // version's length, which is the property this header actually risks.
+    expect(stlHeaderText("©")).toBe(`${APPLICATION} | (c) OpenStreetMap contributors | ?`);
+    expect(stlHeaderText("©")).toMatch(/^FrameCraft \d+\.\d+\.\d+/);
+    expect(stlHeaderText("©")).toContain(" | (c) OpenStreetMap contributors | ");
   });
 
   it("writes outward unit normals and build-space vertices", () => {

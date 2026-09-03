@@ -26,24 +26,39 @@ export function tintEnabled(params: PrintParams): boolean {
 }
 
 /**
- * The tint list for a set of building solids, empty when tint is off.
+ * The tint list for a set of building solids.
  *
  * `id` is `BuildingSolid.id`: the SceneGraph id of the footprint that set the
  * solid's height, which is what the preview keys its own tint map by, so a
  * building has ONE tint wherever it is drawn.
+ *
+ * Two sources, and the per-object one wins (v3.1 Task 11). `colour.tint` jitters
+ * every building around its region's colour; an `object_overrides` row names one
+ * building's shade outright. A user who picked a shade for one building has said
+ * something more specific than the seed did, so it survives the jitter - and a
+ * named shade works with the jitter OFF, which is the case the inspector is used
+ * in. The list is therefore empty only when neither source has anything to say.
  */
 export function buildingTints(
   params: PrintParams,
   baseHex: string,
   buildings: ReadonlyArray<{ id: string; centroidMm: [number, number] }>,
+  named: ReadonlyMap<string, string> = new Map(),
 ): BuildingTint[] {
-  if (!tintEnabled(params)) return [];
+  const jitter = tintEnabled(params);
+  if (!jitter && named.size === 0) return [];
   const tint = params.colour?.tint;
-  return buildings.map((building) => ({
-    id: building.id,
-    colorHex: tintedColor(building.id, baseHex, tint),
-    centroidMm: building.centroidMm,
-  }));
+  const out: BuildingTint[] = [];
+  for (const building of buildings) {
+    const own = named.get(building.id);
+    if (own === undefined && !jitter) continue;
+    out.push({
+      id: building.id,
+      colorHex: own ?? tintedColor(building.id, baseHex, tint),
+      centroidMm: building.centroidMm,
+    });
+  }
+  return out;
 }
 
 /**

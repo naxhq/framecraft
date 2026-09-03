@@ -15,6 +15,7 @@
  * actually be asked to lay down.
  */
 
+import { perfSpan } from "../../perf";
 import * as T from "../../transform";
 import type { BuildContext } from "./context";
 import {
@@ -255,6 +256,29 @@ export function survivesOpening(
  */
 export type SkipBand = readonly [number, number];
 
+/**
+ * A plan region the probe must not judge inside one Z band (v3.1 Task 12).
+ *
+ * A surface label's strokes and the ridges between its letters are text, and
+ * text is judged by the lettering rules (`solid/lettering.ts:repairText`, and
+ * the reference validator's `labels` row), not as free-standing walls: a
+ * 0.5 mm ridge of roof between two engraved letters is surface texture on a
+ * solid block. Unlike a `SkipBand`, which drops the whole slice height, a
+ * mask removes only the label's own ink rectangle from the slice, so every
+ * other wall at that height is still measured (the same masking the reference
+ * validator applies from the sidecar's `label_bands`).
+ */
+export interface SliceMask {
+  zMm: readonly [number, number];
+  /** The rectangle to remove, a live section in the caller's arena. */
+  section: CrossSection;
+}
+
+/** The masks active at `z`, or an empty list. */
+function masksAt(z: number, masks: readonly SliceMask[]): SliceMask[] {
+  return masks.filter((mask) => z >= mask.zMm[0] && z <= mask.zMm[1]);
+}
+
 /** True when `z` falls inside one of the skipped bands. */
 function skipped(z: number, bands: readonly SkipBand[]): boolean {
   return bands.some(([low, high]) => z >= low && z <= high);
@@ -388,6 +412,7 @@ export function measureMinWall(
   ctx: BuildContext,
   solid: Manifold,
   skipBands: readonly SkipBand[] = [],
+  masks: readonly SliceMask[] = [],
 ): MinWallReport {
   const bbox = solid.boundingBox();
   const flat = sliceHeights(ctx, bbox.max[2], skipBands);
@@ -426,9 +451,15 @@ export function measureMinWall(
     // Here that question is `attribution.deepMarkDepthMm`'s own clamp, which
     // refuses to cut deeper than the plate can carry (`[V3-P7-A8]`).
     if (skipped(z, skipBands)) continue;
-    const section = solid.slice(z);
-    const lean = section.simplify(SLICE_SIMPLIFY_MM);
-    const above = solid.slice(z + persist);
+    const section = perfSpan("measure.slice", () => solid.slice(z));
+    const active = masksAt(z, masks);
+    // A label's ink rectangle is taken out of the slice before it is judged
+    // (`SliceMask`); the rest of the slice at this height is measured as ever.
+    const masked =
+      active.length === 0 ? section : ctx.wasm.CrossSection.difference([section, ...active.map((mask) => mask.section)]);
+    const lean = perfSpan("measure.simplify", () => masked.simplify(SLICE_SIMPLIFY_MM));
+    if (masked !== section) masked.delete();
+    const above = perfSpan("measure.slice", () => solid.slice(z + persist));
     const components: CrossSection[] = [];
     try {
       const area = lean.area();
@@ -442,7 +473,7 @@ export function measureMinWall(
       // form of the same question is one erosion per region: what survives
       // `offset(-0.45 * min_wall)` is at least 0.9 of a wall wide somewhere,
       // and only what does not is worth searching.
-      components.push(...lean.decompose());
+      components.push(...perfSpan("measure.decompose", () => lean.decompose()));
       for (const piece of components) {
         // On a FLAT build only a region that VANISHES under the erosion probe is
         // measured, and this is a known blind spot rather than a claim
@@ -476,23 +507,30 @@ export function measureMinWall(
         // spends 85 ms and hands the intersect almost nothing, persistence first
         // spends 8162 ms on 1930 intersects. Do not swap them.
         if (draped === null) {
-          const eroded = piece.offset(-probe, ROUND, 2, OPENING_SEGMENTS);
-          const thin = eroded.isEmpty();
-          eroded.delete();
+          const thin = perfSpan("measure.erode", () => {
+            const eroded = piece.offset(-probe, ROUND, 2, OPENING_SEGMENTS);
+            const empty = eroded.isEmpty();
+            eroded.delete();
+            return empty;
+          });
           if (!thin) continue;
         }
         // A wall, or the top of a ridge? Only what survives one printed layer
         // upward is judged (`WALL_PERSIST_PER_NOZZLE`).
         if (!above.isEmpty()) {
-          const kept = piece.intersect(above);
-          const survives = kept.area() >= WALL_PERSIST_RATIO * piece.area();
-          kept.delete();
+          const survives = perfSpan("measure.persist", () => {
+            const kept = piece.intersect(above);
+            const enough = kept.area() >= WALL_PERSIST_RATIO * piece.area();
+            kept.delete();
+            return enough;
+          });
           if (!survives) continue;
         }
-        const width =
+        const width = perfSpan("measure.width", () =>
           draped === null
             ? inscribedWidthMm(piece, ctx.thresholdsMm.minWall)
-            : narrowestWidthMm(ctx, piece, ctx.thresholdsMm.minWall);
+            : narrowestWidthMm(ctx, piece, ctx.thresholdsMm.minWall),
+        );
         if (width < ctx.thresholdsMm.minWall) thinRegions += 1;
         if (narrowest === null || width < narrowest) {
           narrowest = width;

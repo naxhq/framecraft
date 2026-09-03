@@ -271,24 +271,22 @@ describe("the rail region", () => {
     expect(outstandingWasmObjects()).toBe(0);
   }, 120_000);
 
-  it("uses params.regions.rail.width_m when the way carries none", async () => {
-    const narrow = await buildModel({
-      scene: scene({
-        radiusM: RADIUS_M,
-        rail: [{ id: "rail1", path: [[-180, 60], [180, 60]], width_m: 6 }],
-      }),
-      params: defaultPrintParams(),
-    });
-    const wide = await buildModel({
-      scene: scene({
-        radiusM: RADIUS_M,
-        rail: [{ id: "rail1", path: [[-180, 60], [180, 60]], width_m: 20 }],
-      }),
-      params: defaultPrintParams(),
-    });
-    expect(regionOf(wide, "rail")!.volumeMm3).toBeGreaterThan(
-      regionOf(narrow, "rail")!.volumeMm3 * 1.5,
-    );
+  it("takes the ribbon width from params.regions.rail.width_m, never from the way", async () => {
+    // `[V3.1-P2-1]`: the parameter is authoritative for every rail ribbon.
+    // The way's own `width_m` is SceneGraph data the normaliser fills from the
+    // railway type, and it moves nothing here: a 20 m way at the 6 m default
+    // prints exactly as a 6 m way does, and the parameter driven to 20 m
+    // prints wider. (This test used to assert the opposite, that the way's
+    // width won, which is the defect the ruling closed.)
+    const railway = (widthM: number) =>
+      scene({ radiusM: RADIUS_M, rail: [{ id: "rail1", path: [[-180, 60], [180, 60]], width_m: widthM }] });
+    const narrow = await buildModel({ scene: railway(6), params: defaultPrintParams() });
+    const wideWay = await buildModel({ scene: railway(20), params: defaultPrintParams() });
+    expect(regionOf(wideWay, "rail")!.volumeMm3).toBeCloseTo(regionOf(narrow, "rail")!.volumeMm3, 6);
+    const wideParams = defaultPrintParams();
+    wideParams.regions = { ...(wideParams.regions ?? {}), rail: { ...(wideParams.regions?.rail ?? {}), width_m: 20 } };
+    const wide = await buildModel({ scene: railway(6), params: wideParams });
+    expect(regionOf(wide, "rail")!.volumeMm3).toBeGreaterThan(regionOf(narrow, "rail")!.volumeMm3 * 1.5);
     expect(outstandingWasmObjects()).toBe(0);
   }, 120_000);
 });

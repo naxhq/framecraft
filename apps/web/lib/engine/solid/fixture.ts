@@ -221,9 +221,15 @@ export function road(
   return out;
 }
 
-/** One area feature (water or green) from a ring. */
-export function area(ring: Point[], holes: Point[][] = []): AreaFeature {
-  return { ring, holes };
+/**
+ * One area feature (water or green) from a ring.
+ *
+ * `osmId` is the schema_version 4 identity an `object_overrides` row is keyed
+ * by (`AreaFeature.osm_id`); it is optional and omitted by default, so every
+ * scene built before it existed is byte-identical to what it was.
+ */
+export function area(ring: Point[], holes: Point[][] = [], osmId?: string): AreaFeature {
+  return osmId === undefined ? { ring, holes } : { ring, holes, osm_id: osmId };
 }
 
 /** One building, with sane defaults for everything the test does not care about. */

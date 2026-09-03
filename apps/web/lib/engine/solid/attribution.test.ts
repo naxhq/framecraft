@@ -38,6 +38,7 @@ import {
   wallNormal,
   wrapText,
 } from "./attribution";
+import { APPLICATION } from "../export/common";
 import { building, scene, square } from "./fixture";
 import { outstandingWasmObjects } from "./manifold";
 
@@ -281,8 +282,10 @@ describe("every build carries the marks", () => {
     // The mark is the only thing that takes material out of a plain lip.
     expect(ring - frame.volumeMm3).toBeGreaterThan(1);
     expect(lineOf(plain, "attribution-frame-wall")?.depthMm).toBe(WALL_MARK_DEPTH_MM);
-    // Fitted to the wall: the default lip is exactly the 2 mm minimum.
-    expect(geometry.top_mm - geometry.bottom_mm).toBeCloseTo(WALL_MARK_MIN_HEIGHT_MM, 6);
+    // Fitted to the wall: the default lip's exposed wall, under the default
+    // sight-edge rebate (`[V3.1-P2-2]`), is exactly the 1.6 mm minimum.
+    expect(geometry.top_mm - geometry.bottom_mm - T.lip_rebate_depth_mm(plain.params)).toBeCloseTo(WALL_MARK_MIN_HEIGHT_MM, 6);
+    expect(T.lip_rebate_depth_mm(plain.params)).toBe(T.LIP_DEPTH_DEFAULT_MM);
     const size = lineOf(plain, "attribution-frame-wall")!.sizeMm!;
     expect(size).toBeGreaterThan(1);
     expect(size).toBeLessThan(WALL_MARK_MIN_HEIGHT_MM);
@@ -376,10 +379,15 @@ describe("the provenance block", () => {
     const wanted = [
       "V. Alizadeh",
       licenceTail,
-      "FrameCraft 3.0.0",
+      // `APPLICATION`, never the literal it used to be: this list is the
+      // provenance every exporter must carry, and a typed version here was
+      // one of the six places a release bump had to remember to visit
+      // (Task 15). Its shape is asserted once, below.
+      APPLICATION,
       "lat=41.8827 lon=-87.6233 radius_m=200",
       "2026-09-01T09:00:00Z",
     ];
+    expect(APPLICATION).toMatch(/^FrameCraft \d+\.\d+\.\d+/);
 
     const generic = unzipText(
       exportGeneric3mf(result, { created, source }).bytes,
@@ -435,7 +443,7 @@ describe("the provenance block", () => {
     expect(sidecar.provenance).toEqual({
       author: "V. Alizadeh",
       license: MODEL_DATA_LICENCE,
-      generator: "FrameCraft 3.0.0",
+      generator: APPLICATION,
       source: "lat=41.8827 lon=-87.6233 radius_m=200",
       generated: "2026-09-01T09:00:00Z",
     });

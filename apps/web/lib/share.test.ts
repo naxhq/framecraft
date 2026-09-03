@@ -26,7 +26,7 @@ import {
   PARAM_RANGES,
   defaultPrintParams,
 } from "./contracts";
-import type { Engraving, PrintParams, SceneRequest } from "./contracts";
+import type { Engraving, Label, ObjectOverride, PrintParams, SceneRequest } from "./contracts";
 import { RADIUS_MAX_M, RADIUS_MIN_M } from "./geo";
 import {
   DECODABLE_VERSIONS,
@@ -72,8 +72,10 @@ function pick<T>(random: () => number, values: readonly T[]): T {
 function between(random: () => number, range: { min: number; max: number }): number {
   // Two decimals: the sliders step in 0.05 / 0.1, and an exactly-representable
   // value keeps the round-trip assertion about the encoding rather than about
-  // float printing.
-  return Math.round((range.min + random() * (range.max - range.min)) * 100) / 100;
+  // float printing. `+ 0` folds a rounded `-0` into `0`: JSON has no negative
+  // zero, so the wire cannot hand one back and `toEqual` would call that a
+  // change (a range that straddles zero, `proud_mm` or `rotation_deg`, hits it).
+  return Math.round((range.min + random() * (range.max - range.min)) * 100) / 100 + 0;
 }
 
 function randomParams(random: () => number): PrintParams {
@@ -97,6 +99,45 @@ function randomParams(random: () => number): PrintParams {
     `#${Math.floor(random() * 0xffffff)
       .toString(16)
       .padStart(6, "0")}`;
+  // v3.1: the two per-object arrays (Tasks 11 and 12), every member drawn from
+  // its own contract range so a random row is always a legal row.
+  const LAYERS = ["building", "road", "water", "green"] as const;
+  const overrides: ObjectOverride[] = [];
+  const overrideCount = Math.floor(random() * (PARAM_LIMITS.object_overrides.max_items + 1));
+  for (let i = 0; i < overrideCount; i += 1) {
+    overrides.push({
+      osm_id: `w${Math.floor(random() * 1e6)}`,
+      layer: pick(random, LAYERS),
+      hidden: random() > 0.5,
+      height_scale: between(random, PARAM_RANGES.object_overrides.height_scale),
+      hero: pick(random, ["inherit", "on", "off"] as const),
+      tint: random() > 0.5 ? hex() : "",
+      slot: Math.round(between(random, PARAM_RANGES.object_overrides.slot)),
+      color: random() > 0.5 ? hex() : "",
+      road_mode: pick(random, ["inherit", "engrave", "emboss", "off"] as const),
+      width_scale: between(random, PARAM_RANGES.object_overrides.width_scale),
+      raise_mm: between(random, PARAM_RANGES.object_overrides.raise_mm),
+    });
+  }
+  const labels: Label[] = [];
+  const labelCount = Math.floor(random() * (PARAM_LIMITS.labels.max_items + 1));
+  for (let i = 0; i < labelCount; i += 1) {
+    const layer = pick(random, LAYERS);
+    labels.push({
+      target_osm_id: `w${Math.floor(random() * 1e6)}`,
+      layer,
+      surface: layer === "building" ? "building_top" : "ground",
+      u: between(random, PARAM_RANGES.labels.u),
+      v: between(random, PARAM_RANGES.labels.v),
+      rotation_deg: between(random, PARAM_RANGES.labels.rotation_deg),
+      size_mm: between(random, PARAM_RANGES.labels.size_mm),
+      mode: pick(random, ["engrave", "emboss"] as const),
+      depth_mm: between(random, PARAM_RANGES.labels.depth_mm),
+      font: pick(random, FONTS),
+      text: pick(random, ["", "Tower", "Rue de Rivoli", "東京駅"]),
+      follow: random() > 0.5,
+    });
+  }
 
   return {
     schema_version: 2,
@@ -142,6 +183,8 @@ function randomParams(random: () => number): PrintParams {
     hero_building_ids: heroes,
     hero_mode: pick(random, ["true_height", "own_color", "both"] as const),
     ...randomV3Params(random),
+    object_overrides: overrides,
+    labels,
   };
 }
 
@@ -825,6 +868,40 @@ describe("the payload is a diff", () => {
       thickness_mm: PARAM_RANGES.hanger_magnet.thickness_mm.max,
       count: PARAM_RANGES.hanger_magnet.count.max,
     };
+    // v3.1: both per-object arrays full, every string at its cap.
+    params.object_overrides = Array.from(
+      { length: PARAM_LIMITS.object_overrides.max_items },
+      (): ObjectOverride => ({
+        osm_id: long(PARAM_LIMITS.object_overrides.osm_id.max_length),
+        layer: "road",
+        hidden: true,
+        height_scale: PARAM_RANGES.object_overrides.height_scale.max,
+        hero: "on",
+        tint: "#ABCDEF",
+        slot: PARAM_RANGES.object_overrides.slot.max,
+        color: "#123456",
+        road_mode: "emboss",
+        width_scale: PARAM_RANGES.object_overrides.width_scale.max,
+        raise_mm: PARAM_RANGES.object_overrides.raise_mm.max,
+      }),
+    );
+    params.labels = Array.from(
+      { length: PARAM_LIMITS.labels.max_items },
+      (): Label => ({
+        target_osm_id: long(PARAM_LIMITS.labels.target_osm_id.max_length),
+        layer: "road",
+        surface: "ground",
+        u: PARAM_RANGES.labels.u.max,
+        v: PARAM_RANGES.labels.v.max,
+        rotation_deg: PARAM_RANGES.labels.rotation_deg.max,
+        size_mm: PARAM_RANGES.labels.size_mm.max,
+        mode: "emboss",
+        depth_mm: PARAM_RANGES.labels.depth_mm.max,
+        font: "mono",
+        text: long(PARAM_LIMITS.labels.text.max_length),
+        follow: true,
+      }),
+    );
     return params;
   };
 
@@ -944,15 +1021,15 @@ describe("a link is untrusted input", () => {
     expect(outOfRange({ part_colors: { base: "red" } })).toContain("not in the form");
     expect(outOfRange({ trees: "yes" })).toContain("true/false");
     // Audit v3-02 finding 11: the contract's own `schema_version` type is
-    // `2 | 3` (`contracts.ts`), so a value outside THAT pair is refused, not
-    // 3 itself -- 3 is the current default and a link naming it honestly
+    // `2 | 3 | 4` (`contracts.ts`), so a value outside THAT set is refused, not
+    // 4 itself -- 4 is the current default and a link naming it honestly
     // must round-trip, which the next test asserts directly.
-    expect(outOfRange({ schema_version: 4 })).toContain("must be 2 or 3");
-    expect(outOfRange({ schema_version: 1 })).toContain("must be 2 or 3");
+    expect(outOfRange({ schema_version: 5 })).toContain("must be 2 or 3 or 4");
+    expect(outOfRange({ schema_version: 1 })).toContain("must be 2 or 3 or 4");
   });
 
-  it("accepts either legal schema_version, including the current default", () => {
-    for (const version of [2, 3] as const) {
+  it("accepts every legal schema_version, including the current default", () => {
+    for (const version of [2, 3, 4] as const) {
       const decoded = decodeShare(payloadOf({ r: REQUEST, p: { schema_version: version } }));
       expect(decoded.ok, String(version)).toBe(true);
       if (decoded.ok) expect(decoded.params.schema_version).toBe(version);

@@ -36,12 +36,13 @@ import { buildSidecarJson } from "../export/common";
 import { ExportBlockedError, blockingFindings } from "../export/gate";
 import { exportForTarget } from "../export/index";
 import type { OverpassResponse } from "../osm/normalize";
-import { sceneFromOverpass } from "../osm/scene";
+import { projectOverpass, sceneFromProjected, type ProjectedScene } from "../osm/scene";
 import { fetchOverpass, type OverpassFetchError } from "../osm/overpass";
-import type { EngineBuilding } from "../osm/types";
+import type { EngineBuilding, EngineSceneGraph } from "../osm/types";
 import { samplerFromGrid, smoothGrid } from "../terrain/heightfield";
 import {
   SURFACE_ORDER,
+  buildOverrideSurfaces,
   buildSurfaceRegion,
   fittedSolid,
   grownPocket,
@@ -50,6 +51,16 @@ import {
   type RepairedSurface,
   type SurfaceRegion,
 } from "../solid/areas";
+import {
+  OVERRIDE_MAX_REGIONS,
+  baseOsmIdOfBuilding,
+  groupForRegion,
+  heroOverrides,
+  overrideGroups,
+  overrideIndexOf,
+  overrideRegionStyle,
+  reconcileOverrides,
+} from "../solid/overrides";
 import { buildAttribution, undersideReserveMm, undersideSkipBands } from "../solid/attribution";
 import { buildPlate, carveBase, cutterTopMm } from "../solid/base";
 import { buildBridges } from "../solid/bridges";
@@ -69,7 +80,19 @@ import {
   reportUnbuiltFrameStyle,
 } from "../solid/frame";
 import { buildHangers } from "../solid/hangers";
+import {
+  applyLabels,
+  baseCutters,
+  buildLabels,
+  groundAdditions,
+  groundPiecesFor,
+  labelFaces,
+  labelMasks,
+  roofPiecesFor,
+} from "../solid/labels";
 import { buildLettering, facesFor, loadFaces } from "../solid/lettering";
+import { loadGlyphFace } from "../../fontGlyphs";
+import { labelPose } from "../../labelAnchor";
 import {
   UNION_DEBRIS_MM3,
   batchedUnion,
@@ -77,6 +100,7 @@ import {
   pruneDebrisCounted,
   subtractSolids,
   toRegionMesh,
+  type CrossSection,
   type Manifold,
 } from "../solid/manifold";
 import { measureMinWall, regionBounds, triangleCount } from "../solid/measure";
@@ -87,13 +111,14 @@ import { buildTiles, tileGridSpec, type TileSource } from "../solid/tiling";
 import { buildTrees } from "../solid/trees";
 import { canonicalMesh } from "../solid/mesh";
 import { islandReport, validate, type BuiltRegion } from "../solid/validate";
-import { hashBytes, hashParts } from "./hash";
+import { hashBytes, hashParts, hashString } from "./hash";
 import type { AuditFinding, EngineStats, RegionMesh, RegionName } from "../types";
 import { REGION_NAMES } from "../types";
 import {
   defineStage,
   finishStageId,
   regionStageId,
+  type FetchOut,
   type FinishStageId,
   type RecessBand,
   type RegionStageId,
@@ -104,6 +129,16 @@ import {
 
 /** How far the assembly may sit off z = 0 before it is nudged back, mm. */
 export const SIT_EPS_MM = 1e-9;
+
+/**
+ * The colour an override region falls back to, which nothing reachable uses.
+ *
+ * A region only has a solid when a group claimed it, and a claimed group always
+ * resolves a colour, so this is the value of a branch the types need and the
+ * program does not take. It is the contract's own `region_colors.base` default,
+ * the same literal `merged` uses for an empty scene.
+ */
+const OVERRIDE_FALLBACK_HEX = "#D8D3C6";
 
 /**
  * The eight placement leaves `areas.placementFor` reads for the four surface
@@ -187,6 +222,79 @@ function solidsDigest(solids: readonly (Manifold | null)[]): string | null {
   return hashParts(parts);
 }
 
+/**
+ * The scene layers the ground stages read, and nothing else: what the
+ * `normalise#ground` part digest stands for.
+ *
+ * `heights.*` moves a building's `height_m`, `min_height_m` and `is_tall` and
+ * nothing outside `buildings` and `stats` (`osm/normalize.ts`: the rules are
+ * applied per footprint and the water, green, road, rail and tree emission
+ * never reads them). A surface layer, the bridge decks and the grove read only
+ * these layers, so they are keyed on this digest and a storey-height change
+ * leaves the whole ground of the plate cached (v3-07 section 3's one miss).
+ * The runner hands such a stage a view of the scene with every OTHER layer
+ * replaced by a getter that throws (`runner.ts:scenePartView`), so a stage
+ * keyed on the part cannot quietly read past it.
+ */
+export const SCENE_GROUND_LAYERS = ["bounds", "center", "roads", "rail", "water", "green", "trees"] as const;
+
+/** Every named part of the scene a stage may key on, each as the layers it exposes. */
+export const SCENE_PARTS: Readonly<Record<"ground", readonly (keyof EngineSceneGraph)[]>> = {
+  ground: SCENE_GROUND_LAYERS,
+};
+
+/**
+ * A content digest of the ground layers. `JSON.stringify`, not `stableJson`:
+ * the normaliser emits every entity with its keys in one fixed order and only
+ * finite numbers, strings and booleans in them (an absent optional is
+ * `undefined`, which both serialisers treat as absent), and the native
+ * serialiser is an order of magnitude faster on a megabyte of coordinates.
+ */
+function groundDigest(scene: EngineSceneGraph): string {
+  return perfSpan("digest.ground", () => {
+    const picked: Partial<Record<(typeof SCENE_GROUND_LAYERS)[number], unknown>> = {};
+    for (const layer of SCENE_GROUND_LAYERS) picked[layer] = scene[layer];
+    return hashString(JSON.stringify(picked));
+  });
+}
+
+/**
+ * A content digest of a cross-section: the constant `none` for nothing, else
+ * the polygon lengths and every vertex. Exact, like `solidsDigest`: Clipper2
+ * is deterministic, so the same footprints in the same order give the same
+ * polygons, and two sections with the same polygons are the same section.
+ */
+function sectionDigest(section: CrossSection | null): string {
+  if (section === null || section.isEmpty()) return "none";
+  return perfSpan("digest.section", () => {
+    const polygons = section.toPolygons();
+    let total = 0;
+    for (const polygon of polygons) total += polygon.length;
+    const flat = new Float64Array(total * 2);
+    const lengths: string[] = [];
+    let at = 0;
+    for (const polygon of polygons) {
+      lengths.push(String(polygon.length));
+      for (const [x, y] of polygon) {
+        flat[at] = x;
+        flat[at + 1] = y;
+        at += 2;
+      }
+    }
+    return hashParts([...lengths, hashBytes(new Uint8Array(flat.buffer))]);
+  });
+}
+
+/**
+ * What a ground stage keys on instead of the whole scene and the whole repair:
+ * the ground layers, and the footprint the base is socketed with. The repair's
+ * footprint is the union of the closed, cropped, widened components, which
+ * reads no height (`solid/repair.ts` step 4); the block heights, the stacked
+ * towers and the hero bookkeeping live beside it in the same output and are
+ * read by `buildings`, `labels` and `audit`, which stay keyed on the whole.
+ */
+const GROUND_READS = { normalise: "ground", "repair-buildings": "footprint" } as const;
+
 /** The finished regions in `REGION_NAMES` order, read from the finish stages a stage declared. */
 function builtRegions(ctx: StageContext): BuiltRegion[] {
   const out: BuiltRegion[] = [];
@@ -259,6 +367,71 @@ function reportRelief(ctx: BuildContext, drape: Drape | null): void {
   });
 }
 
+/**
+ * Say what the per-object overrides did NOT do (v3.1 Task 11).
+ *
+ * Two silences worth breaking, both raised where they are known, in the stage
+ * that resolves the groups, so a memoised build still carries them:
+ *
+ * - an override whose base OSM id names nothing in this scene. It is kept, not
+ *   dropped, because a smaller crop must not destroy a decision a bigger one
+ *   recorded, and widening the crop has to bring it back. Info, not a warning:
+ *   nothing is wrong with the model.
+ * - an override that asked for a printed treatment and did not get one, either
+ *   because the four override regions were already spoken for or because it
+ *   produced no geometry on this plate (a road that is only a bridge deck). It
+ *   prints in its layer's own filament, which is a real difference from what
+ *   was asked for, so it is a warning.
+ */
+function reportOverrides(ctx: StageContext, unbuilt: readonly string[]): void {
+  const build = ctx.build;
+  const { inactive } = reconcileOverrides(ctx.scene, ctx.params);
+  if (inactive.length > 0) {
+    addFinding(build, {
+      id: "override-unresolved",
+      severity: "info",
+      title: `${inactive.length} per-object ${inactive.length === 1 ? "change is" : "changes are"} waiting for their object`,
+      detail:
+        `${inactive.length} ${inactive.length === 1 ? "object was" : "objects were"} given a change ` +
+        "that this map area does not reach. They are kept in the project, inactive, and come back " +
+        "the moment the area covers them again.",
+    });
+  }
+  const overflow = overrideGroups(ctx.params).overflow.length;
+  const unplaced = overflow + unbuilt.length;
+  if (unplaced > 0) {
+    addFinding(build, {
+      id: "override-not-printed",
+      severity: "warning",
+      title: `${unplaced} per-object ${unplaced === 1 ? "colour is" : "colours are"} printing in the layer's filament`,
+      detail:
+        (overflow > 0
+          ? `${overflow} asked for a filament of their own after all ${OVERRIDE_MAX_REGIONS} per-object ` +
+            `slots were taken. ${OVERRIDE_MAX_REGIONS} is the filament count of the default printer, and ` +
+            "objects given the SAME colour share one, so re-using a colour you already picked costs nothing. "
+          : "") +
+        (unbuilt.length > 0
+          ? `${unbuilt.length} produced no printed surface here: a road carried entirely on a bridge deck ` +
+            "keeps the road region's filament, because the deck is built with the bridge rather than laid " +
+            "on the ground."
+          : ""),
+    });
+  }
+}
+
+/** The three override counts the stats carry, each absent when it is zero. */
+function overrideStats(ctx: StageContext): Partial<EngineStats> {
+  const { active, inactive } = reconcileOverrides(ctx.scene, ctx.params);
+  const total = active.length + inactive.length;
+  if (total === 0) return {};
+  const unplaced = overrideGroups(ctx.params).overflow.length + ctx.input("surface-overrides").unbuilt.length;
+  return {
+    overrides: total,
+    ...(inactive.length === 0 ? {} : { overridesUnresolved: inactive.length }),
+    ...(unplaced === 0 ? {} : { overridesUnplaced: unplaced }),
+  };
+}
+
 const SURFACE_STAGE: Record<(typeof SURFACE_ORDER)[number], "surface-water" | "surface-rail" | "surface-roads" | "surface-parks"> = {
   water: "surface-water",
   rail: "surface-rail",
@@ -285,17 +458,43 @@ const fetch = defineStage({
   },
 });
 
+/**
+ * The projected layers of each fetched response, kept beside the response
+ * for as long as the `fetch` entry lives.
+ *
+ * `normalise` claims `heights.*`, correctly: the rules decide every building's
+ * height. But they are the LAST step of the ingest and about 5 ms of it; the
+ * other 500 to 700 ms on the Chicago Loop (three quarters of it the water
+ * and green dissolve) depend on the response and the request only, both of
+ * which are the `fetch` key. So the stage projects once per fetch output and
+ * applies the rules per run: the same pure function of the same declared
+ * inputs, with the height-free part memoised on the input it is a function
+ * of. A `WeakMap` on the output object, not a stage of its own, because the
+ * stage list is what the HUD, the plan events and the protocol's test seams
+ * name, and none of them needs to know (v3-07 section 3, the one miss).
+ */
+const PROJECTED = new WeakMap<FetchOut, ProjectedScene>();
+
 const normalise = defineStage({
   id: "normalise",
   phase: "scene",
   params: ["heights.*"],
   inputs: ["fetch"],
   extra: ["scene-request"],
+  // The ground layers, for the stages that never look at a building.
+  digests: { ground: (out) => groundDigest(out.scene) },
   run(ctx) {
     const request = ctx.extra("scene-request");
     if (request === null) throw new Error("normalise: the job carries a finished scene, so the runner should have seeded this stage");
-    const raw = ctx.input("fetch").raw;
-    const scene = perfSpan("osm.normalize", () => sceneFromOverpass(raw, request, ctx.params));
+    const fetched = ctx.input("fetch");
+    const scene = perfSpan("osm.normalize", () => {
+      let projected = PROJECTED.get(fetched);
+      if (projected === undefined) {
+        projected = perfSpan("osm.project", () => projectOverpass(fetched.raw, request));
+        PROJECTED.set(fetched, projected);
+      }
+      return sceneFromProjected(projected, ctx.params);
+    });
     return { scene };
   },
 });
@@ -362,31 +561,130 @@ const terrain = defineStage({
   },
 });
 
+/**
+ * The parameter leaves that decide which override belongs to which group, and
+ * therefore which region an object prints in.
+ *
+ * Every stage that partitions objects by group reads exactly these, and no
+ * stage reads them for any other reason. `hidden`, `height_scale`, `hero`,
+ * `tint` and `width_scale` are NOT here: each is claimed only by the one stage
+ * that applies it, so a tint change does not re-run the road repair.
+ */
+const OVERRIDE_GROUP_LEAVES = [
+  "object_overrides[].osm_id",
+  "object_overrides[].layer",
+  "object_overrides[].slot",
+  "object_overrides[].color",
+  "object_overrides[].road_mode",
+  "object_overrides[].raise_mm",
+] as const;
+
+/** What a group's own filament falls back to when the override names none. */
+const OVERRIDE_COLOUR_LEAVES = [
+  "colour.region_slots.buildings",
+  "colour.region_slots.roads",
+  "colour.region_slots.water",
+  "colour.region_slots.parks",
+  "colour.region_colors.buildings",
+  "colour.region_colors.roads",
+  "colour.region_colors.water",
+  "colour.region_colors.parks",
+] as const;
+
 const heroes = defineStage({
   id: "heroes",
   phase: "geometry",
-  params: ["hero_building_ids", "hero_auto.enabled", "hero_auto.count"],
+  params: [
+    "hero_building_ids",
+    "hero_auto.enabled",
+    "hero_auto.count",
+    "object_overrides[].osm_id",
+    "object_overrides[].layer",
+    "object_overrides[].hero",
+  ],
   inputs: ["normalise"],
   extra: ["hero-ids"],
   run(ctx) {
     const override = ctx.extra("hero-ids");
-    if (override !== null) return { ids: [...override] };
-    const manual = (ctx.param("hero_building_ids") ?? []).map((id) => String(id));
-    if (ctx.param("hero_auto.enabled") !== true) return { ids: manual };
-    const count = ctx.param("hero_auto.count") ?? 0;
-    return { ids: autoHeroIds(heroCandidates(ctx.scene.buildings as EngineBuilding[]), manual, count) };
+    const base = ((): string[] => {
+      if (override !== null) return [...override];
+      const manual = (ctx.param("hero_building_ids") ?? []).map((id) => String(id));
+      if (ctx.param("hero_auto.enabled") !== true) return manual;
+      const count = ctx.param("hero_auto.count") ?? 0;
+      return autoHeroIds(heroCandidates(ctx.scene.buildings as EngineBuilding[]), manual, count);
+    })();
+    // v3.1 Task 11. The per-object marks are applied LAST, including over the
+    // caller-resolved `hero-ids` extra: the store resolves that list from
+    // `hero_building_ids` and `hero_auto`, which is the same computation this
+    // stage would do, and neither of them knows about an override. Marking is
+    // by base OSM id, so it is translated back to the scene ids the rest of
+    // the build speaks.
+    const marks = heroOverrides(ctx.params);
+    if (marks.marked.size === 0 && marks.unmarked.size === 0) return { ids: base };
+    const ids = new Set(base);
+    for (const building of ctx.scene.buildings) {
+      const baseId = baseOsmIdOfBuilding(building);
+      if (marks.marked.has(baseId)) ids.add(String(building.id));
+      if (marks.unmarked.has(baseId)) ids.delete(String(building.id));
+    }
+    return { ids: [...ids] };
   },
 });
 
 const repairBuildingsStage = defineStage({
   id: "repair-buildings",
   phase: "geometry",
-  params: ["small_scale", "large_scale", "hero_mode", "base_thickness_mm"],
+  params: [
+    "small_scale",
+    "large_scale",
+    "hero_mode",
+    "base_thickness_mm",
+    // The stacking decision (a tower taller than its block keeps its own
+    // solid) compares printed tops through `T.building_top_mm_for`, which
+    // applies the exaggeration first; the footprint union below it does not
+    // read it, so `repair-buildings#footprint` leaves the ground cached.
+    "height_exaggeration.*",
+    "object_overrides[].osm_id",
+    "object_overrides[].layer",
+    "object_overrides[].hidden",
+    "object_overrides[].height_scale",
+  ],
   inputs: ["normalise", "context", "heroes"],
+  // The footprint the surface layers are blocked by and the base is socketed
+  // with; a taller block leaves it where it was.
+  digests: { footprint: (out) => sectionDigest(out.footprint) },
   run(ctx) {
     const repaired = repairBuildings(ctx.build, ctx.input("heroes").ids);
     reportHeroes(ctx.build, repaired.heroUnknown, repaired.heroBuried, repaired.heroDropped);
     return repaired;
+  },
+});
+
+const surfaceOverrides = defineStage({
+  id: "surface-overrides",
+  phase: "geometry",
+  params: [
+    ...OVERRIDE_GROUP_LEAVES,
+    "object_overrides[].hidden",
+    "object_overrides[].width_scale",
+    "regions.roads.*",
+    "regions.water.*",
+    "regions.parks.*",
+    "road_scale",
+    "bridges.enabled",
+    "water",
+  ],
+  inputs: ["normalise", "context", "repair-buildings"],
+  run(ctx) {
+    const grouping = overrideGroups(ctx.params);
+    if (grouping.groups.length === 0) {
+      reportOverrides(ctx, []);
+      return { surfaces: [], unbuilt: [] };
+    }
+    const built = buildOverrideSurfaces(ctx.build, grouping.groups, ctx.input("repair-buildings").footprint);
+    const unbuilt = built.unbuilt.map((group) => group.region);
+    reportOverrides(ctx, unbuilt);
+    return { surfaces: built.surfaces, unbuilt };
   },
 });
 
@@ -396,6 +694,11 @@ function repairSurfaceLayer(ctx: StageContext, layer: (typeof SURFACE_ORDER)[num
   const blockers: Array<{ section: RepairedSurface["section"] | null; separate: boolean }> = [
     { section: footprint, separate: false },
   ];
+  // The override layers come before every ordinary one: an object the user
+  // singled out owns its ground against water, rail, roads and parks alike.
+  for (const surface of ctx.input("surface-overrides").surfaces) {
+    blockers.push({ section: surface.section, separate: false });
+  }
   for (const earlier of SURFACE_ORDER) {
     if (earlier === layer) break;
     const built = ctx.input(SURFACE_STAGE[earlier]);
@@ -407,8 +710,14 @@ function repairSurfaceLayer(ctx: StageContext, layer: (typeof SURFACE_ORDER)[num
 const surfaceWater = defineStage({
   id: "surface-water",
   phase: "geometry",
-  params: ["water", "regions.water.*"],
-  inputs: ["normalise", "context", "repair-buildings"],
+  params: [
+    "water",
+    "regions.water.*",
+    ...OVERRIDE_GROUP_LEAVES,
+    "object_overrides[].hidden",
+  ],
+  inputs: ["normalise", "context", "repair-buildings", "surface-overrides"],
+  inputDigests: GROUND_READS,
   run(ctx) {
     return repairSurfaceLayer(ctx, "water");
   },
@@ -418,7 +727,8 @@ const surfaceRail = defineStage({
   id: "surface-rail",
   phase: "geometry",
   params: ["regions.rail.*", "bridges.enabled", "road_scale"],
-  inputs: ["normalise", "context", "repair-buildings", "surface-water"],
+  inputs: ["normalise", "context", "repair-buildings", "surface-overrides", "surface-water"],
+  inputDigests: GROUND_READS,
   run(ctx) {
     return repairSurfaceLayer(ctx, "rail");
   },
@@ -427,8 +737,17 @@ const surfaceRail = defineStage({
 const surfaceRoads = defineStage({
   id: "surface-roads",
   phase: "geometry",
-  params: ["road_mode", "road_scale", "regions.roads.*", "bridges.enabled"],
-  inputs: ["normalise", "context", "repair-buildings", "surface-water", "surface-rail"],
+  params: [
+    "road_mode",
+    "road_scale",
+    "regions.roads.*",
+    "bridges.enabled",
+    ...OVERRIDE_GROUP_LEAVES,
+    "object_overrides[].hidden",
+    "object_overrides[].width_scale",
+  ],
+  inputs: ["normalise", "context", "repair-buildings", "surface-overrides", "surface-water", "surface-rail"],
+  inputDigests: GROUND_READS,
   run(ctx) {
     reportRoadModeConflict(ctx.build);
     return repairSurfaceLayer(ctx, "roads");
@@ -438,15 +757,31 @@ const surfaceRoads = defineStage({
 const surfaceParks = defineStage({
   id: "surface-parks",
   phase: "geometry",
-  params: ["regions.parks.*", "frame"],
-  inputs: ["normalise", "context", "repair-buildings", "surface-water", "surface-rail", "surface-roads"],
+  params: [
+    "regions.parks.*",
+    "frame",
+    ...OVERRIDE_GROUP_LEAVES,
+    "object_overrides[].hidden",
+  ],
+  inputs: [
+    "normalise",
+    "context",
+    "repair-buildings",
+    "surface-overrides",
+    "surface-water",
+    "surface-rail",
+    "surface-roads",
+  ],
+  inputDigests: GROUND_READS,
   run(ctx) {
     const build = ctx.build;
     const parks = repairSurfaceLayer(ctx, "parks");
     // The layers in precedence order, each as its own stage repaired it. The
     // ridge merge below may replace a recessed layer's footprint, so the
-    // records are copied first: the upstream outputs stay what they were.
-    const repaired: RepairedSurface[] = [];
+    // records are copied first: the upstream outputs stay what they were. The
+    // override layers are first and are therefore never the merge's SINK, which
+    // is what keeps a singled-out object's footprint exactly what the user drew.
+    const repaired: RepairedSurface[] = ctx.input("surface-overrides").surfaces.map((surface) => ({ ...surface }));
     for (const layer of SURFACE_ORDER) {
       const built = layer === "parks" ? parks : ctx.input(SURFACE_STAGE[layer]);
       if (built === null || "regions" in built) continue;
@@ -488,8 +823,12 @@ const buildings = defineStage({
     "colour.tint.*",
     "colour.region_colors.buildings",
     "colour.region_colors.hero_building",
+    // v3.1 Task 11: the group leaves decide which buildings leave the band
+    // split for an `override_N` region, and `tint` names one building's shade.
+    ...OVERRIDE_GROUP_LEAVES,
+    "object_overrides[].tint",
   ],
-  inputs: ["context", "terrain", "repair-buildings"],
+  inputs: ["normalise", "context", "terrain", "repair-buildings"],
   digests: { socket: (out) => solidsDigest(out.socket) },
   run(ctx) {
     return buildBuildings(ctx.build, ctx.input("repair-buildings"), ctx.input("terrain").drape);
@@ -499,8 +838,21 @@ const buildings = defineStage({
 const bridges = defineStage({
   id: "bridges",
   phase: "geometry",
-  params: ["bridges.*", "road_mode", "road_scale", "regions.roads.depth_mm", "regions.rail.depth_mm", "regions.rail.width_m"],
+  params: [
+    "bridges.*",
+    "road_mode",
+    "road_scale",
+    "regions.roads.depth_mm",
+    "regions.rail.depth_mm",
+    "regions.rail.width_m",
+    "object_overrides[].osm_id",
+    "object_overrides[].layer",
+    "object_overrides[].hidden",
+    "object_overrides[].road_mode",
+    "object_overrides[].width_scale",
+  ],
   inputs: ["normalise", "context", "terrain", "repair-buildings"],
+  inputDigests: GROUND_READS,
   run(ctx) {
     return buildBridges(ctx.build, ctx.input("repair-buildings").footprint, ctx.input("terrain").drape);
   },
@@ -511,6 +863,7 @@ const trees = defineStage({
   phase: "geometry",
   params: ["trees", "nozzle_mm"],
   inputs: ["normalise", "context", "terrain", "repair-buildings", "surface-parks"],
+  inputDigests: GROUND_READS,
   run(ctx) {
     const surfaces = ctx.input("surface-parks").regions;
     return buildTrees(
@@ -535,11 +888,63 @@ const tokens = defineStage({
 const fonts = defineStage({
   id: "fonts",
   phase: "geometry",
-  params: ["engravings[].edge", "engravings[].font", "frame", "scale_bar.enabled", "tiling.enabled", "tiling.index_mark"],
+  params: ["engravings[].edge", "engravings[].font", "labels[].font", "frame", "scale_bar.enabled", "tiling.enabled", "tiling.index_mark"],
   inputs: [],
   async run(ctx) {
-    await loadFaces(ctx.params);
-    return { faces: facesFor(ctx.params) };
+    // The surface labels' faces ride along with the lettering's (Task 12).
+    const extra = labelFaces(ctx.params);
+    await Promise.all([loadFaces(ctx.params), ...extra.map((face) => loadGlyphFace(face))]);
+    return { faces: [...new Set([...facesFor(ctx.params), ...extra])] };
+  },
+});
+
+/**
+ * The surface labels (v3.1 Task 12): every `labels[]` entry as a cutter or a
+ * raised solid on the roof or the ground surface it names, plus the bands the
+ * validator masks and the gizmo places itself on. It sits between `fonts` and
+ * `lettering` so the resolved text comes out in parameter order, labels first;
+ * its consumers are `base` (the ground engraves that reach into the plate),
+ * the building and surface regions, `assembly` and `measure`.
+ */
+const labels = defineStage({
+  id: "labels",
+  phase: "geometry",
+  params: [
+    "labels[].*",
+    "plate_mm",
+    "nozzle_mm",
+    "frame",
+    "base_thickness_mm",
+    "road_scale",
+    "small_scale",
+    "large_scale",
+    "hero_mode",
+    "height_exaggeration.*",
+    "regions.building_skirt_mm",
+  ],
+  inputs: ["normalise", "context", "terrain", "repair-buildings", "surface-parks", "fonts"],
+  // What each consumer reads: the ground cutters (the base), the roof pieces
+  // (the building regions) and the ground pieces (the surface regions). Empty
+  // for a plate with no labels, so nothing re-runs for a text nobody placed.
+  digests: {
+    base: (out) => solidsDigest(baseCutters(out)),
+    roofs: (out) => solidsDigest(out.pieces.filter((piece) => piece.layer === "building").map((piece) => piece.cut ?? piece.add)),
+    ground: (out) => solidsDigest(out.pieces.filter((piece) => piece.layer !== "building").map((piece) => piece.cut ?? piece.add)),
+  },
+  run(ctx) {
+    const out = buildLabels(ctx.build, ctx.input("repair-buildings"), ctx.input("surface-parks").regions, ctx.input("terrain").drape);
+    // The pose the gizmo draws its handles from (`LabelBand.pose`): the anchor
+    // resolved through the same `labelAnchor` maths the cut itself used, so a
+    // handle and the groove under it cannot disagree. Resolved here, not in
+    // the canvas, because nothing drawn there may read a parameter.
+    const { scene, params, scale } = ctx.build;
+    for (const band of out.bands) {
+      const label = (params.labels ?? [])[band.index];
+      if (label === undefined) continue;
+      const pose = labelPose(scene, params, label, scale);
+      if (pose !== null) band.pose = { xMm: pose.x, yMm: pose.y, angleDeg: pose.angleDeg };
+    }
+    return out;
   },
 });
 
@@ -665,11 +1070,11 @@ const base = defineStage({
   id: "base",
   phase: "geometry",
   params: [],
-  inputs: ["context", "terrain", "surface-parks", "buildings", "lettering", "ornaments", "attribution", "hangers", "frame-cutters"],
+  inputs: ["context", "terrain", "surface-parks", "buildings", "labels", "lettering", "ornaments", "attribution", "hangers", "frame-cutters"],
   // Of these, the base reads only the cutters and the ridge, so it is keyed on
   // those parts: a frame-edge text, an ornament on the lip, a profile change
   // do not re-carve the plate.
-  inputDigests: { buildings: "socket", lettering: "base", ornaments: "base", attribution: "base", hangers: "base", "frame-cutters": "base" },
+  inputDigests: { buildings: "socket", labels: "base", lettering: "base", ornaments: "base", attribution: "base", hangers: "base", "frame-cutters": "base" },
   run(ctx) {
     const build = ctx.build;
     const cutters = ctx.input("frame-cutters");
@@ -678,6 +1083,9 @@ const base = defineStage({
     const carved = carveBase(build, withRidge, [
       ...ctx.input("buildings").socket,
       ...ctx.input("surface-parks").regions.map((s) => s.cutter),
+      // A ground label engraved deeper than its surface region is thick
+      // reaches the plate under it (Task 12).
+      ...baseCutters(ctx.input("labels")),
       ...ctx.input("lettering").baseCut,
       ...ctx.input("ornaments").baseCut,
       ...ctx.input("attribution").baseCut,
@@ -743,14 +1151,15 @@ function regionInputs(region: RegionName): StageId[] {
       return ["frame-cutters"];
     case "buildings":
     case "hero_building":
-      return ["buildings"];
+      return ["buildings", "labels"];
     case "roads":
+      return ["context", "terrain", "surface-parks", "bridges", "labels"];
     case "rail":
       return ["context", "terrain", "surface-parks", "bridges"];
     case "water":
-      return ["context", "terrain", "surface-parks"];
+      return ["context", "terrain", "surface-parks", "labels"];
     case "parks":
-      return ["context", "terrain", "surface-parks", "trees"];
+      return ["context", "terrain", "surface-parks", "trees", "labels"];
     case "lettering":
       return ["lettering"];
     case "attribution":
@@ -759,8 +1168,19 @@ function regionInputs(region: RegionName): StageId[] {
     case "cleat":
       return ["hangers"];
     default:
-      return ["buildings"];
+      // The gradient bands come from `buildings`; an `override_N` region can
+      // hold buildings AND a surface layer, so it reads both. Both carry the
+      // roof labels of the buildings they hold (Task 12).
+      return overrideIndexOf(region) === null
+        ? ["buildings", "labels"]
+        : ["context", "terrain", "surface-parks", "buildings", "labels"];
   }
+}
+
+/** The part digest of `labels` a region stage keys on: the roof pieces for a building region, the ground pieces otherwise. */
+function labelDigestFor(region: RegionName): "roofs" | "ground" {
+  if (region === "roads" || region === "water" || region === "parks") return "ground";
+  return "roofs";
 }
 
 function regionSolid(ctx: StageContext, region: RegionName): Manifold | null {
@@ -772,12 +1192,21 @@ function regionSolid(ctx: StageContext, region: RegionName): Manifold | null {
     case "matting":
       return ctx.input("frame-cutters").matting;
     case "hero_building":
-      return ctx.input("buildings").hero;
+      return applyLabels(ctx.wasm, ctx.arena, ctx.input("buildings").hero, roofPiecesFor(ctx.input("labels"), "hero_building", null));
     case "roads":
     case "rail":
     case "water":
     case "parks": {
       const surface = ctx.input("surface-parks").regions.find((s) => s.region === region);
+      // The ground labels are cut and raised on the FLAT surface, before the
+      // drape, exactly as the base carves its own cutters flat (Task 12).
+      // `rail` carries no labels and reads no label output.
+      const flat =
+        surface === undefined
+          ? null
+          : region === "rail"
+            ? surface.solid
+            : applyLabels(ctx.wasm, ctx.arena, surface.solid, groundPiecesFor(ctx.input("labels"), region));
       // Each surface region is warped on its own, which is safe here in a way
       // it was not for the assembly: a region overlaps the base laterally as
       // well as vertically, so the two stay welded through any tessellation
@@ -785,7 +1214,7 @@ function regionSolid(ctx: StageContext, region: RegionName): Manifold | null {
       // grade layer at all can still exist: a road that is only a bridge, a
       // park that is only its trees.
       let solid: Manifold | null =
-        surface === undefined ? null : (drapeSolid(ctx.build, ctx.input("terrain").drape, surface.solid, undefined, false) ?? surface.solid);
+        flat === null ? null : (drapeSolid(ctx.build, ctx.input("terrain").drape, flat, undefined, false) ?? flat);
       if (region === "roads" || region === "rail") {
         for (const bridge of ctx.input("bridges")) {
           if (bridge.region !== region) continue;
@@ -806,18 +1235,45 @@ function regionSolid(ctx: StageContext, region: RegionName): Manifold | null {
     case "cleat":
       return ctx.input("hangers").parts.find((part) => part.region === region)?.solid ?? null;
     default: {
-      // `buildings` and the gradient bands.
-      return ctx.input("buildings").bands.find((band) => band.region === region)?.solid ?? null;
+      if (overrideIndexOf(region) === null) {
+        // `buildings` and the gradient bands, each carrying the roof labels of
+        // the buildings whose tops fall in its range (Task 12).
+        const band = ctx.input("buildings").bands.find((candidate) => candidate.region === region);
+        if (band === undefined) return null;
+        return applyLabels(ctx.wasm, ctx.arena, band.solid, roofPiecesFor(ctx.input("labels"), region, band.topRangeMm));
+      }
+      // An override region (v3.1 Task 11) is whatever claimed this group: the
+      // buildings the user recoloured, the road or polygon layer they lifted
+      // out, or both. Each half is built by the stage that owns its geometry
+      // and welded here, the way `parks` welds its own trees in.
+      const surface = ctx.input("surface-parks").regions.find((s) => s.region === region);
+      let solid: Manifold | null =
+        surface === undefined
+          ? null
+          : (drapeSolid(ctx.build, ctx.input("terrain").drape, surface.solid, undefined, false) ?? surface.solid);
+      const band = ctx.input("buildings").overrideBands.find((entry) => entry.region === region);
+      if (band !== undefined) {
+        // A recoloured building keeps its roof label: every non-hero roof piece
+        // is offered, and a cutter over a building this group does not hold
+        // removes nothing (Task 12).
+        const labelled = applyLabels(ctx.wasm, ctx.arena, band.solid, roofPiecesFor(ctx.input("labels"), region, null));
+        solid = batchedUnion(ctx.wasm, ctx.arena, [solid, labelled]) ?? solid;
+      }
+      return solid;
     }
   }
 }
 
 function regionStage(region: RegionName): StageDef<RegionStageId> {
+  const inputs = regionInputs(region);
   return defineStage({
     id: regionStageId(region),
     phase: "region",
     params: [],
-    inputs: regionInputs(region),
+    inputs,
+    // A region that carries labels is keyed on the label pieces it can hold,
+    // so a roof label leaves the roads cached and the other way round.
+    ...(inputs.includes("labels") ? { inputDigests: { labels: labelDigestFor(region) } } : {}),
     run(ctx) {
       return { solid: regionSolid(ctx, region) };
     },
@@ -837,10 +1293,16 @@ function regionStage(region: RegionName): StageDef<RegionStageId> {
  * - `attribution` has no solid today (the marks are cuts, not an inlay), so
  *   its finish stage is always null and reads nothing; its two colour leaves
  *   are therefore claimed by no stage (see the graph test).
+ * - `override_N` (v3.1 Task 11) takes its filament from the override itself,
+ *   falling back per half to the layer the objects came out of, so it reads the
+ *   group leaves plus the four layers' slots and colours.
  */
 function finishClaims(region: RegionName): StageDef["params"] {
   const claim = (path: string): StageDef["params"][number] => path as StageDef["params"][number];
   if (region === "attribution") return [];
+  if (overrideIndexOf(region) !== null) {
+    return [...OVERRIDE_GROUP_LEAVES.map(claim), ...OVERRIDE_COLOUR_LEAVES.map(claim)];
+  }
   if (region === "easel" || region === "cleat") return [claim("colour.region_slots.base"), claim("colour.region_colors.base")];
   if (region === "hero_building") {
     return [
@@ -877,13 +1339,27 @@ const sit = defineStage({
   },
 });
 
-/** The regions whose triangles carry a building identity (`RegionMesh.triangleOwner`). */
+/**
+ * The regions whose triangles carry a building identity
+ * (`RegionMesh.triangleOwner`).
+ *
+ * An `override_N` region is here because it MAY hold buildings; whether it
+ * actually does is a run-time fact about that build's groups, and the finish
+ * stage skips the attribution when the group's layer is not `building` rather
+ * than walking a road's triangles looking for a building that is not there.
+ */
 export function ownedRegion(region: RegionName): boolean {
-  return region === "buildings" || region === "hero_building" || region.startsWith("buildings_band_");
+  return (
+    region === "buildings" ||
+    region === "hero_building" ||
+    region.startsWith("buildings_band_") ||
+    overrideIndexOf(region) !== null
+  );
 }
 
 function finishStage(region: RegionName): StageDef<FinishStageId> {
   const owned = ownedRegion(region);
+  const isOverride = overrideIndexOf(region) !== null;
   return defineStage({
     id: finishStageId(region),
     phase: "region",
@@ -898,11 +1374,20 @@ function finishStage(region: RegionName): StageDef<FinishStageId> {
       if (pruned.solid.isEmpty()) return null;
       const shift = ctx.input("sit").shiftMm;
       const placed = shift === 0 ? pruned.solid : ctx.arena.keep(pruned.solid.translate([0, 0, shift]));
-      const twin = colourTwin(ctx, region);
+      // An override region reads its filament from the override, never from
+      // `colour.region_slots`: there is no `region_slots.override_1` leaf to
+      // read, and asking for one is an undeclared read under strict claims.
+      // The fallback pair is unreachable (a region with a solid is a region a
+      // group claimed) and exists so the types need no assertion.
+      const style = isOverride ? overrideRegionStyle(ctx.params, region) : null;
+      const twin = isOverride ? region : colourTwin(ctx, region);
+      const slot = isOverride ? (style?.slot ?? 1) : regionSlot(ctx.params, twin);
+      const colorHex = isOverride ? (style?.colorHex ?? OVERRIDE_FALLBACK_HEX) : regionColor(ctx.params, twin);
       const mesh = perfSpan("finish.mesh", () =>
-        toRegionMesh(placed, region, regionSlot(ctx.params, twin), regionColor(ctx.params, twin), pruned.bodies.real + pruned.bodies.debris),
+        toRegionMesh(placed, region, slot, colorHex, pruned.bodies.real + pruned.bodies.debris),
       );
-      if (owned) {
+      const carriesBuildings = !isOverride || groupForRegion(overrideGroups(ctx.params), region)?.layer === "building";
+      if (owned && carriesBuildings) {
         const attribution = perfSpan("finish.owners", () => attributeTriangleOwners(placed, mesh, ctx.input("buildings").ownerIds));
         mesh.triangleOwner = attribution.triangleOwner;
         mesh.owners = attribution.owners;
@@ -927,6 +1412,7 @@ const assembly = defineStage({
     "buildings",
     "bridges",
     "trees",
+    "labels",
     "lettering",
     "ornaments",
     "attribution",
@@ -939,6 +1425,7 @@ const assembly = defineStage({
     const { wasm, arena } = ctx;
     const drape = ctx.input("terrain").drape;
     const cutters = ctx.input("frame-cutters");
+    const labelsOut = ctx.input("labels");
     const letteringOut = ctx.input("lettering");
     const ornamentsOut = ctx.input("ornaments");
     const attributionOut = ctx.input("attribution");
@@ -956,9 +1443,18 @@ const assembly = defineStage({
     const additive: Manifold[] = [assemblyPlate];
     if (frameOut.raisedFrame !== null) additive.push(frameOut.raisedFrame);
     if (cutters.matting !== null) additive.push(cutters.matting);
+    // The roof labels are applied to the building solids themselves, before
+    // they are unioned, so the same cut lands in the merged model whether the
+    // buildings join before the drape (flat) or after it (Task 12).
     const rigid: Manifold[] = [];
-    for (const band of buildingsOut.bands) rigid.push(band.solid);
-    if (buildingsOut.hero !== null) rigid.push(buildingsOut.hero);
+    for (const band of buildingsOut.bands) {
+      const labelled = applyLabels(wasm, arena, band.solid, roofPiecesFor(labelsOut, band.region, band.topRangeMm));
+      if (labelled !== null) rigid.push(labelled);
+    }
+    if (buildingsOut.hero !== null) {
+      const labelled = applyLabels(wasm, arena, buildingsOut.hero, roofPiecesFor(labelsOut, "hero_building", null));
+      if (labelled !== null) rigid.push(labelled);
+    }
     const standing: Manifold[] = [];
     for (const bridge of ctx.input("bridges")) standing.push(bridge.solid);
     const grove = ctx.input("trees").solid;
@@ -973,12 +1469,15 @@ const assembly = defineStage({
         if (groove !== null) grooves.push(groove);
       }
     }
-    const raised = batchedUnion(wasm, arena, [...additive, ...(drape === null ? rigid : [])]);
+    // Ground labels: the raised letters join the flat surfaces and the grooves
+    // are cut with the other flat cutters, both before the drape (Task 12).
+    const raised = batchedUnion(wasm, arena, [...additive, ...groundAdditions(labelsOut), ...(drape === null ? rigid : [])]);
     const carvedAssembly =
       raised === null
         ? null
         : subtractSolids(wasm, arena, raised, [
             ...grooves,
+            ...baseCutters(labelsOut),
             ...letteringOut.frameCut,
             ...ornamentsOut.frameCut,
             ...attributionOut.frameCut,
@@ -1039,11 +1538,13 @@ const measure = defineStage({
   id: "measure",
   phase: "audit",
   params: ["nozzle_mm", "terrain_exaggeration", "hanger", "base_thickness_mm", "frame", "underside_mark.enabled", ...PLACEMENT_LEAVES],
-  inputs: ["context", "terrain", "assembly"],
+  inputs: ["context", "terrain", "assembly", "labels"],
   run(ctx) {
     const welded = ctx.input("assembly").assembly;
     if (welded === null) return null;
-    return measureMinWall(ctx.build, welded, undersideSkipBands(ctx.build));
+    // Each surface label's ink polygon is masked out of the slices inside its
+    // own band: text is judged by the lettering rules, not as a wall (Task 12).
+    return measureMinWall(ctx.build, welded, undersideSkipBands(ctx.build), labelMasks(ctx.input("labels")));
   },
 });
 
@@ -1106,12 +1607,15 @@ const audit = defineStage({
     "custom_profile.*",
     "frame_style.profile",
     "colour.region_slots.*",
+    // v3.1 Task 11: the three override counts the stats carry.
+    ...OVERRIDE_GROUP_LEAVES,
   ],
   inputs: [
     "normalise",
     "context",
     "terrain",
     "repair-buildings",
+    "surface-overrides",
     "buildings",
     "bridges",
     "trees",
@@ -1155,6 +1659,7 @@ const audit = defineStage({
       ...(bridgesOut.length === 0 ? {} : { bridges: bridgesOut.reduce((total, b) => total + b.ways, 0) }),
       ...(grid === null ? {} : { tiles: tiles.length, tileCols: grid.cols, tileRows: grid.rows }),
       ...(buildingsOut.bands.length > 1 ? { gradientBands: buildingsOut.bands.length } : {}),
+      ...overrideStats(ctx),
     };
     // Every finding raised while building, in stage order, then the gate's.
     const builtFindings: AuditFinding[] = [...ctx.findingsBefore(), ...ctx.input("validate")];
@@ -1272,6 +1777,7 @@ export const STAGES: readonly StageDef[] = [
   terrain as StageDef,
   heroes as StageDef,
   repairBuildingsStage as StageDef,
+  surfaceOverrides as StageDef,
   surfaceWater as StageDef,
   surfaceRail as StageDef,
   surfaceRoads as StageDef,
@@ -1281,6 +1787,7 @@ export const STAGES: readonly StageDef[] = [
   trees as StageDef,
   tokens as StageDef,
   fonts as StageDef,
+  labels as StageDef,
   lettering as StageDef,
   ornaments as StageDef,
   attribution as StageDef,

@@ -21,6 +21,19 @@ import { previewView } from "@/lib/enginePreview";
 import { loadGlyphFace, loadedGlyphFace } from "@/lib/fontGlyphs";
 import { autoHeroIds, heroCandidates, heroCapMessage } from "@/lib/heroes";
 import { mergeIssues } from "@/lib/issues";
+import ObjectInspector, { type InspectorTarget } from "@/components/editor/ObjectInspector";
+import { describeBuilding, nameBudgetWarning, objectAt, type HoverHit } from "@/lib/objectInfo";
+import {
+  CURSOR_LAYER_NOUNS,
+  layerStepFor,
+  layerStops,
+  moveStop,
+  stepLayer,
+  stopAt,
+  stopLabel,
+  type CursorLayer,
+} from "@/lib/objectCursor";
+import { overrideLayerByRegion } from "@/lib/objectOverrides";
 import { perfSpan } from "@/lib/perf";
 import {
   cursorLabel,
@@ -49,7 +62,9 @@ import {
   warningDeps,
 } from "@/lib/warnings";
 import { useEditorStore } from "@/store/editor";
+import ObjectPopover, { useObjectHover } from "./ObjectPopover";
 import PreviewScene from "./PreviewScene";
+import { tintMapOf } from "./RegionMeshes";
 import {
   readPreviewPalette,
   readViewportMultipliers,
@@ -71,10 +86,12 @@ import {
  *
  * What that changes about this file:
  *
- *  - nothing rendered reads `PrintParams`. Everything inside `<Canvas>` lives
- *    in `PreviewScene`, whose props are pipeline output; the one exception is
- *    `BuildingPickProxies`, which places invisible boxes for hero picking and
- *    paints nothing. `CityPreview.test.ts` enforces both halves.
+ *  - nothing rendered reads `PrintParams`, and since the v3-06 audit's finding
+ *    C2 nothing inside `<Canvas>` is even HANDED one. Everything there lives in
+ *    `PreviewScene`, whose props are pipeline output; the invisible pick
+ *    proxies that used to be the one exception are gone, because the buildings
+ *    mesh carries the per-building identity they existed to supply.
+ *    `CityPreview.test.ts` enforces both halves.
  *  - a run in flight does not empty the viewport. The previous meshes stay up,
  *    dimmed, under an overlay naming the stage the worker is on, and each
  *    region is replaced on its own as it finishes.
@@ -106,10 +123,15 @@ export const previewDeps = {
     params.frame,
   ],
   /**
-   * The pick proxies' footprints: hulls and oriented rectangles, keyed on the
-   * parameters that move the scale (plate, frame) and the thresholds (nozzle).
-   * Height sliders must NOT invalidate it: rebuilding 5000 convex hulls per
-   * frame blows the budget, and a box only has to sit where its building does.
+   * The HUD's footprint pass: hulls, oriented rectangles and the repair widths,
+   * keyed on the parameters that move the scale (plate, frame) and the
+   * thresholds (nozzle). Height sliders must NOT invalidate it: rebuilding
+   * 5000 convex hulls per frame blows the budget, and none of what this feeds
+   * (the building count, the keyboard cursor's order, the dilation each
+   * popover reports, the adjustments drawer's counts) moves with a height.
+   *
+   * It used to place the invisible pick proxies as well; those are gone (v3-06
+   * audit, finding C2) and nothing keyed on this is drawn any more.
    */
   layout: (graph: SceneGraph | null, params: PrintParams): unknown[] => [
     graph,
@@ -283,9 +305,10 @@ export function CityPreview() {
     previewDeps.scale(graph, params),
   );
 
-  // The pick proxies' footprints. Hero picking needs per-building identity,
-  // which the fused region meshes do not carry, so this layout survives -- as
-  // invisible boxes only (named exception 1).
+  // The footprint pass, now a HUD-only one: the building count in the spec
+  // strip, the keyboard cursor's tallest-first order, the repair widths the
+  // object popover reports, and the adjustments drawer's dilated/dropped
+  // counts. Nothing it produces is drawn or raycast any more.
   const layout = useMemo(
     () =>
       graph
@@ -375,6 +398,10 @@ export function CityPreview() {
       // lettering configured for it.
       ...letteringWarnings(params, textTokenContext(graph, params, today)),
       ...tintPreviewOnlyWarning(params),
+      // Names the ingest left out to keep the scene inside the transfer budget
+      // (Task 10). Empty on every scene inside it, which is every scene up to
+      // twice the Chicago fixture's density.
+      ...nameBudgetWarning(graph),
       // A stage that threw is a warning for the user like any other: the
       // Issues badge is the one place findings and failures are reported.
       ...pipelineFailureWarning(pipelineError),
@@ -461,20 +488,239 @@ export function CityPreview() {
   const [cursorId, setCursorId] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
   const order = useMemo(() => cursorOrder(layout.buildings), [layout.buildings]);
-  const cursorText = cursorLabel(order, cursorId, heroIds);
+
+  /**
+   * ...and the keyboard path to everything ELSE the right-click reaches
+   * (`lib/objectCursor.ts`, v3.1 Task 11).
+   *
+   * The inspector acts on four layers, so the cursor has to reach four layers
+   * or three quarters of it would be pointer-only -- WCAG 2.1.1, Level A, on a
+   * real function. PageDown and PageUp change layer, the arrows walk within
+   * one, and the building layer keeps the walk and the Enter it always had.
+   *
+   * The three surface layers are built from the SceneGraph rather than from
+   * `layout`, which is the buildings' own repair pass; they are memoised on
+   * `graph` alone, so no parameter write rebuilds them.
+   */
+  const [cursorLayer, setCursorLayer] = useState<CursorLayer>("building");
+  const [surfaceKey, setSurfaceKey] = useState<string | null>(null);
+  const roadStops = useMemo(() => layerStops(graph, "road"), [graph]);
+  const waterStops = useMemo(() => layerStops(graph, "water"), [graph]);
+  const greenStops = useMemo(() => layerStops(graph, "green"), [graph]);
+  const surfaceStops =
+    cursorLayer === "road" ? roadStops : cursorLayer === "water" ? waterStops : greenStops;
+  const layerCounts = useMemo(
+    () => ({
+      building: order.length,
+      road: roadStops.length,
+      water: waterStops.length,
+      green: greenStops.length,
+    }),
+    [order.length, roadStops.length, waterStops.length, greenStops.length],
+  );
+
+  const cursorText =
+    cursorLayer === "building"
+      ? cursorLabel(order, cursorId, heroIds)
+      : stopLabel(cursorLayer, surfaceStops, surfaceKey);
+
+  // --- the pointer path to "what is this?" (lib/objectInfo.ts) -------------
+  //
+  // Everything the resolver needs, and nothing that changes per frame. The
+  // hero set and the repair widths are the only two facts about a printed
+  // object that do not live in the SceneGraph, so they are lifted here once
+  // rather than re-derived on every move.
+  const heroIdSet = useMemo(() => new Set(heroIds), [heroIds]);
+  const dilationById = useMemo(() => {
+    const out = new Map<string, number>();
+    for (const building of layout.buildings) {
+      if (building.dilation_m > 0) out.set(building.id, building.dilation_m);
+    }
+    return out;
+  }, [layout.buildings]);
+
+  /**
+   * `override_N` -> the layer that region's group came out of (v3.1 Task 11).
+   *
+   * An override region holds whatever objects the user gave the same printed
+   * treatment, so its NAME cannot say whether a hit on it is a building or a
+   * road. Nothing drawn in the viewport may read a parameter to find out, so
+   * the answer is resolved here - where reading them is allowed - and handed to
+   * the resolver as data.
+   */
+  const overrideList = params.object_overrides;
+  const overrideLayers = useMemo(
+    () => overrideLayerByRegion(params),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [overrideList],
+  );
+
+  const resolveHover = useCallback(
+    (hit: HoverHit) =>
+      graph === null || scale === null
+        ? null
+        : objectAt(graph, hit, {
+            scaleMmPerM: scale,
+            heroIds: heroIdSet,
+            dilationById,
+            overrideLayers,
+          }),
+    [graph, scale, heroIdSet, dilationById, overrideLayers],
+  );
+  const { popoverRef, onHover } = useObjectHover(resolveHover, viewportRef);
+
+  // --- the right-click path to "change this one thing" ---------------------
+  const [inspector, setInspector] = useState<{ target: InspectorTarget; at: { x: number; y: number } } | null>(
+    null,
+  );
+  const closeInspector = useCallback(() => setInspector(null), []);
+
+  /**
+   * A right-click on the model. `RegionMeshes` raycasts on the context-menu
+   * event alone, so this is called for every region, including the base and the
+   * frame that no hover reaches; `hit` is null for a click on empty sky.
+   */
+  const onInspect = useCallback(
+    (hit: HoverHit | null, clientX: number, clientY: number) => {
+      const box = viewportRef.current?.getBoundingClientRect();
+      const at = { x: clientX - (box?.left ?? 0), y: clientY - (box?.top ?? 0) };
+      const info = hit === null ? null : resolveHover(hit);
+      if (info === null) {
+        setInspector({ target: { kind: "region", region: hit?.region ?? null }, at });
+        return;
+      }
+      // A merged block and an unattributed polygon reach this with `osmId`
+      // null. They are still objects and still say what they are; what they
+      // cannot carry is an override, because there is no OSM element to key one
+      // by, and the menu says exactly that rather than offering controls whose
+      // rows nothing would ever match.
+      setInspector({ target: { kind: "object", info, osmId: info.osmId, layer: info.layer }, at });
+    },
+    [resolveHover],
+  );
+
+  /**
+   * The per-building tints the engine computed, as the lookup the meshes want.
+   *
+   * `EngineResult` is a fresh object per run, so this memo is keyed on the
+   * array it carries; `RegionMeshes` keys its geometry cache on the CONTENTS
+   * (`tintsKeyOf`), so a run that reproduces the same colours re-shades
+   * nothing. Until the v3-06 audit's finding C1 this value had no reader at
+   * all: the engine computed the tints, the OBJ exporter wrote them, and the
+   * preview painted every building the region's one flat colour while the
+   * Issues badge said otherwise.
+   */
+  const tints = useMemo(
+    () => tintMapOf(pipelineResult?.buildingTints),
+    [pipelineResult?.buildingTints],
+  );
+
+  /**
+   * A click on a building's own solid. `RegionMeshes` maps the hit triangle
+   * through `triangleOwner` to a SceneGraph id, so this is handed the same id
+   * the keyboard cursor toggles, from the geometry the user actually clicked.
+   */
+  const onPickBuilding = useCallback(
+    (id: string) => {
+      setCursorId(id);
+      toggleHero(id);
+    },
+    [toggleHero],
+  );
+
+  /**
+   * The keyboard's own way into the inspector.
+   *
+   * The two keys a context menu is opened with everywhere else - the Menu key
+   * and Shift+F10 - on the object the viewport's cursor is already on, which is
+   * the same building Enter would toggle. It opens at the middle of the
+   * viewport rather than at a projected position: the cursor is a list
+   * position, not a screen point, and putting the menu where the building
+   * happens to be would move it under the user between two presses.
+   */
+  const openInspectorForCursor = useCallback(() => {
+    const box = viewportRef.current?.getBoundingClientRect();
+    const at = { x: (box?.width ?? 0) / 2, y: (box?.height ?? 0) / 2 };
+    // A road, a lake or a park: the stop already carries the same `ObjectInfo`
+    // a hover over it would have produced, so the menu that opens is the menu
+    // the pointer opens, keyed by the same base OSM id.
+    if (cursorLayer !== "building") {
+      const stop = stopAt(surfaceStops, surfaceKey);
+      if (stop === null) return;
+      setInspector({
+        target: { kind: "object", info: stop.info, osmId: stop.info.osmId, layer: stop.info.layer },
+        at,
+      });
+      return;
+    }
+    if (graph === null || cursorId === null) return;
+    const building = graph.buildings.find((candidate) => candidate.id === cursorId);
+    if (building === undefined) return;
+    const info = describeBuilding(building, {
+      hero: heroIdSet.has(building.id),
+      dilationM: dilationById.get(building.id) ?? 0,
+    });
+    setInspector({
+      target: { kind: "object", info, osmId: info.osmId, layer: info.layer },
+      at,
+    });
+  }, [cursorId, cursorLayer, dilationById, graph, heroIdSet, surfaceKey, surfaceStops]);
 
   const onViewportKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+        event.preventDefault();
+        openInspectorForCursor();
+        return;
+      }
+      // PageDown / PageUp: the layer the walk is on. It lands on the biggest
+      // thing there at once, so the readout says where the cursor went rather
+      // than leaving a keyboard user to guess and press again.
+      const layerStep = layerStepFor(event);
+      if (layerStep !== null) {
+        event.preventDefault();
+        const next = stepLayer(cursorLayer, layerStep, layerCounts);
+        if (next === cursorLayer) return;
+        setCursorLayer(next);
+        if (next !== "building") {
+          const stops = next === "road" ? roadStops : next === "water" ? waterStops : greenStops;
+          setSurfaceKey(stops[0]?.key ?? null);
+        }
+        return;
+      }
       const step = cursorStepFor(event);
       if (step === null) return;
       event.preventDefault();
       if (step === "toggle") {
-        if (cursorId !== null) toggleHero(cursorId);
+        // Enter acts on what the cursor is on, and what "act" means is what the
+        // layer HAS: a building becomes a hero, and a road, a lake or a park -
+        // none of which can be one - opens the inspector, which is the only
+        // thing there is to do to them.
+        if (cursorLayer === "building") {
+          if (cursorId !== null) toggleHero(cursorId);
+        } else {
+          openInspectorForCursor();
+        }
         return;
       }
-      setCursorId((current) => moveCursor(order, current, step));
+      if (cursorLayer === "building") {
+        setCursorId((current) => moveCursor(order, current, step));
+        return;
+      }
+      setSurfaceKey((current) => moveStop(surfaceStops, current, step));
     },
-    [cursorId, order, toggleHero],
+    [
+      cursorId,
+      cursorLayer,
+      greenStops,
+      layerCounts,
+      openInspectorForCursor,
+      order,
+      roadStops,
+      surfaceStops,
+      toggleHero,
+      waterStops,
+    ],
   );
 
   if (!graph || scale === null) {
@@ -520,7 +766,7 @@ export function CityPreview() {
         data-testid="preview-canvas"
         tabIndex={0}
         role="application"
-        aria-label="3D preview. Arrow keys move the building cursor, Enter picks a hero building."
+        aria-label="3D preview. Arrow keys move the object cursor, Page Up and Page Down change layer between buildings, roads, water and green space, Enter picks a hero building or opens the menu for anything else, and the Menu key or Shift+F10 opens that menu on the object under the cursor."
         aria-describedby="preview-cursor-status"
         onKeyDown={onViewportKeyDown}
         onFocus={() => setFocused(true)}
@@ -540,15 +786,27 @@ export function CityPreview() {
           gridColor={viewportPalette.grid}
           plateMm={frameWidthMm}
           fitTrigger={graph}
-          pickBuildings={layout.buildings}
-          pickParams={params}
-          pickScale={scale}
-          onPick={(id) => {
-            setCursorId(id);
-            toggleHero(id);
-          }}
+          tints={tints}
+          onPick={onPickBuilding}
+          onHover={onHover}
+          onInspect={onInspect}
         />
       </Canvas>
+
+      {/*
+        The object popover. It sits over the canvas, not in it: nothing it does
+        re-renders the scene, and a pointer move costs one style write.
+      */}
+      <ObjectPopover ref={popoverRef} />
+
+      {/*
+        The right-click inspector. It reads and writes `PrintParams`, which is
+        why it lives in `components/editor/` and is rendered here as a sibling
+        of the canvas rather than inside it.
+      */}
+      {inspector === null ? null : (
+        <ObjectInspector target={inspector.target} at={inspector.at} onClose={closeInspector} />
+      )}
 
       {/* The chip docks top-left, over the model's own empty corner. */}
       <div className="pointer-events-none absolute left-3 top-3 flex flex-col items-start gap-2">
@@ -572,6 +830,7 @@ export function CityPreview() {
           role="status"
           aria-live="polite"
           data-testid="preview-cursor"
+          data-cursor-layer={cursorLayer}
           className={
             focused && cursorText
               ? "rounded-milled border border-control bg-plate/95 px-2 py-1 text-2xs text-ink shadow-raised"
@@ -580,7 +839,9 @@ export function CityPreview() {
         >
           {focused && cursorText
             ? cursorText
-            : "Arrow keys move a building cursor; Enter picks it as a hero."}
+            : `Arrow keys move a cursor over the ${CURSOR_LAYER_NOUNS[
+                cursorLayer
+              ].toLowerCase()} layer; Page Up and Page Down change layer; Enter picks a hero or opens the object menu; the Menu key opens it anywhere.`}
         </span>
         {heroIds.length > 0 ? (
           <span

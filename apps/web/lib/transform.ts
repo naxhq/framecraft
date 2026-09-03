@@ -1556,12 +1556,47 @@ export function edge_up(edge: string): [number, number] {
   return [-Math.sin(theta), Math.cos(theta)];
 }
 
-/** Centre point of one edge's lip band, in plate mm. */
+/**
+ * The contract's default for `frame_style.lip_depth_mm`, mm (the schema's
+ * `PARAM_RANGES.frame_style.lip_depth_mm.default`, repeated here so this
+ * module stays free of a runtime import from the generated contracts).
+ */
+export const LIP_DEPTH_DEFAULT_MM = 0.4;
+
+/**
+ * Width of the sight-edge rebate on the frame lip's inner top edge, mm.
+ *
+ * `frame_style.lip_depth_mm` is how DEEP that step is cut and this is how far
+ * it reaches into the lip from the opening, so the lip's flat top face is
+ * `FRAME_WIDTH_MM` less this wherever the rebate exists (`[V3.1-P2-2]`).
+ */
+export const FRAME_SIGHT_EDGE_MM = 1.0;
+
+/**
+ * Depth of the sight-edge rebate, mm: `frame_style.lip_depth_mm` clamped to
+ * the lip's own height, 0 meaning a flat lip.
+ */
+export function lip_rebate_depth_mm(params: ParamsLike): number {
+  const asked = params.frame_style?.lip_depth_mm ?? LIP_DEPTH_DEFAULT_MM;
+  return Math.max(0.0, Math.min(asked, FRAME_LIP_MM));
+}
+
+/**
+ * Width of the lip's flat top face on a plain profile, mm: the 6 mm band less
+ * the sight-edge rebate when there is one. Everything laid on the lip - the
+ * text band, the ornaments, the north arrow's corner square - is sized and
+ * centred on this face, so nothing the layout places can land on the step.
+ */
+export function lip_face_width_mm(params: ParamsLike): number {
+  return FRAME_WIDTH_MM - (lip_rebate_depth_mm(params) > 0.0 ? FRAME_SIGHT_EDGE_MM : 0.0);
+}
+
+/** Centre point of one edge's lip band (the flat top face), in plate mm. */
 export function edge_band_center_mm(
   params: ParamsLike,
   edge: string,
 ): [number, number] {
-  const offset = params.plate_mm / 2.0 - FRAME_WIDTH_MM / 2.0;
+  const offset = params.plate_mm / 2.0 - lip_face_width_mm(params) / 2.0;
   if (edge === "top") return [0.0, offset];
   if (edge === "bottom") return [0.0, -offset];
   if (edge === "left") return [-offset, 0.0];
@@ -1579,9 +1614,9 @@ export function lip_text_margin_mm(params: ParamsLike): number {
   return Math.max(LIP_TEXT_MARGIN_MM, min_detail_mm(params));
 }
 
-/** Height of the band the ink must stay inside, mm. */
+/** Height of the band the ink must stay inside, mm: the flat top face less a margin each side. */
 export function edge_band_mm(params: ParamsLike): number {
-  return FRAME_WIDTH_MM - 2.0 * lip_text_margin_mm(params);
+  return lip_face_width_mm(params) - 2.0 * lip_text_margin_mm(params);
 }
 
 /** Anchor and rotation for one fitted string on one edge. */
@@ -1902,7 +1937,7 @@ export function lettering_layout(
     if (arrow.size_mm < asked - 1e-9) {
       warnings.push(
         `the north arrow was reduced from ${g_format(asked)} mm to ${g_format(arrow.size_mm)} mm ` +
-          `to fit the ${g_format(FRAME_WIDTH_MM)} mm lip band`,
+          `to fit the ${g_format(lip_face_width_mm(params))} mm lip band`,
       );
     }
   }
@@ -1946,7 +1981,9 @@ export function north_arrow_layout(
   const enabled = Boolean(arrow?.enabled) && have_frame;
   const corner = arrow?.corner ?? "ne";
   const size = Math.min(arrow?.size_mm ?? 4.0, north_arrow_max_size_mm(params));
-  const offset = params.plate_mm / 2.0 - FRAME_WIDTH_MM / 2.0;
+  // The corner square is the flat face's own width on both axes: the rebate
+  // runs along both of the corner's inner edges.
+  const offset = params.plate_mm / 2.0 - lip_face_width_mm(params) / 2.0;
   const sx = corner === "nw" || corner === "sw" ? -1.0 : 1.0;
   const sy = corner === "se" || corner === "sw" ? -1.0 : 1.0;
   return {

@@ -4,6 +4,7 @@
 
 import type { PrintParams, SceneGraph } from "../../contracts";
 import { resolveProfile } from "../../printers";
+import { appVersion } from "../../version";
 import { REGION_NAMES, type Bbox3, type EngineResult, type RegionMesh, type RegionName } from "../types";
 
 /**
@@ -19,9 +20,27 @@ export const VERTEX_DECIMALS = 12;
 
 export const ATTRIBUTION = "© OpenStreetMap contributors";
 export const LICENSE_LINE = "OpenStreetMap data is licensed under the ODbL 1.0.";
-export const APPLICATION = "FrameCraft 3.0.0";
 export const GENERATOR_NAME = "FrameCraft";
-export const GENERATOR_VERSION = "3.0.0";
+
+/**
+ * The version stamped into every exported file, from the SAME source the
+ * footer, the About dialog and the installers read (`lib/version.ts`, and
+ * behind it `apps/web/package.json`).
+ *
+ * It used to be the literal "3.0.0", typed here and repeated in `stl.ts`. That
+ * is how a build shipped installers saying 3.1.0 while every model it exported
+ * said 3.0.0, which is worse than a missing version: a file that names a
+ * release it did not come from sends a bug report to the wrong commit.
+ *
+ * Read once at module initialisation, which is safe in all three runtimes:
+ * the browser and the desktop shell get a bundler-substituted literal, and
+ * `scripts/export-cli.ts` sets the variable before this module is parsed (see
+ * `scripts/stamp-version-env.mjs`). The SHAPE is unchanged -- `FrameCraft` and
+ * a space and a semver -- so the reference validator's provenance rows and
+ * every consumer that parses the string still match.
+ */
+export const GENERATOR_VERSION = appVersion();
+export const APPLICATION = `${GENERATOR_NAME} ${GENERATOR_VERSION}`;
 
 /**
  * The one licence sentence every format carries verbatim (v3 phase 7).
@@ -483,5 +502,22 @@ export function buildSidecarJson(input: SidecarInput): Record<string, unknown> {
      * it always was.
      */
     attribution_bands: result.attributionBands ?? [],
+    /**
+     * One entry per surface label the build cut (v3.1 Task 12): its Z band,
+     * its ink rectangle in plan and the face it sits on. Read by
+     * `services/bake/app/cli.py` like `attribution_bands`: the validator's
+     * structural `min_wall` row masks the rectangle out of the slices inside
+     * the band and its `labels` row measures the strokes and ridges inside it
+     * with the lettering row's own thresholds (docs/handoff/v3-12-labels.md).
+     */
+    label_bands: (result.labelBands ?? []).map((band) => ({
+      id: band.id,
+      index: band.index,
+      mode: band.mode,
+      z: band.zMm,
+      face_z: band.faceZMm,
+      rect: band.rect,
+      region: band.region,
+    })),
   };
 }

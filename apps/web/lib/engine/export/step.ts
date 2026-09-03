@@ -9,11 +9,24 @@
 // A mesh model has no analytic surfaces, so this is the honest STEP for it,
 // and it is large: about ten entities per triangle. Above `triangleWarnLimit`
 // (50 000 by default) the export still happens but carries a note.
+//
+// Coordinates are written at `VERTEX_DECIMALS` (twelve places), the same grid
+// the 3MF writes and the reference validator judges clean. They were written
+// at six, and at six the writer lost exactly the faces the float32 STL loses
+// at plate 256 (v3-07 geometry audit finding 8): a needle whose vertices are
+// 1e-5 mm apart is real geometry at twelve places and one point at six. The
+// vertex weld is keyed by the WRITTEN text rather than the double, so the shell
+// is closed on the grid the reader sees, and a face that measures under 04's
+// 1e-9 mm^2 once its corners are on that grid is left out and counted
+// (`StepExportFile.gridLostTriangles`), never written as a sliver the reader
+// has to guess at.
 
 import type { EngineResult, ExportFile, RegionMesh } from "../types";
+import { DEGENERATE_AREA_MM2 } from "../solid/mesh";
 import {
   APPLICATION,
   ATTRIBUTION,
+  VERTEX_DECIMALS,
   isoTimestamp,
   isSingleObject,
   orderedRegions,
@@ -40,11 +53,20 @@ export interface StepExportFile extends ExportFile {
   entities: number;
   /** Degenerate (zero-area) triangles left out of the shells. */
   skippedTriangles: number;
+  /**
+   * Triangles that measure at least 04's 1e-9 mm^2 in the double mesh and
+   * under it once their corners are on the written grid. Left out of the
+   * shells like the zero-area ones, and said out loud in `notes`.
+   */
+  gridLostTriangles: number;
 }
 
-/** A STEP real: fixed point, always with a decimal point. */
+/**
+ * A STEP real: fixed point, always with a decimal point, at the same twelve
+ * places the 3MF writes (`common.VERTEX_DECIMALS`).
+ */
 export function fmtStep(value: number): string {
-  const text = fmtNum(value, 6);
+  const text = fmtNum(value, VERTEX_DECIMALS);
   return text.indexOf(".") >= 0 ? text : `${text}.`;
 }
 
@@ -81,23 +103,33 @@ class StepWriter {
 interface RegionShell {
   shellId: number;
   skipped: number;
+  gridLost: number;
 }
 
 function writeShell(w: StepWriter, region: RegionMesh): RegionShell {
-  const p = region.positions;
-  const vertexCount = Math.floor(p.length / 3);
-  // Weld by exact coordinate so a shared corner is one VERTEX_POINT.
+  const source = region.positions;
+  const vertexCount = Math.floor(source.length / 3);
+  // Every coordinate as the reader will get it back: the geometry below (the
+  // weld, the plane normals, the degenerate test) is computed on the WRITTEN
+  // grid, so what the file says about itself is what it holds.
+  const p = new Float64Array(source.length);
+  const text: string[] = new Array(source.length);
+  for (let i = 0; i < source.length; i += 1) {
+    text[i] = fmtStep(source[i]);
+    p[i] = Number(text[i]);
+  }
+  // Weld by written coordinate so a shared corner is one VERTEX_POINT.
   const weld = new Int32Array(vertexCount);
   const pointIds: number[] = [];
   const vertexIds: number[] = [];
   const byKey = new Map<string, number>();
   for (let i = 0; i < vertexCount; i += 1) {
-    const key = `${p[i * 3]},${p[i * 3 + 1]},${p[i * 3 + 2]}`;
+    const key = `${text[i * 3]},${text[i * 3 + 1]},${text[i * 3 + 2]}`;
     let welded = byKey.get(key);
     if (welded === undefined) {
       welded = pointIds.length;
       byKey.set(key, welded);
-      const cp = w.add(`CARTESIAN_POINT('',(${fmtStep(p[i * 3])},${fmtStep(p[i * 3 + 1])},${fmtStep(p[i * 3 + 2])}))`);
+      const cp = w.add(`CARTESIAN_POINT('',(${text[i * 3]},${text[i * 3 + 1]},${text[i * 3 + 2]}))`);
       pointIds.push(cp);
       vertexIds.push(w.add(`VERTEX_POINT('',#${cp})`));
     }
@@ -126,6 +158,7 @@ function writeShell(w: StepWriter, region: RegionMesh): RegionShell {
 
   const faceIds: number[] = [];
   let skipped = 0;
+  let gridLost = 0;
   const idx = region.indices;
   for (let t = 0; t + 2 < idx.length; t += 3) {
     const ia = idx[t];
@@ -156,6 +189,14 @@ function writeShell(w: StepWriter, region: RegionMesh): RegionShell {
       skipped += 1;
       continue;
     }
+    // Under 04's threshold on the written grid. A face that was under it in
+    // the double mesh too is a plain skip; one the grid alone collapsed is
+    // counted apart, because that is the file's own loss and the note says so.
+    if (nlen / 2 < DEGENERATE_AREA_MM2) {
+      if (doubleArea(source, ia, ib, ic) < DEGENERATE_AREA_MM2) skipped += 1;
+      else gridLost += 1;
+      continue;
+    }
     const normal = w.add(`DIRECTION('',(${fmtStep(nx / nlen)},${fmtStep(ny / nlen)},${fmtStep(nz / nlen)}))`);
     const ref = w.add(`DIRECTION('',(${fmtStep(ux / ulen)},${fmtStep(uy / ulen)},${fmtStep(uz / ulen)}))`);
     const axis = w.add(`AXIS2_PLACEMENT_3D('',#${pointIds[a]},#${normal},#${ref})`);
@@ -177,13 +218,25 @@ function writeShell(w: StepWriter, region: RegionMesh): RegionShell {
     throw new Error(`${region.region}: no non-degenerate triangles to build a shell from`);
   }
   const shellId = w.add(`CLOSED_SHELL('',(${faceIds.map((id) => `#${id}`).join(",")}))`);
-  return { shellId, skipped };
+  return { shellId, skipped, gridLost };
+}
+
+/** Triangle area from the double-precision positions, mm^2. */
+function doubleArea(p: ArrayLike<number>, ia: number, ib: number, ic: number): number {
+  const ux = p[ib * 3] - p[ia * 3];
+  const uy = p[ib * 3 + 1] - p[ia * 3 + 1];
+  const uz = p[ib * 3 + 2] - p[ia * 3 + 2];
+  const vx = p[ic * 3] - p[ia * 3];
+  const vy = p[ic * 3 + 1] - p[ia * 3 + 1];
+  const vz = p[ic * 3 + 2] - p[ia * 3 + 2];
+  return 0.5 * Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx);
 }
 
 export interface StepDocument {
   text: string;
   entities: number;
   skippedTriangles: number;
+  gridLostTriangles: number;
 }
 
 export function stepDocument(regions: readonly RegionMesh[], meta: { fileName: string; title: string; author: string; created: Date; sourceLine: string; provenance?: readonly string[] }): StepDocument {
@@ -208,6 +261,7 @@ export function stepDocument(regions: readonly RegionMesh[], meta: { fileName: s
   const worldAxis = w.add(`AXIS2_PLACEMENT_3D('',#${origin},#${dirZ},#${dirX})`);
 
   let skipped = 0;
+  let gridLost = 0;
   regions.forEach((region) => {
     const name = stepString(region.region);
     const product = w.add(`PRODUCT(${name},${name},${stepString(`FrameCraft region ${region.region}, colour ${region.colorHex}`)},(#${productCtx}))`);
@@ -217,6 +271,7 @@ export function stepDocument(regions: readonly RegionMesh[], meta: { fileName: s
     const shape = w.add(`PRODUCT_DEFINITION_SHAPE('','',#${definition})`);
     const shell = writeShell(w, region);
     skipped += shell.skipped;
+    gridLost += shell.gridLost;
     const brep = w.add(`MANIFOLD_SOLID_BREP(${name},#${shell.shellId})`);
     const representation = w.add(`ADVANCED_BREP_SHAPE_REPRESENTATION(${name},(#${worldAxis},#${brep}),#${geomCtx})`);
     w.add(`SHAPE_DEFINITION_REPRESENTATION(#${shape},#${representation})`);
@@ -228,7 +283,7 @@ export function stepDocument(regions: readonly RegionMesh[], meta: { fileName: s
     `FILE_NAME(${stepString(meta.fileName)},${stepString(isoTimestamp(meta.created))},(${stepString(meta.author)}),(${stepString("FrameCraft")}),${stepString(APPLICATION)},${stepString(APPLICATION)},'');\n` +
     "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n";
   const text = header + w.lines.join("\n") + "\nENDSEC;\nEND-ISO-10303-21;\n";
-  return { text, entities: w.count, skippedTriangles: skipped };
+  return { text, entities: w.count, skippedTriangles: skipped, gridLostTriangles: gridLost };
 }
 
 export function exportStep(result: EngineResult, options: StepOptions = {}): StepExportFile {
@@ -261,6 +316,13 @@ export function exportStep(result: EngineResult, options: StepOptions = {}): Ste
   if (doc.skippedTriangles > 0) {
     notes.push(`${doc.skippedTriangles} zero-area triangle(s) were left out of the STEP shells.`);
   }
+  if (doc.gridLostTriangles > 0) {
+    notes.push(
+      `The STEP file cannot carry every face of this model: ${doc.gridLostTriangles} face(s) measure under ` +
+        `1e-9 mm2 once the coordinates are on the ${VERTEX_DECIMALS}-decimal grid the file writes, and were left ` +
+        "out of the shells. A smaller plate is what removes the faces at source.",
+    );
+  }
   return {
     name: fileName,
     mime: MIME_STEP,
@@ -268,6 +330,7 @@ export function exportStep(result: EngineResult, options: StepOptions = {}): Ste
     notes,
     entities: doc.entities,
     skippedTriangles: doc.skippedTriangles,
+    gridLostTriangles: doc.gridLostTriangles,
   };
 }
 

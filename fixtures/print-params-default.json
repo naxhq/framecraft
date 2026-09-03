@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "plate_mm": 180.0,
   "base_thickness_mm": 3.0,
   "nozzle_mm": 0.4,
@@ -187,5 +187,7 @@
     "diameter_mm": 6.0,
     "thickness_mm": 2.0,
     "count": 2
-  }
+  },
+  "object_overrides": [],
+  "labels": []
 }

@@ -44,3 +44,37 @@ parts modes. Shipped: commit 4becd5e, tag v3.0.0, Pages deploy
 https://naxhq.github.io/framecraft/, release installers via
 `.github/workflows/release.yml`. Known limitations: RUNBOOK.md section
 "limitations" and docs/handoff/FAILURES.md.
+
+## v3.1 run (2026-09-02 to 2026-09-03)
+
+Seventeen-task brief: one incremental pipeline, settings truth, the Preview and
+Export vocabulary, the shell, the settings panel, the action bar, performance,
+deployed-site performance, search, object identity, per-object overrides,
+surface labels, the project format, the CI diet, branding, and the README.
+
+Orchestrator on Fable then Opus, writing only `DECISIONS.md`, `docs/handoff/*`,
+`.claude/agents/*` and `CLAUDE.md`; implementation on Opus 5 subagents, with
+Fable for the pipeline core, its audit, the engine performance work, the label
+geometry and the preset-city defect. Every implementation phase was followed by
+an adversarial audit by an agent that did not write the code, and those audits
+are what caught the run's worst defects.
+
+| Phase | Agent | Gate | Status |
+|---|---|---|---|
+| T0 baseline and `?perf=1` | w0-baseline-local, w0-baseline-remote | measured, audited | PASS (3e5883c) |
+| Inventories | w0-inventory-engine, w0-inventory-ui | read-only | PASS |
+| T3 vocabulary | w1-rename | gate + audit | PASS (511f3ea) |
+| T1 pipeline core | w2-pipeline (Fable) | gate + Fable audit | PASS (adc99e9) |
+| T9 search | w2-search | audit + fixes | PASS (eaafbce) |
+| T14 CI diet | w2-ci | audit + fixes | PASS (0ae5d87) |
+| T1 integration, T2 settings, matrix, geometry | w3-* | audits + fixes | PASS (af02c98) |
+| T6 action bar, T4 shell, T5 panel, T7 perf, T8 site perf, T10 identity | w4-*, w5-identity2 | audits + fixes | landed, gating |
+| T11 overrides, T12 labels, T13 project, T15 branding | w5-overrides, w6-labels, w6-dist | in flight | in flight |
+
+Two lessons recorded in `DECISIONS.md` `[V3.1-O8]` and worth repeating: green
+tests never imply a working feature (three features were absent while every
+test in their files passed, found only by adversarial audit), and an agent's
+self-report can describe half a feature as the whole. The run's worst defect,
+the browser engine failing the reference validator on five of the six preset
+cities, was invisible because a command-line default cropped every city around
+the Chicago Loop, so only one city had ever been built.

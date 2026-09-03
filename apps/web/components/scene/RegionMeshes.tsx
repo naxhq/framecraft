@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef } from "react";
-import { BufferAttribute, BufferGeometry } from "three";
+import { useThree, type ThreeEvent } from "@react-three/fiber";
+import { BufferAttribute, BufferGeometry, Color, Raycaster, Vector2, type Group } from "three";
 
 import PerfFrameMark from "@/components/scene/PerfFrameMark";
-import type { RecessBand, RegionMesh } from "@/lib/engine/types";
+import { NO_OWNER, type BuildingTint, type RecessBand, type RegionMesh } from "@/lib/engine/types";
+import { isBuildingRegion, isPickableRegion, ownerAt, type HoverHit } from "@/lib/objectInfo";
 import { perfSpan } from "@/lib/perf";
 
 /**
@@ -34,6 +36,22 @@ import { perfSpan } from "@/lib/perf";
  * it was cut into. Not one coordinate moves; the band list is a named
  * exception in `docs/handoff/v3-01-pipeline.md` section 5.
  *
+ * **Per-building tint is the same mechanism, keyed by owner.** The buildings,
+ * band and hero meshes carry `triangleOwner`/`owners` ([V3.1-P1-18]), so a
+ * triangle can be given the colour `EngineResult.buildingTints` assigned to
+ * ITS building rather than the one flat colour of the whole region. Before
+ * this, `colour.tint` moved nothing a user could see: the engine computed the
+ * tints and the OBJ exporter wrote them, and the only preview layer that had
+ * ever painted them (`InstancedBuildings.tsx`) had been deleted, while the
+ * Issues badge still said tint affected the preview (v3-06 audit, finding C1).
+ * Again not one coordinate moves.
+ *
+ * **Hero picking reads the same owners.** A click on the buildings mesh maps
+ * `faceIndex` through `triangleOwner` to a building id, so the invisible
+ * `InstancedMesh` of oriented boxes that used to stand in for per-building
+ * identity is gone (audit finding C2). Picking is now done against the solid
+ * the user is actually looking at, not a dilated proxy of it.
+ *
  * `RegionMesh.positions` is double precision (`lib/engine/types.ts`: a
  * consumer that writes a FILE must keep that precision, but a GPU buffer
  * cannot hold one and has to make its own float32 copy) -- WebGL vertex
@@ -55,6 +73,74 @@ export function insideBands(z: number, bands: readonly RecessBand[]): boolean {
 }
 
 /**
+ * Building id -> `#RRGGBB`, from `EngineResult.buildingTints`.
+ *
+ * `null` (not an empty map) when `colour.tint` is off, which is what keeps the
+ * whole tinted path out of the way: a region with no tints takes the exact
+ * geometry, the exact colour attribute and the exact material it always did.
+ */
+export type TintMap = ReadonlyMap<string, string> | null;
+
+/** `EngineResult.buildingTints` as the lookup this file wants, or null when the switch is off. */
+export function tintMapOf(tints: readonly BuildingTint[] | undefined): TintMap {
+  if (tints === undefined || tints.length === 0) return null;
+  return new Map(tints.map((tint) => [tint.id, tint.colorHex]));
+}
+
+/**
+ * A key that moves when the tints do, so the geometry cache re-shades a region
+ * only when it has to.
+ *
+ * `EngineResult` is a fresh object per run, so the tint ARRAY is a new
+ * reference after every build even when nothing about the colours changed;
+ * keying on the reference would re-expand 19 000 building triangles on every
+ * run. The contents are what matter, and they are cheap to spell out: 289
+ * owners on Chicago.
+ */
+export function tintsKeyOf(tints: TintMap): string {
+  if (tints === null) return "";
+  const parts: string[] = [];
+  for (const [id, hex] of tints) parts.push(`${id}:${hex}`);
+  return parts.join("|");
+}
+
+/**
+ * True when this mesh's triangles should be coloured one by one.
+ *
+ * Both halves are needed: the tints ([V3.1-P1-18] gives them only to buildings)
+ * and the per-triangle identity to key them by. Every other region has neither
+ * and is untouched.
+ */
+export function isTinted(mesh: RegionMesh, tints: TintMap): boolean {
+  if (tints === null || mesh.owners === undefined || mesh.triangleOwner === undefined) return false;
+  return mesh.owners.some((owner) => tints.has(owner));
+}
+
+/**
+ * The material colour that leaves an absolute vertex colour alone.
+ *
+ * three multiplies `material.color` by the vertex colour, so a buffer holding
+ * the colour ITSELF needs a material that multiplies by one. This is that
+ * identity and NOT a design token: it must be exactly (1, 1, 1) in every theme,
+ * because a token redefined under `.dark` would silently scale every building's
+ * tint. A CSS colour keyword rather than a hex, for the same reason
+ * `palette.ts`'s `MISSING` is one -- `app/globals.css` owns the hexes
+ * (`lib/design-tokens.test.ts`), and this is not a colour choice to own.
+ */
+export const MATERIAL_IDENTITY = "white";
+
+/**
+ * What to give the material.
+ *
+ * The identity above for a tinted mesh, whose colour attribute holds absolute
+ * colours; the region's own filament colour otherwise, so an untinted region is
+ * rendered by exactly the path it always was.
+ */
+export function materialColorFor(mesh: RegionMesh, tints: TintMap): string {
+  return isTinted(mesh, tints) ? MATERIAL_IDENTITY : mesh.colorHex;
+}
+
+/**
  * One region's `BufferGeometry`.
  *
  * With no bands this is the indexed mesh the worker sent, vertex for vertex:
@@ -62,20 +148,26 @@ export function insideBands(z: number, bands: readonly RecessBand[]): boolean {
  * and `flatShading` reads per-face normals in the fragment shader through
  * `fwidth`, so nothing has to be duplicated to keep a building's edges sharp.
  *
- * With bands the triangles are expanded, because a vertex colour is per VERTEX
- * and a shared vertex cannot be both shaded and not. The expansion costs three
- * vertices per triangle in the two regions that carry cuts (the base and the
- * frame) and nothing at all in the buildings, the roads, the water and the
- * parks, which carry none. The colour is a MULTIPLIER: 1 leaves the region's
- * own filament colour exactly as it was, `shade` darkens it.
+ * With bands, or with tints, the triangles are expanded, because a vertex
+ * colour is per VERTEX and a shared vertex cannot be two colours. The expansion
+ * costs three vertices per triangle, and it is paid only where it buys
+ * something: the two regions that carry cuts (the base and the frame), and the
+ * building regions while `colour.tint` is on. The roads, the water and the
+ * parks never pay it.
+ *
+ * Which colour model the buffer then holds is exactly `isTinted` -- a
+ * multiplier on the region's own filament colour, or the per-building colour
+ * itself against a white material. The comment inside says why.
  */
 export function buildGeometry(
   region: RegionMesh,
   bands: readonly RecessBand[],
   shade: number,
+  tints: TintMap = null,
 ): BufferGeometry {
   const geometry = new BufferGeometry();
-  if (bands.length === 0) {
+  const tinted = isTinted(region, tints);
+  if (bands.length === 0 && !tinted) {
     geometry.setAttribute("position", new BufferAttribute(new Float32Array(region.positions), 3));
     geometry.setIndex(new BufferAttribute(region.indices, 1));
     geometry.computeVertexNormals();
@@ -83,9 +175,29 @@ export function buildGeometry(
     return geometry;
   }
 
+  // Two colour models share this buffer, and which one is in use is exactly
+  // `tinted`:
+  //
+  //   * no tint -- the value is a MULTIPLIER on the material's own colour, 1 or
+  //     `shade`. Colour-space-neutral, and the material still carries
+  //     `mesh.colorHex`, so the region paints in its own filament.
+  //   * tinted -- the value is the colour ITSELF, and the material is white
+  //     (`materialColorFor`). Absolute, because a per-building colour cannot be
+  //     expressed as a multiple of the region's; a multiplier would have to be
+  //     tint/region per channel, which divides by zero on any dark region and
+  //     cannot exceed 1 at all.
+  //
+  // `new Color(hex)` converts sRGB to the renderer's working space, which a
+  // vertex-colour attribute is assumed to already be in (three does not convert
+  // one). Doing it here is what makes the tinted path render the same colour
+  // the material would have.
   const triangles = Math.floor(region.indices.length / 3);
   const positions = new Float32Array(triangles * 9);
   const colors = new Float32Array(triangles * 9);
+  const owners = region.owners;
+  const triangleOwner = region.triangleOwner;
+  const base = tinted ? new Color(region.colorHex) : null;
+  const cache = new Map<string, Color>();
   for (let t = 0; t < triangles; t += 1) {
     const out = t * 9;
     let zSum = 0;
@@ -96,8 +208,29 @@ export function buildGeometry(
       positions[out + k * 3 + 2] = region.positions[source + 2];
       zSum += region.positions[source + 2];
     }
-    const tint = insideBands(zSum / 3, bands) ? shade : 1;
-    for (let k = 0; k < 9; k += 1) colors[out + k] = tint;
+    const multiplier = insideBands(zSum / 3, bands) ? shade : 1;
+    if (!tinted || base === null) {
+      for (let k = 0; k < 9; k += 1) colors[out + k] = multiplier;
+      continue;
+    }
+    let colour = base;
+    const ownerIndex = triangleOwner === undefined ? NO_OWNER : triangleOwner[t];
+    if (owners !== undefined && ownerIndex !== NO_OWNER && ownerIndex < owners.length) {
+      const hex = tints?.get(owners[ownerIndex]);
+      if (hex !== undefined) {
+        let hit = cache.get(hex);
+        if (hit === undefined) {
+          hit = new Color(hex);
+          cache.set(hex, hit);
+        }
+        colour = hit;
+      }
+    }
+    for (let k = 0; k < 3; k += 1) {
+      colors[out + k * 3] = colour.r * multiplier;
+      colors[out + k * 3 + 1] = colour.g * multiplier;
+      colors[out + k * 3 + 2] = colour.b * multiplier;
+    }
   }
   geometry.setAttribute("position", new BufferAttribute(positions, 3));
   geometry.setAttribute("color", new BufferAttribute(colors, 3));
@@ -116,12 +249,18 @@ export interface BuiltRegion {
   mesh: RegionMesh;
   bands: RecessBand[];
   geometry: BufferGeometry;
+  /** True when the geometry carries absolute per-triangle colours (bands or tint). */
+  vertexColors: boolean;
+  /** What the material paints with: white for a tinted region, its own filament otherwise. */
+  materialColor: string;
 }
 
 interface CacheEntry extends BuiltRegion {
   /** The band list this geometry was shaded with, by value: bands move without the mesh moving. */
   bandsKey: string;
   shade: number;
+  /** The tints this geometry was coloured with, by value: a new run brings a new array of the same colours. */
+  tintsKey: string;
 }
 
 function bandsKeyOf(bands: readonly RecessBand[]): string {
@@ -153,9 +292,11 @@ export class RegionGeometryCache {
     regions: ReadonlyMap<string, RegionMesh>,
     recessBands: readonly RecessBand[],
     recessShade: number,
+    tints: TintMap = null,
   ): ReconcileResult {
     const out: BuiltRegion[] = [];
     const live = new Set<string>();
+    const tintsKey = tintsKeyOf(tints);
     let moved = false;
     for (const [name, mesh] of regions) {
       if (!drawable(mesh)) continue;
@@ -163,7 +304,13 @@ export class RegionGeometryCache {
       const bands = bandsForRegion(recessBands, name);
       const bandsKey = bandsKeyOf(bands);
       const hit = this.entries.get(name);
-      if (hit !== undefined && hit.mesh === mesh && hit.bandsKey === bandsKey && hit.shade === recessShade) {
+      if (
+        hit !== undefined &&
+        hit.mesh === mesh &&
+        hit.bandsKey === bandsKey &&
+        hit.shade === recessShade &&
+        hit.tintsKey === tintsKey
+      ) {
         out.push(hit);
         continue;
       }
@@ -173,9 +320,19 @@ export class RegionGeometryCache {
       // sphere for THIS region. Nothing here touches the GPU; three.js uploads
       // a buffer lazily, on the first render that binds it.
       const geometry = perfSpan(`preview.region.${name}`, () =>
-        buildGeometry(mesh, bands, recessShade),
+        buildGeometry(mesh, bands, recessShade, tints),
       );
-      const entry: CacheEntry = { region: name, mesh, bands, bandsKey, shade: recessShade, geometry };
+      const entry: CacheEntry = {
+        region: name,
+        mesh,
+        bands,
+        bandsKey,
+        shade: recessShade,
+        tintsKey,
+        geometry,
+        vertexColors: bands.length > 0 || isTinted(mesh, tints),
+        materialColor: materialColorFor(mesh, tints),
+      };
       this.entries.set(name, entry);
       out.push(entry);
       moved = true;
@@ -196,12 +353,141 @@ export class RegionGeometryCache {
   }
 }
 
+/** The hover plumbing: what the object popover needs, and nothing else. */
+export type HoverHandler = (
+  hit: HoverHit | null,
+  clientX: number,
+  clientY: number,
+) => void;
+
+/**
+ * The two pointer props one pickable region's mesh carries.
+ *
+ * `event.faceIndex` is three's triangle ordinal, which is exactly what
+ * `RegionMesh.triangleOwner` is indexed by. The hit point arrives in WORLD
+ * space and the meshes hang under the one `rotation-x = -90deg` group that
+ * turns print space (z up) into three's (y up), so it is converted back
+ * through the mesh's own matrix rather than by re-deriving that rotation here:
+ * `worldToLocal` is the inverse whatever the group above it is doing.
+ *
+ * `stopPropagation` keeps the answer to the NEAREST surface. Without it a hit
+ * on a building would also be reported for the base underneath it, and the
+ * last handler to run would win.
+ */
+/** How far the pointer may travel between press and release and still be a click, pixels. */
+export const PICK_DRAG_SLOP_PX = 4;
+
+/** Where the pointer went down, so an orbit drag that ends on a building is not a pick. */
+interface PressPoint {
+  current: { x: number; y: number } | null;
+}
+
+/**
+ * True when a press and a release that far apart is a click rather than an
+ * orbit. Exported because it is the whole of the click/drag rule and is worth
+ * asserting without a renderer.
+ */
+export function isClick(from: { x: number; y: number } | null, x: number, y: number): boolean {
+  if (from === null) return true;
+  return Math.hypot(x - from.x, y - from.y) <= PICK_DRAG_SLOP_PX;
+}
+
+/** The pointer props one pickable region's mesh may carry. Spelled out so the spread stays type-checked. */
+interface MeshInteraction {
+  onPointerMove?: (event: ThreeEvent<PointerEvent>) => void;
+  onPointerOut?: (event: ThreeEvent<PointerEvent>) => void;
+  onPointerOver?: (event: ThreeEvent<PointerEvent>) => void;
+  onPointerDown?: (event: ThreeEvent<PointerEvent>) => void;
+  onClick?: (event: ThreeEvent<MouseEvent>) => void;
+}
+
+function interactionHandlers(
+  region: string,
+  mesh: RegionMesh,
+  onHover: HoverHandler | undefined,
+  onPick: ((id: string) => void) | undefined,
+  press: PressPoint,
+): MeshInteraction {
+  const handlers: MeshInteraction = {};
+  // An `override_N` region (v3.1 Task 11) may hold buildings or a road/area
+  // layer, and only the finished mesh knows which: the finish stage attributes
+  // triangle owners on a building group and leaves them off any other. Asking
+  // the MESH rather than the name is what keeps the pointer cursor honest -- a
+  // recoloured street is not a hero waiting to be picked.
+  const buildings = isBuildingRegion(region) || (mesh.owners !== undefined && mesh.triangleOwner !== undefined);
+
+  if (onHover !== undefined) {
+    handlers.onPointerMove = (event) => {
+      const faceIndex = event.faceIndex;
+      if (faceIndex === undefined || faceIndex === null) return;
+      event.stopPropagation();
+      const local = event.object.worldToLocal(event.point.clone());
+      onHover(
+        { region, mesh, faceIndex, xMm: local.x, yMm: local.y },
+        event.nativeEvent.clientX,
+        event.nativeEvent.clientY,
+      );
+    };
+    handlers.onPointerOut = (event) => {
+      if (buildings) document.body.style.cursor = "";
+      onHover(null, event.nativeEvent.clientX, event.nativeEvent.clientY);
+    };
+  } else if (buildings && onPick !== undefined) {
+    handlers.onPointerOut = () => {
+      document.body.style.cursor = "";
+    };
+  }
+
+  if (buildings && onPick !== undefined) {
+    handlers.onPointerOver = () => {
+      document.body.style.cursor = "pointer";
+    };
+    handlers.onPointerDown = (event) => {
+      press.current = { x: event.nativeEvent.clientX, y: event.nativeEvent.clientY };
+    };
+    handlers.onClick = (event) => {
+      const faceIndex = event.faceIndex;
+      if (faceIndex === undefined || faceIndex === null) return;
+      const from = press.current;
+      press.current = null;
+      if (!isClick(from, event.nativeEvent.clientX, event.nativeEvent.clientY)) return;
+      const id = ownerAt(mesh, faceIndex);
+      // A merged block has no SceneGraph building to promote, and neither has a
+      // triangle the attribution could not place; both are left alone rather
+      // than turned into a hero id nothing else in the app knows.
+      if (id === null || id.startsWith("block-")) return;
+      event.stopPropagation();
+      onPick(id);
+    };
+  }
+
+  return handlers;
+}
+
+/**
+ * What a right-click reports: the region under the pointer, or null for a
+ * click that hit nothing.
+ *
+ * Deliberately NOT a mesh handler. r3f raycasts every object that carries any
+ * handler on every pointer move, so giving the base and the frame an
+ * `onContextMenu` would put a 40 000-triangle plate back into the per-move
+ * raycast that v3-10 took it out of. This is one native listener on the canvas
+ * that raycasts on the CONTEXTMENU event alone, which costs nothing until the
+ * user asks, and can therefore answer for the regions no hover reaches: the
+ * base, the frame and the matting.
+ */
+export type InspectHandler = (hit: HoverHit | null, clientX: number, clientY: number) => void;
+
 export function RegionMeshes({
   regions,
   recessBands,
   dimmed,
   dimOpacity,
   recessShade,
+  tints = null,
+  onHover,
+  onPick,
+  onInspect,
 }: {
   regions: ReadonlyMap<string, RegionMesh>;
   recessBands: readonly RecessBand[];
@@ -209,6 +495,27 @@ export function RegionMeshes({
   dimmed: boolean;
   dimOpacity: number;
   recessShade: number;
+  /** Per-building colours from `EngineResult.buildingTints`, or null when `colour.tint` is off. */
+  tints?: TintMap;
+  /**
+   * Called with the raycast hit under the pointer, or null when it leaves. Only
+   * the regions `isPickableRegion` names get a handler at all, which is also
+   * what keeps three.js from raycasting the base and the frame on every move.
+   * The identity of this function must be stable, or every move would re-render
+   * the meshes; `useObjectHover` guarantees that.
+   */
+  onHover?: HoverHandler;
+  /**
+   * Hero picking, straight off the buildings solid: the clicked triangle's
+   * owner. Replaces the invisible proxy layer (v3-06 audit, finding C2).
+   */
+  onPick?: (id: string) => void;
+  /**
+   * A right-click anywhere on the model, with the region it landed on. Its
+   * identity may change freely: it is held in a ref and never re-binds the
+   * listener.
+   */
+  onInspect?: InspectHandler;
 }) {
   // A ref rather than a memo because the unit of work is ONE region: a memo
   // over the whole map would rebuild every region's buffers whenever any
@@ -217,15 +524,68 @@ export function RegionMeshes({
   const cache = useRef<RegionGeometryCache | null>(null);
   cache.current ??= new RegionGeometryCache();
   const store = cache.current;
+  const press = useRef<{ x: number; y: number } | null>(null);
 
   const built = useMemo(
-    () => store.reconcile(regions, recessBands, recessShade),
-    [store, regions, recessBands, recessShade],
+    () => store.reconcile(regions, recessBands, recessShade, tints),
+    [store, regions, recessBands, recessShade, tints],
   );
 
+  // --- the right-click path -------------------------------------------------
+  const groupRef = useRef<Group>(null);
+  const inspectRef = useRef<InspectHandler | undefined>(onInspect);
+  inspectRef.current = onInspect;
+  const meshesRef = useRef<ReadonlyMap<string, RegionMesh>>(regions);
+  meshesRef.current = regions;
+  const gl = useThree((state) => state.gl);
+  const camera = useThree((state) => state.camera);
+
+  useEffect(() => {
+    const canvas = gl.domElement;
+    const raycaster = new Raycaster();
+    const pointer = new Vector2();
+    const onContextMenu = (event: MouseEvent): void => {
+      const report = inspectRef.current;
+      const group = groupRef.current;
+      if (report === undefined || group === null) return;
+      // The browser menu never opens over the model: the app's own menu is
+      // what a right-click here is for, and two menus at once is neither.
+      event.preventDefault();
+      const box = canvas.getBoundingClientRect();
+      if (box.width === 0 || box.height === 0) {
+        report(null, event.clientX, event.clientY);
+        return;
+      }
+      pointer.x = ((event.clientX - box.left) / box.width) * 2 - 1;
+      pointer.y = -((event.clientY - box.top) / box.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const hits = raycaster.intersectObjects(group.children, false);
+      for (const hit of hits) {
+        const region = (hit.object.userData as { region?: string }).region;
+        const mesh = region === undefined ? undefined : meshesRef.current.get(region);
+        const faceIndex = hit.faceIndex;
+        if (region === undefined || mesh === undefined || faceIndex === undefined || faceIndex === null) continue;
+        const local = hit.object.worldToLocal(hit.point.clone());
+        report({ region, mesh, faceIndex, xMm: local.x, yMm: local.y }, event.clientX, event.clientY);
+        return;
+      }
+      report(null, event.clientX, event.clientY);
+    };
+    canvas.addEventListener("contextmenu", onContextMenu);
+    return () => canvas.removeEventListener("contextmenu", onContextMenu);
+  }, [gl, camera]);
+
   // Every geometry still in the cache is this component's own to dispose when
-  // it unmounts; the reconciliation above owns the rest.
-  useEffect(() => () => store.dispose(), [store]);
+  // it unmounts; the reconciliation above owns the rest. The cursor is this
+  // component's too: an unmount while the pointer is over a building would
+  // otherwise leave the page stuck on `pointer`.
+  useEffect(
+    () => () => {
+      store.dispose();
+      document.body.style.cursor = "";
+    },
+    [store],
+  );
 
   // `data-testid` on a react-three-fiber primitive is NOT a DOM attribute --
   // `<group>`/`<mesh>` become real `THREE.Object3D` instances inside the
@@ -235,21 +595,25 @@ export function RegionMeshes({
   // a region is on screen reads `window.__framecraft` (`CityPreview.tsx`),
   // not a DOM query.
   return (
-    <group data-testid="region-meshes">
+    <group ref={groupRef} data-testid="region-meshes">
       {/* Perf mode only: the first frame that actually renders these meshes,
           which is where three.js uploads the buffers this component built. */}
       <PerfFrameMark key={built.id} name="preview.geometryOnScreen" />
-      {built.regions.map(({ region, mesh, bands, geometry }) => (
+      {built.regions.map(({ region, mesh, geometry, vertexColors, materialColor }) => (
         <mesh
           key={region}
           data-testid={`region-mesh-${region}`}
+          userData={{ region }}
           geometry={geometry}
           castShadow={!dimmed}
           receiveShadow={!dimmed}
+          {...(isPickableRegion(region)
+            ? interactionHandlers(region, mesh, onHover, onPick, press)
+            : {})}
         >
           <meshStandardMaterial
-            color={mesh.colorHex}
-            vertexColors={bands.length > 0}
+            color={materialColor}
+            vertexColors={vertexColors}
             roughness={0.85}
             flatShading
             transparent={dimmed}

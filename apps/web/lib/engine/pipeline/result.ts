@@ -13,7 +13,7 @@ import type { Engraving, PrintParams } from "../../contracts";
 import type { EngineResult, RecessBand, RegionMesh, RegionName, ResolvedLine, TileResult } from "../types";
 import { REGION_NAMES } from "../types";
 import type { StageCache } from "./cache";
-import { finishStageId, type AuditOut, type FinishOut, type MergedOut, type StageId } from "./stage";
+import { finishStageId, type AuditOut, type FinishOut, type LabelsOut, type MergedOut, type StageId } from "./stage";
 import { STAGES } from "./stages";
 
 /** Stages whose channels feed the result, in registry order (everything before `audit`). */
@@ -187,6 +187,8 @@ export function assembleResult(cache: StageCache, params: PrintParams, options: 
     params: resolveParamsEcho(params, resolvedText),
     attributionBands: markBandsFromCache(cache),
     recessBands: recessBandsFromCache(cache),
+    labelBands: cache.get<LabelsOut>("labels")?.output.bands ?? [],
+    sitShiftMm: cache.get<import("./stage").SitOut>("sit")?.output.shiftMm ?? 0,
     ...(tiles.length === 0 ? {} : { tiles }),
     ...(buildings === undefined || buildings.tints.length === 0 ? {} : { buildingTints: buildings.tints }),
     ...(bandSummaries === null ? {} : { buildingBands: bandSummaries }),

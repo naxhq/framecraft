@@ -39,6 +39,21 @@
         "is_tall": {
           "type": "boolean",
           "description": "height_m >= 40, computed once here."
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "schema_version 4, OPTIONAL. The OSM `name` tag, verbatim. Absent when the element carries none, and absent for the smallest footprints when the ingest's name budget is exceeded (apps/web/lib/engine/osm/normalize.ts)."
+        },
+        "osm_id": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "schema_version 4, OPTIONAL. The source OSM element id, \"w123\" or \"r456\". `id` is unique within the SceneGraph and gains a \"-N\" suffix when one element produced several parts; this is the unsuffixed source, so two parts of one building name the same element. ABSENT means `id` is already the source id, which is the common case; writing the duplicate out cost 11 % of the Chicago payload."
+        },
+        "kind": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "schema_version 4, OPTIONAL. The OSM tag that classified this entity, as \"key=value\": \"building=apartments\", \"building=yes\"."
         }
       },
       "required": ["id", "ring", "holes", "height_m", "height_source", "min_height_m", "is_tall"]
@@ -57,6 +72,21 @@
         "class": {
           "type": "string",
           "enum": ["motorway", "primary", "secondary", "residential", "service", "path"]
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "schema_version 4, OPTIONAL. The OSM `name` tag, verbatim, e.g. \"West Adams Street\"."
+        },
+        "osm_id": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "schema_version 4, OPTIONAL. The source OSM way id, unsuffixed; `id` gains a \"-N\" suffix per clipped segment. ABSENT means `id` is already the source id."
+        },
+        "kind": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "schema_version 4, OPTIONAL. The OSM tag that classified this road, as \"key=value\": \"highway=trunk\", \"highway=footway\". `class` is the six-member printing bucket this was mapped into; `kind` is the raw tag, and is written ONLY where the two differ. ABSENT means the raw tag was exactly \"highway=\" + class, which is lossless and is what keeps the identity block off the transfer budget on a road-dense scene."
         }
       },
       "required": ["id", "path", "width_m", "class"]
@@ -71,6 +101,21 @@
           "type": "array",
           "items": { "$ref": "#/$defs/Ring" },
           "default": []
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "schema_version 4, OPTIONAL. The OSM `name` tag of the element this polygon came from, e.g. \"Lake Michigan\", \"Grant Park\"."
+        },
+        "osm_id": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "schema_version 4, OPTIONAL. The source OSM element id. Water and green polygons are DISSOLVED across elements that overlap or share a boundary node, so this names the largest contributor to this polygon, not its only one."
+        },
+        "kind": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "schema_version 4, OPTIONAL. The OSM tag that classified this polygon, as \"key=value\": \"natural=water\", \"waterway=riverbank\", \"landuse=grass\", \"leisure=park\"."
         }
       },
       "required": ["ring", "holes"]

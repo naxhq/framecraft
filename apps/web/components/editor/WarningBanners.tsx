@@ -45,11 +45,14 @@ export function WarningBanners() {
   return (
     <div data-testid="warnings" className="space-y-1.5 px-3 pt-3">
       {/*
-        A shared link that could not be applied. Informational rather than an
-        error -- nothing is broken and the editor is on its defaults -- but it
-        has to be SAID, or a link that silently did nothing reads as a bug in
-        the product rather than as damage to the link. Dismissible, because it
-        is about a thing that already happened.
+        A restored design that has something to say: a shared link that could
+        not be applied, or a project file that loaded from an older format
+        (Task 13). Informational rather than an error -- nothing is broken --
+        but it has to be SAID, or a link that silently did nothing reads as a
+        bug in the product rather than as damage to the link, and a project
+        that quietly changed format gives no clue why the next save writes a
+        differently named file. Dismissible, because it is about a thing that
+        already happened.
       */}
       {shareNotice !== null ? (
         <div
@@ -63,7 +66,7 @@ export function WarningBanners() {
           <button
             type="button"
             data-testid="share-notice-dismiss"
-            aria-label="Dismiss the shared link message"
+            aria-label="Dismiss this message"
             onClick={() => setShareNotice(null)}
             className="shrink-0 rounded-[2px] px-1 text-ink-muted transition-colors hover:text-ink"
           >

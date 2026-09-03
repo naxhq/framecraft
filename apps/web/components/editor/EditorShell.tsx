@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import MapPane from "@/components/map/MapPane";
 import PreviewPane from "@/components/scene/PreviewPane";
@@ -10,10 +10,13 @@ import { SHARE_PARAM } from "@/lib/share";
 import { exportBlockReason } from "@/lib/warnings";
 import { useEditorStore } from "@/store/editor";
 import { initHistory, redoHistory, undoHistory, useHistoryStore } from "@/store/history";
+import { hydrateLayout, useLayoutStore } from "@/store/layout";
 import ActionBar from "./ActionBar";
 import HistoryChip from "./HistoryChip";
+import { LayoutControls } from "./PaneChrome";
 import ParamPanel from "./ParamPanel";
 import PresetRow from "./PresetRow";
+import ResizableRegions from "./ResizableRegions";
 import ShortcutSheet from "./ShortcutSheet";
 import ThemeToggle from "./ThemeToggle";
 import WarningBanners from "./WarningBanners";
@@ -22,19 +25,31 @@ import WarningBanners from "./WarningBanners";
  * The editor: the atlas on the left, the workpiece in the middle, the spec
  * sheet on the right.
  *
+ * The three regions, their sizes and everything that hides or maximizes one
+ * live in `ResizableRegions` and `lib/layout.ts`; what stays here is the
+ * header, the keyboard, the four things that have to happen once after mount,
+ * and the small-screen states.
+ *
  * Responsive behaviour (01 puts mobile polish out of scope, so this is about
  * not lying to the user rather than about a phone-first layout):
  *
- *  - **≥ 1024 px** three columns.
+ *  - **≥ 1024 px** three columns, resizable, either side hideable, the map or
+ *    the preview able to take the whole window.
  *  - **640–1023 px** map and preview stack, and the parameter panel becomes a
  *    bottom sheet that is closed by default. A 23 rem rail beside a 3D
- *    viewport on a 900 px screen leaves neither of them usable.
+ *    viewport on a 900 px screen leaves neither of them usable, and neither
+ *    does a divider between two things that are not side by side.
  *  - **< 640 px** a plain "this needs a desktop" state. The alternative is a
  *    broken layout that pretends to work; the honest version says what is
  *    needed and what the product does.
+ *
+ * This component deliberately does NOT subscribe to the layout store. A drag
+ * writes a new width on every pointer move, and a re-render here would rebuild
+ * the three region elements and take the map and the 3D scene down with them
+ * on every frame of the drag. The keyboard dispatcher reads the layout through
+ * `getState()` for the same reason it reads the editor store that way.
  */
 export function EditorShell() {
-  const [sheetOpen, setSheetOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   /**
@@ -112,6 +127,29 @@ export function EditorShell() {
     // that the key did nothing.
     if (sheet || drawer || issues || history) return;
 
+    // The layout keys. Read through `getState()` so this component never
+    // subscribes to the layout store: it renders the three regions, and a
+    // re-render of it on every frame of a divider drag would take the map's GL
+    // context and the 3D scene with it.
+    switch (action) {
+      case "maximize-map":
+        event.preventDefault();
+        useLayoutStore.getState().toggleMaximized("map");
+        return;
+      case "maximize-viewport":
+        event.preventDefault();
+        useLayoutStore.getState().toggleMaximized("viewport");
+        return;
+      case "collapse-map":
+        event.preventDefault();
+        useLayoutStore.getState().toggleCollapsed("map");
+        return;
+      case "collapse-settings":
+        event.preventDefault();
+        useLayoutStore.getState().toggleCollapsed("settings");
+        return;
+    }
+
     switch (action) {
       case "generate": {
         // Same rule as the button: nothing to generate when the scene already
@@ -146,6 +184,23 @@ export function EditorShell() {
     window.addEventListener("keydown", dispatchShortcut);
     return () => window.removeEventListener("keydown", dispatchShortcut);
   }, [dispatchShortcut]);
+
+  /**
+   * This browser's own layout, adopted after mount.
+   *
+   * Declared BEFORE the share-link effect below, and React runs effects in
+   * declaration order, so a link that carries a layout wins over the one this
+   * device happened to have: the point of shipping the layout in a payload is
+   * that a shared design opens the way its author framed it.
+   *
+   * After mount rather than during render, for the reason every other
+   * `localStorage` read in this app is: the server has no storage, renders the
+   * default, and a client that read storage during its first render would be a
+   * hydration mismatch.
+   */
+  useEffect(() => {
+    hydrateLayout();
+  }, []);
 
   /**
    * A shared configuration in the URL (`?s=v3.…`, a v2 link from before
@@ -239,6 +294,14 @@ export function EditorShell() {
 
           <div className="flex shrink-0 items-center gap-1.5">
             {/*
+              The layout controls sit with the other window chrome, not inside
+              the panes they act on: the button that brings a hidden column
+              back cannot live in the column that is hidden, and a fixed
+              cluster is the one place a user can look for it before knowing
+              it exists.
+            */}
+            <LayoutControls />
+            {/*
               [V3-P6]: undo/redo lives in the header, not inside
               `CityPreview`'s scene-gated chip stack -- a parameter change is
               recorded into history from the very first slider move, before
@@ -260,82 +323,44 @@ export function EditorShell() {
         </header>
 
         {/*
-          Below `lg` this is a flex column (map above, preview filling what is
-          left) and the bottom sheet is `fixed`, so the column has to RESERVE
-          the sheet's height. Without that, opening the sheet at 900 px put the
-          whole 3D canvas and the spec strip behind it: the user could see the
-          model or change it, never both, which is precisely the promise the
-          empty state makes ("the preview follows every control instantly").
+          The three regions. `ResizableRegions` owns the row, its dividers, the
+          rails a hidden column leaves behind, and the bottom-sheet behaviour
+          below `lg`.
+
+          The SETTINGS column's slots are stated here and nowhere else, because
+          the promise is about this order and not about any one component:
+          the action bar first, fixed, outside anything that scrolls, and then
+          the panel, which holds the scrolling groups and pins the results
+          under them. Preview and Export are the two things the whole editor
+          exists to do, and inside `ParamPanel` they sat under a results block
+          that grew and shrank with every run. Here nothing below them can move
+          them, which `e2e/shell.spec.ts` measures across a run, a refusal and
+          a finished export rather than asserting.
         */}
-        <div
-          className="flex min-h-0 flex-1 flex-col pb-[var(--fc-sheet-reserve)] transition-[padding] lg:grid lg:grid-cols-[minmax(0,var(--spacing-atlas))_minmax(0,1fr)_var(--spacing-rail)] lg:pb-0"
-          // A custom property, not an inline `padding-bottom`: an inline style
-          // would beat `lg:pb-0` and reserve space on the desktop layout too,
-          // where the panel is a static column and reserves nothing.
-          style={{ "--fc-sheet-reserve": sheetOpen ? "42dvh" : "3rem" } as CSSProperties}
-        >
-          <section
-            aria-label="Location"
-            className="flex min-h-0 shrink-0 flex-col border-b border-line lg:shrink lg:border-b-0 lg:border-r"
-          >
-            <div className="h-[20dvh] min-h-28 lg:h-auto lg:flex-1">
-              <MapPane />
-            </div>
-          </section>
-
-          <section
-            aria-label="Preview"
-            className="flex min-h-0 flex-1 flex-col bg-plate-sunken"
-          >
-            <WarningBanners />
-            {/*
-              `min-h-0`, deliberately no floor: a minimum taller than what is
-              left after the sheet's reserve would push the canvas back under
-              the sheet, which is the bug this reserve exists to fix.
-            */}
-            <div className="min-h-0 flex-1 lg:h-auto">
-              <PreviewPane />
-            </div>
-          </section>
-
-          <aside
-            aria-label="Parameters"
-            data-testid="param-sheet"
-            data-open={sheetOpen ? "true" : "false"}
-            className={`fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-hidden border-t border-line bg-plate shadow-lifted transition-[height] lg:static lg:h-auto lg:min-h-0 lg:border-l lg:border-t-0 lg:shadow-none ${
-              sheetOpen ? "h-[42dvh]" : "h-12"
-            }`}
-          >
-            <button
-              type="button"
-              data-testid="param-sheet-toggle"
-              aria-expanded={sheetOpen}
-              aria-controls="param-sheet-body"
-              onClick={() => setSheetOpen((value) => !value)}
-              className="flex h-12 shrink-0 items-center justify-between px-4 text-left lg:hidden"
-            >
-              <span className="font-display text-2xs font-semibold uppercase tracking-[0.16em] text-ink">
-                Model parameters
-              </span>
-              <span className="text-2xs text-ink-faint">
-                {sheetOpen ? "Hide" : "Show"}
-              </span>
-            </button>
-            {/*
-              The action bar is a sibling of the panel, not a row inside it.
-              Preview and Export are the two things the whole editor exists to
-              do, and inside `ParamPanel` they sat under a results block that
-              grew and shrank with every run. Here they have the top of the
-              column to themselves and nothing below them can move them.
-            */}
-            <div id="param-sheet-body" className="flex min-h-0 flex-1 flex-col">
+        <ResizableRegions
+          map={<MapPane />}
+          viewport={
+            <>
+              <WarningBanners />
+              {/*
+                `min-h-0`, deliberately no floor: a minimum taller than what is
+                left after the sheet's reserve would push the canvas back under
+                the sheet, which is the bug that reserve exists to fix.
+              */}
+              <div className="min-h-0 flex-1 lg:h-auto">
+                <PreviewPane />
+              </div>
+            </>
+          }
+          settings={
+            <>
               <ActionBar />
-              <div className="min-h-0 flex-1">
+              <div className="min-h-0 flex-1" data-testid="settings-panel-slot">
                 <ParamPanel />
               </div>
-            </div>
-          </aside>
-        </div>
+            </>
+          }
+        />
       </div>
 
       <ShortcutSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />

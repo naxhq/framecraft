@@ -99,7 +99,10 @@ describe("frame profiles", () => {
       expect(slabs).toHaveLength(1);
       expect(slabs[0].outerDeltaMm).toBe(0);
       expect(slabs[0].innerDeltaMm).toBe(0);
-      expect(topFaceWidthMm(ctx)).toBeCloseTo(T.FRAME_WIDTH_MM, 9);
+      // The flat top face is the 6 mm band less the 1 mm sight-edge rebate
+      // along the opening (`[V3.1-P2-2]`).
+      expect(topFaceWidthMm(ctx)).toBeCloseTo(T.lip_face_width_mm(print), 9);
+      expect(topFaceWidthMm(ctx)).toBeCloseTo(T.FRAME_WIDTH_MM - T.FRAME_SIGHT_EDGE_MM, 9);
     } finally {
       arena.dispose();
     }
@@ -119,7 +122,7 @@ describe("frame profiles", () => {
       // A 45 degree face: the inset at the top equals the height risen.
       const top = slabs[slabs.length - 1];
       expect(top.outerDeltaMm).toBeCloseTo(chamfer, 9);
-      expect(topFaceWidthMm(ctx)).toBeCloseTo(T.FRAME_WIDTH_MM - chamfer, 9);
+      expect(topFaceWidthMm(ctx)).toBeCloseTo(T.lip_face_width_mm(print) - chamfer, 9);
     } finally {
       arena.dispose();
     }
@@ -214,11 +217,14 @@ describe("frame corners", () => {
     const mitred = await cornerAreaMm2("mitred");
     const rounded = await cornerAreaMm2("rounded");
 
-    // The BAND keeps its area whatever the corner: what a rounded outer corner
-    // takes off the outside, the matching inner corner gives back inside, so
-    // the frame stays 6 mm wide the whole way round. The corner itself is what
-    // moves, and that is what is measured.
-    const ring = 180 * 180 - 168 * 168;
+    // The flat top FACE keeps its area whatever the corner: what a rounded
+    // outer corner takes off the outside, the matching inner corner gives back
+    // inside, because both edges carry the same radius. The face is the 6 mm
+    // band less the 1 mm sight-edge rebate along the opening (`[V3.1-P2-2]`),
+    // so its inner edge sits at 85 mm, and the rebate's own boundary keeps the
+    // opening's radius too, which is what keeps this invariant. The corner
+    // itself is what moves, and that is what is measured.
+    const ring = 180 * 180 - 170 * 170;
     expect(sharp.ring).toBeCloseTo(ring, 6);
     expect(mitred.ring).toBeCloseTo(ring, 0);
     expect(rounded.ring).toBeCloseTo(ring, 0);
@@ -665,8 +671,18 @@ describe("per-building tints", () => {
 /**
  * Volume the four inner-wall attribution marks take out of the plain 6 mm lip,
  * mm3 (v3 phase 7). Measured on this build; see the note in the test below.
+ * 27.60 until `[V3.1-P2-2]`: the sight-edge rebate shortens the exposed inner
+ * wall from 2.0 to 1.6 mm, the mark is fitted to that wall (1.36 mm against
+ * 1.78 mm of text), and four smaller copies cut less.
  */
-const ATTRIBUTION_WALL_CUT_MM3 = 27.6;
+const ATTRIBUTION_WALL_CUT_MM3 = 15.814;
+
+/**
+ * Volume the default sight-edge rebate takes out of the plain lip, mm3: a
+ * step `FRAME_SIGHT_EDGE_MM` (1.0) wide and `lip_depth_mm` (0.4 by default)
+ * deep round the 168 mm opening, `4 * (85^2 - 84^2) * 0.4` (`[V3.1-P2-2]`).
+ */
+const SIGHT_EDGE_REBATE_MM3 = 4 * (85 * 85 - 84 * 84) * T.LIP_DEPTH_DEFAULT_MM;
 
 describe("the default build", () => {
   it("is what it was: one body, one region set, plain 6 mm lip", async () => {
@@ -684,14 +700,27 @@ describe("the default build", () => {
     expect(frame.bbox.min[2]).toBeCloseTo(geometry.bottom_mm - 0.2, 3);
     // The plain lip's volume is the ring times its height, to the Z grid (the
     // 2.2 mm of extrusion lands on 2.19995, which is 0.2 mm3 of 9 187), LESS
-    // the four copies of the mandatory attribution engraved into its inner
-    // walls (v3 phase 7, `solid/attribution.ts`). That mark is cut on every
-    // build and is not a parameter, so the plain lip is 27.60 mm3 lighter than
-    // it was in phase 5 - which is the number below, measured on this build and
-    // re-measurable from it: `ring - frame.volumeMm3`.
+    // the default sight-edge rebate (`[V3.1-P2-2]`: a 1.0 by 0.4 mm step round
+    // the opening, 270.40 mm3, on every default frame) and LESS the four
+    // copies of the mandatory attribution engraved into its inner walls (v3
+    // phase 7, `solid/attribution.ts`), below the rebate. Neither is a
+    // parameter of this build, so the plain lip is 286.25 mm3 lighter than it
+    // was in phase 5 (9 159.31 to 8 900.74 mm3) - which are the numbers below,
+    // measured on this build and re-measurable from it:
+    // `ring - SIGHT_EDGE_REBATE_MM3 - frame.volumeMm3`.
     const ring = (180 * 180 - 168 * 168) * (frame.bbox.max[2] - frame.bbox.min[2]);
-    expect(ring - frame.volumeMm3).toBeCloseTo(ATTRIBUTION_WALL_CUT_MM3, 2);
-    expect(frame.volumeMm3).toBeCloseTo(4176 * 2.2 - ATTRIBUTION_WALL_CUT_MM3, 0);
+    expect(ring - SIGHT_EDGE_REBATE_MM3 - frame.volumeMm3).toBeCloseTo(ATTRIBUTION_WALL_CUT_MM3, 2);
+    expect(frame.volumeMm3).toBeCloseTo(4176 * 2.2 - SIGHT_EDGE_REBATE_MM3 - ATTRIBUTION_WALL_CUT_MM3, 0);
     expect(frameStyle(result.params).profile).toBe("plain");
+    // The rebate floor: a ring of vertices 0.4 mm under the lip top (on the
+    // engine's own 1/4096 mm Z grid, so 4.5996), from the opening (84 mm) to
+    // 1.0 mm into the lip (85 mm), and nothing else of the frame on that plane.
+    const floor = new Set<number>();
+    for (let i = 0; i < frame.positions.length; i += 3) {
+      if (Math.abs(frame.positions[i + 2] - (geometry.top_mm - T.LIP_DEPTH_DEFAULT_MM)) < 1e-3) {
+        floor.add(Math.round(Math.max(Math.abs(frame.positions[i]), Math.abs(frame.positions[i + 1])) * 1000) / 1000);
+      }
+    }
+    expect([...floor].sort((a, b) => a - b)).toEqual([84, 85]);
   });
 });

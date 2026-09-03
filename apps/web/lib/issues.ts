@@ -60,6 +60,7 @@ const WARNING_TITLES: Record<string, string> = {
   "base-too-thin-for-underside": "The base is too thin for what is cut into it",
   "estimated-heights": "Building heights are mostly estimated",
   "frame-off-lettering": "Frame lettering will not be cut",
+  "names-over-budget": "Some OpenStreetMap names were left out",
 };
 
 function warningTitle(warning: SceneWarning): string {

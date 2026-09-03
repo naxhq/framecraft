@@ -262,8 +262,43 @@ describe("an untiled build", () => {
     // provenance block. Checked the same way, entry by entry on the unzipped
     // `3D/3dmodel.model`: nothing else in the metadata list, the mesh, the
     // plate, the config parts or the zip framing moved.
+    //
+    // It moved a fourth time in v3.1 (Task 7), for two reasons that landed in
+    // the same tree and neither of which is the writer: the frame MESH
+    // changed, because every default lip now carries the sight-edge rebate
+    // and its lettering band moved onto the 5 mm flat face
+    // (DECISIONS [V3.1-P2-2]); and the Description metadata changed, because
+    // `schema_version`'s default in `contracts.ts` went 3 to 4 in the same
+    // wave. The writer files (`bambu3mf.ts`, `common.ts`) were not edited by
+    // the wave that re-pinned this; if the version literals in `common.ts`
+    // move next, this number moves with them and is re-pinned by that change.
+    //
+    // It moved a fifth time in v3.1 (Task 15), which is the case the previous
+    // paragraph predicted, plus one that arrived in the same tree. Both were
+    // separated before this number was touched, by re-running the whole test
+    // with `NEXT_PUBLIC_APP_VERSION=3.0.0`, which restores the exact string
+    // the old literal produced:
+    //
+    //   7e4d0580  the committed pin, before either change
+    //   7b82383f  Tasks 11 and 12 only: `object_overrides` and `labels` joined
+    //             PrintParams, and every 3MF carries PrintParams in its
+    //             Description. Not this task's, and reproduced exactly by the
+    //             forced-version run above.
+    //   bca6c6aa  and then Task 15: `common.APPLICATION` stopped being the
+    //             typed literal "FrameCraft 3.0.0" and became `appVersion()`
+    //             from `lib/version.ts`, so ONE metadata value moved,
+    //             `framecraft:generator`. Nothing else in the metadata list,
+    //             the mesh, the plate, the config parts or the zip framing
+    //             changed, which is what the forced-version run proves rather
+    //             than asserts.
+    //
+    // Under vitest that version resolves to `UNBUILT_VERSION`, deliberately
+    // and permanently: no bundler inlines anything here and no npm script
+    // stamps it, so this number does NOT move on a release bump the way it
+    // would have if the tests saw the real version. `lib/version.ts` explains
+    // the choice.
     const digest = createHash("sha256").update(file.bytes).digest("hex");
-    expect(digest).toBe("42c5cd560cc98cb2bcfaa3e502dc900ac8e1fe3f346ebc0f27288d5493845064");
+    expect(digest).toBe("bca6c6aa746df126dd2ad3a9aae6066d7353c0f62c2ee55e4e2d8c30213c592b");
     expect(unzipText(file.bytes, "3D/3dmodel.model")).toContain('<metadata name="framecraft:palette">default</metadata>');
     // The block is there, once each, so a future edit that drops it fails here
     // as well as on the hash.

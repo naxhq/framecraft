@@ -370,15 +370,29 @@ jobs:
   # the same six through `export:cli --overpass --center`, so the two pipelines
   # are judged on every preset rather than the browser one on Chicago alone.
   #
-  # Timeout from measurement: 221 s for the reference half of the script on
-  # this host, and 6 min 04 s for the browser half added beside it, so 9 min
-  # 45 s for the whole script. 45 minutes is roughly 4.6 times that, which
-  # covers a runner without a GPU and a cold npm cache.
+  # READ THIS BEFORE TREATING A RED preset-matrix AS A REGRESSION. The browser
+  # half is red on arrival, on purpose, and it is the finding [V3.1-P7-4]
+  # asked for. Measured 2026-09-03 on the dev host: the reference pipeline
+  # builds and validates all six presets (Paris: ALL CHECKS PASS), while the
+  # browser engine on the identical committed fixture fails five of the six.
+  # `min_wall` on New York, Tokyo, London and San Francisco (narrowest
+  # 0.134 mm against a 0.720 mm floor) and degenerate faces on Paris and
+  # London; Chicago alone passes, which is the one city the browser engine had
+  # ever been run on. That is a real parity gap between the two engines, not a
+  # flaw in this job, and the numbers are in docs/handoff/v3-08-siteperf.md.
+  # This workflow is advisory by design (see the header), so it reports the gap
+  # rather than blocking on it. Do not silence it by dropping the validation.
+  #
+  # Timeout from measurement on this host: 221 s for the reference half, plus
+  # 37 s of browser-engine builds (4 to 8 s per preset) and 34 s of validator
+  # runs for the browser half, so about 4 min 52 s for the whole script. The
+  # 30 minutes below is roughly six times that, which covers a slower runner
+  # and a cold npm cache.
   # ---------------------------------------------------------------------
   preset-matrix:
     name: preset matrix (6 presets, both engines, offline)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 

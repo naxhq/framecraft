@@ -6,11 +6,9 @@ import { useThree } from "@react-three/fiber";
 import type { PerspectiveCamera } from "three";
 
 import PerfFrameMark from "@/components/scene/PerfFrameMark";
-import type { PrintParams } from "@/lib/contracts";
 import type { RecessBand, RegionMesh, TileResult } from "@/lib/engine/types";
-import type { PreviewBuilding } from "@/lib/preview";
-import BuildingPickProxies from "./BuildingPickProxies";
-import RegionMeshes from "./RegionMeshes";
+import LabelGizmo from "./LabelGizmo";
+import RegionMeshes, { type HoverHandler, type InspectHandler, type TintMap } from "./RegionMeshes";
 import TileGrid from "./TileGrid";
 
 /**
@@ -22,9 +20,14 @@ import TileGrid from "./TileGrid";
  * appears to do nothing can only ever be a stage that did not claim it, never
  * a preview layer that forgot to read it -- the class of defect the settings
  * complaint was made of. `CityPreview.test.ts` holds this file, and every
- * other file under `components/scene/`, to zero parameter reads; the one
- * exception is `BuildingPickProxies`, which places invisible boxes and paints
- * nothing, and `pickParams` is handed straight to it without being read here.
+ * other file under `components/scene/`, to zero parameter reads.
+ *
+ * Since the v3-06 audit's finding C2 there are no exceptions left: hero
+ * picking used to need an invisible `InstancedMesh` of oriented boxes placed
+ * from `PrintParams`, because the fused region meshes were said to carry no
+ * per-building identity. They do carry it ([V3.1-P1-18]), so the proxies are
+ * gone and the `PrintParams` object no longer crosses the canvas boundary at
+ * all -- not to be read, and not even to be passed through.
  */
 export function PreviewScene({
   regions,
@@ -32,6 +35,7 @@ export function PreviewScene({
   dimmed,
   dimOpacity,
   recessShade,
+  tints,
   tiles,
   tileColor,
   background,
@@ -40,16 +44,17 @@ export function PreviewScene({
   gridColor,
   plateMm,
   fitTrigger,
-  pickBuildings,
-  pickParams,
-  pickScale,
   onPick,
+  onHover,
+  onInspect,
 }: {
   regions: ReadonlyMap<string, RegionMesh>;
   recessBands: readonly RecessBand[];
   dimmed: boolean;
   dimOpacity: number;
   recessShade: number;
+  /** Per-building colours from `EngineResult.buildingTints`, or null when `colour.tint` is off. */
+  tints: TintMap;
   tiles: TileResult[] | undefined;
   tileColor: string;
   background: string;
@@ -60,10 +65,20 @@ export function PreviewScene({
   plateMm: number;
   /** Re-frames the view whenever this changes identity (a new scene). */
   fitTrigger: unknown;
-  pickBuildings: PreviewBuilding[];
-  pickParams: PrintParams;
-  pickScale: number;
+  /** Hero picking: the id of the building whose solid was clicked. */
   onPick: (id: string) => void;
+  /**
+   * The object popover's feed: the raycast hit under the pointer, or null when
+   * it leaves the pickable geometry. Handed straight to `RegionMeshes`, which
+   * attaches it only to the regions that can name an object.
+   */
+  onHover?: HoverHandler;
+  /**
+   * The right-click inspector's feed: the region a context-menu click landed
+   * on, or null when it landed on nothing. It answers for the base, the frame
+   * and the matting too, which no hover reaches.
+   */
+  onInspect?: InspectHandler;
 }) {
   return (
     <>
@@ -93,16 +108,15 @@ export function PreviewScene({
           dimmed={dimmed}
           dimOpacity={dimOpacity}
           recessShade={recessShade}
+          tints={tints}
+          onHover={onHover}
+          onPick={onPick}
+          onInspect={onInspect}
         />
         <TileGrid tiles={tiles} color={tileColor} />
-        {/* Invisible, and interactive: hero picking has no equivalent on the
-            fused region meshes, which carry no per-building identity. */}
-        <BuildingPickProxies
-          buildings={pickBuildings}
-          params={pickParams}
-          scale={pickScale}
-          onPick={onPick}
-        />
+        {/* The surface-label handles (v3.1 Task 12): pipeline output too, read
+            straight off the store's result rather than threaded through props. */}
+        <LabelGizmo color={tileColor} />
       </group>
 
       <Grid

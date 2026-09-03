@@ -35,8 +35,8 @@ describe("DEFAULT_PRINT_PARAMS", () => {
     expect(DEFAULT_PRINT_PARAMS as unknown as Record<string, unknown>).toEqual(pythonDefaults);
   });
 
-  it("declares schema_version 3", () => {
-    expect(DEFAULT_PRINT_PARAMS.schema_version).toBe(3);
+  it("declares schema_version 4", () => {
+    expect(DEFAULT_PRINT_PARAMS.schema_version).toBe(4);
   });
 
   it("keeps every v1 field at its v1 default", () => {
@@ -148,6 +148,10 @@ const NESTED_KEYS = [
   "tiling",
   "frame_style",
   "hanger_magnet",
+  // schema_version 4: the per-object overrides (docs/handoff/v3-11-overrides.md)
+  // and the surface labels (Task 12, docs/handoff/v3-12-labels.md).
+  "object_overrides",
+  "labels",
 ] as const;
 
 function walk(value: unknown, path: string, out: string[]): void {
@@ -276,6 +280,10 @@ describe("PARAM_LIMITS", () => {
   it("publishes the array caps the schema declares", () => {
     expect(PARAM_LIMITS.engravings.max_items).toBe(8);
     expect(PARAM_LIMITS.hero_building_ids.max_items).toBe(12);
+    // Task 12: measured in docs/handoff/v3-12-labels.md section 2.
+    expect(PARAM_LIMITS.labels.max_items).toBe(12);
+    expect(PARAM_LIMITS.labels.target_osm_id.max_length).toBe(32);
+    expect(PARAM_LIMITS.labels.text.max_length).toBe(64);
   });
 
   it("publishes the 64-character text caps", () => {
@@ -292,6 +300,8 @@ describe("PARAM_LIMITS", () => {
       "hero_building_ids",
       "place",
       "colour",
+      "object_overrides",
+      "labels",
     ]);
   });
 

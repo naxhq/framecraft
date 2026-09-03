@@ -630,7 +630,11 @@ def test_ornament_north_arrow_sits_in_its_corner(corner: str) -> None:
     assert arrow.enabled
     sx = -1.0 if corner in ("nw", "sw") else 1.0
     sy = -1.0 if corner in ("se", "sw") else 1.0
-    offset = p.plate_mm / 2.0 - T.FRAME_WIDTH_MM / 2.0
+    # The corner square is the lip's FLAT top face, 5 mm at the default
+    # sight-edge rebate ([V3.1-P2-2]), so the arrow sits 2.5 mm in from the
+    # outer edge on both axes rather than 3.
+    offset = p.plate_mm / 2.0 - T.lip_face_width_mm(p) / 2.0
+    assert offset == pytest.approx(87.5)
     assert arrow.placement.anchor_x == pytest.approx(sx * offset)
     assert arrow.placement.anchor_y == pytest.approx(sy * offset)
     # The glyph is two triangles: a concave quadrilateral, tip on +y.
@@ -652,8 +656,10 @@ def test_ornament_north_arrow_is_fitted_to_the_band_not_clipped(rotation_deg: fl
     layout = T.lettering_layout(p, ctx(), rotation_deg=rotation_deg)
     arrow = layout.north_arrow
     assert arrow.size_mm == pytest.approx(T.north_arrow_max_size_mm(p))
-    assert arrow.size_mm == pytest.approx(4.28746, abs=1e-5)
-    assert any("the north arrow was reduced from 6 mm to 4.28746 mm" in w for w in layout.warnings)
+    # 4.28746 mm on the full 6 mm band; the 4 mm band the sight-edge rebate
+    # leaves holds 3.42997 mm ([V3.1-P2-2]).
+    assert arrow.size_mm == pytest.approx(3.42997, abs=1e-5)
+    assert any("the north arrow was reduced from 6 mm to 3.42997 mm" in w for w in layout.warnings)
 
     keep = L.lip_keep_region(p)
     placed = L.place(
@@ -676,7 +682,9 @@ def test_ornament_north_arrow_is_fitted_to_the_band_not_clipped(rotation_deg: fl
 
 def test_ornament_north_arrow_under_the_cap_is_untouched() -> None:
     """The fit is a cap, not a resize: anything the band can hold is left alone."""
-    for asked in (2.0, 3.0, 4.0):
+    cap = T.north_arrow_max_size_mm(params(north_arrow={"enabled": True, "corner": "sw"}))
+    assert 3.4 < cap < 3.5  # the 4 mm band of [V3.1-P2-2]; 4.0 is over it now
+    for asked in (2.0, 3.0, math.floor(cap * 100.0) / 100.0):
         p = params(north_arrow={"enabled": True, "corner": "sw", "size_mm": asked})
         layout = T.lettering_layout(p, ctx())
         assert layout.north_arrow.size_mm == pytest.approx(asked)
@@ -696,7 +704,11 @@ def test_layout_frame_off_refuses_every_engraving_rather_than_warning() -> None:
     and the plate shipped with two letters floating over it (v2-03 audit,
     finding 2).
     """
-    p = params(frame=False, engravings=[engraving(), engraving(edge="bottom", mode="emboss")])
+    # "Loop" for the emboss: on the 4 mm band the sight-edge rebate leaves
+    # ([V3.1-P2-2]) an embossed "Chicago" fits at 3.62 mm, where its counters
+    # close, and is refused by the lip itself rather than by the rule under
+    # test here.
+    p = params(frame=False, engravings=[engraving(), engraving(edge="bottom", mode="emboss", text="Loop")])
     for placed in T.lettering_layout(p, ctx()).engravings:
         assert placed.fit.refused is True
         assert "no lip" in placed.fit.reason
@@ -1020,17 +1032,21 @@ def test_build_refusal_names_a_size_that_really_cuts() -> None:
     so "larger" was not advice.  The size named now is MEASURED: the same
     geometry chain, at that size, through the same gate.
     """
-    p = params(engravings=[engraving(text="1:10,714", size_mm=3.5, font="serif")])
+    # "1:1,000" rather than "1:10,714": on the 4 mm band the sight-edge rebate
+    # leaves ([V3.1-P2-2]) the original string has no legal size in this face
+    # at all (`test_build_refusal_admits_it_when_no_size_works` keeps that
+    # case), and the point here is a refusal that names a MEASURED size.
+    p = params(engravings=[engraving(text="1:1,000", size_mm=3.0, font="serif")])
     geometry = L.build(p, ctx())
     assert not geometry.cut
     refusal = next(w for w in geometry.warnings if "was not cut" in w)
     named = size_in(refusal)
 
     # the named size cuts, and the one just under it does not
-    works = params(engravings=[engraving(text="1:10,714", size_mm=named, font="serif")])
+    works = params(engravings=[engraving(text="1:1,000", size_mm=named, font="serif")])
     assert L.build(works, ctx()).cut, f"{named} mm was named but does not cut"
     under = round(named - L.TEXT_SEARCH_FINE_MM, 3)
-    lower = params(engravings=[engraving(text="1:10,714", size_mm=under, font="serif")])
+    lower = params(engravings=[engraving(text="1:1,000", size_mm=under, font="serif")])
     assert not L.build(lower, ctx()).cut, f"{under} mm cuts too, so {named} is not the smallest"
 
 
@@ -1112,13 +1128,16 @@ def test_build_engraved_rim_is_the_margin_less_the_separation() -> None:
     separation for engraved ink.  Harmless - 0.48 mm is still more than a
     nozzle - but the invariant as written was false, so here is the true one.
     """
+    # Four lines that still cut on the 4 mm band the sight-edge rebate leaves
+    # ([V3.1-P2-2]): a serif "{scale}" and an embossed "{date}" no longer fit
+    # it, and this test is about the rim, not about which strings fit.
     p = params(
         city_label="Chicago",
         engravings=[
             engraving(edge="top", text="{city}", size_mm=8.0),
-            engraving(edge="bottom", text="{coords}", size_mm=8.0, font="mono"),
-            engraving(edge="left", text="{scale}", size_mm=8.0, font="serif"),
-            engraving(edge="right", text="{date}", size_mm=8.0, mode="emboss"),
+            engraving(edge="bottom", text="{date}", size_mm=8.0, font="mono"),
+            engraving(edge="left", text="{city}", size_mm=8.0, font="serif"),
+            engraving(edge="right", text="LOOP", size_mm=8.0, mode="emboss"),
         ],
     )
     geom = L.build(p, ctx())

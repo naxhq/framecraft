@@ -121,7 +121,18 @@ export function OutputPanel({
         {showResults && exportState.phase !== "idle" ? (
           <div className="space-y-2" data-testid="export-status">
             <div className="flex items-center justify-between gap-2 text-2xs">
-              <span className={exportState.phase === "failed" ? "text-danger" : "text-ink-muted"}>
+              {/*
+                The phase, never the reason. Why an export produced no file --
+                a printability refusal naming its checks, or a Cancel the user
+                pressed -- is the ACTION BAR's failure surface, which is the one
+                surface that can tell those two apart ([V3.1-T6] 2). The raw
+                message stays reachable on the title so nothing is swallowed.
+              */}
+              <span
+                data-testid="export-phase"
+                title={exportState.phase === "failed" ? (exportState.error ?? undefined) : undefined}
+                className={exportState.phase === "failed" ? "text-danger" : "text-ink-muted"}
+              >
                 {exportStatusLabel(exportState)}
               </span>
               {exportState.target ? (

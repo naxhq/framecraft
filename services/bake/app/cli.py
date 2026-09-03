@@ -462,6 +462,33 @@ def _attribution_bands_from_sidecar(path: Path) -> list[tuple[float, float]] | N
     return out
 
 
+def _label_bands_from_sidecar(path: Path) -> list[dict[str, Any]] | None:
+    """The surface labels the bake cut, or ``None``, from the sidecar's ``label_bands``.
+
+    The same arrangement as :func:`_attribution_bands_from_sidecar`: the browser
+    engine engraves or embosses a name on a roof or a ground surface (v3.1 Task
+    12, ``apps/web/lib/engine/solid/labels.ts``) and declares each one's Z band
+    and ink polygon.  ``checks.validate`` masks the polygon out of the
+    structural ``min_wall`` probe inside the band and judges the strokes and
+    ridges inside it by its ``labels`` row.  Each entry is handed over as the
+    dict the sidecar holds; ``checks._clean_label_bands`` does the parsing, so
+    anything malformed is dropped there rather than crashing here.
+    """
+    sidecar = path.with_suffix(".json")
+    if not sidecar.is_file():
+        return None
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get("label_bands")
+    if not isinstance(raw, list):
+        return None
+    return [item for item in raw if isinstance(item, dict)]
+
+
 def _index_stl_triangle_soup(mesh: "trimesh.Trimesh") -> tuple["trimesh.Trimesh", int]:
     """Weld the *exactly* coincident vertices of an STL triangle soup.
 
@@ -666,6 +693,7 @@ def _validate_parts_file(path: Path, args: argparse.Namespace) -> int:
             params,
             max_height_mm=_max_height_from_sidecar(path),
             attribution_bands=_attribution_bands_from_sidecar(path),
+            label_bands=_label_bands_from_sidecar(path),
         )
     else:
         report = validators.ValidationReport(checks=[])
@@ -770,6 +798,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         params,
         max_height_mm=_max_height_from_sidecar(path),
         attribution_bands=_attribution_bands_from_sidecar(path),
+        label_bands=_label_bands_from_sidecar(path),
     )
     if sidecar_error is not None:
         # The file's own record of how it was printed is broken, so every row

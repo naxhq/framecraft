@@ -336,3 +336,36 @@ Closing it needs a second quantiser in `cleanMesh` keyed by the writer's grid
 plus a change in `export/step.ts`, over the wave's thirty-line bar. STEP is a
 faceted B-rep whose consumers re-mesh anyway; the reference validator does not
 read STEP. Status: OPEN, queued for the Task 7 geometry wave.
+
+---
+
+## Open: the browser engine fails the validator on five of the six preset cities (2026-09-03)
+
+Found by the nightly preset matrix's new browser-engine half ([V3.1-P7-4]),
+which became possible only when `export-cli.ts` gained a `--center lat,lon`
+flag: a raw Overpass response carries no centre, so every previous
+browser-engine run cropped around the Chicago Loop whatever city it was given.
+Chicago is therefore the only city the engine has ever really built, and it is
+the only one that passes. The gap was invisible, not absent.
+
+Measured on the dev host, browser engine through `export:cli`, then
+`make validate` on each 3MF. The Python reference pipeline builds all six from
+the same committed fixtures and passes every one, so the fixture, the request
+and the parameter set are ruled out; rebuilding Paris and New York with
+`print-params-default.json` instead of the parts profile fails too.
+
+| preset | verdict |
+|---|---|
+| chicago-loop | ALL CHECKS PASS |
+| new-york-midtown | FAIL `min_wall`, 7 of 340 sampled regions under 0.720 mm, narrowest 0.134 mm |
+| paris-eiffel | FAIL `part_meshes` (buildings), 55 degenerate faces; 58 at the top level in single mode |
+| tokyo-shinjuku | FAIL `min_wall`, 10 of 465, narrowest 0.169 mm |
+| london-city | FAIL `min_wall` 2 of 136, narrowest 0.206 mm, and `part_meshes` |
+| san-francisco-fidi | FAIL `min_wall`, 7 of 268, narrowest 0.205 mm |
+
+The nightly job ships red on arrival with the failing checks named in
+`nightly.yml`'s header so nobody reads it as a regression from this wave. No
+check was weakened and no expected-failure ledger was added. Reproduction
+commands and per-city numbers: `docs/handoff/v3-08-siteperf.md` section 7.5.
+
+Status: OPEN, assigned to a geometry fixer this run.

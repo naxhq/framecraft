@@ -1,14 +1,19 @@
 /**
- * SceneGraph + PrintParams -> the PICKING footprints, in PRINT MILLIMETRES.
+ * SceneGraph + PrintParams -> per-building FOOTPRINTS, in PRINT MILLIMETRES.
  *
- * Since v3.1 the viewport draws the pipeline's own solids and nothing else, so
- * what is left here is the one thing those solids cannot provide: a per-
- * building box to raycast against, because the fused region meshes carry no
- * per-building identity. `components/scene/BuildingPickProxies.tsx` turns these
- * into one invisible InstancedMesh (named exception 1,
- * `docs/handoff/v3-01-pipeline.md` section 5). `PreviewArea` stays because it
- * is the flat-contour shape `lib/previewText.ts` emits and the engine's own
- * lettering, frame and tiling code consumes.
+ * Since v3.1 the viewport draws the pipeline's own solids and nothing else, and
+ * since the v3-06 audit's finding C2 it PICKS them too: the buildings mesh
+ * carries `triangleOwner`/`owners`, so the invisible box per building that used
+ * to stand in for per-building identity is gone. What these footprints feed now
+ * is the HUD -- the building count, the keyboard cursor's tallest-first order,
+ * the minimum-feature repair width the object popover reports, and the
+ * adjustments drawer's dilated and dropped counts. Nothing derived here is
+ * drawn or raycast. `buildingInstanceMatrices` is what the deleted layer used
+ * and has no caller left; it is kept with its tests rather than removed here,
+ * because this module is not this task's to reshape.
+ *
+ * `PreviewArea` stays because it is the flat-contour shape `lib/previewText.ts`
+ * emits and the engine's own lettering, frame and tiling code consumes.
  *
  * Rules this module still enforces:
  *

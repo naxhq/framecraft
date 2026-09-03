@@ -60,6 +60,7 @@ import {
   widenThinParts,
 } from "./repair";
 import { bridgeRoadWays, bridgeRailWays, railWidthGroundM } from "./roads";
+import { baseOsmIdOfRoad, hiddenOverrideIds, widthScaleOverrides } from "./overrides";
 import type { RegionName } from "../types";
 
 /** A centreline that is going to be built in the air. */
@@ -447,13 +448,30 @@ export function deckMinWidthMm(ctx: BuildContext): number {
   return DECK_MIN_WIDTH_FACTOR * ctx.thresholdsMm.minWall;
 }
 
-/** Road ways this build will build in the air, at their grade printed width. */
+/**
+ * Road ways this build will build in the air, at their grade printed width.
+ *
+ * A road an `object_overrides` row hid (or switched off) is not built here
+ * either: "leave it out of the model" means out of the deck as well as out of
+ * the ground layer. A `width_scale` override reaches the deck through the same
+ * ground width the flat ribbon uses, so a widened bridge road stays as wide in
+ * the air as it is where it comes back down.
+ */
 export function roadBridgeWays(ctx: BuildContext): BridgeWay[] {
   if (ctx.params.road_mode === "off") return [];
   const floor = deckMinWidthMm(ctx);
+  const hidden = hiddenOverrideIds(ctx.params, "road");
+  const widthScales = widthScaleOverrides(ctx.params);
   const out: BridgeWay[] = [];
   for (const road of bridgeRoadWays(ctx.scene)) {
-    const groundM = T.road_width_ground_m(road, ctx.params, ctx.thresholdsGroundM);
+    const id = baseOsmIdOfRoad(road);
+    if (hidden.has(id)) continue;
+    const scale = widthScales.get(id) ?? 1;
+    const groundM = T.road_width_ground_m(
+      scale === 1 ? road : { width_m: road.width_m * scale },
+      ctx.params,
+      ctx.thresholdsGroundM,
+    );
     out.push({ path: road.path, widthMm: Math.max(groundM * ctx.scale, floor) });
   }
   return out;
@@ -466,7 +484,7 @@ export function railBridgeWays(ctx: BuildContext): BridgeWay[] {
   for (const way of bridgeRailWays(ctx.scene)) {
     out.push({
       path: way.path,
-      widthMm: Math.max(railWidthGroundM(ctx, way) * ctx.scale, floor),
+      widthMm: Math.max(railWidthGroundM(ctx) * ctx.scale, floor),
     });
   }
   return out;

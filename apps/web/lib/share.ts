@@ -47,12 +47,14 @@
 
 import { deflateSync, inflateSync } from "fflate";
 
+import { adoptLayoutPayload, currentLayoutPayload } from "@/store/layout";
 import {
   DEFAULT_PRINT_PARAMS,
   PARAM_LIMITS,
   PARAM_RANGES,
   defaultPrintParams,
 } from "./contracts";
+import { layoutFromPayload, type LayoutPayload, type LayoutState } from "./layout";
 import type {
   Colour,
   PartColors,
@@ -198,6 +200,55 @@ const ENGRAVING_SPEC: FieldSpec = {
     size_mm: bounded(PARAM_RANGES.engravings.size_mm),
     depth_mm: bounded(PARAM_RANGES.engravings.depth_mm),
     font: { kind: "enum", values: ["sans", "serif", "mono"] },
+  },
+};
+
+/**
+ * An optional `#RRGGBB`, where the empty string means "inherit".
+ *
+ * `ObjectOverride.color` and `.tint` both default to "" and the contract's
+ * pattern allows it, so the wire validator has to as well or every link
+ * carrying a default-shaped override row is refused.
+ */
+const OPTIONAL_HEX_COLOUR = /^$|^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/;
+
+const OBJECT_OVERRIDE_SPEC: FieldSpec = {
+  kind: "object",
+  fields: {
+    osm_id: { kind: "string", maxLength: PARAM_LIMITS.object_overrides.osm_id.max_length },
+    layer: { kind: "enum", values: ["building", "road", "water", "green"] },
+    hidden: { kind: "boolean" },
+    height_scale: bounded(PARAM_RANGES.object_overrides.height_scale),
+    hero: { kind: "enum", values: ["inherit", "on", "off"] },
+    tint: { kind: "string", pattern: OPTIONAL_HEX_COLOUR },
+    slot: bounded(PARAM_RANGES.object_overrides.slot),
+    color: { kind: "string", pattern: OPTIONAL_HEX_COLOUR },
+    road_mode: { kind: "enum", values: ["inherit", "engrave", "emboss", "off"] },
+    width_scale: bounded(PARAM_RANGES.object_overrides.width_scale),
+    raise_mm: bounded(PARAM_RANGES.object_overrides.raise_mm),
+  },
+};
+
+/**
+ * A surface label (Task 12). `target_osm_id`, `layer` and `surface` are the
+ * three required leaves; the rest default on the contract, so a payload naming
+ * only the anchor is a legal label and every bound is the generated one.
+ */
+const LABEL_SPEC: FieldSpec = {
+  kind: "object",
+  fields: {
+    target_osm_id: { kind: "string", maxLength: PARAM_LIMITS.labels.target_osm_id.max_length },
+    layer: { kind: "enum", values: ["building", "road", "water", "green"] },
+    surface: { kind: "enum", values: ["building_top", "ground"] },
+    u: bounded(PARAM_RANGES.labels.u),
+    v: bounded(PARAM_RANGES.labels.v),
+    rotation_deg: bounded(PARAM_RANGES.labels.rotation_deg),
+    size_mm: bounded(PARAM_RANGES.labels.size_mm),
+    mode: { kind: "enum", values: ["engrave", "emboss"] },
+    depth_mm: bounded(PARAM_RANGES.labels.depth_mm),
+    font: { kind: "enum", values: ["sans", "serif", "mono"] },
+    text: { kind: "string", maxLength: PARAM_LIMITS.labels.text.max_length },
+    follow: { kind: "boolean" },
   },
 };
 
@@ -468,12 +519,14 @@ const HANGER_MAGNET_SPEC: FieldSpec = {
  */
 export const PRINT_PARAM_SPEC: Record<string, FieldSpec> = {
   // Audit v3-02 finding 11: the frozen contract's `schema_version` is
-  // `2 | 3` (not required, `contracts.ts:385`'s default is 3), so a share
-  // link honestly carrying either value is legal on the wire -- a literal
+  // `2 | 3 | 4` (not required, and the generated default is the highest), so a
+  // share link honestly carrying any of them is legal on the wire -- a literal
   // pinned to 2 alone refused a link naming the CURRENT default and, read
   // the other way, would have accepted a link naming a version this build
-  // does not really default to without saying so.
-  schema_version: { kind: "literal", values: [2, 3] },
+  // does not really default to without saying so. `share.test.ts` asserts this
+  // list contains the contract's own default, so a version bump that forgets
+  // this line fails there rather than silently refusing every new link.
+  schema_version: { kind: "literal", values: [2, 3, 4] },
   plate_mm: bounded(PARAM_RANGES.plate_mm),
   base_thickness_mm: bounded(PARAM_RANGES.base_thickness_mm),
   nozzle_mm: bounded(PARAM_RANGES.nozzle_mm),
@@ -565,6 +618,16 @@ export const PRINT_PARAM_SPEC: Record<string, FieldSpec> = {
   tiling: TILING_SPEC,
   frame_style: FRAME_STYLE_SPEC,
   hanger_magnet: HANGER_MAGNET_SPEC,
+  object_overrides: {
+    kind: "array",
+    maxItems: PARAM_LIMITS.object_overrides.max_items,
+    item: OBJECT_OVERRIDE_SPEC,
+  },
+  labels: {
+    kind: "array",
+    maxItems: PARAM_LIMITS.labels.max_items,
+    item: LABEL_SPEC,
+  },
 };
 
 const SCENE_REQUEST_SPEC: Record<string, FieldSpec> = {
@@ -662,8 +725,28 @@ export function paramsDiff(params: PrintParams): Record<string, unknown> {
   return out;
 }
 
-/** `v3.<base64url(deflate-raw)>.<checksum>` for one editor state. */
-export function encodeShare(request: SceneRequest, params: PrintParams): string {
+/**
+ * `v3.<base64url(deflate-raw)>.<checksum>` for one editor state.
+ *
+ * `l` is the shell layout (DECISIONS `[V3.1-O6]`), so a shared design opens
+ * the way its author framed it: their column widths, their collapsed side, the
+ * region they had maximized. It is a SIBLING of `p`, never a member of it --
+ * the layout is not a print parameter, so it must not reach `paramsDiff`, must
+ * not hash into a pipeline stage and must not read as a change from default in
+ * the settings diff.
+ *
+ * It defaults to the layout on screen rather than being passed in by the Copy
+ * link button, so every caller that shares a design shares its framing without
+ * having to know this field exists; a caller that wants a link with no layout
+ * at all (a test, a fixture) passes `null` explicitly. A DEFAULT layout writes
+ * nothing, which is what keeps a default link exactly the length it was before
+ * this field existed.
+ */
+export function encodeShare(
+  request: SceneRequest,
+  params: PrintParams,
+  layout: LayoutPayload | null = currentLayoutPayload(),
+): string {
   const body = JSON.stringify({
     r: {
       lat: request.lat,
@@ -673,6 +756,7 @@ export function encodeShare(request: SceneRequest, params: PrintParams): string 
       ...(request.preset_id ? { preset_id: request.preset_id } : {}),
     },
     p: paramsDiff(params),
+    ...(layout === null ? {} : { l: layout }),
   });
   const compressed = deflateSync(new TextEncoder().encode(body), { level: 9 });
   return `${SHARE_VERSION}.${bytesToBase64Url(compressed)}.${checksum(body)}`;
@@ -683,7 +767,7 @@ export function encodeShare(request: SceneRequest, params: PrintParams): string 
 // ---------------------------------------------------------------------------
 
 export type ShareDecode =
-  | { ok: true; request: SceneRequest; params: PrintParams }
+  | { ok: true; request: SceneRequest; params: PrintParams; layout: LayoutState | null }
   | { ok: false; reason: string };
 
 /**
@@ -776,7 +860,24 @@ export function decodeShare(payload: string): ShareDecode {
   if (!parsedParams.ok) {
     return { ok: false, reason: `this shared link ${parsedParams.reason}, so it was not applied` };
   }
-  return { ok: true, request, params: parsedParams.params };
+  /*
+    The sender's framing, restored (DECISIONS [V3.1-O6]).
+
+    Applied HERE, once the payload has been accepted, rather than handed back
+    for a caller to apply: a link reaches the editor through `loadShared` and
+    through the recent-designs list, and a layout that only one of those two
+    restored would be a layout that comes back or does not depending on which
+    door the same payload came through. A refused link never gets this far, so
+    a damaged payload cannot move the columns either.
+
+    A payload with no `l` block -- every link written before this field, and
+    every link whose author never moved a boundary -- leaves this browser's own
+    layout exactly where it was. Nothing about the layout can refuse a link:
+    `layoutFromPayload` clamps what it understands and ignores the rest.
+  */
+  const layout = holder.l === undefined ? null : layoutFromPayload(holder.l);
+  if (layout !== null) adoptLayoutPayload(holder.l);
+  return { ok: true, request, params: parsedParams.params, layout };
 }
 
 // ---------------------------------------------------------------------------
@@ -893,14 +994,15 @@ export function parsePrintParams(rawParams: unknown): ParamsParseResult {
 // URLs
 // ---------------------------------------------------------------------------
 
-/** The full link to copy: this page, with the payload as `?s=`. */
+/** The full link to copy: this page, with the payload as `?s=`. Carries the layout on screen unless one is named. */
 export function shareUrl(
   href: string,
   request: SceneRequest,
   params: PrintParams,
+  layout: LayoutPayload | null = currentLayoutPayload(),
 ): string {
   const url = new URL(href);
-  url.searchParams.set(SHARE_PARAM, encodeShare(request, params));
+  url.searchParams.set(SHARE_PARAM, encodeShare(request, params, layout));
   url.hash = "";
   return url.toString();
 }

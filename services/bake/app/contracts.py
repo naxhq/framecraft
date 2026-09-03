@@ -5,9 +5,15 @@ packages/contracts/gen_ts.py). Hand edits here will be overwritten.
 """
 from __future__ import annotations
 
-from typing import Annotated, List, Literal, Optional, Tuple
+from typing import Annotated, Any, List, Literal, Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+)
 
 
 # ---- from scene_request.json ----------------------
@@ -50,6 +56,28 @@ class Building(BaseModel):
     height_source: Literal["tag", "levels", "default"]
     min_height_m: Annotated[float, Field(ge=0)]
     is_tall: bool
+    name: Optional[Annotated[str, Field(max_length=120)]] = None
+    osm_id: Optional[Annotated[str, Field(max_length=32)]] = None
+    kind: Optional[Annotated[str, Field(max_length=64)]] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent(self, handler: SerializerFunctionWrapHandler) -> Any:
+        """Drop `name`, `osm_id`, `kind` from a dump when they are absent.
+
+        These properties are optional AND non-nullable in the schema, so `null`
+        is not one of their legal values: `None` on the model means "the key was
+        not sent", and a dump that wrote `null` would emit an instance the
+        contract itself rejects.  Omitting them is also what lets a payload
+        written against an EARLIER schema version round-trip through this model
+        byte for byte (services/bake/tests/test_contracts.py's
+        `test_scene_graph_dumps_fixture_verbatim_without_by_alias`, and the
+        per-version migration cases in tests/test_schema_migration.py).
+        """
+        data = handler(self)
+        for key in ("name", "osm_id", "kind"):
+            if key in data and data[key] is None:
+                del data[key]
+        return data
 
 
 class Road(BaseModel):
@@ -58,12 +86,56 @@ class Road(BaseModel):
     path: Annotated[List[Point], Field(min_length=2)]
     width_m: Annotated[float, Field(gt=0)]
     class_: Literal["motorway", "primary", "secondary", "residential", "service", "path"] = Field(alias="class")
+    name: Optional[Annotated[str, Field(max_length=120)]] = None
+    osm_id: Optional[Annotated[str, Field(max_length=32)]] = None
+    kind: Optional[Annotated[str, Field(max_length=64)]] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent(self, handler: SerializerFunctionWrapHandler) -> Any:
+        """Drop `name`, `osm_id`, `kind` from a dump when they are absent.
+
+        These properties are optional AND non-nullable in the schema, so `null`
+        is not one of their legal values: `None` on the model means "the key was
+        not sent", and a dump that wrote `null` would emit an instance the
+        contract itself rejects.  Omitting them is also what lets a payload
+        written against an EARLIER schema version round-trip through this model
+        byte for byte (services/bake/tests/test_contracts.py's
+        `test_scene_graph_dumps_fixture_verbatim_without_by_alias`, and the
+        per-version migration cases in tests/test_schema_migration.py).
+        """
+        data = handler(self)
+        for key in ("name", "osm_id", "kind"):
+            if key in data and data[key] is None:
+                del data[key]
+        return data
 
 
 class AreaFeature(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
     ring: Ring
     holes: List[Ring]
+    name: Optional[Annotated[str, Field(max_length=120)]] = None
+    osm_id: Optional[Annotated[str, Field(max_length=32)]] = None
+    kind: Optional[Annotated[str, Field(max_length=64)]] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent(self, handler: SerializerFunctionWrapHandler) -> Any:
+        """Drop `name`, `osm_id`, `kind` from a dump when they are absent.
+
+        These properties are optional AND non-nullable in the schema, so `null`
+        is not one of their legal values: `None` on the model means "the key was
+        not sent", and a dump that wrote `null` would emit an instance the
+        contract itself rejects.  Omitting them is also what lets a payload
+        written against an EARLIER schema version round-trip through this model
+        byte for byte (services/bake/tests/test_contracts.py's
+        `test_scene_graph_dumps_fixture_verbatim_without_by_alias`, and the
+        per-version migration cases in tests/test_schema_migration.py).
+        """
+        data = handler(self)
+        for key in ("name", "osm_id", "kind"):
+            if key in data and data[key] is None:
+                del data[key]
+        return data
 
 
 class Tree(BaseModel):
@@ -341,9 +413,40 @@ class HangerMagnet(BaseModel):
     count: Annotated[int, Field(ge=1, le=8)] = 2
 
 
+class ObjectOverride(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
+    osm_id: Annotated[str, Field(max_length=32)]
+    layer: Literal["building", "road", "water", "green"]
+    hidden: bool = False
+    height_scale: Annotated[float, Field(ge=0.1, le=4.0)] = 1.0
+    hero: Literal["inherit", "on", "off"] = "inherit"
+    tint: Annotated[str, Field(pattern="^$|^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$")] = ""
+    slot: Annotated[int, Field(ge=0, le=16)] = 0
+    color: Annotated[str, Field(pattern="^$|^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$")] = ""
+    road_mode: Literal["inherit", "engrave", "emboss", "off"] = "inherit"
+    width_scale: Annotated[float, Field(ge=0.25, le=4.0)] = 1.0
+    raise_mm: Annotated[float, Field(ge=-2.0, le=2.0)] = 0.0
+
+
+class Label(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
+    target_osm_id: Annotated[str, Field(max_length=32)]
+    layer: Literal["building", "road", "water", "green"]
+    surface: Literal["building_top", "ground"]
+    u: Annotated[float, Field(ge=0, le=1)] = 0.5
+    v: Annotated[float, Field(ge=0, le=1)] = 0.5
+    rotation_deg: Annotated[float, Field(ge=-180, le=180)] = 0
+    size_mm: Annotated[float, Field(ge=1.5, le=8.0)] = 4.0
+    mode: Literal["engrave", "emboss"] = "engrave"
+    depth_mm: Annotated[float, Field(ge=0.2, le=1.5)] = 0.4
+    font: Literal["sans", "serif", "mono"] = "sans"
+    text: Annotated[str, Field(max_length=64)] = ""
+    follow: bool = False
+
+
 class PrintParams(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
-    schema_version: Literal[2, 3] = 3
+    schema_version: Literal[2, 3, 4] = 4
     plate_mm: Annotated[float, Field(ge=100, le=256)] = 180
     base_thickness_mm: Annotated[float, Field(ge=2, le=8)] = 3.0
     nozzle_mm: Annotated[float, Field(ge=0.1, le=1.2)] = 0.4
@@ -379,6 +482,8 @@ class PrintParams(BaseModel):
     tiling: Tiling = Field(default_factory=lambda: Tiling(enabled=False, cols=1, rows=1, joint="dovetail", tolerance_mm=0.15, index_mark=True))
     frame_style: FrameStyle = Field(default_factory=lambda: FrameStyle(profile="plain", corner="square", corner_radius_mm=3, lip_depth_mm=0.4, shadow_gap=ShadowGap(enabled=False, width_mm=1.0, depth_mm=0.8), matting=Matting(enabled=False, width_mm=6, proud_mm=0.4), separate=Separate(enabled=False, mount="snap", tolerance_mm=0.2), texture=Texture(pattern="none", scale_mm=1.0, depth_mm=0.2)))
     hanger_magnet: HangerMagnet = Field(default_factory=lambda: HangerMagnet(diameter_mm=6, thickness_mm=2, count=2))
+    object_overrides: Annotated[List[ObjectOverride], Field(max_length=24)] = Field(default_factory=list)
+    labels: Annotated[List[Label], Field(max_length=12)] = Field(default_factory=list)
 
 
 # ---- from bake_result.json ------------------------
@@ -548,4 +653,27 @@ PRINT_PARAM_LEAF_PATHS: tuple[str, ...] = (
     "hanger_magnet.diameter_mm",
     "hanger_magnet.thickness_mm",
     "hanger_magnet.count",
+    "object_overrides[].osm_id",
+    "object_overrides[].layer",
+    "object_overrides[].hidden",
+    "object_overrides[].height_scale",
+    "object_overrides[].hero",
+    "object_overrides[].tint",
+    "object_overrides[].slot",
+    "object_overrides[].color",
+    "object_overrides[].road_mode",
+    "object_overrides[].width_scale",
+    "object_overrides[].raise_mm",
+    "labels[].target_osm_id",
+    "labels[].layer",
+    "labels[].surface",
+    "labels[].u",
+    "labels[].v",
+    "labels[].rotation_deg",
+    "labels[].size_mm",
+    "labels[].mode",
+    "labels[].depth_mm",
+    "labels[].font",
+    "labels[].text",
+    "labels[].follow",
 )

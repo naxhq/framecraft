@@ -65,7 +65,9 @@ test("a copied link restores the whole editor in a fresh browser", async ({
   await expect(page.getByTestId("colour-color-water")).toHaveValue("#123456");
 
   // A hero, picked from the keyboard so the test does not depend on a raycast
-  // landing on a building.
+  // landing on a building. The list it lands in is in the Buildings group,
+  // which starts collapsed since Task 5.
+  await page.getByTestId("group-buildings-toggle").click();
   await page.getByTestId("preview-canvas").focus();
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("Enter");
@@ -117,7 +119,9 @@ test("a copied link restores the whole editor in a fresh browser", async ({
     await expect(other.locator("#city_label")).toHaveValue("Bergen");
     await expect(other.getByTestId("plate_mm-value")).toHaveText("200 mm");
     await expect(other.getByTestId("radius_m-value")).toHaveText("900 m");
+    // The header states the group's own state whether it is open or closed.
     await expect(other.getByTestId("group-buildings-toggle")).toContainText("1/12 heroes");
+    await other.getByTestId("group-buildings-toggle").click();
     // Before Preview there is no scene to resolve a NAME from at all (step 4
     // below asserts that restoring a link never fetches on its own), so the
     // honest, stable thing the row can show is the id the link carries --
@@ -125,8 +129,8 @@ test("a copied link restores the whole editor in a fresh browser", async ({
     await expect(other.getByTestId("hero-item").first()).toContainText(heroId);
     await expect(other.getByTestId("hero-item").first()).not.toContainText("unnamed building");
 
-    // A fresh context has fresh localStorage, so the two personalisation groups
-    // are collapsed again and have to be opened to read their controls.
+    // A fresh context has fresh localStorage, so every group except Location
+    // and Scale is collapsed again and has to be opened to read its controls.
     await other.getByTestId("group-frame-toggle").click();
     await expect(other.getByTestId("engraving-row")).toHaveCount(1);
     await expect(other.locator("#engraving_0_text")).toHaveValue("{city}");

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { APPLICATION } from "./common";
 import { FIXED_DATE, boxRegion, lShapeRegion, makeResult, sampleResult } from "./fixtures";
 import { exportStep, fmtStep, stepCheck, stepString } from "./step";
 
@@ -28,7 +29,13 @@ describe("exportStep", () => {
   });
 
   it("carries author, generator and timestamp in the header", () => {
-    expect(text).toContain("FILE_NAME('city.step','2026-08-30T12:00:00Z',('V. A.'),('FrameCraft'),'FrameCraft 3.0.0','FrameCraft 3.0.0','');");
+    // From `APPLICATION` (`lib/version.ts`), never a literal; see the note in
+    // `generic3mf.test.ts`. STEP names the originating system twice, so both
+    // slots move together.
+    expect(text).toContain(
+      `FILE_NAME('city.step','2026-08-30T12:00:00Z',('V. A.'),('FrameCraft'),'${APPLICATION}','${APPLICATION}','');`,
+    );
+    expect(APPLICATION).toMatch(/^FrameCraft \d+\.\d+\.\d+/);
     expect(text).toContain("FrameCraft framed miniature city, faceted B-rep");
     expect(text).toContain("OpenStreetMap contributors, ODbL 1.0");
     expect(text).toContain("'lat=41.88 lon=-87.62'");

@@ -17,6 +17,13 @@
 // the reference build can be profiled from the command line (v3-00 audit
 // finding 14).
 
+// MUST stay the first import in this file. It sets
+// NEXT_PUBLIC_APP_VERSION, which `lib/version.ts` reads and
+// `lib/engine/export/common.ts` stamps into every file's metadata at module
+// initialisation. ES modules evaluate imports in order, so moving this line
+// down would stamp the exports before the version is known.
+import "./stamp-version-env.mjs";
+
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, resolve } from "node:path";
 

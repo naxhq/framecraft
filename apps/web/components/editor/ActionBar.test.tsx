@@ -36,20 +36,35 @@ vi.mock("@/store/editor", async (importOriginal) => {
   return { ...actual, useEditorStore: hook };
 });
 
-import type { PrintParams } from "@/lib/contracts";
+import { defaultPrintParams, type PrintParams, type SceneGraph } from "@/lib/contracts";
 import { planFor } from "@/lib/engine/pipeline";
+import {
+  LEGACY_PROJECT_FILE_EXTENSION,
+  PROJECT_FILE_ACCEPT,
+  PROJECT_FILE_EXTENSION,
+  buildProject,
+  parseProject,
+  serializeProject,
+} from "@/lib/project";
 import type { AuditFinding, EngineResult, RegionMesh } from "@/lib/engine/types";
 import type { EditorState, PipelineProgress } from "@/store/editor";
 import ActionBar, {
   BUILD_PLAN_IDS,
   EXPORT_PLAN_IDS,
   EXPORT_WRITER_IDS,
+  INITIAL_RUN_WATCH,
+  NO_OUTCOME,
+  exportCancelledModel,
   exportFailureModel,
   exportProgressModel,
+  failureNotice,
   paramsFingerprint,
   previewProgressModel,
+  projectLoadNotices,
   runFailureModel,
   statusLine,
+  stepRunOutcome,
+  type RunOutcome,
 } from "./ActionBar";
 import EstimateCard from "./EstimateCard";
 import ExportErrorDetail from "./ExportErrorDetail";
@@ -103,6 +118,34 @@ function fakeResult(params: PrintParams, findings: AuditFinding[] = []): EngineR
     findings,
     resolvedText: [],
     params,
+  };
+}
+
+/** A SceneGraph just real enough for `scene.status: "ready"` to be a state the store could reach. */
+function fakeGraph(): SceneGraph {
+  const buildings = Array.from({ length: 30 }, (_, index) => ({
+    id: `w${index}`,
+    ring: [
+      [0, 0],
+      [30, 0],
+      [30, 30],
+      [0, 30],
+    ] as Array<[number, number]>,
+    holes: [],
+    height_m: 12,
+    height_source: "tag" as const,
+    min_height_m: 0,
+    is_tall: false,
+  }));
+  return {
+    bounds: { min_x: -900, min_y: -900, max_x: 900, max_y: 900 },
+    center: { lat: 41.8827, lon: -87.6233 },
+    buildings,
+    roads: [],
+    water: [],
+    green: [],
+    trees: [],
+    stats: { building_count: buildings.length, coverage: "good", height_tag_ratio: 0.5 },
   };
 }
 
@@ -185,20 +228,42 @@ describe("the progress model", () => {
   });
 });
 
+/** A settled store: a model on screen, nothing running, nothing exported. */
+const SETTLED_STATUS = {
+  cancelledAt: null as string | null,
+  pipelineStatus: "ready",
+  hasResult: true,
+  exportLabel: "Not exported yet",
+  exportPhase: "idle",
+  running: false,
+};
+
 describe("the status line", () => {
-  const base = {
-    cancelledAt: null,
-    pipelineStatus: "ready",
-    hasResult: true,
-    exportLabel: "Not exported yet",
-    exportPhase: "idle",
-    running: false,
-  };
+  const base = SETTLED_STATUS;
 
   it("names the stage a cancel stopped at, until the next run", () => {
     expect(statusLine({ ...base, cancelledAt: "region-roads" })).toBe("Cancelled at roads.");
     expect(statusLine({ ...base, cancelledAt: "validate" })).toBe(
       "Cancelled at checking printability.",
+    );
+  });
+
+  it("says an EXPORT was cancelled rather than refused, ahead of the failed branch", () => {
+    // The store puts a cancelled export in the same `failed` phase a refusal
+    // lands in, so this branch has to win or the line reads "Export refused."
+    // for something the user asked to stop ([V3.1-T6] 2).
+    expect(
+      statusLine({
+        ...base,
+        cancelledAt: "region-roads",
+        exportCancelled: true,
+        exportPhase: "failed",
+        exportLabel: "No file written",
+      }),
+    ).toBe("Export cancelled at roads.");
+    // A Preview cancel keeps the plainer word.
+    expect(statusLine({ ...base, cancelledAt: "region-roads", exportCancelled: false })).toBe(
+      "Cancelled at roads.",
     );
   });
 
@@ -285,6 +350,328 @@ describe("the failure surface", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Cancel is not a failure ([V3.1-T6] 2)
+// ---------------------------------------------------------------------------
+
+type WatchInput = Parameters<typeof stepRunOutcome>[1];
+
+/**
+ * Drive the watcher render by render and report what the bar would be showing
+ * at the end -- exactly what `useRunOutcome`'s effect does, minus React.
+ */
+function watch(steps: readonly Partial<WatchInput>[]): RunOutcome {
+  let seen = INITIAL_RUN_WATCH;
+  let shown: RunOutcome = NO_OUTCOME;
+  let input: WatchInput = {
+    running: false,
+    stage: "",
+    result: null,
+    pipelineStatus: "idle",
+    sceneStatus: "idle",
+    exportPhase: "idle",
+  };
+  for (const patch of steps) {
+    input = { ...input, ...patch };
+    const step = stepRunOutcome(seen, input);
+    seen = step.seen;
+    if (step.outcome !== null) shown = step.outcome;
+  }
+  return shown;
+}
+
+describe("telling a cancel from a failure", () => {
+  const BUILT = fakeResult(BASE.params);
+  const REBUILT = fakeResult(BASE.params);
+
+  it("reads a Cancel pressed during an export as a cancelled EXPORT, naming the stage", () => {
+    /*
+      The exact chain the audit walked. `cancelPipeline` leaves
+      `pipeline.error` null on purpose, `requestExport` sees its run resolve
+      null with no error to quote and writes the fallback string, and the bar
+      used to render that as "The export was refused: The engine could not build
+      a model." -- false in both halves. Nothing in a single store SNAPSHOT can
+      separate the two; the transition can.
+    */
+    const outcome = watch([
+      // Export pressed: the phase moves and the run it needs starts, in one render.
+      { running: true, exportPhase: "exporting", result: BUILT, pipelineStatus: "running" },
+      { stage: "region-roads" },
+      // Cancel: the store writes the cancelled pipeline and the failed export in
+      // two `set` calls that React batches into ONE render, so by the time the
+      // watcher looks the phase has already moved to `failed`.
+      { running: false, exportPhase: "failed", pipelineStatus: "ready", result: BUILT },
+    ]);
+    expect(outcome).toEqual({ cancelledAt: "region-roads", exportCancelled: true });
+  });
+
+  it("reads a Cancel pressed during a Preview as a cancel, but not as an export's", () => {
+    const outcome = watch([
+      { running: true, pipelineStatus: "running", result: BUILT },
+      { stage: "buildings" },
+      { running: false, pipelineStatus: "ready", result: BUILT },
+    ]);
+    expect(outcome).toEqual({ cancelledAt: "buildings", exportCancelled: false });
+  });
+
+  it("says nothing about a run that finished: a NEW result is what finishing looks like", () => {
+    expect(
+      watch([
+        { running: true, pipelineStatus: "running", result: BUILT },
+        { stage: "validate" },
+        { running: false, pipelineStatus: "ready", result: REBUILT },
+      ]),
+    ).toBe(NO_OUTCOME);
+  });
+
+  it("says nothing about a run that broke, which the run-failure surface owns", () => {
+    expect(
+      watch([
+        { running: true, pipelineStatus: "running", result: BUILT },
+        { stage: "lettering" },
+        { running: false, pipelineStatus: "error", result: BUILT },
+      ]),
+    ).toBe(NO_OUTCOME);
+    // An Overpass failure is reported on the SCENE and leaves the pipeline
+    // `ready` with the last good model, so it has to be checked separately or
+    // it reads as a cancel.
+    expect(
+      watch([
+        { running: true, pipelineStatus: "running", result: BUILT },
+        { stage: "fetch" },
+        { running: false, pipelineStatus: "ready", sceneStatus: "error", result: BUILT },
+      ]),
+    ).toBe(NO_OUTCOME);
+  });
+
+  it("does not report a REFUSED export as cancelled: its run finished", () => {
+    // [V3.1-P1-15]: the build lands, the writer runs, the gate refuses. The run
+    // produced a new result, so nothing here was cancelled.
+    expect(
+      watch([
+        { running: true, exportPhase: "exporting", pipelineStatus: "running", result: BUILT },
+        { stage: "audit" },
+        { running: false, pipelineStatus: "ready", result: REBUILT },
+        { exportPhase: "failed" },
+      ]),
+    ).toBe(NO_OUTCOME);
+  });
+
+  it("does not report an export refused with no run at all as cancelled", () => {
+    // The model was already fresh, so `requestExport` never started a run and
+    // the gate refused the writer on its own.
+    expect(watch([{ exportPhase: "exporting", result: BUILT }, { exportPhase: "failed" }])).toBe(
+      NO_OUTCOME,
+    );
+  });
+
+  it("retires a cancel when the next export starts, and when one finishes", () => {
+    const cancelled: Partial<WatchInput>[] = [
+      { running: true, exportPhase: "exporting", pipelineStatus: "running", result: BUILT },
+      { stage: "region-roads" },
+      { running: false, exportPhase: "failed", pipelineStatus: "ready", result: BUILT },
+    ];
+    expect(watch(cancelled).cancelledAt).toBe("region-roads");
+    // "Cancelled at roads." must not still be under a fresh download link.
+    expect(watch([...cancelled, { exportPhase: "exporting" }])).toBe(NO_OUTCOME);
+    expect(watch([...cancelled, { exportPhase: "exporting" }, { exportPhase: "done" }])).toBe(
+      NO_OUTCOME,
+    );
+  });
+
+  it("still reports a cancel that arrived before the first stage was named", () => {
+    const outcome = watch([
+      { running: true, exportPhase: "exporting", pipelineStatus: "running", result: BUILT },
+      { running: false, exportPhase: "failed", pipelineStatus: "ready", result: BUILT },
+    ]);
+    expect(outcome).toEqual({ cancelledAt: "", exportCancelled: true });
+    expect(statusLine({ ...SETTLED_STATUS, cancelledAt: "", exportCancelled: true })).toBe(
+      "Export cancelled.",
+    );
+  });
+
+  it("writes a cancelled export's own detail block, and never the word refused", () => {
+    const model = exportCancelledModel("region-roads", "abc123");
+    expect(model.headline).toContain("cancelled");
+    expect(model.headline).toContain("roads");
+    expect(model.headline).toContain("stage \"region-roads\"");
+    expect(model.headline).not.toContain("refused");
+    expect(model.headline).not.toContain("could not");
+    // The previous download is untouched, and the sentence says so, because the
+    // panel below is still showing it.
+    expect(model.headline).toContain("untouched");
+    expect(model.stage).toBe("region-roads");
+    expect(model.findingIds).toEqual([]);
+    expect(model.detail).toContain("what: the export was cancelled");
+    expect(model.detail).toContain("stage: region-roads");
+    expect(model.detail).toContain("app: FrameCraft");
+    expect(model.detail).toContain("params: abc123");
+    expect(model.detail).not.toContain("blocking:");
+  });
+
+  it("routes a cancel and a refusal to two different surfaces", () => {
+    const common = {
+      pipelineError: null,
+      pipelineRunning: false,
+      exportPhase: "failed",
+      result: fakeResult(BASE.params, [EXCEEDS_HEIGHT]),
+      paramsHash: "abc123",
+    };
+
+    // The cancel: the store's message is the misleading fallback, and it is
+    // NOT what reaches the screen.
+    const cancelled = failureNotice({
+      ...common,
+      exportError: "The engine could not build a model.",
+      outcome: { cancelledAt: "region-roads", exportCancelled: true },
+    });
+    expect(cancelled?.testId).toBe("export-cancelled-detail");
+    expect(cancelled?.tone).toBe("note");
+    expect(cancelled?.model.headline).not.toContain("could not build");
+    expect(cancelled?.model.findingIds).toEqual([]);
+
+    // The genuine refusal, same phase, same store snapshot apart from the
+    // transition: named by finding, in the danger palette ([V3.1-P1-15]).
+    const refused = failureNotice({
+      ...common,
+      exportError:
+        "export refused: the printability gate failed a check (exceeds-height): The model is taller than the printer can build.",
+      outcome: NO_OUTCOME,
+    });
+    expect(refused?.testId).toBe("export-error-detail");
+    expect(refused?.tone).toBe("danger");
+    expect(refused?.model.findingIds).toEqual(["exceeds-height"]);
+    expect(refused?.model.stage).toBe("export");
+    expect(refused?.model.detail).toContain("blocking: exceeds-height");
+
+    // Neither can be mistaken for the other: the two surfaces never coexist.
+    expect(cancelled?.testId).not.toBe(refused?.testId);
+  });
+
+  it("lets a broken RUN outrank the export's own report of it", () => {
+    const notice = failureNotice({
+      pipelineError: { stage: "lettering", message: "font not found", detail: null },
+      pipelineRunning: false,
+      exportPhase: "failed",
+      exportError: "The engine could not build a model.",
+      result: null,
+      outcome: { cancelledAt: "lettering", exportCancelled: true },
+      paramsHash: "abc123",
+    });
+    expect(notice?.testId).toBe("run-error-detail");
+    expect(notice?.model.stage).toBe("lettering");
+  });
+
+  it("shows nothing at all when the export did not fail", () => {
+    for (const phase of ["idle", "exporting", "done"]) {
+      expect(
+        failureNotice({
+          pipelineError: null,
+          pipelineRunning: false,
+          exportPhase: phase,
+          exportError: "stale message",
+          result: null,
+          outcome: { cancelledAt: "region-roads", exportCancelled: true },
+          paramsHash: "abc123",
+        }),
+      ).toBeNull();
+    }
+  });
+
+  it("renders the cancel in the quiet palette and the refusal in the danger one", () => {
+    const cancelled = renderToStaticMarkup(
+      <ExportErrorDetail
+        model={exportCancelledModel("region-roads", "hash")}
+        testId="export-cancelled-detail"
+        tone="note"
+      />,
+    );
+    expect(cancelled).toContain('data-tone="note"');
+    expect(cancelled).not.toContain("bg-danger-soft");
+    expect(cancelled).toContain('data-testid="export-cancelled-detail-copy"');
+
+    const refused = renderToStaticMarkup(
+      <ExportErrorDetail
+        model={exportFailureModel("export refused: ...", fakeResult(BASE.params, [EXCEEDS_HEIGHT]), "hash")}
+        testId="export-error-detail"
+      />,
+    );
+    expect(refused).toContain('data-tone="danger"');
+    expect(refused).toContain("bg-danger-soft");
+    expect(refused).toContain('data-findings="exceeds-height"');
+  });
+});
+
+/**
+ * Loading a project file: which of the bar's two message slots gets filled
+ * (Task 13).
+ *
+ * The rule is asserted on the pure function the change handler calls, because
+ * the handler itself needs a real file input and this package's vitest
+ * environment is `node`. The parse outcomes are the REAL ones, produced by
+ * `parseProject` over real documents, so a change to the migration wording or
+ * to which forms count as legacy fails here as well as in `lib/project.test.ts`.
+ */
+describe("the project file's two message slots", () => {
+  const LOCATION = {
+    lat: 41.8827,
+    lon: -87.6233,
+    radius_m: 900,
+    rotation_deg: 0,
+    preset_id: "chicago-loop",
+  };
+  const SAVED_AT = new Date("2026-08-29T12:00:00.000Z");
+  const current = (): string =>
+    serializeProject(buildProject(LOCATION, defaultPrintParams(), SAVED_AT, null));
+
+  function legacyEnvelope(): string {
+    const parsed = JSON.parse(current()) as Record<string, unknown>;
+    delete parsed.app_version;
+    parsed.version = 3;
+    return JSON.stringify(parsed);
+  }
+
+  it("says nothing at all for a current file under its current name", () => {
+    const slots = projectLoadNotices(parseProject(current(), `chicago${PROJECT_FILE_EXTENSION}`));
+    expect(slots).toEqual({ error: null, notice: null });
+  });
+
+  it("fills the notice slot, not the error slot, for a version-3 envelope", () => {
+    const slots = projectLoadNotices(parseProject(legacyEnvelope()));
+    expect(slots.error).toBeNull();
+    expect(slots.notice).toContain("project format 3");
+    // The point of saying anything: the next Save writes a different filename.
+    expect(slots.notice).toContain(PROJECT_FILE_EXTENSION);
+  });
+
+  it("fills the notice slot for a file loaded under the legacy extension", () => {
+    const slots = projectLoadNotices(
+      parseProject(current(), `chicago${LEGACY_PROJECT_FILE_EXTENSION}`),
+    );
+    expect(slots.error).toBeNull();
+    expect(slots.notice).toContain(LEGACY_PROJECT_FILE_EXTENSION);
+  });
+
+  it("fills the error slot and clears the notice for a file that will not load", () => {
+    const slots = projectLoadNotices(parseProject("not a project at all {"));
+    expect(slots.notice).toBeNull();
+    expect(slots.error).toContain("not valid JSON");
+  });
+
+  it("keeps both slots empty until a file is actually loaded", () => {
+    setStore({});
+    const html = renderToStaticMarkup(<ActionBar />);
+    expect(html).not.toContain('data-testid="project-migrated"');
+    expect(html).not.toContain('data-testid="project-error"');
+  });
+
+  it("offers both extensions in the load picker, or the legacy files are unselectable", () => {
+    setStore({});
+    const html = renderToStaticMarkup(<ActionBar />);
+    expect(html).toContain(`accept="${PROJECT_FILE_ACCEPT}"`);
+  });
+});
+
 describe("the bar itself", () => {
   it("offers Preview as the primary action with no scene, and Export disabled", () => {
     setStore({});
@@ -313,11 +700,16 @@ describe("the bar itself", () => {
 
   it("re-enables Preview after a cancel, when the scene is current but the model is not", () => {
     const params = BASE.params;
+    /*
+      A REAL graph, not `graph: null`. `scene.status === "ready"` with no graph
+      is a state the store cannot produce -- `generate()` only ever reaches
+      `ready` with one -- and proving "Preview is disabled" against an
+      impossible state proves nothing about the app ([V3.1-T6] 5).
+    */
     const settled = {
-      scene: { ...BASE.scene, status: "ready" as const, graph: null, stale: false },
+      scene: { ...BASE.scene, status: "ready" as const, graph: fakeGraph(), stale: false },
       pipeline: { ...BASE.pipeline, status: "ready" as const, stale: false, result: fakeResult(params) },
     };
-    expect(renderToStaticMarkup(<ActionBar />)).toBeTruthy();
     setStore(settled);
     expect(renderToStaticMarkup(<ActionBar />)).toMatch(
       /data-testid="preview-button"[^>]* disabled=/,
@@ -328,6 +720,25 @@ describe("the bar itself", () => {
     expect(renderToStaticMarkup(<ActionBar />)).not.toMatch(
       /data-testid="preview-button"[^>]* disabled=/,
     );
+  });
+
+  it("keeps Preview live while the scene is being fetched, because the run already owns the button", () => {
+    /*
+      `scene.status === "loading"` with `pipeline.status === "running"` is the
+      only shape the store can produce: `generate()` writes the loading scene
+      and calls `startPipelineRun` in the same synchronous block. So the button
+      is Cancel, and the `fetching` term that used to disable it and the
+      "Previewing..." label it fed were both unreachable ([V3.1-T6] 5).
+    */
+    setStore({
+      scene: { ...BASE.scene, status: "loading", graph: null },
+      pipeline: { ...BASE.pipeline, status: "running", progress: progress({ stage: "fetch", index: 0, total: 40 }) },
+    });
+    const html = renderToStaticMarkup(<ActionBar />);
+    expect(html).toContain('data-mode="cancel"');
+    expect(html).toContain(">Cancel<");
+    expect(html).not.toContain("Previewing...");
+    expect(html).not.toMatch(/data-testid="preview-button"[^>]* disabled=/);
   });
 
   it("keeps Save, Load and Copy link on the bar", () => {

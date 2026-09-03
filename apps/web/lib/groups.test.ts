@@ -1,5 +1,6 @@
 /**
- * The nine groups, and the persistence of which ones are collapsed.
+ * The twelve groups, which ones start open, the state line each header shows,
+ * and the persistence of the collapse record.
  *
  * The failure this file guards against is the one a `try { JSON.parse } catch`
  * usually still has: storage that is present but useless (a stray value, an old
@@ -9,17 +10,23 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { DEFAULT_PRINT_PARAMS, defaultPrintParams } from "./contracts";
 import { controlsInGroup } from "./controlCatalog";
 import {
   GROUPS,
   GROUP_IDS,
   GROUP_STORAGE_KEY,
   defaultCollapsed,
+  groupSpec,
   loadCollapsed,
   mergeCollapsed,
   saveCollapsed,
+  summariseGroup,
   type CollapsedGroups,
+  type SummaryContext,
 } from "./groups";
+
+const CONTEXT: SummaryContext = { heroCount: 0, radiusM: 900, rotationDeg: 0 };
 
 /** A localStorage stand-in with switchable failure modes. */
 function fakeStorage(initial: Record<string, string> = {}) {
@@ -44,13 +51,18 @@ afterEach(() => {
 });
 
 describe("the group table", () => {
-  it("names the ten groups the panel is built from", () => {
+  it("names the twelve groups the panel is built from", () => {
+    // `regions` and `bridges` are new in this wave: both contract blocks were
+    // read by the geometry stages and reachable through a share link with no
+    // control anywhere (docs/handoff/v3-02-settings.md section 5).
     expect(GROUP_IDS).toEqual([
       "location",
       "scale",
       "buildings",
       "heights",
       "surface",
+      "regions",
+      "bridges",
       "terrain",
       "frame",
       "colour",
@@ -88,20 +100,87 @@ describe("the group table", () => {
     }
   });
 
-  it("starts with the three personalisation groups and terrain collapsed", () => {
+  it("starts with only Location and Scale open", () => {
+    // Twelve open groups is a 4000 px scroll on a 1280 screen. Everything else
+    // states itself on its header instead (`summariseGroup`), so a closed group
+    // can still be read. Output is not a settings group: it is the pinned
+    // action area at the foot of the panel and its toggle folds the RESULTS.
     const collapsed = defaultCollapsed();
     expect(collapsed).toEqual({
       location: false,
       scale: false,
-      buildings: false,
-      heights: false,
-      surface: false,
+      buildings: true,
+      heights: true,
+      surface: true,
+      regions: true,
+      bridges: true,
       terrain: true,
       frame: true,
       colour: true,
       printer: true,
       output: false,
     });
+    const open = GROUPS.filter((group) => !group.collapsedByDefault).map((group) => group.id);
+    expect(open).toEqual(["location", "scale", "output"]);
+  });
+
+  it("looks a group up by id and refuses one it does not have", () => {
+    expect(groupSpec("regions").title).toBe("Surface depths");
+    expect(() => groupSpec("nope" as never)).toThrow(/no group named/);
+  });
+});
+
+describe("the header state line", () => {
+  it("gives every group a line computed from the parameters, not a fixed string", () => {
+    const defaults = defaultPrintParams();
+    for (const group of GROUPS) {
+      const line = summariseGroup(group.id, defaults, CONTEXT);
+      expect(line.length, group.id).toBeGreaterThan(0);
+      expect(line, group.id).not.toContain("—");
+      // Never the standing summary said twice.
+      expect(line, group.id).not.toBe(group.summary);
+    }
+  });
+
+  it("moves when the parameter it names moves", () => {
+    const defaults = defaultPrintParams();
+    const moved = { ...defaults, plate_mm: 220, water: false, frame: false };
+    expect(summariseGroup("scale", defaults, CONTEXT)).toContain("180 mm plate");
+    expect(summariseGroup("scale", moved, CONTEXT)).toContain("220 mm plate");
+    expect(summariseGroup("surface", defaults, CONTEXT)).toContain("water");
+    expect(summariseGroup("surface", moved, CONTEXT)).toContain("no water");
+    expect(summariseGroup("frame", moved, CONTEXT)).toBe("no frame, the city runs to the edge");
+  });
+
+  it("keeps the hero count the panel header has always shown", () => {
+    // `e2e/ui.spec.ts` and `e2e/share.spec.ts` both read this off the header
+    // after picking a building in the 3D preview.
+    expect(summariseGroup("buildings", defaultPrintParams(), { ...CONTEXT, heroCount: 1 })).toContain(
+      "1/12 heroes",
+    );
+  });
+
+  it("reads the two new groups off their own contract blocks", () => {
+    const defaults = defaultPrintParams();
+    expect(summariseGroup("regions", defaults, CONTEXT)).toBe(
+      "roads 0.6 mm deep, water 1 mm, rail 6 m wide",
+    );
+    expect(summariseGroup("bridges", defaults, CONTEXT)).toBe(
+      "on, 1 mm clearance, abutments",
+    );
+    const off = { ...defaults, bridges: { ...DEFAULT_PRINT_PARAMS.bridges, enabled: false } };
+    expect(summariseGroup("bridges", off, CONTEXT)).toBe("off, everything laid at ground level");
+  });
+
+  it("says what an absent v3 block would build, not that it is missing", () => {
+    // A v1 payload carries no `regions`, no `bridges` and no `heights`; the
+    // engine falls back to the contract defaults, so the header has to say what
+    // the engine will do rather than "not set".
+    const v1 = { ...defaultPrintParams(), regions: undefined, bridges: undefined };
+    expect(summariseGroup("regions", v1, CONTEXT)).toBe(
+      "roads 0.6 mm deep, water 1 mm, rail 6 m wide",
+    );
+    expect(summariseGroup("bridges", v1, CONTEXT)).toBe("on, 1 mm clearance, abutments");
   });
 });
 

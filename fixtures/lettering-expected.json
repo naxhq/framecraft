@@ -4,7 +4,7 @@
     {
       "name": "every-edge",
       "params": {
-        "schema_version": 3,
+        "schema_version": 4,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -229,7 +229,9 @@
           "diameter_mm": 6.0,
           "thickness_mm": 2.0,
           "count": 2
-        }
+        },
+        "object_overrides": [],
+        "labels": []
       },
       "ctx": {
         "lat": 41.8827,
@@ -250,8 +252,8 @@
             "mode": "engrave",
             "depth_mm": 0.4,
             "placement": {
-              "anchor_x": -10.086943,
-              "anchor_y": 85.618037,
+              "anchor_x": -7.975723,
+              "anchor_y": 86.407285,
               "rotation_deg": 0.0,
               "mirror_x": false
             },
@@ -260,18 +262,19 @@
               "text": "Chicago",
               "dropped": "",
               "requested_mm": 6.0,
-              "size_mm": 5.16,
-              "width_mm": 20.173887,
-              "ink_top_mm": 3.877559,
-              "ink_bottom_mm": -1.113633,
-              "dilation_mm": 0.0,
-              "stroke_mm": 0.440918,
+              "size_mm": 4.08,
+              "width_mm": 16.002813,
+              "ink_top_mm": 3.065977,
+              "ink_bottom_mm": -0.880547,
+              "dilation_mm": 0.025684,
+              "stroke_mm": 0.4,
               "min_size_mm": 3.08,
               "gap_size_mm": 4.49,
               "refused": false,
               "reason": "",
               "warnings": [
-                "the top engraving was reduced from 6 mm to 5.16 mm to fit the 6 mm lip band"
+                "the top engraving was reduced from 6 mm to 4.08 mm to fit the 6 mm lip band",
+                "at 4.08 mm the letters of this top engraving come within a nozzle of each other and will touch where they are closest; 4.49 mm would keep them apart"
               ]
             }
           },
@@ -282,8 +285,8 @@
             "mode": "engrave",
             "depth_mm": 0.4,
             "placement": {
-              "anchor_x": 10.633913,
-              "anchor_y": -88.5892,
+              "anchor_x": 26.305016,
+              "anchor_y": -88.7441,
               "rotation_deg": 0.0,
               "mirror_x": false
             },
@@ -292,18 +295,18 @@
               "text": "41.8827\u00b0 N, 87.6233\u00b0 W",
               "dropped": "",
               "requested_mm": 6.0,
-              "size_mm": 5.48,
-              "width_mm": 72.396174,
-              "ink_top_mm": 4.0552,
-              "ink_bottom_mm": -0.8768,
-              "dilation_mm": 0.030087,
+              "size_mm": 4.29,
+              "width_mm": 56.761969,
+              "ink_top_mm": 3.1746,
+              "ink_bottom_mm": -0.6864,
+              "dilation_mm": 0.066984,
               "stroke_mm": 0.4,
               "min_size_mm": 3.49,
               "gap_size_mm": 4.13,
               "refused": false,
               "reason": "",
               "warnings": [
-                "the bottom engraving was reduced from 6 mm to 5.48 mm to fit the 6 mm lip band"
+                "the bottom engraving was reduced from 6 mm to 4.29 mm to fit the 6 mm lip band"
               ]
             }
           },
@@ -314,8 +317,8 @@
             "mode": "engrave",
             "depth_mm": 0.4,
             "placement": {
-              "anchor_x": -85.558245,
-              "anchor_y": -10.746,
+              "anchor_x": -86.35046,
+              "anchor_y": -8.568,
               "rotation_deg": 90.0,
               "mirror_x": false
             },
@@ -324,18 +327,19 @@
               "text": "1:10,714",
               "dropped": "",
               "requested_mm": 6.0,
-              "size_mm": 5.97,
-              "width_mm": 21.492,
-              "ink_top_mm": 3.9402,
-              "ink_bottom_mm": -1.05669,
-              "dilation_mm": 0.0,
-              "stroke_mm": 0.486812,
+              "size_mm": 4.76,
+              "width_mm": 17.147855,
+              "ink_top_mm": 3.1416,
+              "ink_bottom_mm": -0.84252,
+              "dilation_mm": 0.005928,
+              "stroke_mm": 0.4,
               "min_size_mm": 3.47,
               "gap_size_mm": 4.99,
               "refused": false,
               "reason": "",
               "warnings": [
-                "the left engraving was reduced from 6 mm to 5.97 mm to fit the 6 mm lip band"
+                "the left engraving was reduced from 6 mm to 4.76 mm to fit the 6 mm lip band",
+                "at 4.76 mm the letters of this left engraving come within a nozzle of each other and will touch where they are closest; 4.99 mm would keep them apart"
               ]
             }
           },
@@ -346,8 +350,8 @@
             "mode": "emboss",
             "depth_mm": 0.4,
             "placement": {
-              "anchor_x": 84.817383,
-              "anchor_y": 17.666016,
+              "anchor_x": 85.753906,
+              "anchor_y": 14.132813,
               "rotation_deg": -90.0,
               "mirror_x": false
             },
@@ -356,18 +360,19 @@
               "text": "2026-08-30",
               "dropped": "",
               "requested_mm": 6.0,
-              "size_mm": 6.0,
-              "width_mm": 35.647168,
-              "ink_top_mm": 4.423828,
-              "ink_bottom_mm": -0.058594,
-              "dilation_mm": 0.157568,
+              "size_mm": 4.8,
+              "width_mm": 28.677734,
+              "ink_top_mm": 3.539063,
+              "ink_bottom_mm": -0.046875,
+              "dilation_mm": 0.206055,
               "stroke_mm": 0.8,
               "min_size_mm": 3.74,
               "gap_size_mm": 6.01,
               "refused": false,
               "reason": "",
               "warnings": [
-                "at 6.00 mm the letters of this right engraving come within a nozzle of each other and will touch where they are closest; 6.01 mm would keep them apart"
+                "the right engraving was reduced from 6 mm to 4.80 mm to fit the 6 mm lip band",
+                "at 4.80 mm the letters of this right engraving come within a nozzle of each other and will touch where they are closest; 6.01 mm would keep them apart"
               ]
             }
           }
@@ -375,10 +380,10 @@
         "north_arrow": {
           "enabled": false,
           "corner": "ne",
-          "size_mm": 4.0,
+          "size_mm": 3.429972,
           "placement": {
-            "anchor_x": 87.0,
-            "anchor_y": 87.0,
+            "anchor_x": 87.5,
+            "anchor_y": 87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           }
@@ -394,7 +399,7 @@
           "span_mm": 18.666667,
           "placement": {
             "anchor_x": -83.0,
-            "anchor_y": -87.0,
+            "anchor_y": -87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           },
@@ -413,17 +418,20 @@
           "fit": null
         },
         "warnings": [
-          "the top engraving was reduced from 6 mm to 5.16 mm to fit the 6 mm lip band",
-          "the bottom engraving was reduced from 6 mm to 5.48 mm to fit the 6 mm lip band",
-          "the left engraving was reduced from 6 mm to 5.97 mm to fit the 6 mm lip band",
-          "at 6.00 mm the letters of this right engraving come within a nozzle of each other and will touch where they are closest; 6.01 mm would keep them apart"
+          "the top engraving was reduced from 6 mm to 4.08 mm to fit the 6 mm lip band",
+          "at 4.08 mm the letters of this top engraving come within a nozzle of each other and will touch where they are closest; 4.49 mm would keep them apart",
+          "the bottom engraving was reduced from 6 mm to 4.29 mm to fit the 6 mm lip band",
+          "the left engraving was reduced from 6 mm to 4.76 mm to fit the 6 mm lip band",
+          "at 4.76 mm the letters of this left engraving come within a nozzle of each other and will touch where they are closest; 4.99 mm would keep them apart",
+          "the right engraving was reduced from 6 mm to 4.80 mm to fit the 6 mm lip band",
+          "at 4.80 mm the letters of this right engraving come within a nozzle of each other and will touch where they are closest; 6.01 mm would keep them apart"
         ]
       }
     },
     {
       "name": "aligns-on-one-edge",
       "params": {
-        "schema_version": 3,
+        "schema_version": 4,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -639,7 +647,9 @@
           "diameter_mm": 6.0,
           "thickness_mm": 2.0,
           "count": 2
-        }
+        },
+        "object_overrides": [],
+        "labels": []
       },
       "ctx": {
         "lat": 41.8827,
@@ -661,7 +671,7 @@
             "depth_mm": 0.4,
             "placement": {
               "anchor_x": -83.0,
-              "anchor_y": 85.188477,
+              "anchor_y": 85.688477,
               "rotation_deg": 0.0,
               "mirror_x": false
             },
@@ -690,7 +700,7 @@
             "mode": "engrave",
             "depth_mm": 0.4,
             "placement": {
-              "anchor_x": -85.181152,
+              "anchor_x": -85.681152,
               "anchor_y": -9.937744,
               "rotation_deg": 90.0,
               "mirror_x": false
@@ -720,7 +730,7 @@
             "mode": "engrave",
             "depth_mm": 0.4,
             "placement": {
-              "anchor_x": 85.181152,
+              "anchor_x": 85.681152,
               "anchor_y": -72.619141,
               "rotation_deg": -90.0,
               "mirror_x": false
@@ -747,10 +757,10 @@
         "north_arrow": {
           "enabled": false,
           "corner": "ne",
-          "size_mm": 4.0,
+          "size_mm": 3.429972,
           "placement": {
-            "anchor_x": 87.0,
-            "anchor_y": 87.0,
+            "anchor_x": 87.5,
+            "anchor_y": 87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           }
@@ -766,7 +776,7 @@
           "span_mm": 18.666667,
           "placement": {
             "anchor_x": -83.0,
-            "anchor_y": -87.0,
+            "anchor_y": -87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           },
@@ -790,7 +800,7 @@
     {
       "name": "auto-fit-shrinks",
       "params": {
-        "schema_version": 3,
+        "schema_version": 4,
         "plate_mm": 100.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -988,7 +998,9 @@
           "diameter_mm": 6.0,
           "thickness_mm": 2.0,
           "count": 2
-        }
+        },
+        "object_overrides": [],
+        "labels": []
       },
       "ctx": {
         "lat": 41.8827,
@@ -1009,8 +1021,8 @@
             "mode": "engrave",
             "depth_mm": 0.4,
             "placement": {
-              "anchor_x": -42.960652,
-              "anchor_y": -49.411792,
+              "anchor_x": -34.666589,
+              "anchor_y": -49.446167,
               "rotation_deg": 0.0,
               "mirror_x": false
             },
@@ -1019,19 +1031,19 @@
               "text": "FOR ANNA AND TOM 2026",
               "dropped": "",
               "requested_mm": 8.0,
-              "size_mm": 6.63,
-              "width_mm": 85.921304,
-              "ink_top_mm": 4.88833,
-              "ink_bottom_mm": -0.064746,
+              "size_mm": 5.35,
+              "width_mm": 69.333179,
+              "ink_top_mm": 3.94458,
+              "ink_bottom_mm": -0.052246,
               "dilation_mm": 0.0,
-              "stroke_mm": 0.556816,
+              "stroke_mm": 0.449316,
               "min_size_mm": 3.13,
               "gap_size_mm": 7.32,
               "refused": false,
               "reason": "",
               "warnings": [
-                "the bottom engraving was reduced from 8 mm to 6.63 mm to fit the edge",
-                "at 6.63 mm the letters of this bottom engraving come within a nozzle of each other and will touch where they are closest; 7.32 mm would keep them apart"
+                "the bottom engraving was reduced from 8 mm to 5.35 mm to fit the 6 mm lip band",
+                "at 5.35 mm the letters of this bottom engraving come within a nozzle of each other and will touch where they are closest; 7.32 mm would keep them apart"
               ]
             }
           }
@@ -1039,10 +1051,10 @@
         "north_arrow": {
           "enabled": false,
           "corner": "ne",
-          "size_mm": 4.0,
+          "size_mm": 3.429972,
           "placement": {
-            "anchor_x": 47.0,
-            "anchor_y": 47.0,
+            "anchor_x": 47.5,
+            "anchor_y": 47.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           }
@@ -1058,7 +1070,7 @@
           "span_mm": 18.666667,
           "placement": {
             "anchor_x": -43.0,
-            "anchor_y": -47.0,
+            "anchor_y": -47.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           },
@@ -1077,15 +1089,15 @@
           "fit": null
         },
         "warnings": [
-          "the bottom engraving was reduced from 8 mm to 6.63 mm to fit the edge",
-          "at 6.63 mm the letters of this bottom engraving come within a nozzle of each other and will touch where they are closest; 7.32 mm would keep them apart"
+          "the bottom engraving was reduced from 8 mm to 5.35 mm to fit the 6 mm lip band",
+          "at 5.35 mm the letters of this bottom engraving come within a nozzle of each other and will touch where they are closest; 7.32 mm would keep them apart"
         ]
       }
     },
     {
       "name": "refused-counters",
       "params": {
-        "schema_version": 3,
+        "schema_version": 4,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -1292,7 +1304,9 @@
           "diameter_mm": 6.0,
           "thickness_mm": 2.0,
           "count": 2
-        }
+        },
+        "object_overrides": [],
+        "labels": []
       },
       "ctx": {
         "lat": 41.8827,
@@ -1314,7 +1328,7 @@
             "depth_mm": 0.4,
             "placement": {
               "anchor_x": -2.6955,
-              "anchor_y": 86.625,
+              "anchor_y": 87.125,
               "rotation_deg": 0.0,
               "mirror_x": false
             },
@@ -1343,8 +1357,8 @@
             "mode": "engrave",
             "depth_mm": 0.4,
             "placement": {
-              "anchor_x": -10.5,
-              "anchor_y": -88.4925,
+              "anchor_x": -8.673,
+              "anchor_y": -88.732805,
               "rotation_deg": 0.0,
               "mirror_x": false
             },
@@ -1353,27 +1367,29 @@
               "text": "Chicago",
               "dropped": "",
               "requested_mm": 5.0,
-              "size_mm": 5.0,
-              "width_mm": 21.0,
-              "ink_top_mm": 3.885,
-              "ink_bottom_mm": -0.9,
-              "dilation_mm": 0.0,
-              "stroke_mm": 0.43701,
+              "size_mm": 4.13,
+              "width_mm": 17.38503,
+              "ink_top_mm": 3.20901,
+              "ink_bottom_mm": -0.7434,
+              "dilation_mm": 0.019515,
+              "stroke_mm": 0.4,
               "min_size_mm": 2.84,
               "gap_size_mm": 3.63,
               "refused": false,
               "reason": "",
-              "warnings": []
+              "warnings": [
+                "the bottom engraving was reduced from 5 mm to 4.13 mm to fit the 6 mm lip band"
+              ]
             }
           }
         ],
         "north_arrow": {
           "enabled": false,
           "corner": "ne",
-          "size_mm": 4.0,
+          "size_mm": 3.429972,
           "placement": {
-            "anchor_x": 87.0,
-            "anchor_y": 87.0,
+            "anchor_x": 87.5,
+            "anchor_y": 87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           }
@@ -1389,7 +1405,7 @@
           "span_mm": 18.666667,
           "placement": {
             "anchor_x": -83.0,
-            "anchor_y": -87.0,
+            "anchor_y": -87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           },
@@ -1408,14 +1424,15 @@
           "fit": null
         },
         "warnings": [
-          "engraving 1 (top) was not cut: at 1.50 mm a 0.4 mm nozzle cannot cut this top engraving without closing a counter; it needs 3.39 mm"
+          "engraving 1 (top) was not cut: at 1.50 mm a 0.4 mm nozzle cannot cut this top engraving without closing a counter; it needs 3.39 mm",
+          "the bottom engraving was reduced from 5 mm to 4.13 mm to fit the 6 mm lip band"
         ]
       }
     },
     {
       "name": "north-arrow-ne-rotated",
       "params": {
-        "schema_version": 3,
+        "schema_version": 4,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -1603,7 +1620,9 @@
           "diameter_mm": 6.0,
           "thickness_mm": 2.0,
           "count": 2
-        }
+        },
+        "object_overrides": [],
+        "labels": []
       },
       "ctx": {
         "lat": 41.8827,
@@ -1620,10 +1639,10 @@
         "north_arrow": {
           "enabled": true,
           "corner": "ne",
-          "size_mm": 4.0,
+          "size_mm": 3.429972,
           "placement": {
-            "anchor_x": 87.0,
-            "anchor_y": 87.0,
+            "anchor_x": 87.5,
+            "anchor_y": 87.5,
             "rotation_deg": 29.0,
             "mirror_x": false
           }
@@ -1639,7 +1658,7 @@
           "span_mm": 18.666667,
           "placement": {
             "anchor_x": -83.0,
-            "anchor_y": -87.0,
+            "anchor_y": -87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           },
@@ -1657,13 +1676,15 @@
           },
           "fit": null
         },
-        "warnings": []
+        "warnings": [
+          "the north arrow was reduced from 4 mm to 3.42997 mm to fit the 5 mm lip band"
+        ]
       }
     },
     {
       "name": "north-arrow-nw-rotated",
       "params": {
-        "schema_version": 3,
+        "schema_version": 4,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -1851,7 +1872,9 @@
           "diameter_mm": 6.0,
           "thickness_mm": 2.0,
           "count": 2
-        }
+        },
+        "object_overrides": [],
+        "labels": []
       },
       "ctx": {
         "lat": 41.8827,
@@ -1868,10 +1891,10 @@
         "north_arrow": {
           "enabled": true,
           "corner": "nw",
-          "size_mm": 4.287465,
+          "size_mm": 3.429972,
           "placement": {
-            "anchor_x": -87.0,
-            "anchor_y": 87.0,
+            "anchor_x": -87.5,
+            "anchor_y": 87.5,
             "rotation_deg": 29.0,
             "mirror_x": false
           }
@@ -1887,7 +1910,7 @@
           "span_mm": 18.666667,
           "placement": {
             "anchor_x": -83.0,
-            "anchor_y": -87.0,
+            "anchor_y": -87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           },
@@ -1906,14 +1929,14 @@
           "fit": null
         },
         "warnings": [
-          "the north arrow was reduced from 6 mm to 4.28746 mm to fit the 6 mm lip band"
+          "the north arrow was reduced from 6 mm to 3.42997 mm to fit the 5 mm lip band"
         ]
       }
     },
     {
       "name": "north-arrow-sw-rotated",
       "params": {
-        "schema_version": 3,
+        "schema_version": 4,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -2101,7 +2124,9 @@
           "diameter_mm": 6.0,
           "thickness_mm": 2.0,
           "count": 2
-        }
+        },
+        "object_overrides": [],
+        "labels": []
       },
       "ctx": {
         "lat": 41.8827,
@@ -2120,8 +2145,8 @@
           "corner": "sw",
           "size_mm": 2.0,
           "placement": {
-            "anchor_x": -87.0,
-            "anchor_y": -87.0,
+            "anchor_x": -87.5,
+            "anchor_y": -87.5,
             "rotation_deg": 29.0,
             "mirror_x": false
           }
@@ -2137,7 +2162,7 @@
           "span_mm": 18.666667,
           "placement": {
             "anchor_x": -83.0,
-            "anchor_y": -87.0,
+            "anchor_y": -87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           },
@@ -2161,7 +2186,7 @@
     {
       "name": "scale-bar-auto-chicago",
       "params": {
-        "schema_version": 3,
+        "schema_version": 4,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -2359,7 +2384,9 @@
           "diameter_mm": 6.0,
           "thickness_mm": 2.0,
           "count": 2
-        }
+        },
+        "object_overrides": [],
+        "labels": []
       },
       "ctx": {
         "lat": 41.8827,
@@ -2380,8 +2407,8 @@
             "mode": "engrave",
             "depth_mm": 0.4,
             "placement": {
-              "anchor_x": 12.822103,
-              "anchor_y": -88.818848,
+              "anchor_x": 11.83774,
+              "anchor_y": -89.318848,
               "rotation_deg": 0.0,
               "mirror_x": false
             },
@@ -2409,10 +2436,10 @@
         "north_arrow": {
           "enabled": false,
           "corner": "ne",
-          "size_mm": 4.0,
+          "size_mm": 3.429972,
           "placement": {
-            "anchor_x": 87.0,
-            "anchor_y": 87.0,
+            "anchor_x": 87.5,
+            "anchor_y": 87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           }
@@ -2425,10 +2452,10 @@
           "bar_mm": 18.666667,
           "thickness_mm": 0.8,
           "tick_mm": 2.4,
-          "span_mm": 38.839518,
+          "span_mm": 36.870793,
           "placement": {
             "anchor_x": -83.0,
-            "anchor_y": -87.0,
+            "anchor_y": -87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           },
@@ -2437,17 +2464,20 @@
             "text": "200 m",
             "dropped": "",
             "requested_mm": 6.0,
-            "size_mm": 6.0,
-            "width_mm": 18.172852,
-            "ink_top_mm": 4.423828,
-            "ink_bottom_mm": -0.058594,
+            "size_mm": 5.35,
+            "width_mm": 16.204126,
+            "ink_top_mm": 3.94458,
+            "ink_bottom_mm": -0.052246,
             "dilation_mm": 0.0,
-            "stroke_mm": 0.503906,
+            "stroke_mm": 0.449316,
             "min_size_mm": 1.93,
             "gap_size_mm": 5.58,
             "refused": false,
             "reason": "",
-            "warnings": []
+            "warnings": [
+              "the scale bar label was reduced from 6 mm to 5.35 mm to fit the 6 mm lip band",
+              "at 5.35 mm the letters of this scale bar label come within a nozzle of each other and will touch where they are closest; 5.58 mm would keep them apart"
+            ]
           },
           "warnings": []
         },
@@ -2470,7 +2500,7 @@
     {
       "name": "scale-bar-auto-wide",
       "params": {
-        "schema_version": 3,
+        "schema_version": 4,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -2658,7 +2688,9 @@
           "diameter_mm": 6.0,
           "thickness_mm": 2.0,
           "count": 2
-        }
+        },
+        "object_overrides": [],
+        "labels": []
       },
       "ctx": {
         "lat": 41.8827,
@@ -2675,10 +2707,10 @@
         "north_arrow": {
           "enabled": false,
           "corner": "ne",
-          "size_mm": 4.0,
+          "size_mm": 3.429972,
           "placement": {
-            "anchor_x": 87.0,
-            "anchor_y": 87.0,
+            "anchor_x": 87.5,
+            "anchor_y": 87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           }
@@ -2691,10 +2723,10 @@
           "bar_mm": 21.212121,
           "thickness_mm": 0.8,
           "tick_mm": 2.4,
-          "span_mm": 41.285363,
+          "span_mm": 39.327429,
           "placement": {
             "anchor_x": -83.0,
-            "anchor_y": 87.0,
+            "anchor_y": 87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           },
@@ -2703,17 +2735,20 @@
             "text": "500 m",
             "dropped": "",
             "requested_mm": 6.0,
-            "size_mm": 6.0,
-            "width_mm": 18.073242,
-            "ink_top_mm": 4.423828,
-            "ink_bottom_mm": -0.058594,
+            "size_mm": 5.35,
+            "width_mm": 16.115308,
+            "ink_top_mm": 3.94458,
+            "ink_bottom_mm": -0.052246,
             "dilation_mm": 0.0,
-            "stroke_mm": 0.524414,
+            "stroke_mm": 0.467603,
             "min_size_mm": 1.91,
             "gap_size_mm": 5.45,
             "refused": false,
             "reason": "",
-            "warnings": []
+            "warnings": [
+              "the scale bar label was reduced from 6 mm to 5.35 mm to fit the 6 mm lip band",
+              "at 5.35 mm the letters of this scale bar label come within a nozzle of each other and will touch where they are closest; 5.45 mm would keep them apart"
+            ]
           },
           "warnings": []
         },
@@ -2734,7 +2769,7 @@
     {
       "name": "scale-bar-fixed-clamped",
       "params": {
-        "schema_version": 3,
+        "schema_version": 4,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.4,
@@ -2922,7 +2957,9 @@
           "diameter_mm": 6.0,
           "thickness_mm": 2.0,
           "count": 2
-        }
+        },
+        "object_overrides": [],
+        "labels": []
       },
       "ctx": {
         "lat": 41.8827,
@@ -2939,10 +2976,10 @@
         "north_arrow": {
           "enabled": false,
           "corner": "ne",
-          "size_mm": 4.0,
+          "size_mm": 3.429972,
           "placement": {
-            "anchor_x": 87.0,
-            "anchor_y": 87.0,
+            "anchor_x": 87.5,
+            "anchor_y": 87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           }
@@ -2955,9 +2992,9 @@
           "bar_mm": 18.666667,
           "thickness_mm": 0.8,
           "tick_mm": 2.4,
-          "span_mm": 38.839518,
+          "span_mm": 36.870793,
           "placement": {
-            "anchor_x": -87.0,
+            "anchor_x": -87.5,
             "anchor_y": -83.0,
             "rotation_deg": 90.0,
             "mirror_x": false
@@ -2967,17 +3004,20 @@
             "text": "200 m",
             "dropped": "",
             "requested_mm": 6.0,
-            "size_mm": 6.0,
-            "width_mm": 18.172852,
-            "ink_top_mm": 4.423828,
-            "ink_bottom_mm": -0.058594,
+            "size_mm": 5.35,
+            "width_mm": 16.204126,
+            "ink_top_mm": 3.94458,
+            "ink_bottom_mm": -0.052246,
             "dilation_mm": 0.0,
-            "stroke_mm": 0.503906,
+            "stroke_mm": 0.449316,
             "min_size_mm": 1.93,
             "gap_size_mm": 5.58,
             "refused": false,
             "reason": "",
-            "warnings": []
+            "warnings": [
+              "the scale bar label was reduced from 6 mm to 5.35 mm to fit the 6 mm lip band",
+              "at 5.35 mm the letters of this scale bar label come within a nozzle of each other and will touch where they are closest; 5.58 mm would keep them apart"
+            ]
           },
           "warnings": [
             "the scale bar's fixed 5000 m would print 466.7 mm, outside the 15-40 mm window; using 200 m instead"
@@ -3002,7 +3042,7 @@
     {
       "name": "underside-and-hanger",
       "params": {
-        "schema_version": 3,
+        "schema_version": 4,
         "plate_mm": 180.0,
         "base_thickness_mm": 5.0,
         "nozzle_mm": 0.4,
@@ -3190,7 +3230,9 @@
           "diameter_mm": 6.0,
           "thickness_mm": 2.0,
           "count": 2
-        }
+        },
+        "object_overrides": [],
+        "labels": []
       },
       "ctx": {
         "lat": 41.8827,
@@ -3207,10 +3249,10 @@
         "north_arrow": {
           "enabled": false,
           "corner": "ne",
-          "size_mm": 4.0,
+          "size_mm": 3.429972,
           "placement": {
-            "anchor_x": 87.0,
-            "anchor_y": 87.0,
+            "anchor_x": 87.5,
+            "anchor_y": 87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           }
@@ -3226,7 +3268,7 @@
           "span_mm": 18.666667,
           "placement": {
             "anchor_x": -83.0,
-            "anchor_y": -87.0,
+            "anchor_y": -87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           },
@@ -3266,7 +3308,7 @@
     {
       "name": "frame-off-skips-the-lip",
       "params": {
-        "schema_version": 3,
+        "schema_version": 4,
         "plate_mm": 180.0,
         "base_thickness_mm": 4.0,
         "nozzle_mm": 0.4,
@@ -3464,7 +3506,9 @@
           "diameter_mm": 6.0,
           "thickness_mm": 2.0,
           "count": 2
-        }
+        },
+        "object_overrides": [],
+        "labels": []
       },
       "ctx": {
         "lat": 41.8827,
@@ -3485,8 +3529,8 @@
             "mode": "engrave",
             "depth_mm": 0.4,
             "placement": {
-              "anchor_x": -10.086943,
-              "anchor_y": 85.618037,
+              "anchor_x": -7.975723,
+              "anchor_y": 86.407285,
               "rotation_deg": 0.0,
               "mirror_x": false
             },
@@ -3495,12 +3539,12 @@
               "text": "Chicago",
               "dropped": "",
               "requested_mm": 6.0,
-              "size_mm": 5.16,
-              "width_mm": 20.173887,
-              "ink_top_mm": 3.877559,
-              "ink_bottom_mm": -1.113633,
-              "dilation_mm": 0.0,
-              "stroke_mm": 0.440918,
+              "size_mm": 4.08,
+              "width_mm": 16.002813,
+              "ink_top_mm": 3.065977,
+              "ink_bottom_mm": -0.880547,
+              "dilation_mm": 0.025684,
+              "stroke_mm": 0.4,
               "min_size_mm": 3.08,
               "gap_size_mm": 4.49,
               "refused": true,
@@ -3512,10 +3556,10 @@
         "north_arrow": {
           "enabled": false,
           "corner": "ne",
-          "size_mm": 4.0,
+          "size_mm": 3.429972,
           "placement": {
-            "anchor_x": 87.0,
-            "anchor_y": 87.0,
+            "anchor_x": 87.5,
+            "anchor_y": 87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           }
@@ -3531,7 +3575,7 @@
           "span_mm": 18.666667,
           "placement": {
             "anchor_x": -83.0,
-            "anchor_y": -87.0,
+            "anchor_y": -87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           },
@@ -3573,7 +3617,7 @@
     {
       "name": "fat-nozzle-refuses-everything",
       "params": {
-        "schema_version": 3,
+        "schema_version": 4,
         "plate_mm": 180.0,
         "base_thickness_mm": 3.0,
         "nozzle_mm": 0.8,
@@ -3771,7 +3815,9 @@
           "diameter_mm": 6.0,
           "thickness_mm": 2.0,
           "count": 2
-        }
+        },
+        "object_overrides": [],
+        "labels": []
       },
       "ctx": {
         "lat": 41.8827,
@@ -3792,8 +3838,8 @@
             "mode": "engrave",
             "depth_mm": 0.4,
             "placement": {
-              "anchor_x": -7.975723,
-              "anchor_y": 85.907285,
+              "anchor_x": -5.747212,
+              "anchor_y": 86.712603,
               "rotation_deg": 0.0,
               "mirror_x": false
             },
@@ -3802,18 +3848,18 @@
               "text": "Chicago",
               "dropped": "",
               "requested_mm": 8.0,
-              "size_mm": 4.08,
-              "width_mm": 16.402813,
-              "ink_top_mm": 3.065977,
-              "ink_bottom_mm": -0.880547,
-              "dilation_mm": 0.225684,
+              "size_mm": 2.94,
+              "width_mm": 12.043203,
+              "ink_top_mm": 2.209307,
+              "ink_bottom_mm": -0.634512,
+              "dilation_mm": 0.27439,
               "stroke_mm": 0.8,
               "min_size_mm": 6.15,
               "gap_size_mm": 8.98,
               "refused": true,
-              "reason": "at 4.08 mm a 0.8 mm nozzle cannot cut this top engraving without closing a counter; it needs 6.15 mm, which does not fit this edge: shorten the text or widen the plate",
+              "reason": "at 2.94 mm a 0.8 mm nozzle cannot cut this top engraving without closing a counter; it needs 6.15 mm, which does not fit this edge: shorten the text or widen the plate",
               "warnings": [
-                "the top engraving was reduced from 8 mm to 4.08 mm to fit the 6 mm lip band"
+                "the top engraving was reduced from 8 mm to 2.94 mm to fit the 6 mm lip band"
               ]
             }
           }
@@ -3821,10 +3867,10 @@
         "north_arrow": {
           "enabled": false,
           "corner": "ne",
-          "size_mm": 3.772969,
+          "size_mm": 2.915476,
           "placement": {
-            "anchor_x": 87.0,
-            "anchor_y": 87.0,
+            "anchor_x": 87.5,
+            "anchor_y": 87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           }
@@ -3840,7 +3886,7 @@
           "span_mm": 18.666667,
           "placement": {
             "anchor_x": -83.0,
-            "anchor_y": -87.0,
+            "anchor_y": -87.5,
             "rotation_deg": 0.0,
             "mirror_x": false
           },
@@ -3859,8 +3905,8 @@
           "fit": null
         },
         "warnings": [
-          "the top engraving was reduced from 8 mm to 4.08 mm to fit the 6 mm lip band",
-          "engraving 1 (top) was not cut: at 4.08 mm a 0.8 mm nozzle cannot cut this top engraving without closing a counter; it needs 6.15 mm, which does not fit this edge: shorten the text or widen the plate"
+          "the top engraving was reduced from 8 mm to 2.94 mm to fit the 6 mm lip band",
+          "engraving 1 (top) was not cut: at 2.94 mm a 0.8 mm nozzle cannot cut this top engraving without closing a counter; it needs 6.15 mm, which does not fit this edge: shorten the text or widen the plate"
         ]
       }
     }

@@ -887,3 +887,29 @@ pins the diameter, not its direction.
 Unchanged, and recorded in `docs/handoff/v3-01-matrix.md` as a known limit: the
 gate asks for one non-default value per leaf, `export_target` sweeps all seven,
 and the other enums are one value deep.
+
+## 7. Readings changed by the Task 7 geometry wave (`[V3.1-P2-2]`)
+
+Appended by the engine performance agent, on the orchestrator's ruling that
+the wave owns these readings on one standard: each asks the same physical
+question about the same field, more precisely, and still fails if the field
+stops working. The full account, with the measured numbers, is section 6 of
+`docs/handoff/v3-07-perf.md`. Two facts of the contract, not of the probes,
+forced them: the default engraving depth and the default sight-edge rebate
+depth are both 0.4 mm, so a lettering pocket's floor and the rebate's floor
+share a plane; and the mandatory inner-wall attribution's glyphs occupy the
+opening's walls between z 3.15 and 4.45 mm on every default lip (3.15 to 4.85
+before the rebate), so a whole-plane count at `top - 1.5` was never empty.
+
+| probe | reading before | reading after | why |
+|---|---|---|---|
+| `frame_style.lip_depth_mm` | `ringAt` over the whole plane: a ring at `top - 0.4` before, none at `top - 1.5` before, a 1.00 mm ring at `top - 1.5` after; the volume line | `cornerRingAt`: the same reads restricted to the plate's four corner squares (at least `innerHalf - 1` from the centre on both axes), plus the default's floor gone after; volume line unchanged, preview and file | the rebate floor's vertices are its eight corners, inside the corner squares; the attribution glyphs are at the opening's half-width on one axis only, so both axes are banded |
+| `engravings[].edge`, `engravings[].align` | `pocketFloor`, `filePocketFloor`: every vertex on the pocket floor's plane | on the frame, only the vertices on the lip's flat face (`max(abs x, abs y)` at least `innerHalf + 1 + 0.25`); thresholds unchanged | the rebate floor's corners at 84 and 85 mm made every pocket read 170 mm wide |
+| `engravings[].font`, `place.country`, `place.state`, `place.neighbourhood`, `place.author` | `letteringSpan`: a y half-plane window | the same window over flat-face vertices only; thresholds unchanged | as above |
+| `engravings[].size_mm = 7` | after reports over 6 | after over 4, under 7, and 5.41 to two decimals (the band-limited fit of "Blockton" in sans on the 4 mm band) | the band is 4 mm, not 5, since the layout keeps clear of the rebate |
+| `north_arrow.size_mm = 2` | before (a 6 mm request) reports over 4 | before 3.43 to two decimals and equal to `north_arrow_max_size_mm`; after 2, under before | the cap on the 4 mm band is 3.43 mm |
+
+`KNOWN_DEFECTS` is empty: both fields landed and their probes pass on their
+own. F17's `extentAtZ` is no longer imported by `matrix.probes.ts`
+(`letteringSpan` reads the flat face through its own extent); it stays in
+`matrix.assert.ts` for `partExtentAtZ`.

@@ -20,7 +20,7 @@ so it always expanded to `""`. Fix, in priority order:
    the moment they type it.
 
 The store tracks this as `placeDetect: { status, source, detectedCity,
-overridden }` in `apps/web/store/editor.ts` — deliberately named apart from
+overridden }` in `apps/web/store/editor.ts` - deliberately named apart from
 `PrintParams.place` (the unrelated v3 wire field for country/state/
 neighbourhood/author) so the two are never confused in code or in review.
 
@@ -28,7 +28,7 @@ neighbourhood/author) so the two are never confused in code or in review.
 
 - `apps/web/lib/tokens.ts` / `services/bake/app/geom/tokens.py`: five new
   tokens (`{country} {state} {neighbourhood} {author} {hero}`), `resolve_text`
-  (TS only, returns which tokens were empty — see DECISIONS `[V3-P1]`).
+  (TS only, returns which tokens were empty - see DECISIONS `[V3-P1]`).
 - `apps/web/lib/geocode.ts` (new): Nominatim reverse geocode, 600 ms debounce,
   1 req/s queue, 30 day localStorage cache keyed by lat/lon at 3 decimals,
   5 s timeout, fails soft to `null` on every path.
@@ -37,9 +37,9 @@ neighbourhood/author) so the two are never confused in code or in review.
   the single source of truth for what cuts vs. skips and why. Feeds the
   Issues badge, the Resolved output panel and the bake request.
 - `apps/web/lib/warnings.ts`: `letteringWarnings()`, built on
-  `resolvedOutputLines` — one warn per empty line/mark naming the token, one
+  `resolvedOutputLines` - one warn per empty line/mark naming the token, one
   info entry for the whole frame when it is off.
-- `apps/web/lib/bake.ts`: `resolveParamsForBake(params, ctx)` — token
+- `apps/web/lib/bake.ts`: `resolveParamsForBake(params, ctx)` - token
   expansion happens once, client-side, right before `POST /bake`; an empty
   line is omitted outright, never sent as `""`; the frame off omits every
   engraving; an empty underside mark is sent `enabled: false`.
@@ -75,7 +75,7 @@ neighbourhood/author) so the two are never confused in code or in review.
 - `apps/web/e2e/lettering.spec.ts` (new).
 - Second pass, per the team lead's follow-up ruling (DECISIONS `[V3-P1]`):
   `apps/web/lib/advisor.test.ts`, `apps/web/lib/share.ts`,
-  `apps/web/lib/share.test.ts` — the three remaining v3-exhaustiveness guards.
+  `apps/web/lib/share.test.ts` - the three remaining v3-exhaustiveness guards.
   See section 4 below for what changed in each.
 
 ## 3. Deliberate deviations from the brief's literal wording
@@ -93,7 +93,7 @@ neighbourhood/author) so the two are never confused in code or in review.
 ## 4. Tests
 
 - `apps/web/lib/tokens.test.ts`: 73 tests (was ~30), including `resolve_text`.
-- `apps/web/lib/geocode.test.ts` (new): 25 tests — cache/TTL/rate-limit/
+- `apps/web/lib/geocode.test.ts` (new): 25 tests - cache/TTL/rate-limit/
   debounce/fail-soft, `fetch` always mocked.
 - `apps/web/lib/presets.test.ts` (new): 6 tests.
 - `apps/web/lib/resolvedOutput.test.ts` (new): 17 tests.

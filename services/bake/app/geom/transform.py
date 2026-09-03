@@ -1571,9 +1571,38 @@ def edge_up(edge: str) -> Tuple[float, float]:
     return (-math.sin(theta), math.cos(theta))
 
 
+# The contract's default for ``frame_style.lip_depth_mm``, mm (``contracts.
+# FrameStyle.lip_depth_mm``, repeated here so this module stays pure).
+LIP_DEPTH_DEFAULT_MM = 0.4
+
+# Width of the sight-edge rebate on the frame lip's inner top edge, mm.
+# ``frame_style.lip_depth_mm`` is how DEEP that step is cut and this is how far
+# it reaches into the lip from the opening, so the lip's flat top face is
+# ``FRAME_WIDTH_MM`` less this wherever the rebate exists ([V3.1-P2-2]).
+FRAME_SIGHT_EDGE_MM = 1.0
+
+
+def lip_rebate_depth_mm(params: ParamsLike) -> float:
+    """Depth of the sight-edge rebate, mm: ``frame_style.lip_depth_mm`` clamped
+    to the lip's own height, 0 meaning a flat lip."""
+    style = getattr(params, "frame_style", None)
+    asked = getattr(style, "lip_depth_mm", None)
+    if asked is None:
+        asked = LIP_DEPTH_DEFAULT_MM
+    return max(0.0, min(float(asked), FRAME_LIP_MM))
+
+
+def lip_face_width_mm(params: ParamsLike) -> float:
+    """Width of the lip's flat top face on a plain profile, mm: the 6 mm band
+    less the sight-edge rebate when there is one.  Everything laid on the lip -
+    the text band, the ornaments, the north arrow's corner square - is sized and
+    centred on this face, so nothing the layout places can land on the step."""
+    return FRAME_WIDTH_MM - (FRAME_SIGHT_EDGE_MM if lip_rebate_depth_mm(params) > 0.0 else 0.0)
+
+
 def edge_band_center_mm(params: ParamsLike, edge: str) -> Tuple[float, float]:
-    """Centre point of one edge's lip band, in plate mm."""
-    offset = float(params.plate_mm) / 2.0 - FRAME_WIDTH_MM / 2.0
+    """Centre point of one edge's lip band (the flat top face), in plate mm."""
+    offset = float(params.plate_mm) / 2.0 - lip_face_width_mm(params) / 2.0
     if edge == "top":
         return (0.0, offset)
     if edge == "bottom":
@@ -1604,8 +1633,9 @@ def lip_text_margin_mm(params: ParamsLike) -> float:
 
 
 def edge_band_mm(params: ParamsLike) -> float:
-    """Height of the band the ink must stay inside, in mm."""
-    return FRAME_WIDTH_MM - 2.0 * lip_text_margin_mm(params)
+    """Height of the band the ink must stay inside, in mm: the flat top face
+    less a margin each side."""
+    return lip_face_width_mm(params) - 2.0 * lip_text_margin_mm(params)
 
 
 def north_arrow_max_size_mm(params: ParamsLike) -> float:
@@ -1980,7 +2010,7 @@ def lettering_layout(
         if arrow.size_mm < asked - 1e-9:
             warnings.append(
                 f"the north arrow was reduced from {_g(asked)} mm to "
-                f"{_g(arrow.size_mm)} mm to fit the {_g(FRAME_WIDTH_MM)} mm lip band"
+                f"{_g(arrow.size_mm)} mm to fit the {_g(lip_face_width_mm(params))} mm lip band"
             )
     mark = _underside_mark_layout(params, ctx)
     if mark.fit is not None:
@@ -2020,7 +2050,9 @@ def _north_arrow_layout(
     corner = str(getattr(arrow, "corner", None) or "ne")
     requested = float(getattr(arrow, "size_mm", None) or 4.0)
     size = min(requested, north_arrow_max_size_mm(params))
-    offset = float(params.plate_mm) / 2.0 - FRAME_WIDTH_MM / 2.0
+    # The corner square is the flat face's own width on both axes: the rebate
+    # runs along both of the corner's inner edges.
+    offset = float(params.plate_mm) / 2.0 - lip_face_width_mm(params) / 2.0
     sx = -1.0 if corner in ("nw", "sw") else 1.0
     sy = -1.0 if corner in ("se", "sw") else 1.0
     return NorthArrowLayout(

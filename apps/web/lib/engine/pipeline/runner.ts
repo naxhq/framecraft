@@ -50,7 +50,7 @@ import {
   type TerrainOut,
 } from "./stage";
 import { ExportBlockedError } from "../export/gate";
-import { OverpassStageError, STAGES } from "./stages";
+import { OverpassStageError, SCENE_PARTS, STAGES } from "./stages";
 
 // ---------------------------------------------------------------------------
 // Job and events
@@ -350,6 +350,16 @@ function digestOf(key: string, output: unknown, channels: StageChannels, owned: 
   return hashString(text);
 }
 
+/** The named part digests a stage defines over `output`; a null answer resolves to the whole digest. */
+function partDigestsFor(stage: StageDef, output: unknown, digest: string): Map<string, string> {
+  const partDigests = new Map<string, string>();
+  for (const [name, fn] of Object.entries(stage.digests ?? {})) {
+    const part = (fn as (value: unknown) => string | null)(output);
+    partDigests.set(name, part === null ? digest : hashParts([stage.id, name, part]));
+  }
+  return partDigests;
+}
+
 // ---------------------------------------------------------------------------
 // Handles
 // ---------------------------------------------------------------------------
@@ -427,6 +437,34 @@ function aborted(signal: AbortSignal | undefined): boolean {
 // Stage context
 // ---------------------------------------------------------------------------
 
+/**
+ * The scene as a stage keyed on `normalise#<part>` is allowed to see it: the
+ * part's layers as they are, every other layer a getter that throws and names
+ * the stage. A part digest is only honest if the stage reads nothing outside
+ * the part, and this is what makes that a broken build rather than a stale
+ * cache: a ground stage that started reading `buildings` would be served the
+ * old ground after a `heights.*` change, silently, without it.
+ */
+export function scenePartView(scene: EngineSceneGraph, stageId: StageId, part: string): EngineSceneGraph {
+  const layers = (SCENE_PARTS as Readonly<Record<string, readonly string[] | undefined>>)[part];
+  if (layers === undefined) throw new Error(`pipeline: stage ${stageId} keys on normalise#${part}, which names no scene part`);
+  const allowed = new Set<string>(layers);
+  const view: Record<string, unknown> = {};
+  for (const key of Object.keys(scene)) {
+    if (allowed.has(key)) {
+      view[key] = (scene as unknown as Record<string, unknown>)[key];
+      continue;
+    }
+    Object.defineProperty(view, key, {
+      enumerable: false,
+      get() {
+        throw new Error(`pipeline: stage ${stageId} reads scene.${key}, which normalise#${part} does not cover`);
+      },
+    });
+  }
+  return view as unknown as EngineSceneGraph;
+}
+
 interface ContextParts {
   stage: StageDef;
   job: PipelineJob;
@@ -469,13 +507,19 @@ function makeStageContext(parts: ContextParts): StageContext {
   // the same numbers from a changed scene is exactly the case the digest rule
   // would otherwise hide.
   const canReadScene = inputs.has("normalise");
+  // A stage keyed on a named part of the scene sees that part and nothing
+  // else: the layers outside it are behind getters that throw.
+  const scenePart = stage.inputDigests?.normalise;
   let build: BuildContext | null = null;
+  let sceneView: EngineSceneGraph | null = null;
 
   const readScene = (): EngineSceneGraph => {
     if (!canReadScene) throw new Error(`pipeline: stage ${stage.id} reads the scene without declaring normalise as an input`);
     const entry = cache.get<NormaliseOut>("normalise");
     if (entry === undefined) throw new Error("pipeline: normalise has not run");
-    return entry.output.scene;
+    if (scenePart === undefined) return entry.output.scene;
+    if (sceneView === null) sceneView = scenePartView(entry.output.scene, stage.id, scenePart);
+    return sceneView;
   };
 
   const buildWith = (terrain: TerrainSampler | null): BuildContext => {
@@ -728,7 +772,10 @@ export async function runPipeline(
         if (cache.isValid("normalise", key)) {
           report("cached", 0);
         } else {
-          cache.set<NormaliseOut>("normalise", key, new Map(), { scene: seeded }, emptyChannels(), [], 0);
+          // Seeded with the same part digests a run of the stage would define,
+          // so a consumer keyed on `normalise#ground` finds them here too.
+          const seededOut: NormaliseOut = { scene: seeded };
+          cache.set<NormaliseOut>("normalise", key, new Map(), seededOut, emptyChannels(), [], 0, key, partDigestsFor(stage, seededOut, key));
           report("done", 0);
         }
         scene = { scene: seeded, hash: key, fromCache: true };
@@ -797,11 +844,7 @@ export async function runPipeline(
       }
       arena.dispose();
       const digest = digestOf(key, output, channels, owned);
-      const partDigests = new Map<string, string>();
-      for (const [name, fn] of Object.entries(stage.digests ?? {})) {
-        const part = (fn as (value: unknown) => string | null)(output);
-        partDigests.set(name, part === null ? digest : hashParts([stage.id, name, part]));
-      }
+      const partDigests = partDigestsFor(stage, output, digest);
       // Measured after the digests: they are part of what the stage costs.
       const elapsedMs = now() - stageStartedMs;
       cache.set(stage.id, key, inputGens, output, channels, owned, elapsedMs, digest, partDigests);

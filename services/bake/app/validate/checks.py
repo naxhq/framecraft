@@ -567,8 +567,19 @@ def _min_wall_probe(
     manifold: Any = None,
     extra_zs: Sequence[float] = (),
     skip_bands: Sequence[tuple[float, float]] = (),
+    masks: Sequence[tuple[float, float, Any]] = (),
 ) -> tuple[float, int, int, int]:
     """(narrowest wall, failing regions, regions measured, slices skipped).
+
+    ``masks`` are ``(z_low, z_high, polygon)`` triples: inside that Z band the
+    polygon is taken OUT of every slice before it is judged, and the rest of
+    the slice is judged as ever.  Today's one caller is the SURFACE LABELS the
+    browser engine cuts into a roof or a ground surface (v3.1 Task 12): the
+    ridge of roof between two engraved letters is text, judged by the
+    ``labels`` row with the lettering row's own thresholds, and not a
+    free-standing wall.  Unlike ``skip_bands`` this removes nothing but the
+    label's own ink polygon, so a thin building wall at the same height is
+    still measured.
 
     ``skip_bands`` are Z ranges this probe must not judge, and today there is
     exactly one caller for it: the band occupied by the UNDERSIDE pockets (the
@@ -615,6 +626,12 @@ def _min_wall_probe(
         regions = slicer(z)
         if not regions:
             continue
+        active = [poly for lo, hi, poly in masks if lo <= z <= hi]
+        if active:
+            mask = shapely.union_all(active)
+            regions = [p for r in regions for p in _polygons(r.difference(mask))]
+            if not regions:
+                continue
         above = slicer(z + persist)
         above_union = shapely.union_all(above) if above else None
         for region in regions:
@@ -1355,6 +1372,7 @@ def validate(
     self_intersection_sample: bool = True,
     max_height_mm: float | None = None,
     attribution_bands: Sequence[tuple[float, float]] | None = None,
+    label_bands: Sequence[Any] | None = None,
 ) -> ValidationReport:
     """Run every 04 stage 4 validator.  All must pass for a job to be ``done``.
 
@@ -1525,6 +1543,7 @@ def validate(
     skip_bands = [underside] if underside is not None else []
     marks = _clean_bands(attribution_bands)
     skip_bands = skip_bands + marks
+    labels = _clean_label_bands(label_bands)
     smallest, failing, measured, skipped = _min_wall_probe(
         mesh,
         min_wall_mm,
@@ -1532,6 +1551,7 @@ def validate(
         manifold=manifold,
         extra_zs=recess_zs,
         skip_bands=skip_bands,
+        masks=_label_masks(labels),
     )
     slice_count = slices + len(recess_zs) - skipped
     fail_at = min_wall_mm * MIN_WALL_FAIL_FACTOR
@@ -1591,6 +1611,8 @@ def validate(
     # and every v1 report keeps exactly the rows it had.
     checks.extend(validate_lettering(mesh, params, manifold=manifold))
     checks.extend(validate_base_floor(mesh, params, manifold=manifold))
+    # ---- surface labels (v3.1 Task 12, additive) ----------------------------
+    checks.extend(validate_labels(mesh, params, labels, manifold=manifold))
 
     # ---- degenerate faces ------------------------------------------------
     degenerate = int((mesh.area_faces < DEGENERATE_FACE_AREA).sum())
@@ -1736,3 +1758,215 @@ def _attribution_check(
             else "; ".join(bad)
         ),
     )
+
+
+# --------------------------------------------------------------------------
+# Surface labels (v3.1 Task 12)
+# --------------------------------------------------------------------------
+
+#: Tallest single Z band a bake may declare for a label, mm: the contract's
+#: ``labels[].depth_mm`` maximum.  A band this size cannot hide a plate: the
+#: shallowest recess the contract allows is 0.2 mm and the base is 2 mm or more,
+#: and a mask removes only the label's own ink polygon from the slice anyway.
+LABEL_BAND_MAX_MM = 1.5
+
+#: Most label bands a bake may declare: the contract's ``labels.maxItems``
+#: (``packages/contracts/schema/print_params.json``; tests/test_labels.py pins
+#: the two together).
+LABEL_BAND_MAX_COUNT = 12
+
+#: Widest a declared ink polygon may be in plan, mm, on either axis: the
+#: longest text the contract allows (64 characters at the 8 mm maximum size,
+#: about 0.7 em each) with room for the one-nozzle growth the engine adds.
+LABEL_RECT_MAX_MM = 400.0
+
+
+@dataclass(frozen=True)
+class LabelBand:
+    """One cut surface label as the bake's sidecar declares it (``label_bands``)."""
+
+    id: str
+    mode: str
+    low: float
+    high: float
+    face_z: float
+    rect: Polygon
+
+
+def _clean_label_bands(bands: Sequence[Any] | None) -> list[LabelBand]:
+    """The declared label bands, parsed defensively.
+
+    Anything malformed is dropped rather than raising, for the reason
+    :func:`_clean_bands` gives: a sidecar is data from another program, and a
+    validator that crashes on a bad field is worse than one that judges the
+    file as if the field were absent.
+    """
+    out: list[LabelBand] = []
+    for raw in bands or ():
+        if not isinstance(raw, dict):
+            continue
+        try:
+            z = raw.get("z")
+            low, high = float(z[0]), float(z[1])
+            face_z = float(raw.get("face_z", high))
+            points = [(float(p[0]), float(p[1])) for p in raw.get("rect", ())]
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        if not (math.isfinite(low) and math.isfinite(high) and math.isfinite(face_z)):
+            continue
+        if high < low or len(points) < 3:
+            continue
+        rect = shapely.make_valid(Polygon(points))
+        if rect.is_empty or rect.area <= 0.0:
+            continue
+        mode = str(raw.get("mode", "engrave"))
+        out.append(
+            LabelBand(
+                id=str(raw.get("id", f"label-{len(out)}")),
+                mode="emboss" if mode == "emboss" else "engrave",
+                low=low,
+                high=high,
+                face_z=face_z,
+                rect=rect,
+            )
+        )
+    return out
+
+
+def _label_masks(bands: Sequence[LabelBand]) -> list[tuple[float, float, Any]]:
+    """The ``(z_low, z_high, polygon)`` masks ``_min_wall_probe`` takes."""
+    return [(band.low, band.high, band.rect) for band in bands]
+
+
+def validate_labels(
+    mesh: trimesh.Trimesh,
+    params: T.ParamsLike,
+    bands: Sequence[LabelBand],
+    manifold: Any = None,
+) -> list[Check]:
+    """The ``labels`` row: every surface label's strokes and ridges, measured.
+
+    The mirror of :func:`validate_lettering` for the text the browser engine
+    cuts into a roof or a ground surface (``apps/web/lib/engine/solid/labels.ts``,
+    docs/handoff/v3-12-labels.md).  A label's band is sliced in the middle of
+    the material that forms its letters and the slice is clipped to the ink
+    polygon the sidecar declared for it, then judged by the lettering row's own
+    thresholds: an engraved stroke (a groove) at ``0.9 * one nozzle``, an
+    embossed stroke (standing material) at ``0.9 * min_wall``, and the ridge or
+    gap between two letters at ``0.9 * min_detail``.  Every declared band must
+    show at least one stroke, so a label the bake said it cut and then lost
+    cannot pass as "nothing to measure".
+
+    The row exists because :func:`validate` lets a bake MASK those polygons out
+    of the structural ``min_wall`` probe, and an exclusion nobody checks is a
+    hole in the gate.  The exclusion is bounded the way the attribution row's
+    is: at most :data:`LABEL_BAND_MAX_COUNT` bands, each no taller than
+    :data:`LABEL_BAND_MAX_MM`, each inside the model, each polygon no wider than
+    :data:`LABEL_RECT_MAX_MM`.  Returns no row for a file that declares no
+    bands, so nothing without a sidecar changes.
+    """
+    if not bands:
+        return []
+    from app.geom import lettering
+
+    z_lo = float(mesh.bounds[0][2])
+    z_hi = float(mesh.bounds[1][2])
+    min_wall = T.min_wall_mm(params)
+    min_detail = T.min_detail_mm(params)
+    area_floor = lettering.text_area_floor(params)
+    engrave_fail = MIN_WALL_FAIL_FACTOR * T.text_stroke_target_mm(params, "engrave")
+    emboss_fail = MIN_WALL_FAIL_FACTOR * T.text_stroke_target_mm(params, "emboss")
+    ridge_fail = MIN_WALL_FAIL_FACTOR * min_detail
+    slicer = make_slicer(mesh, manifold)
+
+    bad: list[str] = []
+    if len(bands) > LABEL_BAND_MAX_COUNT:
+        bad.append(f"{len(bands)} label bands, over the {LABEL_BAND_MAX_COUNT} allowed")
+    narrowest_stroke = math.inf
+    narrowest_ridge = math.inf
+    strokes = 0
+    ridges = 0
+    for band in bands:
+        if band.high - band.low > LABEL_BAND_MAX_MM + 1e-9:
+            bad.append(f"{band.id}: band {band.low:.2f}-{band.high:.2f} mm is over {LABEL_BAND_MAX_MM} mm tall")
+            continue
+        if band.low < z_lo - 1e-6 or band.high > z_hi + 1e-6:
+            bad.append(
+                f"{band.id}: band {band.low:.2f}-{band.high:.2f} mm is outside the model ({z_lo:.2f}-{z_hi:.2f})"
+            )
+            continue
+        minx, miny, maxx, maxy = band.rect.bounds
+        if maxx - minx > LABEL_RECT_MAX_MM or maxy - miny > LABEL_RECT_MAX_MM:
+            bad.append(f"{band.id}: ink polygon {maxx - minx:.0f} x {maxy - miny:.0f} mm is wider than any label")
+            continue
+        z = (band.low + band.high) / 2.0
+        regions = slicer(z)
+        solid = shapely.union_all(regions).intersection(band.rect) if regions else Polygon()
+        found = 0
+        if band.mode == "emboss":
+            for piece in thicken.explode(solid):
+                if piece.area < area_floor:
+                    continue
+                found += 1
+                width = thicken.narrowest_width(piece, min_wall, area_floor)
+                narrowest_stroke = min(narrowest_stroke, width)
+                if width < emboss_fail:
+                    bad.append(f"{band.id}: embossed stroke {width:.3f} mm at z={z:.2f}")
+            for gap in thicken.explode(band.rect.difference(solid)):
+                if gap.area < area_floor:
+                    continue
+                ridges += 1
+                width = thicken.narrowest_width(gap, min_detail, area_floor)
+                narrowest_ridge = min(narrowest_ridge, width)
+                if width < ridge_fail:
+                    bad.append(f"{band.id}: embossed gap {width:.3f} mm at z={z:.2f}")
+        else:
+            for groove in thicken.explode(band.rect.difference(solid)):
+                if groove.area < area_floor:
+                    continue
+                found += 1
+                width = thicken.narrowest_width(groove, min_detail, area_floor)
+                narrowest_stroke = min(narrowest_stroke, width)
+                if width < engrave_fail:
+                    bad.append(f"{band.id}: engraved stroke {width:.3f} mm at z={z:.2f}")
+            for piece in thicken.explode(solid):
+                if piece.area < area_floor:
+                    continue
+                ridges += 1
+                width = thicken.narrowest_width(piece, min_detail, area_floor)
+                narrowest_ridge = min(narrowest_ridge, width)
+                if width < ridge_fail:
+                    bad.append(f"{band.id}: ridge {width:.3f} mm at z={z:.2f}")
+        strokes += found
+        if found == 0:
+            bad.append(
+                f"{band.id}: declared {band.mode} band z={band.low:.2f}-{band.high:.2f} mm carries no stroke"
+            )
+
+    stroke_value = 0.0 if not math.isfinite(narrowest_stroke) else narrowest_stroke
+    ridge_value = 0.0 if not math.isfinite(narrowest_ridge) else narrowest_ridge
+    passed = not bad
+    where = ", ".join(f"{band.low:.2f}-{band.high:.2f}" for band in bands)
+    message = (
+        f"narrowest stroke {stroke_value:.3f} mm over {strokes}, narrowest ridge "
+        f"{ridge_value:.3f} mm over {ridges}, on {len(bands)} label band(s) at z {where} mm; "
+        f"min_wall did not judge the ink polygons at those heights"
+        if passed
+        else "; ".join(bad[:4]) + (f"; +{len(bad) - 4} more" if len(bad) > 4 else "")
+    )
+    return [
+        Check(
+            name="labels",
+            passed=passed,
+            value=(
+                f"{len(bands)} band(s); {strokes} strokes; "
+                f"{stroke_value:.3f} mm stroke / {ridge_value:.3f} mm ridge"
+            ),
+            threshold=(
+                f"engraved stroke >= {engrave_fail:.3f} mm, embossed stroke >= {emboss_fail:.3f} mm, "
+                f"ridge >= {ridge_fail:.3f} mm; at most {LABEL_BAND_MAX_COUNT} bands, each <= "
+                f"{LABEL_BAND_MAX_MM} mm, inside the model, each with a stroke"
+            ),
+            message=message,
+        )
+    ]

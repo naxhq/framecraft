@@ -1,20 +1,28 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  CACHE_PREFIX,
+  DECISION_ATTRIBUTE,
+  KILL_SWITCH_STORAGE_KEY,
   MAX_WARM_URLS,
   SKIP_WAITING_MESSAGE,
   UPDATE_READY_MESSAGE,
   UPDATE_TOAST_ID,
   WARM_MESSAGE,
+  killSwitchState,
+  markDecision,
   registerServiceWorker,
+  registrationDecision,
   serviceWorkerUrl,
   shouldRegister,
   showUpdateToast,
+  unregisterServiceWorkers,
   warmUrlsFrom,
   type ContainerLike,
   type DocumentLike,
   type ElementLike,
   type RegistrationLike,
+  type StorageLike,
   type WorkerLike,
 } from "./serviceWorker";
 
@@ -130,10 +138,18 @@ class FakeWorker implements WorkerLike {
 class FakeRegistration implements RegistrationLike {
   installing: WorkerLike | null = null;
   waiting: WorkerLike | null = null;
+  unregistered = 0;
+  /** What `unregister()` reports back: false is a worker that was already gone. */
+  unregisterResult = true;
   private readonly listeners: Array<() => void> = [];
 
   addEventListener(_type: "updatefound", listener: () => void): void {
     this.listeners.push(listener);
+  }
+
+  async unregister(): Promise<boolean> {
+    this.unregistered += 1;
+    return this.unregisterResult;
   }
 
   updateFound(worker: FakeWorker): void {
@@ -149,15 +165,24 @@ class FakeContainer implements ContainerLike {
   readonly controllerPosts: unknown[] = [];
   private readonly listeners = new Map<string, Array<(event: { data?: unknown }) => void>>();
   failWith: Error | null = null;
+  /** Set to make `register` RESOLVE with nothing, the way a stubbing harness does. */
+  resolveWithNothing = false;
+  /** What `getRegistrations()` hands back; defaults to this container's own one. */
+  existing: FakeRegistration[] | null = null;
 
   controlledBy(): void {
     this.controller = { postMessage: (message: unknown) => this.controllerPosts.push(message) };
   }
 
-  async register(url: string): Promise<RegistrationLike> {
+  async register(url: string): Promise<RegistrationLike | undefined> {
     this.registered.push(url);
     if (this.failWith !== null) throw this.failWith;
+    if (this.resolveWithNothing) return undefined;
     return this.registration;
+  }
+
+  async getRegistrations(): Promise<readonly RegistrationLike[]> {
+    return this.existing ?? [this.registration];
   }
 
   addEventListener(type: "controllerchange" | "message", listener: (event: { data?: unknown }) => void): void {
@@ -178,18 +203,92 @@ const BASE_OPTIONS = {
   buildId: "abc123",
 };
 
+/** A browser tab on a deployed build: every clause of the gate satisfied. */
+const BROWSER_ENV = {
+  hasServiceWorker: true,
+  isSecureContext: true,
+  nodeEnv: "production",
+  isDesktopShell: false,
+} as const;
+
 describe("shouldRegister", () => {
   it("registers in a secure production browser", () => {
-    expect(shouldRegister({ hasServiceWorker: true, isSecureContext: true, nodeEnv: "production" })).toBe(true);
+    expect(shouldRegister(BROWSER_ENV)).toBe(true);
   });
 
   it("never registers under `next dev`, where chunk URLs carry no content hash", () => {
-    expect(shouldRegister({ hasServiceWorker: true, isSecureContext: true, nodeEnv: "development" })).toBe(false);
+    expect(shouldRegister({ ...BROWSER_ENV, nodeEnv: "development" })).toBe(false);
   });
 
   it("declines an insecure context and a browser without service workers", () => {
-    expect(shouldRegister({ hasServiceWorker: true, isSecureContext: false, nodeEnv: "production" })).toBe(false);
-    expect(shouldRegister({ hasServiceWorker: false, isSecureContext: true, nodeEnv: "production" })).toBe(false);
+    expect(shouldRegister({ ...BROWSER_ENV, isSecureContext: false })).toBe(false);
+    expect(shouldRegister({ ...BROWSER_ENV, hasServiceWorker: false })).toBe(false);
+  });
+
+  /**
+   * The desktop shell passes every OTHER clause, which is exactly why this one
+   * has to exist. `apps/desktop/src-tauri/tauri.conf.json` sets
+   * `frontendDist: "../../web/out"`, so Tauri ships this same production
+   * export with `sw.js` in it, over a secure-context custom protocol. Without
+   * this line the worker installs inside the app and starts intercepting
+   * local file reads for no possible gain.
+   */
+  it("never registers inside the Tauri desktop shell, whatever else is true", () => {
+    expect(shouldRegister({ ...BROWSER_ENV, isDesktopShell: true })).toBe(false);
+    // Not merely "because production": the shell is refused even when every
+    // other clause is the most favourable value it can take.
+    expect(
+      shouldRegister({
+        hasServiceWorker: true,
+        isSecureContext: true,
+        nodeEnv: "production",
+        isDesktopShell: true,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("registrationDecision", () => {
+  it("names the reason, not just the verdict, for every environment", () => {
+    expect(registrationDecision(BROWSER_ENV)).toBe("on");
+    expect(registrationDecision({ ...BROWSER_ENV, nodeEnv: "development" })).toBe("off:dev");
+    expect(registrationDecision({ ...BROWSER_ENV, isSecureContext: false })).toBe("off:insecure");
+    expect(registrationDecision({ ...BROWSER_ENV, hasServiceWorker: false })).toBe("off:unsupported");
+    expect(registrationDecision({ ...BROWSER_ENV, isDesktopShell: true })).toBe("off:tauri");
+  });
+
+  it("blames the desktop shell rather than anything downstream of it", () => {
+    // The shell is a secure context running a production build, so the clause
+    // order is what makes the reported reason true.
+    expect(
+      registrationDecision({ ...BROWSER_ENV, isDesktopShell: true, nodeEnv: "development" }),
+    ).toBe("off:tauri");
+  });
+
+  it("agrees with `shouldRegister` on every one of them", () => {
+    for (const env of [
+      BROWSER_ENV,
+      { ...BROWSER_ENV, nodeEnv: "development" },
+      { ...BROWSER_ENV, isSecureContext: false },
+      { ...BROWSER_ENV, hasServiceWorker: false },
+      { ...BROWSER_ENV, isDesktopShell: true },
+    ]) {
+      expect(shouldRegister(env)).toBe(registrationDecision(env) === "on");
+    }
+  });
+});
+
+describe("markDecision", () => {
+  it("writes the decision where a browser test can read it", () => {
+    const sink: { dataset: Record<string, string | undefined> } = { dataset: {} };
+    markDecision(sink, "off:dev");
+    expect(sink.dataset[DECISION_ATTRIBUTE]).toBe("off:dev");
+    markDecision(sink, "on");
+    expect(sink.dataset[DECISION_ATTRIBUTE]).toBe("on");
+  });
+
+  it("does nothing without a document, rather than throwing on a prerender", () => {
+    expect(() => markDecision(null, "on")).not.toThrow();
   });
 });
 
@@ -377,6 +476,173 @@ describe("registerServiceWorker", () => {
     await registerServiceWorker({ ...BASE_OPTIONS, container, doc, reload: vi.fn() });
     container.emit("message", { type: "something-else" });
     container.emit("message", undefined);
+    expect(doc.toast()).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// the kill switch
+// ---------------------------------------------------------------------------
+
+/** `localStorage`, small enough to see all of. */
+class FakeStorage implements StorageLike {
+  private readonly map = new Map<string, string>();
+  /** Set to make every access throw, the way a sandboxed iframe does. */
+  throws = false;
+
+  getItem(key: string): string | null {
+    if (this.throws) throw new Error("storage is not available");
+    return this.map.get(key) ?? null;
+  }
+
+  setItem(key: string, value: string): void {
+    if (this.throws) throw new Error("storage is not available");
+    this.map.set(key, value);
+  }
+
+  removeItem(key: string): void {
+    if (this.throws) throw new Error("storage is not available");
+    this.map.delete(key);
+  }
+
+  has(key: string): boolean {
+    return this.map.has(key);
+  }
+}
+
+/** `caches`, holding names only: the kill switch never reads a body. */
+class FakeCaches {
+  constructor(private names: string[]) {}
+  readonly deleted: string[] = [];
+
+  async keys(): Promise<readonly string[]> {
+    return [...this.names];
+  }
+
+  async delete(name: string): Promise<boolean> {
+    if (!this.names.includes(name)) return false;
+    this.names = this.names.filter((entry) => entry !== name);
+    this.deleted.push(name);
+    return true;
+  }
+}
+
+describe("killSwitchState", () => {
+  const url = (query: string): string => `https://example.test/framecraft/${query}`;
+
+  it("is off on an ordinary load, and asks storage for nothing it did not put there", () => {
+    const storage = new FakeStorage();
+    expect(killSwitchState(url(""), storage)).toBe("off");
+    expect(storage.has(KILL_SWITCH_STORAGE_KEY)).toBe(false);
+  });
+
+  it("`?sw-off` turns it on AND remembers it, so the next load is clean too", () => {
+    const storage = new FakeStorage();
+    expect(killSwitchState(url("?sw-off"), storage)).toBe("on");
+    expect(storage.has(KILL_SWITCH_STORAGE_KEY)).toBe(true);
+    // The whole point: no query string this time, and it is still off.
+    expect(killSwitchState(url(""), storage)).toBe("on");
+  });
+
+  it("`?sw-on` puts it back and forgets the flag", () => {
+    const storage = new FakeStorage();
+    killSwitchState(url("?sw-off"), storage);
+    expect(killSwitchState(url("?sw-on"), storage)).toBe("off");
+    expect(storage.has(KILL_SWITCH_STORAGE_KEY)).toBe(false);
+    expect(killSwitchState(url(""), storage)).toBe("off");
+  });
+
+  it("kills rather than revives when a link carries both", () => {
+    // The safe direction: someone pasting a recovery link with a stale
+    // parameter still gets the recovery.
+    expect(killSwitchState(url("?sw-on&sw-off"), new FakeStorage())).toBe("on");
+  });
+
+  it("still honours the query string when storage throws, and never throws itself", () => {
+    const storage = new FakeStorage();
+    storage.throws = true;
+    expect(killSwitchState(url("?sw-off"), storage)).toBe("on");
+    expect(killSwitchState(url(""), storage)).toBe("off");
+    expect(killSwitchState(url(""), null)).toBe("off");
+  });
+
+  it("treats an unparseable href as no query rather than failing", () => {
+    expect(killSwitchState("not a url", new FakeStorage())).toBe("off");
+  });
+});
+
+describe("unregisterServiceWorkers", () => {
+  it("unregisters every worker and deletes every cache this app owns", async () => {
+    const container = new FakeContainer();
+    const second = new FakeRegistration();
+    container.existing = [container.registration, second];
+    const caches = new FakeCaches([
+      `${CACHE_PREFIX}immutable-v1`,
+      `${CACHE_PREFIX}presets-v1`,
+      "someone-elses-cache",
+    ]);
+
+    const outcome = await unregisterServiceWorkers(container, caches);
+
+    expect(outcome.workers).toBe(2);
+    expect(container.registration.unregistered).toBe(1);
+    expect(second.unregistered).toBe(1);
+    // Only ours. A Pages user site can host more than one app on one origin,
+    // and the other one's data is not this switch's to delete.
+    expect(caches.deleted.sort()).toEqual([`${CACHE_PREFIX}immutable-v1`, `${CACHE_PREFIX}presets-v1`]);
+    expect(outcome.caches).toHaveLength(2);
+    expect(await caches.keys()).toEqual(["someone-elses-cache"]);
+  });
+
+  it("counts only the workers that really went", async () => {
+    const container = new FakeContainer();
+    container.registration.unregisterResult = false;
+    const outcome = await unregisterServiceWorkers(container, new FakeCaches([]));
+    expect(container.registration.unregistered).toBe(1);
+    expect(outcome.workers).toBe(0);
+  });
+
+  it("survives a container that refuses to enumerate, and still clears the caches", async () => {
+    const container: Pick<ContainerLike, "getRegistrations"> = {
+      getRegistrations: () => Promise.reject(new Error("denied")),
+    };
+    const caches = new FakeCaches([`${CACHE_PREFIX}static-v1`]);
+    const outcome = await unregisterServiceWorkers(container, caches);
+    expect(outcome.workers).toBe(0);
+    expect(outcome.caches).toEqual([`${CACHE_PREFIX}static-v1`]);
+  });
+
+  it("survives a browser with no cache storage at all", async () => {
+    const container = new FakeContainer();
+    const outcome = await unregisterServiceWorkers(container, null);
+    expect(outcome.workers).toBe(1);
+    expect(outcome.caches).toEqual([]);
+  });
+});
+
+describe("registerServiceWorker fails soft", () => {
+  it("returns null when `register` rejects", async () => {
+    const container = new FakeContainer();
+    container.failWith = new Error("workers are not allowed here");
+    const doc = new FakeDocument();
+    expect(await registerServiceWorker({ ...BASE_OPTIONS, container, doc, reload: vi.fn() })).toBeNull();
+    expect(doc.toast()).toBeNull();
+  });
+
+  /**
+   * The DOM types say this cannot happen; Playwright's `serviceWorkers:
+   * "block"` does it anyway, and reading `.waiting` off the result threw an
+   * uncaught TypeError into the page twice per load in every worker-blocked
+   * run of the byte measurements in `docs/handoff/v3-08-siteperf.md`.
+   */
+  it("returns null when `register` RESOLVES with nothing, instead of throwing into the page", async () => {
+    const container = new FakeContainer();
+    container.resolveWithNothing = true;
+    const doc = new FakeDocument();
+    await expect(
+      registerServiceWorker({ ...BASE_OPTIONS, container, doc, reload: vi.fn() }),
+    ).resolves.toBeNull();
+    expect(container.registered).toHaveLength(1);
     expect(doc.toast()).toBeNull();
   });
 });

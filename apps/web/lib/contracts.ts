@@ -39,6 +39,9 @@ export interface Building {
   height_source: "tag" | "levels" | "default";
   min_height_m: number;
   is_tall: boolean;
+  name?: string;
+  osm_id?: string;
+  kind?: string;
 }
 
 export interface Road {
@@ -46,11 +49,17 @@ export interface Road {
   path: Point[];
   width_m: number;
   class: "motorway" | "primary" | "secondary" | "residential" | "service" | "path";
+  name?: string;
+  osm_id?: string;
+  kind?: string;
 }
 
 export interface AreaFeature {
   ring: Ring;
   holes: Ring[];
+  name?: string;
+  osm_id?: string;
+  kind?: string;
 }
 
 export interface Tree {
@@ -296,8 +305,37 @@ export interface HangerMagnet {
   count?: number;
 }
 
+export interface ObjectOverride {
+  osm_id: string;
+  layer: "building" | "road" | "water" | "green";
+  hidden?: boolean;
+  height_scale?: number;
+  hero?: "inherit" | "on" | "off";
+  tint?: string;
+  slot?: number;
+  color?: string;
+  road_mode?: "inherit" | "engrave" | "emboss" | "off";
+  width_scale?: number;
+  raise_mm?: number;
+}
+
+export interface Label {
+  target_osm_id: string;
+  layer: "building" | "road" | "water" | "green";
+  surface: "building_top" | "ground";
+  u?: number;
+  v?: number;
+  rotation_deg?: number;
+  size_mm?: number;
+  mode?: "engrave" | "emboss";
+  depth_mm?: number;
+  font?: "sans" | "serif" | "mono";
+  text?: string;
+  follow?: boolean;
+}
+
 export interface PrintParams {
-  schema_version?: 2 | 3;
+  schema_version?: 2 | 3 | 4;
   plate_mm: number;
   base_thickness_mm: number;
   nozzle_mm: number;
@@ -333,6 +371,8 @@ export interface PrintParams {
   tiling?: Tiling;
   frame_style?: FrameStyle;
   hanger_magnet?: HangerMagnet;
+  object_overrides?: ObjectOverride[];
+  labels?: Label[];
 }
 
 // ---- from bake_result.json ------------------------
@@ -382,7 +422,7 @@ function deepFreeze<T>(value: T): T {
 }
 
 export const DEFAULT_PRINT_PARAMS: PrintParams = deepFreeze<PrintParams>({
-  schema_version: 3,
+  schema_version: 4,
   plate_mm: 180,
   base_thickness_mm: 3.0,
   nozzle_mm: 0.4,
@@ -568,6 +608,8 @@ export const DEFAULT_PRINT_PARAMS: PrintParams = deepFreeze<PrintParams>({
     thickness_mm: 2,
     count: 2,
   },
+  object_overrides: [],
+  labels: [],
 });
 
 /**
@@ -692,6 +734,19 @@ export const PARAM_RANGES = {
     thickness_mm: { min: 1, max: 10, default: 2 },
     count: { min: 1, max: 8, default: 2 },
   },
+  object_overrides: {
+    height_scale: { min: 0.1, max: 4.0, default: 1.0 },
+    slot: { min: 0, max: 16, default: 0 },
+    width_scale: { min: 0.25, max: 4.0, default: 1.0 },
+    raise_mm: { min: -2.0, max: 2.0, default: 0.0 },
+  },
+  labels: {
+    u: { min: 0, max: 1, default: 0.5 },
+    v: { min: 0, max: 1, default: 0.5 },
+    rotation_deg: { min: -180, max: 180, default: 0 },
+    size_mm: { min: 1.5, max: 8.0, default: 4.0 },
+    depth_mm: { min: 0.2, max: 1.5, default: 0.4 },
+  },
 } as const;
 
 /**
@@ -721,6 +776,15 @@ export const PARAM_LIMITS = {
     gradient: {
       slots: { max_items: 16 },
     },
+  },
+  object_overrides: {
+    max_items: 24,
+    osm_id: { max_length: 32 },
+  },
+  labels: {
+    max_items: 12,
+    target_osm_id: { max_length: 32 },
+    text: { max_length: 64 },
   },
 } as const;
 
@@ -867,6 +931,29 @@ export const PRINT_PARAM_LEAF_PATHS = [
   "hanger_magnet.diameter_mm",
   "hanger_magnet.thickness_mm",
   "hanger_magnet.count",
+  "object_overrides[].osm_id",
+  "object_overrides[].layer",
+  "object_overrides[].hidden",
+  "object_overrides[].height_scale",
+  "object_overrides[].hero",
+  "object_overrides[].tint",
+  "object_overrides[].slot",
+  "object_overrides[].color",
+  "object_overrides[].road_mode",
+  "object_overrides[].width_scale",
+  "object_overrides[].raise_mm",
+  "labels[].target_osm_id",
+  "labels[].layer",
+  "labels[].surface",
+  "labels[].u",
+  "labels[].v",
+  "labels[].rotation_deg",
+  "labels[].size_mm",
+  "labels[].mode",
+  "labels[].depth_mm",
+  "labels[].font",
+  "labels[].text",
+  "labels[].follow",
 ] as const;
 
 export type PrintParamPath = (typeof PRINT_PARAM_LEAF_PATHS)[number];

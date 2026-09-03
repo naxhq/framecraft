@@ -10,11 +10,15 @@ import { exportStatusLabel } from "@/lib/exportFlow";
 import { stageLabel } from "@/lib/hud";
 import { isTauri, saveFileWithDialog } from "@/lib/platform";
 import {
+  LEGACY_PROJECT_FILE_EXTENSION,
+  PROJECT_FILE_ACCEPT,
+  PROJECT_FILE_EXTENSION,
   buildProject,
   downloadProject,
   parseProject,
   projectFilename,
   serializeProject,
+  type ProjectLoadResult,
 } from "@/lib/project";
 import { recentDesignName, recordRecent } from "@/lib/recent";
 import { SHARE_LINK_LENGTH_LIMIT, encodeShare, shareUrl } from "@/lib/share";
@@ -22,7 +26,7 @@ import { exportBlockReason, heightCeilingMm, predictedTopMm, warningDeps } from 
 import type { PipelineFailure, PipelineProgress } from "@/store/editor";
 import { locationToRequest, useEditorStore } from "@/store/editor";
 import { Note } from "./Controls";
-import ExportErrorDetail, { type ErrorDetailModel } from "./ExportErrorDetail";
+import ExportErrorDetail, { type ErrorDetailModel, type ErrorDetailTone } from "./ExportErrorDetail";
 import ExportMenu, { ExportTargetNotes } from "./ExportMenu";
 import ProgressBar, { type RunProgressModel } from "./ProgressBar";
 
@@ -207,6 +211,43 @@ export function exportFailureModel(
   };
 }
 
+/**
+ * An export the user stopped.
+ *
+ * This is not a failure and must not read as one ([V3.1-T6] 2). The store
+ * cannot tell the two apart on its own: `cancelPipeline` leaves
+ * `pipeline.error` at null because a cancel is not an error
+ * (`store/editor.ts`), so `requestExport` sees its run resolve `null` with no
+ * error to quote and falls through to "The engine could not build a model.",
+ * which is false in both halves -- nothing was refused and nothing failed. The
+ * bar has what the store does not, which is the transition: it watched a run
+ * leave flight without a new result and without an error while an export was
+ * waiting on it (`useRunOutcome`), and that is exactly what a cancel is.
+ *
+ * The stage is the one the run had reached, because "cancelled" on its own does
+ * not tell a user how far the work got, and the copyable block is kept so a
+ * cancel that was actually a hang still produces a report worth reading.
+ */
+export function exportCancelledModel(stage: string, paramsHash: string): ErrorDetailModel {
+  const where = stageLabel(stage);
+  const named = where === "" ? null : where;
+  return {
+    headline:
+      named === null
+        ? "The export was cancelled. No file was written, and the previous download is untouched."
+        : `The export was cancelled while ${named} (stage "${stage}"). No file was written, and the previous download is untouched.`,
+    stage: stage === "" ? null : stage,
+    findingIds: [],
+    detail: detailBlock([
+      ["what", "the export was cancelled"],
+      ["stage", stage === "" ? null : stage],
+      ["message", "Cancel was pressed while the export was still building the model."],
+      ["app", APPLICATION],
+      ["params", paramsHash],
+    ]),
+  };
+}
+
 /** The first line of a message: a stack that crossed the wire belongs in the detail block, never in the sentence. */
 function firstLine(message: string): string {
   const line = message.split("\n")[0]?.trim() ?? "";
@@ -234,14 +275,12 @@ export function ActionBar() {
   const params = useEditorStore((state) => state.params);
   const location = useEditorStore((state) => state.location);
   // Booleans and identities only: `state.pipeline.progress` is read by
-  // `RunStatus` alone, so the buttons and the notes here do not re-render on
-  // each of a run's ~142 stage events.
+  // `RunStatus` and `RunOutcomeNotice` alone, so the buttons and the notes here
+  // do not re-render on each of a run's ~142 stage events.
   const pipelineRunning = useEditorStore((state) => state.pipeline.status === "running");
   const pipelineStale = useEditorStore((state) => state.pipeline.stale);
-  const pipelineError = useEditorStore((state) => state.pipeline.error);
   const result = useEditorStore((state) => state.pipeline.result);
   const exportPhase = useEditorStore((state) => state.exportState.phase);
-  const exportError = useEditorStore((state) => state.exportState.error);
   const generate = useEditorStore((state) => state.generate);
   const requestExport = useEditorStore((state) => state.requestExport);
   const cancelPipeline = useEditorStore((state) => state.cancelPipeline);
@@ -257,7 +296,6 @@ export function ActionBar() {
   const blockReason = exportBlockReason(graph, params);
 
   const exporting = exportPhase === "exporting";
-  const fetching = sceneStatus === "loading";
   const hasScene = graph !== null;
   const hasModel = result !== null;
   /**
@@ -318,6 +356,14 @@ export function ActionBar() {
 
   // --- the project file ([V3-P6]) ------------------------------------------
   const [projectError, setProjectError] = useState<string | null>(null);
+  /**
+   * Said once, after a project file that was in an older form loaded anyway
+   * (Task 13): a version-3 envelope, the legacy `.framecraft.json` name, or
+   * both. Its own slot next to `projectError` because it is not an error --
+   * nothing failed, the design is on screen -- but without it the next Save
+   * writing a differently named file has no explanation.
+   */
+  const [projectNotice, setProjectNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   /**
@@ -341,6 +387,7 @@ export function ActionBar() {
 
   const openLoadDialog = (): void => {
     setProjectError(null);
+    setProjectNotice(null);
     fileInputRef.current?.click();
   };
 
@@ -351,21 +398,15 @@ export function ActionBar() {
     event.target.value = "";
     if (!file) return;
     const text = await file.text();
-    const outcome = parseProject(text);
-    if (!outcome.ok) {
-      setProjectError(outcome.reason);
-      return;
-    }
-    setProjectError(null);
+    // The name is passed so a file saved under the legacy `.framecraft.json`
+    // extension can say so once; the BYTES still decide whether it loads.
+    const outcome = parseProject(text, file.name);
+    const { error, notice } = projectLoadNotices(outcome);
+    setProjectError(error);
+    setProjectNotice(notice);
+    if (!outcome.ok) return;
     useEditorStore.getState().applyProject(outcome.location, outcome.params);
   };
-
-  const failure: { model: ErrorDetailModel; testId: string } | null =
-    pipelineError !== null && !pipelineRunning
-      ? { model: runFailureModel(pipelineError, paramsHash), testId: "run-error-detail" }
-      : exportPhase === "failed" && exportError !== null
-        ? { model: exportFailureModel(exportError, result, paramsHash), testId: "export-error-detail" }
-        : null;
 
   return (
     <section
@@ -374,8 +415,18 @@ export function ActionBar() {
       className="shrink-0 space-y-2 border-b border-line bg-plate px-4 py-3"
     >
       {/*
-        The controls, in a row whose box is measured by `e2e/actionbar.spec.ts`
-        before and after a run and after a failure: nothing below may move it.
+        The controls, in a row nothing below may move: the status slot, the
+        notes and the whole results panel are all rendered AFTER this div, so a
+        run, a cancel, an error or a finished export can only ever change what
+        is underneath it.
+
+        Pinned in two places, because the claim has two halves.
+        `ActionBar.test.tsx` pins the COMPOSITION: every state renders the same
+        controls in the same order, and the results panel keeps its five slots
+        when they are empty. `e2e/actionbar.spec.ts` pins the BOX, which needs a
+        laid-out page: it reads `action-bar-actions`'s own bounding rectangle
+        idle, mid-run, after a refused export and after a finished one, and
+        fails if any of the four differ.
       */}
       <div data-testid="action-bar-actions" className="space-y-2">
         <div className="flex gap-2">
@@ -384,7 +435,17 @@ export function ActionBar() {
             data-testid="preview-button"
             data-mode={pipelineRunning ? "cancel" : "preview"}
             onClick={() => (pipelineRunning ? cancelPipeline() : void generate())}
-            disabled={!pipelineRunning && (fetching || nothingToPreview)}
+            /*
+              `scene.status === "loading"` is deliberately NOT part of this.
+              `generate()` writes it and calls `startPipelineRun` in the same
+              synchronous block, so `pipeline.status` is `running` whenever the
+              scene is loading and `pipelineRunning` already covers it. The
+              `fetching` term and the "Previewing..." label it fed were both
+              unreachable ([V3.1-T6] 5); a disabled expression with a branch
+              nothing can enter is a claim about behaviour that no test can
+              fail.
+            */
+            disabled={!pipelineRunning && nothingToPreview}
             title={
               pipelineRunning
                 ? "Stop the run. The model on screen stays."
@@ -394,13 +455,7 @@ export function ActionBar() {
             }
             className={`flex-1 ${pipelineRunning || hasScene ? SECONDARY : PRIMARY}`}
           >
-            {pipelineRunning
-              ? "Cancel"
-              : fetching
-                ? "Previewing..."
-                : sceneStale && graph
-                  ? "Preview again"
-                  : "Preview"}
+            {pipelineRunning ? "Cancel" : sceneStale && graph ? "Preview again" : "Preview"}
           </button>
           <button
             type="button"
@@ -420,7 +475,7 @@ export function ActionBar() {
             type="button"
             data-testid="save-project-button"
             onClick={() => void saveProject()}
-            title="Save this whole design as a .framecraft.json file"
+            title={`Save this whole design as a ${PROJECT_FILE_EXTENSION} file`}
             className={`flex-1 ${QUIET}`}
           >
             Save project
@@ -429,7 +484,7 @@ export function ActionBar() {
             type="button"
             data-testid="load-project-button"
             onClick={openLoadDialog}
-            title="Load a .framecraft.json file, replacing every setting"
+            title={`Load a ${PROJECT_FILE_EXTENSION} file (or an older ${LEGACY_PROJECT_FILE_EXTENSION}), replacing every setting`}
             className={`flex-1 ${QUIET}`}
           >
             Load project
@@ -453,7 +508,7 @@ export function ActionBar() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".json,application/json"
+            accept={PROJECT_FILE_ACCEPT}
             aria-label="Load a FrameCraft project file"
             data-testid="load-project-input"
             className="hidden"
@@ -483,13 +538,19 @@ export function ActionBar() {
         </Note>
       ) : null}
 
-      {failure !== null ? <ExportErrorDetail model={failure.model} testId={failure.testId} /> : null}
+      <RunOutcomeNotice paramsHash={paramsHash} />
 
       <ExportTargetNotes />
 
       {projectError !== null ? (
         <Note tone="warn" testId="project-error">
           {projectError}
+        </Note>
+      ) : null}
+
+      {projectNotice !== null ? (
+        <Note tone="info" testId="project-migrated">
+          {projectNotice}
         </Note>
       ) : null}
 
@@ -532,6 +593,234 @@ export function ActionBar() {
 }
 
 // ---------------------------------------------------------------------------
+// What the last run did, which only the transition can say
+// ---------------------------------------------------------------------------
+
+/** How the run that just left flight ended, for the two surfaces that report it. */
+export interface RunOutcome {
+  /**
+   * The stage a CANCELLED run stopped at, or null when the last run finished or
+   * failed. `""` when the cancel arrived before the first stage was named.
+   */
+  cancelledAt: string | null;
+  /** True when the run that was cancelled was the one an export was waiting on. */
+  exportCancelled: boolean;
+}
+
+export const NO_OUTCOME: RunOutcome = { cancelledAt: null, exportCancelled: false };
+
+/** What the watcher remembers between renders. */
+export interface RunWatchState {
+  running: boolean;
+  /** The last stage the running run named. Reset when a run starts. */
+  stage: string;
+  /** The result object that was on screen when this run started, compared by identity. */
+  resultAtStart: EngineResult | null;
+  exportPhase: string;
+  /** An export asked for a model and has not been told the answer yet. */
+  exportInFlight: boolean;
+}
+
+export const INITIAL_RUN_WATCH: RunWatchState = {
+  running: false,
+  stage: "",
+  resultAtStart: null,
+  exportPhase: "idle",
+  exportInFlight: false,
+};
+
+/**
+ * One render's worth of the watch: the whole classification, as a pure step so
+ * it can be driven event by event without a React renderer.
+ *
+ * `outcome: null` means "this render said nothing new"; whatever is on screen
+ * stands. Every other value REPLACES it, `NO_OUTCOME` included -- a new export
+ * or a finished one clears a stale "Cancelled at roads." that would otherwise
+ * sit under a fresh download link.
+ */
+export function stepRunOutcome(
+  seen: RunWatchState,
+  input: {
+    running: boolean;
+    stage: string;
+    result: EngineResult | null;
+    pipelineStatus: string;
+    sceneStatus: string;
+    exportPhase: string;
+  },
+): { seen: RunWatchState; outcome: RunOutcome | null } {
+  const next: RunWatchState = { ...seen };
+  let outcome: RunOutcome | null = null;
+
+  if (input.exportPhase !== seen.exportPhase) {
+    next.exportPhase = input.exportPhase;
+    if (input.exportPhase === "exporting") {
+      next.exportInFlight = true;
+      outcome = NO_OUTCOME;
+    } else if (input.exportPhase === "done") {
+      next.exportInFlight = false;
+      outcome = NO_OUTCOME;
+    } else if (input.exportPhase === "idle") {
+      next.exportInFlight = false;
+    }
+  }
+
+  if (input.running && !seen.running) {
+    next.resultAtStart = input.result;
+    next.stage = "";
+    outcome = NO_OUTCOME;
+  }
+  if (input.running && input.stage !== "") next.stage = input.stage;
+  if (!input.running && seen.running) {
+    // A run that stopped running without landing a NEW result and without an
+    // error was stopped by somebody. That is the only definition available:
+    // the store puts `pipeline.status` back to `ready` and clears `progress`
+    // on a cancel, precisely because a cancel is not a failure.
+    const finished = input.result !== next.resultAtStart;
+    const failed = input.pipelineStatus === "error" || input.sceneStatus === "error";
+    outcome =
+      finished || failed
+        ? NO_OUTCOME
+        : { cancelledAt: next.stage, exportCancelled: next.exportInFlight };
+  }
+  next.running = input.running;
+  return { seen: next, outcome };
+}
+
+/**
+ * Watch runs leave flight and classify how they ended.
+ *
+ * A cancel resets `progress` to the idle value and puts `pipeline.status` back
+ * to `ready`, deliberately: a cancelled run is not an error and the last good
+ * model stays on screen. So neither the stage it stopped at nor the fact that
+ * it was cancelled at all survives in the store, and both have to be read off
+ * the TRANSITION -- a run that stopped running without landing a new result and
+ * without an error was stopped by somebody. That works for the viewport's own
+ * Stop button and the `g` shortcut too, neither of which this module hears
+ * about.
+ *
+ * `exportCancelled` is the same observation with one more bit: was an export
+ * waiting on that run. It is tracked as a ref rather than read from
+ * `exportState.phase` at the moment of the cancel, because the store writes the
+ * cancel and the export's own failure in two `set` calls that React batches
+ * into one render, so by the time this effect runs the phase has already moved
+ * on to `failed`.
+ *
+ * Call it from a leaf. It subscribes to `pipeline.progress.stage`, which a full
+ * Chicago plan writes 142 times per run.
+ */
+export function useRunOutcome(): RunOutcome {
+  const running = useEditorStore((state) => state.pipeline.status === "running");
+  const progressStage = useEditorStore((state) => state.pipeline.progress.stage);
+  const result = useEditorStore((state) => state.pipeline.result);
+  const pipelineStatus = useEditorStore((state) => state.pipeline.status);
+  const sceneStatus = useEditorStore((state) => state.scene.status);
+  const exportPhase = useEditorStore((state) => state.exportState.phase);
+
+  const [outcome, setOutcome] = useState<RunOutcome>(NO_OUTCOME);
+  const seen = useRef<RunWatchState>(INITIAL_RUN_WATCH);
+
+  useEffect(() => {
+    const step = stepRunOutcome(seen.current, {
+      running,
+      stage: progressStage,
+      result,
+      pipelineStatus,
+      sceneStatus,
+      exportPhase,
+    });
+    seen.current = step.seen;
+    if (step.outcome === null) return;
+    const settled = step.outcome;
+    // Identity-stable when nothing changed, so a run's 142 stage events cannot
+    // re-render this component's parent through a fresh object.
+    setOutcome((previous) =>
+      previous.cancelledAt === settled.cancelledAt &&
+      previous.exportCancelled === settled.exportCancelled
+        ? previous
+        : settled,
+    );
+  }, [running, progressStage, result, pipelineStatus, sceneStatus, exportPhase]);
+
+  return outcome;
+}
+
+// ---------------------------------------------------------------------------
+// The failure surface
+// ---------------------------------------------------------------------------
+
+/**
+ * Which of the three things that can go wrong is on screen, if any.
+ *
+ * A run failure outranks an export one: when the build broke, the export's
+ * "there was no model" is a consequence and not news. Below it, a cancel is
+ * checked BEFORE a refusal, because the store gives both the same
+ * `exportState.phase` of `failed` and the same fallback message, and only the
+ * observed transition can separate them ([V3.1-T6] 2).
+ */
+export function failureNotice(input: {
+  pipelineError: PipelineFailure | null;
+  pipelineRunning: boolean;
+  exportPhase: string;
+  exportError: string | null;
+  result: EngineResult | null;
+  outcome: RunOutcome;
+  paramsHash: string;
+}): { model: ErrorDetailModel; testId: string; tone: ErrorDetailTone } | null {
+  if (input.pipelineError !== null && !input.pipelineRunning) {
+    return {
+      model: runFailureModel(input.pipelineError, input.paramsHash),
+      testId: "run-error-detail",
+      tone: "danger",
+    };
+  }
+  if (input.exportPhase !== "failed") return null;
+  if (input.outcome.exportCancelled) {
+    return {
+      model: exportCancelledModel(input.outcome.cancelledAt ?? "", input.paramsHash),
+      testId: "export-cancelled-detail",
+      tone: "note",
+    };
+  }
+  if (input.exportError === null) return null;
+  return {
+    model: exportFailureModel(input.exportError, input.result, input.paramsHash),
+    testId: "export-error-detail",
+    tone: "danger",
+  };
+}
+
+/**
+ * The failure surface, as its OWN store subscriber.
+ *
+ * It has to be, because telling a cancel from a refusal needs
+ * `useRunOutcome`, which watches `pipeline.progress.stage` -- 142 writes on a
+ * full Chicago run. Reading that from `ActionBar` would re-render the buttons,
+ * the share-link memo and every note on all 142, which is the exact cost
+ * `RunStatus` was split out to avoid.
+ */
+export function RunOutcomeNotice({ paramsHash }: { paramsHash: string }) {
+  const pipelineError = useEditorStore((state) => state.pipeline.error);
+  const pipelineRunning = useEditorStore((state) => state.pipeline.status === "running");
+  const result = useEditorStore((state) => state.pipeline.result);
+  const exportPhase = useEditorStore((state) => state.exportState.phase);
+  const exportError = useEditorStore((state) => state.exportState.error);
+  const outcome = useRunOutcome();
+
+  const notice = failureNotice({
+    pipelineError,
+    pipelineRunning,
+    exportPhase,
+    exportError,
+    result,
+    outcome,
+    paramsHash,
+  });
+  if (notice === null) return null;
+  return <ExportErrorDetail model={notice.model} testId={notice.testId} tone={notice.tone} />;
+}
+
+// ---------------------------------------------------------------------------
 // The status slot
 // ---------------------------------------------------------------------------
 
@@ -549,43 +838,9 @@ export function RunStatus() {
   const progress = useEditorStore((state) => state.pipeline.progress);
   const result = useEditorStore((state) => state.pipeline.result);
   const pipelineStatus = useEditorStore((state) => state.pipeline.status);
-  const sceneStatus = useEditorStore((state) => state.scene.status);
   const exportState = useEditorStore((state) => state.exportState);
   const exporting = exportState.phase === "exporting";
-
-  const [cancelledAt, setCancelledAt] = useState<string | null>(null);
-  /**
-   * What the previous render saw, so a run leaving flight can be classified
-   * without the store having to remember it.
-   *
-   * A cancel resets `progress` to the idle value and puts the status back to
-   * `ready`, deliberately: a cancelled run is not an error and the last good
-   * model stays on screen. So the stage it stopped at exists only here, and
-   * "stopped" is told from "finished" by whether a NEW result landed. It works
-   * for the viewport's own Stop button too, which this component never hears
-   * about.
-   */
-  const run = useRef<{ running: boolean; stage: string; resultAtStart: EngineResult | null }>({
-    running: false,
-    stage: "",
-    resultAtStart: null,
-  });
-
-  useEffect(() => {
-    const state = run.current;
-    if (running && !state.running) {
-      state.resultAtStart = result;
-      state.stage = "";
-      setCancelledAt(null);
-    }
-    if (running && progress.stage !== "") state.stage = progress.stage;
-    if (!running && state.running) {
-      const finished = result !== state.resultAtStart;
-      const failed = pipelineStatus === "error" || sceneStatus === "error";
-      setCancelledAt(finished || failed ? null : state.stage);
-    }
-    state.running = running;
-  }, [running, progress.stage, result, pipelineStatus, sceneStatus]);
+  const { cancelledAt, exportCancelled } = useRunOutcome();
 
   // The wall clock. `progress.elapsedMs` is the sum of the stage times the
   // worker reported, which is the right number to compare with `etaMs` and the
@@ -621,6 +876,7 @@ export function RunStatus() {
         <p data-testid="action-bar-status" className="truncate text-2xs text-ink-muted">
           {statusLine({
             cancelledAt,
+            exportCancelled,
             pipelineStatus,
             hasResult: result !== null,
             exportLabel: exportStatusLabel(exportState),
@@ -633,9 +889,28 @@ export function RunStatus() {
   );
 }
 
+/**
+ * The two slots a project load can fill, from one parse outcome (Task 13).
+ *
+ * A pure function so the rule is testable without a DOM, in the same style as
+ * `statusLine` and `failureNotice` above it. The rule itself is one sentence:
+ * a refusal fills the error slot and nothing else, and an accepted file fills
+ * the notice slot only when it was in an older form. Both are cleared on the
+ * other branch, so a second load can never show the first load's message.
+ */
+export function projectLoadNotices(outcome: ProjectLoadResult): {
+  error: string | null;
+  notice: string | null;
+} {
+  if (!outcome.ok) return { error: outcome.reason, notice: null };
+  return { error: null, notice: outcome.migrated };
+}
+
 /** The sentence in the status slot when nothing is running. */
 export function statusLine(input: {
   cancelledAt: string | null;
+  /** The cancel stopped an export, not just a Preview ([V3.1-T6] 2). */
+  exportCancelled?: boolean;
   pipelineStatus: string;
   hasResult: boolean;
   exportLabel: string;
@@ -644,8 +919,12 @@ export function statusLine(input: {
 }): string {
   if (input.running) return "Starting...";
   if (input.cancelledAt !== null) {
+    // Ahead of the `failed` branch on purpose: a cancelled export IS a failed
+    // export as far as the store is concerned, and "Export refused." is the
+    // wrong word for something the user asked to stop.
+    const what = input.exportCancelled === true ? "Export cancelled" : "Cancelled";
     const where = stageLabel(input.cancelledAt);
-    return where === "" ? "Cancelled." : `Cancelled at ${where}.`;
+    return where === "" ? `${what}.` : `${what} at ${where}.`;
   }
   if (input.pipelineStatus === "error") return "The model could not be built.";
   if (input.exportPhase === "failed") return "Export refused.";

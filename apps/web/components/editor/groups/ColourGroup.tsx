@@ -89,6 +89,10 @@ const REGION_LABELS: Record<RegionName, string> = {
   buildings_band_6: "Buildings, band 6",
   buildings_band_7: "Buildings, band 7",
   buildings_band_8: "Buildings, band 8",
+  override_1: "Per-object colour 1",
+  override_2: "Per-object colour 2",
+  override_3: "Per-object colour 3",
+  override_4: "Per-object colour 4",
 };
 
 /** The three targets whose bodies `color_mode: "single"` merges into one. */

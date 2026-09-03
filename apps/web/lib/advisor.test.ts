@@ -277,6 +277,9 @@ describe("advisorDeps", () => {
     tiling: { enabled: true, cols: 2, rows: 2 },
     frame_style: { profile: "chamfer", corner: "mitred" },
     hanger_magnet: { diameter_mm: 8, thickness_mm: 3, count: 4 },
+    // schema_version 4 (v3.1 Tasks 11 and 12): the two per-object arrays.
+    object_overrides: [{ osm_id: "w1", layer: "building", height_scale: 1.5 }],
+    labels: [{ target_osm_id: "w1", layer: "building", surface: "building_top" }],
   };
 
   it("has a moved value for every non-boolean parameter", () => {

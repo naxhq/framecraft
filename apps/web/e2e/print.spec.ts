@@ -132,23 +132,78 @@ test("a finding with a fix (a region on a slot the profile does not have) clears
 
   const fixButton = page.getByTestId("issue-fix-slot-beyond-profile");
   await expect(fixButton).toBeVisible();
+
+  /*
+   * Record every state the button passes through, rather than sampling it.
+   *
+   * The v3 form asserted the transient directly ("disabled, reading Fixed")
+   * and became flaky: `PIPELINE_DEBOUNCE_MS` is 80 ms (`[V3.1-P1-3]`, down from
+   * 400), so the incremental run the click schedules can retire the whole row
+   * before a poll from Node gets to look. The v3.1 form replaced it with the
+   * `expect.poll(...).not.toBe("still offered")` below, which is a true
+   * invariant but passes with the DEFECT present as well: `.not.toBe` is
+   * satisfied the moment the row retires, and the broken behaviour (clear every
+   * mark whenever a fresh findings array arrives) also ends with the row
+   * retired. Reverting `IssuesBadge.tsx` to `setFixedIds(new Set())` left that
+   * assertion green, so the one case the fix exists for -- the mark holding
+   * while its row is still on screen -- was asserted nowhere outside the pure
+   * function ([V3.1-T6] 3).
+   *
+   * A recorder inside the page has no race to lose. It samples on every DOM
+   * mutation AND every animation frame, keeping only the transitions, so the
+   * whole sequence is readable afterwards however fast it ran. The defect puts
+   * an `enabled:` entry after `disabled:Fixed` while the row is still present,
+   * which is exactly what the assertions after the click forbid.
+   */
+  await page.evaluate((testId) => {
+    const log: string[] = [];
+    (window as unknown as { __fixLog: string[] }).__fixLog = log;
+    const sample = (): void => {
+      const el = document.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`);
+      const state =
+        el === null
+          ? "absent"
+          : `${el.disabled ? "disabled" : "enabled"}:${(el.textContent ?? "").trim()}`;
+      if (log[log.length - 1] !== state) log.push(state);
+    };
+    sample();
+    new MutationObserver(sample).observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["disabled"],
+    });
+    const tick = (): void => {
+      sample();
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, "issue-fix-slot-beyond-profile");
+
   await fixButton.click();
   // Immediate and optimistic: the row answers from the store's own report of
-  // what changed, not from a finished build.
+  // what changed, not from a finished build. The invariant below holds whatever
+  // the timing is: the button is NEVER left offering the same fix a second
+  // time. The recorder above is what pins the stronger claim.
   //
-  // The v3 form of this asserted the transient directly ("disabled, reading
-  // Fixed"). It cannot be read that way any anymore: `PIPELINE_DEBOUNCE_MS`
-  // is 80 ms (`[V3.1-P1-3]`, down from 400), and the incremental run that the
-  // click schedules can finish and retire the whole row before an assertion
-  // gets to look at the button. What is pinned instead is the invariant that
-  // holds either way, and it is the one that matters: the button is NEVER
-  // left offering the same fix a second time.
+  // Both facts are read in ONE synchronous DOM evaluation, deliberately.
+  // Asking the locator twice (`count()`, then `isDisabled()`) is a race
+  // against the very rebuild this assertion is about: the row can be retired
+  // between the two calls, and `isDisabled()` takes no timeout of its own
+  // (Playwright's `actionTimeout` defaults to 0, and this config sets none),
+  // so it then waits for a detached element forever and the poll dies of its
+  // own timeout without ever having produced a value. Read as one snapshot,
+  // the three outcomes are exhaustive and none of them can hang.
   await expect
     .poll(
-      async () => {
-        if ((await fixButton.count()) === 0) return "retired with its row";
-        return (await fixButton.isDisabled()) ? "marked fixed" : "still offered";
-      },
+      async () =>
+        page.evaluate(() => {
+          const button = document.querySelector<HTMLButtonElement>(
+            '[data-testid="issue-fix-slot-beyond-profile"]',
+          );
+          if (button === null) return "retired with its row";
+          return button.disabled ? "marked fixed" : "still offered";
+        }),
       { timeout: WARMUP_BUDGET_MS },
     )
     .not.toBe("still offered");
@@ -161,6 +216,33 @@ test("a finding with a fix (a region on a slot the profile does not have) clears
   // Once the next build lands, the engine no longer reports the finding at
   // all -- the row is gone, not merely disabled.
   await expect(item).toHaveCount(0, { timeout: WARMUP_BUDGET_MS });
+
+  // Now the recorder's sequence, which is the assertion the pure function's
+  // unit tests cannot make: the mark held for as long as the row did.
+  const states = await page.evaluate(
+    () => (window as unknown as { __fixLog: string[] }).__fixLog ?? [],
+  );
+  log(`fix button states: ${states.join(" -> ")}`);
+
+  // 1. The optimistic mark really appeared. Without this the rest is vacuous:
+  //    a button that went straight from offered to absent would satisfy any
+  //    "never offered again" claim while marking nothing.
+  const marked = states.indexOf("disabled:Fixed");
+  expect(states, "the button never read Fixed").not.toEqual([]);
+  expect(marked, `no "disabled:Fixed" in ${states.join(" -> ")}`).toBeGreaterThanOrEqual(0);
+
+  // 2. It was never taken back. Every state after the mark is either the mark
+  //    itself or the row's disappearance -- never the fix on offer again.
+  //    Clearing the marks on a fresh findings array puts an `enabled:` entry
+  //    here, because the array that arrives 80 ms after the click still carries
+  //    this row.
+  expect(
+    states.slice(marked + 1).filter((state) => state.startsWith("enabled:")),
+    `the mark was taken back while the row was still on screen: ${states.join(" -> ")}`,
+  ).toEqual([]);
+
+  // 3. And the row is what retired it, not a timer.
+  expect(states[states.length - 1]).toBe("absent");
   expect(pageErrors, `uncaught page errors: ${pageErrors.join(" | ")}`).toEqual([]);
 });
 

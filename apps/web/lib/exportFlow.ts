@@ -99,6 +99,16 @@ export function exportStarted(previous: ExportState): ExportState {
   return { ...previous, phase: "exporting", error: null };
 }
 
+/**
+ * An export that produced no file: refused by the gate, refused by the editor
+ * before the worker was asked, or stopped by the user mid-run.
+ *
+ * The previous export's `files` are carried over UNTOUCHED and its Blob URLs
+ * are deliberately not revoked ([V3.1-P1-15]: "the previously downloadable
+ * files stay exactly where they were"). Whether they may still be OFFERED is a
+ * separate question that `exportDownloadLinks` answers from `stale`, so a
+ * refusal never takes a good file away and a parameter change always does.
+ */
 export function exportFailedLocally(previous: ExportState, message: string): ExportState {
   return { ...previous, phase: "failed", error: message };
 }
@@ -169,7 +179,36 @@ export function exportDownloadLinks(state: ExportState): DownloadFile[] {
   return state.files;
 }
 
-/** Text for the phase row. */
+/**
+ * Text for the phase row in the results panel.
+ *
+ * The `failed` case names the PHASE and not the message. `state.error` is
+ * whatever ended the export, and the store writes the same string for two
+ * different events: a refusal by the printability gate, and a run the user
+ * stopped while the export was waiting on it ([V3.1-T6] 2). Echoing it here put
+ * "The engine could not build a model." in the results panel for a user-pressed
+ * Cancel, which is false twice over -- nothing failed and nothing was refused.
+ * The one thing that is true of every `failed` export is that no file came out
+ * of it ([V3.1-P1-15]), so that is what this says; the sentence explaining WHY,
+ * and the copyable detail behind it, belong to the action bar's own failure
+ * surface, which can tell a cancel from a refusal.
+ */
+export const EXPORT_FAILED_LABEL = "No file written";
+
+/**
+ * What `requestExport` records when the run it was waiting on ended without a
+ * result and without an error: a user-pressed Cancel, or a run superseded by a
+ * newer one.
+ *
+ * It replaces "The engine could not build a model.", which the store used to
+ * write for both, and which was false in both halves of the sentence for the
+ * cancel case ([V3.1-T6] 2). Every word here is true of both endings: the
+ * export stopped, no file was written, and whatever was downloaded before is
+ * still on disk.
+ */
+export const EXPORT_STOPPED_MESSAGE =
+  "The export was stopped before a file was written. The previous download is untouched.";
+
 export function exportStatusLabel(state: ExportState): string {
   switch (state.phase) {
     case "idle":
@@ -179,7 +218,7 @@ export function exportStatusLabel(state: ExportState): string {
     case "done":
       return state.stale ? "Done (outdated)" : "Done";
     case "failed":
-      return state.error ?? "Failed";
+      return EXPORT_FAILED_LABEL;
   }
 }
 

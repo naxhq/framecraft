@@ -24,6 +24,7 @@ import type { BuildContext } from "../solid/context";
 import type { Drape } from "../solid/drape";
 import type { FrameMating } from "../solid/frame";
 import type { HangerGeometry } from "../solid/hangers";
+import type { LabelGeometry } from "../solid/labels";
 import type { LetteringGeometry } from "../solid/lettering";
 import type { Arena, Manifold, ManifoldToplevel } from "../solid/manifold";
 import type { MinWallReport } from "../solid/measure";
@@ -69,6 +70,7 @@ export type StaticStageId =
   | "terrain"
   | "heroes"
   | "repair-buildings"
+  | "surface-overrides"
   | "surface-water"
   | "surface-rail"
   | "surface-roads"
@@ -78,6 +80,7 @@ export type StaticStageId =
   | "trees"
   | "tokens"
   | "fonts"
+  | "labels"
   | "lettering"
   | "ornaments"
   | "attribution"
@@ -207,6 +210,19 @@ export interface HeroesOut {
 /** A surface layer's repaired footprint: pass one of the layer pipeline. */
 export type SurfaceLayerOut = RepairedSurface | null;
 
+/**
+ * The override groups' own layers (v3.1 Task 11), repaired before every
+ * ordinary layer so an object the user singled out owns its ground.
+ *
+ * `unbuilt` names the groups that asked for a treatment and produced no
+ * geometry on this plate, so the audit can say which decision did nothing
+ * rather than leaving the user to notice.
+ */
+export interface SurfaceOverridesOut {
+  surfaces: RepairedSurface[];
+  unbuilt: string[];
+}
+
 /** Every surface region, extruded, in precedence order (the last layer's stage). */
 export interface SurfacesOut {
   regions: SurfaceRegion[];
@@ -221,6 +237,9 @@ export interface FontsOut {
 }
 
 export type { RecessBand };
+
+/** The surface labels, as solids per target region plus the bands the validator and the gizmo read. */
+export type LabelsOut = LabelGeometry;
 
 export interface LetteringOut extends LetteringGeometry {
   recessBands: RecessBand[];
@@ -309,6 +328,7 @@ export interface StaticStageOutputs {
   terrain: TerrainOut;
   heroes: HeroesOut;
   "repair-buildings": RepairedBuildings;
+  "surface-overrides": SurfaceOverridesOut;
   "surface-water": SurfaceLayerOut;
   "surface-rail": SurfaceLayerOut;
   "surface-roads": SurfaceLayerOut;
@@ -318,6 +338,7 @@ export interface StaticStageOutputs {
   trees: BuiltTrees;
   tokens: TokensOut;
   fonts: FontsOut;
+  labels: LabelsOut;
   lettering: LetteringOut;
   ornaments: OrnamentsOut;
   attribution: AttributionGeometry;

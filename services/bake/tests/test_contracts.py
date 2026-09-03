@@ -323,6 +323,110 @@ PRINT_PARAMS_V3_EXAMPLE = {
     "hanger_magnet": {"diameter_mm": 6, "thickness_mm": 2, "count": 2},
 }
 
+# The one top-level name schema_version 4 adds (docs/handoff/v3-11-overrides.md).
+# Spelled out here for the same reason as the two lists above: growing it is a
+# deliberate act, and the round-trip tests fail the moment the generated model
+# grows or loses a key without this list moving with it.  v4 opened carrying no
+# PrintParams field at all ([V3.1-O4]); `object_overrides` arrived with the
+# right-click inspector that writes it.
+V4_PRINT_PARAM_FIELDS = ["object_overrides", "labels"]
+
+# The label row every v4 example carries: one name on a building roof, every
+# Label member away from its default at least once (docs/handoff/v3-12-labels.md).
+LABEL_EXAMPLE = {
+    "target_osm_id": "w101",
+    "layer": "building",
+    "surface": "building_top",
+    "u": 0.35,
+    "v": 0.6,
+    "rotation_deg": 90.0,
+    "size_mm": 3.5,
+    "mode": "emboss",
+    "depth_mm": 0.6,
+    "font": "serif",
+    "text": "Willis Tower",
+    "follow": False,
+}
+
+# A fully-populated v4 payload: one override per layer, every member of
+# ObjectOverride away from its own default at least once, so the out-of-range
+# and enum cases have a non-vacuous baseline to mutate.
+PRINT_PARAMS_V4_EXAMPLE = {
+    **PRINT_PARAMS_V3_EXAMPLE,
+    "schema_version": 4,
+    "labels": [
+        LABEL_EXAMPLE,
+        {
+            "target_osm_id": "w202",
+            "layer": "road",
+            "surface": "ground",
+            "u": 0.5,
+            "v": 0.5,
+            "rotation_deg": 0.0,
+            "size_mm": 4.0,
+            "mode": "engrave",
+            "depth_mm": 0.4,
+            "font": "sans",
+            "text": "",
+            "follow": True,
+        },
+    ],
+    "object_overrides": [
+        {
+            "osm_id": "w101",
+            "layer": "building",
+            "hidden": False,
+            "height_scale": 1.5,
+            "hero": "on",
+            "tint": "#B08D57",
+            "slot": 5,
+            "color": "#E3A72F",
+            "road_mode": "inherit",
+            "width_scale": 1.0,
+            "raise_mm": 0.0,
+        },
+        {
+            "osm_id": "w202",
+            "layer": "road",
+            "hidden": False,
+            "height_scale": 1.0,
+            "hero": "inherit",
+            "tint": "",
+            "slot": 0,
+            "color": "#2F7FC1",
+            "road_mode": "emboss",
+            "width_scale": 2.0,
+            "raise_mm": 0.0,
+        },
+        {
+            "osm_id": "r303",
+            "layer": "water",
+            "hidden": True,
+            "height_scale": 1.0,
+            "hero": "inherit",
+            "tint": "",
+            "slot": 0,
+            "color": "",
+            "road_mode": "inherit",
+            "width_scale": 1.0,
+            "raise_mm": -1.25,
+        },
+        {
+            "osm_id": "w404",
+            "layer": "green",
+            "hidden": False,
+            "height_scale": 1.0,
+            "hero": "off",
+            "tint": "",
+            "slot": 6,
+            "color": "",
+            "road_mode": "inherit",
+            "width_scale": 1.0,
+            "raise_mm": 0.75,
+        },
+    ],
+}
+
 # status placeholder "queued|running|done|failed" resolved to "done" since
 # files/stats are populated, matching a completed job; progress/error are
 # the ADDITIVE fields (DECISIONS.md) and default to null when unset.
@@ -360,29 +464,98 @@ def test_scene_graph_round_trips():
 
 def test_print_params_round_trips():
     """02's example is a v1 payload: every v1 key round-trips unchanged, and the
-    only keys the v2+v3 model adds are the ones named above."""
+    only keys the v2+v3+v4 model adds are the ones named above."""
     obj = contracts.PrintParams(**PRINT_PARAMS_EXAMPLE)
     dumped = obj.model_dump(mode="json")
     assert {k: dumped[k] for k in PRINT_PARAMS_EXAMPLE} == PRINT_PARAMS_EXAMPLE
     assert sorted(set(dumped) - set(PRINT_PARAMS_EXAMPLE)) == sorted(
-        V2_PRINT_PARAM_FIELDS + V3_PRINT_PARAM_FIELDS
+        V2_PRINT_PARAM_FIELDS + V3_PRINT_PARAM_FIELDS + V4_PRINT_PARAM_FIELDS
     )
 
 
 def test_print_params_v2_round_trips():
     """A v2 payload (which carries none of the fourteen v3 keys) round-trips
-    every v2 key unchanged; the v3 keys land at their own defaults."""
+    every v2 key unchanged; the v3 and v4 keys land at their own defaults."""
     obj = contracts.PrintParams(**PRINT_PARAMS_V2_EXAMPLE)
     dumped = obj.model_dump(mode="json")
     assert {k: dumped[k] for k in PRINT_PARAMS_V2_EXAMPLE} == PRINT_PARAMS_V2_EXAMPLE
-    assert sorted(set(dumped) - set(PRINT_PARAMS_V2_EXAMPLE)) == sorted(V3_PRINT_PARAM_FIELDS)
+    assert sorted(set(dumped) - set(PRINT_PARAMS_V2_EXAMPLE)) == sorted(
+        V3_PRINT_PARAM_FIELDS + V4_PRINT_PARAM_FIELDS
+    )
 
 
 def test_print_params_v3_round_trips():
     """A fully-populated v3 payload - every new group, every new enum member -
-    survives load and dump unchanged."""
+    survives load and dump unchanged, and the one v4 key lands at its default."""
     obj = contracts.PrintParams(**PRINT_PARAMS_V3_EXAMPLE)
-    assert obj.model_dump(mode="json") == PRINT_PARAMS_V3_EXAMPLE
+    dumped = obj.model_dump(mode="json")
+    assert {k: dumped[k] for k in PRINT_PARAMS_V3_EXAMPLE} == PRINT_PARAMS_V3_EXAMPLE
+    assert sorted(set(dumped) - set(PRINT_PARAMS_V3_EXAMPLE)) == sorted(V4_PRINT_PARAM_FIELDS)
+    assert dumped["object_overrides"] == []
+
+
+def test_print_params_v4_round_trips():
+    """A fully-populated v4 payload - four overrides, one per layer, every
+    ObjectOverride member away from its default at least once - survives load
+    and dump unchanged."""
+    obj = contracts.PrintParams(**PRINT_PARAMS_V4_EXAMPLE)
+    assert obj.model_dump(mode="json") == PRINT_PARAMS_V4_EXAMPLE
+
+
+def test_object_override_needs_an_id_and_a_layer_and_nothing_else():
+    """The two required members are required and every other member back-fills,
+    so the inspector can write a row the moment the user picks an object."""
+    minimal = contracts.ObjectOverride(osm_id="w1", layer="road")
+    assert minimal.model_dump(mode="json") == {
+        "osm_id": "w1",
+        "layer": "road",
+        "hidden": False,
+        "height_scale": 1.0,
+        "hero": "inherit",
+        "tint": "",
+        "slot": 0,
+        "color": "",
+        "road_mode": "inherit",
+        "width_scale": 1.0,
+        "raise_mm": 0.0,
+    }
+    for missing in ({"layer": "road"}, {"osm_id": "w1"}):
+        with pytest.raises(ValidationError):
+            contracts.ObjectOverride(**missing)
+
+
+def test_object_overrides_are_capped_at_the_documented_count():
+    """`maxItems` is the contract's own enforcement of the cap the note measures;
+    a payload past it is refused rather than silently truncated."""
+    row = {"osm_id": "w1", "layer": "building"}
+    contracts.PrintParams(**{**PRINT_PARAMS_EXAMPLE, "object_overrides": [row] * 24})
+    with pytest.raises(ValidationError):
+        contracts.PrintParams(**{**PRINT_PARAMS_EXAMPLE, "object_overrides": [row] * 25})
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"layer": "rail"},
+        {"hero": "maybe"},
+        {"road_mode": "carve"},
+        {"height_scale": 0.05},
+        {"height_scale": 4.5},
+        {"width_scale": 0.1},
+        {"width_scale": 5.0},
+        {"raise_mm": -2.5},
+        {"raise_mm": 2.5},
+        {"slot": -1},
+        {"slot": 17},
+        {"color": "red"},
+        {"tint": "#12345"},
+        {"osm_id": "w" * 33},
+        {"unknown_member": 1},
+    ],
+)
+def test_object_override_refuses_out_of_range_and_unknown_members(patch):
+    with pytest.raises(ValidationError):
+        contracts.ObjectOverride(**{"osm_id": "w1", "layer": "building", **patch})
 
 
 def test_bake_result_round_trips():
@@ -444,7 +617,7 @@ OUT_OF_RANGE_CASES = [
     # v2 fields: numeric bounds, string lengths, the hex pattern, array caps
     # and the schema_version enum.
     ("print_params.json", "PrintParams", PRINT_PARAMS_V2_EXAMPLE, ["schema_version"], 1),
-    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["schema_version"], 4),
+    ("print_params.json", "PrintParams", PRINT_PARAMS_V3_EXAMPLE, ["schema_version"], 5),
     ("print_params.json", "PrintParams", PRINT_PARAMS_V2_EXAMPLE, ["city_label"], TOO_LONG),
     (
         "print_params.json",
@@ -798,7 +971,9 @@ def _model_field_names(model) -> dict:
 REQUIRED_DEF_PROPERTIES = {
     "scene_request.json": 0,  # no $defs at all
     "scene_graph.json": 25,
-    "print_params.json": 9,
+    # 9 through schema_version 3, plus ObjectOverride's `osm_id` and `layer`,
+    # plus Label's `target_osm_id`, `layer` and `surface` (Task 12).
+    "print_params.json": 14,
     "bake_result.json": 8,
 }
 
@@ -921,16 +1096,17 @@ def test_default_print_params_dump_validates_against_the_v2_schema():
     its pattern or its enum, and no required key goes missing."""
     instance = contracts.PrintParams().model_dump(mode="json")
     jsonschema.validate(instance=instance, schema=_schema("print_params.json"))
-    assert instance["schema_version"] == 3
+    assert instance["schema_version"] == 4
 
 
 def test_schema_version_is_optional_and_not_required():
     schema = _schema("print_params.json")
     assert "schema_version" not in schema["required"]
-    assert schema["properties"]["schema_version"]["enum"] == [2, 3]
+    assert schema["properties"]["schema_version"]["enum"] == [2, 3, 4]
     # Absent is legal, and loading a payload without it still yields the
-    # current default (v3, [V3-P1c] below).
-    assert contracts.PrintParams(**PRINT_PARAMS_EXAMPLE).schema_version == 3
+    # current default (v4, [V3.1-O4]: the revision that added the SceneGraph's
+    # optional name/osm_id/kind and no PrintParams field at all).
+    assert contracts.PrintParams(**PRINT_PARAMS_EXAMPLE).schema_version == 4
     # A v2 payload that spells out schema_version=2 explicitly still loads.
     assert contracts.PrintParams(**PRINT_PARAMS_V2_EXAMPLE).schema_version == 2
 

@@ -33,9 +33,15 @@ packages/contracts/gen_ts.py). Hand edits here will be overwritten.
 """
 from __future__ import annotations
 
-from typing import Annotated, List, Literal, Optional, Tuple
+from typing import Annotated, Any, List, Literal, Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+)
 
 '''
 
@@ -92,6 +98,58 @@ def length_constraints(prop: dict) -> list[str]:
     if "maxItems" in prop:
         args.append(f"max_length={prop['maxItems']}")
     return args
+
+
+def allows_null(prop: dict) -> bool:
+    """True when the schema fragment lists ``null`` among its allowed types.
+
+    Written two ways in this contract set: ``"type": ["string", "null"]``
+    (``SceneRequest.preset_id``) and ``"anyOf": [{...}, {"type": "null"}]``
+    (``BakeResult.files``).  Both mean ``null`` IS a legal value, which is what
+    separates them from a merely optional property (see ``absent_by_default``).
+    """
+    t = prop.get("type")
+    if isinstance(t, list) and "null" in t:
+        return True
+    return any(branch.get("type") == "null" for branch in prop.get("anyOf", []))
+
+
+def absent_by_default(prop: dict, prop_name: str, required: set[str]) -> bool:
+    """True when "the key is not there" is this property's own default state.
+
+    Three conditions, all of them: not in ``required``, no ``default`` to fall
+    back on, and ``null`` not among its allowed types.  Such a property has no
+    legal value standing for "unset" - ``null`` is not one of them - so the only
+    honest serialization of an unset one is to omit the key, which is what
+    ``OMIT_ABSENT_SERIALIZER`` below makes the model do.  The v4 SceneGraph's
+    ``name``/``osm_id``/``kind`` are the first properties in this contract set
+    shaped that way; every existing ``Optional`` field is nullable WITH a
+    ``"default": null`` and therefore keeps emitting its ``null``.
+    """
+    return prop_name not in required and "default" not in prop and not allows_null(prop)
+
+
+# The wrap serializer emitted for a class that has absent-by-default properties.
+# `{keys}` is the tuple of their contract key names, in schema order.
+OMIT_ABSENT_SERIALIZER = '''
+    @model_serializer(mode="wrap")
+    def _omit_absent(self, handler: SerializerFunctionWrapHandler) -> Any:
+        """Drop {names} from a dump when they are absent.
+
+        These properties are optional AND non-nullable in the schema, so `null`
+        is not one of their legal values: `None` on the model means "the key was
+        not sent", and a dump that wrote `null` would emit an instance the
+        contract itself rejects.  Omitting them is also what lets a payload
+        written against an EARLIER schema version round-trip through this model
+        byte for byte (services/bake/tests/test_contracts.py's
+        `test_scene_graph_dumps_fixture_verbatim_without_by_alias`, and the
+        per-version migration cases in tests/test_schema_migration.py).
+        """
+        data = handler(self)
+        for key in {keys}:
+            if key in data and data[key] is None:
+                del data[key]
+        return data'''
 
 
 def annotate(base: str, args: list[str]) -> str:
@@ -265,6 +323,7 @@ class Emitter:
         )
         if not props:
             lines.append("    pass")
+        absent: list[str] = []
         for prop_name, prop_schema in props.items():
             py_t = self.py_type(prop_schema)
             default = self.py_default(prop_schema, py_t)
@@ -285,9 +344,13 @@ class Emitter:
 
             if default is None and prop_name not in required:
                 # Not required, no explicit default in schema: make it
-                # optional so partial construction never breaks.
+                # optional so partial construction never breaks.  `None` is the
+                # CARRIER for "absent" here, not a value the contract allows, so
+                # the key is dropped again on the way out (see absent_by_default).
                 py_t = f"Optional[{py_t}]" if not py_t.startswith("Optional[") else py_t
                 default = ("value", "None")
+                if absent_by_default(prop_schema, prop_name, required):
+                    absent.append(prop_name)
 
             if needs_alias:
                 field_args = []
@@ -304,6 +367,12 @@ class Emitter:
                 lines.append(f"    {field_name}: {py_t} = {rhs}")
             else:
                 lines.append(f"    {field_name}: {py_t}")
+        if absent:
+            names = ", ".join(f"`{key}`" for key in absent)
+            # A one-key tuple still needs its trailing comma to BE a tuple.
+            body = ", ".join(json.dumps(key) for key in absent)
+            keys = f"({body},)" if len(absent) == 1 else f"({body})"
+            lines.append(OMIT_ABSENT_SERIALIZER.format(names=names, keys=keys))
         self.class_blocks.append("\n".join(lines) + "\n")
 
     def emit_root(self) -> str:

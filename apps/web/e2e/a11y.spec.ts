@@ -25,6 +25,21 @@ import { mockChicagoOverpass } from "./overpassMock";
  * (5.1 min into a 120-press walk), not a single slow assertion.
  */
 const BUDGET_FACTOR = Number(process.env.E2E_BUDGET_FACTOR ?? 1) || 1;
+/** Every settings group the panel renders, in panel order. `output` is the pinned action area. */
+const EVERY_SETTINGS_GROUP = [
+  "location",
+  "scale",
+  "buildings",
+  "heights",
+  "surface",
+  "regions",
+  "bridges",
+  "terrain",
+  "frame",
+  "colour",
+  "printer",
+] as const;
+
 const WARMUP_BUDGET_MS = 60_000 * BUDGET_FACTOR;
 const BLOCKING_IMPACTS = new Set(["serious", "critical"]);
 
@@ -128,8 +143,10 @@ for (const theme of ["light", "dark"] as const) {
     await auditWithAxe(page, `${theme} / empty`);
 
     // 2. A real scene, with every group open so nothing is audited unrendered.
+    // Since Task 5 only Location and Scale start open, so this list is now
+    // every settings group rather than the three that used to start closed.
     await generateChicago(page);
-    for (const group of ["frame", "colour", "printer"]) {
+    for (const group of EVERY_SETTINGS_GROUP) {
       const toggle = page.getByTestId(`group-${group}-toggle`);
       if ((await toggle.getAttribute("aria-expanded")) === "false") {
         await toggle.click();
@@ -178,7 +195,7 @@ for (const theme of ["light", "dark"] as const) {
 test("every control in the panel is reachable and named", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId("editor")).toBeVisible();
-  for (const group of ["frame", "colour", "printer"]) {
+  for (const group of EVERY_SETTINGS_GROUP) {
     const toggle = page.getByTestId(`group-${group}-toggle`);
     if ((await toggle.getAttribute("aria-expanded")) === "false") await toggle.click();
   }
@@ -246,7 +263,14 @@ test("every control is reachable by Tab, in order, with a visible focus ring", a
   await expect(page.getByTestId("pipeline-stage-overlay")).toHaveCount(0, {
     timeout: WARMUP_BUDGET_MS,
   });
-  for (const group of ["frame", "colour", "printer"]) {
+  // The same set this walk has always covered: three groups it opened, plus
+  // the four that used to start open and now do not (Task 5). Deliberately NOT
+  // every group: the walk is bounded at 120 presses and has to complete a full
+  // cycle, and Surface depths plus Bridges would add fifteen more stops to a
+  // cycle that already runs to about a hundred. Those two are covered by the
+  // axe sweep and the unnamed-control census above, both of which open
+  // everything and neither of which walks.
+  for (const group of ["buildings", "heights", "surface", "frame", "colour", "printer"]) {
     const toggle = page.getByTestId(`group-${group}-toggle`);
     if ((await toggle.getAttribute("aria-expanded")) === "false") await toggle.click();
   }

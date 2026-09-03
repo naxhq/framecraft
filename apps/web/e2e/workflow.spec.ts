@@ -121,6 +121,8 @@ test("changing three settings and pressing Ctrl+Z twice reverts them, and the hi
   await page.locator("#frame").click();
   await expect(page.locator("#frame")).toHaveAttribute("aria-checked", "false");
 
+  // Water is in the Surface group, which starts collapsed since Task 5.
+  await openGroup(page, "surface");
   await expect(page.locator("#water")).toHaveAttribute("aria-checked", "true");
   await page.locator("#water").click();
   await expect(page.locator("#water")).toHaveAttribute("aria-checked", "false");
@@ -168,9 +170,10 @@ test("save project, reload, load project: every setting comes back", async ({ pa
   await page.getByTestId("save-project-button").click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toContain("bergen");
-  expect(download.suggestedFilename()).toContain(".framecraft.json");
+  // The current extension, and NOT the legacy double one it replaced.
+  expect(download.suggestedFilename().endsWith(".framecraft")).toBe(true);
 
-  const savedPath = path.join(os.tmpdir(), `framecraft-workflow-${Date.now()}.framecraft.json`);
+  const savedPath = path.join(os.tmpdir(), `framecraft-workflow-${Date.now()}.framecraft`);
   await download.saveAs(savedPath);
 
   // A genuinely fresh editor: reload drops every in-memory (non-localStorage)

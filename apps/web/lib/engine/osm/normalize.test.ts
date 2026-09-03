@@ -3,7 +3,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { SceneRequest } from "../../contracts";
 import { area, netArea, type Ring } from "./geometry";
-import { sceneFromOverpass, type OverpassResponse } from "./normalize";
+import { heightRulesFrom } from "./heights";
+import { projectOverpass, sceneFromOverpass, sceneFromProjected, type OverpassResponse } from "./normalize";
 
 // Ground truth: the committed raw Overpass fixture (phase 0, 12.7 MB, sha1
 // a4e5375818f309940313e0ac08b8ebb88c615f9e -- see overpass.test.ts) and
@@ -21,6 +22,45 @@ const CHICAGO_LOOP: SceneRequest = { lat: 41.8827, lon: -87.6233, radius_m: 900.
 function ringNetArea(ring: Ring, holes: Ring[]): number {
   return netArea(ring, holes);
 }
+
+describe("projectOverpass + sceneFromProjected: the height rules reach the buildings' heights and nothing else", () => {
+  const projected = projectOverpass(RAW, CHICAGO_LOOP);
+  const frozen = sceneFromProjected(projected);
+  const storeys = sceneFromProjected(projected, { heights: heightRulesFrom({ floor_height_m: 6.0 }) });
+
+  it("composes to sceneFromOverpass, at the frozen constants and at a changed rule set", () => {
+    expect(JSON.stringify(frozen)).toBe(JSON.stringify(sceneFromOverpass(RAW, CHICAGO_LOOP)));
+    expect(JSON.stringify(storeys)).toBe(JSON.stringify(sceneFromOverpass(RAW, CHICAGO_LOOP, { heights: heightRulesFrom({ floor_height_m: 6.0 }) })));
+  });
+
+  it("a storey height moves height_m, min_height_m and is_tall of the storey-tagged buildings, and no other field of any building", () => {
+    expect(storeys.buildings).toHaveLength(frozen.buildings.length);
+    let moved = 0;
+    for (let i = 0; i < frozen.buildings.length; i++) {
+      const { height_m: h0, min_height_m: m0, is_tall: t0, height_source: s0, ...rest0 } = frozen.buildings[i];
+      const { height_m: h1, min_height_m: m1, is_tall: t1, height_source: s1, ...rest1 } = storeys.buildings[i];
+      expect(rest1).toEqual(rest0);
+      // A merged footprint's source can flip with the rules (the tallest member
+      // is decided per run); a leaf's cannot.
+      if (s0 !== "levels" && s1 !== "levels") expect([h1, m1, t1]).toEqual([h0, m0, t0]);
+      if (h1 !== h0) moved += 1;
+    }
+    expect(moved).toBeGreaterThan(0);
+    expect(moved).toBe(frozen.buildings.filter((b) => b.height_source === "levels" || storeys.buildings.find((s) => s.id === b.id)?.height_source === "levels").length);
+  });
+
+  it("shares the ground layers between rule sets: the same arrays, not copies, which is what normalise#ground stands on", () => {
+    expect(storeys.roads).toBe(frozen.roads);
+    expect(storeys.rail).toBe(frozen.rail);
+    expect(storeys.water).toBe(frozen.water);
+    expect(storeys.green).toBe(frozen.green);
+    expect(storeys.trees).toBe(frozen.trees);
+    expect(storeys.bounds).toEqual(frozen.bounds);
+    expect(storeys.center).toEqual(frozen.center);
+    expect(storeys.stats.building_count).toBe(frozen.stats.building_count);
+    expect(storeys.stats.coverage).toBe(frozen.stats.coverage);
+  });
+});
 
 describe("sceneFromOverpass (parity against the Python /scene reference)", () => {
   const scene = sceneFromOverpass(RAW, CHICAGO_LOOP);

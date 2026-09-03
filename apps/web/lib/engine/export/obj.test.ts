@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { APPLICATION } from "./common";
 import { DEFAULT_PRINT_PARAMS, FIXED_DATE, makeResult, sampleRegions, sampleResult } from "./fixtures";
 import type { RegionMesh } from "../types";
 import { exportObj } from "./obj";
@@ -20,7 +21,10 @@ describe("exportObj", () => {
   });
 
   it("carries the metadata as header comments", () => {
-    expect(lines[0]).toBe("# FrameCraft 3.0.0");
+    // From `APPLICATION` (`lib/version.ts`), never a literal; see the note in
+    // `generic3mf.test.ts`.
+    expect(lines[0]).toBe(`# ${APPLICATION}`);
+    expect(lines[0]).toMatch(/^# FrameCraft \d+\.\d+\.\d+/);
     expect(obj).toContain("# Title: FrameCraft Chicago");
     expect(obj).toContain("# Created: 2026-08-30T12:00:00Z");
     expect(obj).toContain("# © OpenStreetMap contributors, ODbL 1.0");

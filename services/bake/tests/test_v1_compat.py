@@ -200,6 +200,13 @@ def test_the_v1_sidecar_print_params_load_and_equal_the_v2_defaults():
         "tiling",
         "frame_style",
         "hanger_magnet",
+        # v4 (schema_version 4), [V3.1-O4]: the per-object overrides the
+        # right-click inspector writes. Empty by default, so the same "carries
+        # none of them and still loads to exactly PrintParams()" claim holds.
+        "object_overrides",
+        # v4, Task 12: the surface labels the viewport places. Empty by
+        # default for the same reason (docs/handoff/v3-12-labels.md).
+        "labels",
     }
     assert PrintParams(**v1_params) == PrintParams()
 
@@ -318,4 +325,8 @@ def test_the_description_gains_only_the_v2_defaults(baked, golden_xml):
         "tiling",
         "frame_style",
         "hanger_magnet",
+        # v4 (schema_version 4), [V3.1-O4]
+        "object_overrides",
+        # v4, Task 12 surface labels
+        "labels",
     }

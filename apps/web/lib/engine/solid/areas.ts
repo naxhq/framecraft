@@ -47,12 +47,26 @@ import {
   thinParts,
   type Blocker,
 } from "./repair";
-import { railLayerContours, roadLayerContours } from "./roads";
+import { overrideRoadContours, railLayerContours, roadLayerContours } from "./roads";
+import {
+  baseOsmIdOfArea,
+  hiddenOverrideIds,
+  overrideGroups,
+  type OverrideGroup,
+  type OverrideLayer,
+} from "./overrides";
 import type { RegionName } from "../types";
 
-/** One layer after the Stage 1 repair, before anything is extruded. */
+/**
+ * One layer after the Stage 1 repair, before anything is extruded.
+ *
+ * `region` is a `RegionName` rather than a `SurfaceName` because an override
+ * group's own layer (`override_N`, v3.1 Task 11) is repaired, merged, extruded
+ * and carved by exactly this machinery; the four names a `SurfaceName` can take
+ * are all region names too.
+ */
 export interface RepairedSurface {
-  region: SurfaceName;
+  region: RegionName;
   /** The repaired footprint: what the pocket and the neighbours are built from. */
   section: CrossSection;
   /** The same, clipped to the plate: what the printed solid is built from. */
@@ -80,8 +94,8 @@ export const SURFACE_ORDER = ["water", "rail", "roads", "parks"] as const;
 
 export type SurfaceName = (typeof SURFACE_ORDER)[number];
 
-/** The contract's per-region placement, with the v1 defaults as the fallback. */
-export function placementFor(ctx: BuildContext, region: SurfaceName): Placement {
+/** The depth and offset the contract asks for, before any clamp. */
+function placementSpec(ctx: BuildContext, region: SurfaceName): [number, number] {
   const spec = ctx.params.regions?.[region];
   const fallback: Record<SurfaceName, [number, number]> = {
     water: [1.0, -0.5],
@@ -90,20 +104,93 @@ export function placementFor(ctx: BuildContext, region: SurfaceName): Placement 
     parks: [0.4, 0.0],
   };
   const [depth, proud] = fallback[region];
-  return placementOf(ctx, spec?.depth_mm ?? depth, spec?.proud_mm ?? proud);
+  return [spec?.depth_mm ?? depth, spec?.proud_mm ?? proud];
+}
+
+/** The contract's per-region placement, with the v1 defaults as the fallback. */
+export function placementFor(ctx: BuildContext, region: SurfaceName): Placement {
+  const [depth, proud] = placementSpec(ctx, region);
+  return placementOf(ctx, depth, proud);
+}
+
+/**
+ * How far the surface a road override may be moved when the layer itself sits
+ * flush, mm.
+ *
+ * `regions.roads.proud_mm` can legally be 0, and a per-road "engrave" that
+ * mirrored a zero offset would engrave nothing. The contract's own default
+ * magnitude is the honest stand-in: it is what "engraved roads" means on a
+ * default plate.
+ */
+export const OVERRIDE_FLUSH_PROUD_MM = 0.2;
+
+/**
+ * Where one override group's own layer sits, relative to the base top.
+ *
+ * It MIRRORS the layer it came out of rather than inventing numbers: the depth
+ * is the layer's, and only the offset moves.
+ *
+ * * a road switched to `engrave` takes `-|roads.proud_mm|`, to `emboss` takes
+ *   `+|roads.proud_mm|`, so a user who deepened the road recess and then
+ *   embossed one street gets that street standing as proud as the others are
+ *   sunk;
+ * * a water or green polygon takes its layer's offset plus `raise_mm`, so the
+ *   number in the inspector reads as "this much further up (or down) than the
+ *   rest of the water";
+ * * everything else keeps its layer's placement exactly, which is the case of
+ *   a group that only asked for a colour.
+ *
+ * Null for a building group: buildings are extruded from the plate to their own
+ * roof and have no surface placement at all.
+ */
+export function overridePlacement(ctx: BuildContext, group: OverrideGroup): Placement | null {
+  if (group.surface === null) return null;
+  const [depth, layerProud] = placementSpec(ctx, group.surface);
+  if (group.layer === "road" && group.roadMode !== "inherit") {
+    const magnitude = Math.abs(layerProud) < 1e-9 ? OVERRIDE_FLUSH_PROUD_MM : Math.abs(layerProud);
+    return placementOf(ctx, depth, group.roadMode === "emboss" ? magnitude : -magnitude);
+  }
+  return placementOf(ctx, depth, layerProud + group.raiseMm);
+}
+
+/**
+ * The polygons of one area layer that stay in it.
+ *
+ * Two kinds of `object_overrides` row take a polygon out (v3.1 Task 11): one
+ * that hides it, and one that gives it a filament or a raise of its own and
+ * moves it into an `override_N` region. Both are applied HERE, before the
+ * repair, so the layer closes over the ground rather than keeping a hole.
+ *
+ * A dissolved polygon with no `osm_id` at all names no OSM element and can
+ * never be the target of an override, so it is always kept.
+ */
+function visibleAreas(
+  ctx: BuildContext,
+  features: readonly { ring: import("../../contracts").Point[]; holes: import("../../contracts").Point[][]; osm_id?: string }[],
+  layer: OverrideLayer,
+): typeof features {
+  const hidden = hiddenOverrideIds(ctx.params, layer);
+  const grouped = overrideGroups(ctx.params).byId;
+  if (hidden.size === 0 && grouped.size === 0) return features;
+  return features.filter((feature) => {
+    const id = baseOsmIdOfArea(feature);
+    if (id === null) return true;
+    if (hidden.has(id)) return false;
+    return grouped.get(id)?.layer !== layer;
+  });
 }
 
 /** Contours for one layer, print mm. */
 function layerContours(ctx: BuildContext, region: SurfaceName): Contour[] {
   switch (region) {
     case "water":
-      return ctx.params.water ? areaContours(ctx.scene.water, ctx.scale) : [];
+      return ctx.params.water ? areaContours(visibleAreas(ctx, ctx.scene.water, "water"), ctx.scale) : [];
     case "rail":
       return railLayerContours(ctx);
     case "roads":
       return roadLayerContours(ctx);
     case "parks":
-      return areaContours(ctx.scene.green, ctx.scale);
+      return areaContours(visibleAreas(ctx, ctx.scene.green, "green"), ctx.scale);
   }
 }
 
@@ -195,6 +282,103 @@ export function buildSurfaceRegion(
 }
 
 /**
+ * The polygons one override group takes out of an area layer, print mm.
+ *
+ * The group's own ids, in the group's layer, minus anything hidden: an object
+ * cannot be both given a filament and taken out of the model, and "hidden"
+ * wins, because it is the stronger statement.
+ */
+function overrideAreaContours(ctx: BuildContext, group: OverrideGroup): Contour[] {
+  if (group.layer !== "water" && group.layer !== "green") return [];
+  if (group.layer === "water" && !ctx.params.water) return [];
+  const source = group.layer === "water" ? ctx.scene.water : ctx.scene.green;
+  const hidden = hiddenOverrideIds(ctx.params, group.layer);
+  const wanted = new Set(group.ids);
+  const features = source.filter((feature) => {
+    const id = baseOsmIdOfArea(feature);
+    return id !== null && wanted.has(id) && !hidden.has(id);
+  });
+  return areaContours(features, ctx.scale);
+}
+
+/**
+ * One override group's layer, repaired exactly as a surface layer is (v3.1
+ * Task 11).
+ *
+ * It IS a surface layer: the same repair, the same clip rules, the same
+ * `RepairedSurface` record, so the ridge merge, the base carve, the assembly and
+ * the region phase all treat it like water or roads and need no special case.
+ * What differs is only where its contours come from and where it sits.
+ *
+ * Null when the group has no geometry on this plate - a group whose only road
+ * is a bridge deck, or whose object the crop no longer reaches - which is what
+ * lets `surface-overrides` report the groups that could not be built.
+ */
+export function buildOverrideSurface(
+  ctx: BuildContext,
+  group: OverrideGroup,
+  blockers: readonly Blocker[],
+): RepairedSurface | null {
+  const placement = overridePlacement(ctx, group);
+  if (placement === null) return null;
+  const contours =
+    group.layer === "road" ? overrideRoadContours(ctx, group) : overrideAreaContours(ctx, group);
+  if (contours.length === 0) return null;
+  const recessed = placement.topMm < ctx.baseTopMm;
+  const clipHalfMm = recessed ? ctx.recessClipHalfMm : ctx.cropHalfMm;
+  const repaired = repairFlatLayer(ctx, contours, {
+    clipHalfMm,
+    subtract: blockers,
+    thinMode: recessed ? "keep" : "strip",
+  });
+  if (repaired.section === null) return null;
+  let solidSection = repaired.section;
+  if (clipHalfMm > ctx.plateHalfMm) {
+    const plate = cropSection(ctx, ctx.plateHalfMm);
+    const clipped = intersectSection(ctx.arena, repaired.section, plate);
+    ctx.arena.drop(plate);
+    if (clipped === null) return null;
+    solidSection = clipped;
+  }
+  return {
+    region: group.region,
+    section: repaired.section,
+    solidSection,
+    placement,
+    dropped: repaired.dropped,
+  };
+}
+
+/**
+ * Every override group's layer, in group order, each blocked by the buildings
+ * and by the groups before it.
+ *
+ * They come FIRST, before water: an object the user singled out owns its ground
+ * against every ordinary layer, which is what makes "this street is gold" mean
+ * the whole street rather than the parts no park claimed.
+ */
+export function buildOverrideSurfaces(
+  ctx: BuildContext,
+  groups: readonly OverrideGroup[],
+  buildingFootprint: CrossSection | null,
+): { surfaces: RepairedSurface[]; unbuilt: OverrideGroup[] } {
+  const surfaces: RepairedSurface[] = [];
+  const unbuilt: OverrideGroup[] = [];
+  const blockers: Blocker[] = [{ section: buildingFootprint, separate: false }];
+  for (const group of groups) {
+    if (group.surface === null) continue;
+    const built = perfSpan(`solid.${group.region}`, () => buildOverrideSurface(ctx, group, blockers));
+    if (built === null) {
+      unbuilt.push(group);
+      continue;
+    }
+    surfaces.push(built);
+    blockers.push({ section: built.section, separate: false });
+  }
+  return { surfaces, unbuilt };
+}
+
+/**
  * The footprint the base is CARVED with: the layer, grown by `POCKET_GROW_MM`.
  *
  * The layers tile the plate, so extruding two neighbours as they are gives two
@@ -276,20 +460,22 @@ export const RIDGE_MERGE_PASSES = 4;
  * ridge standing. What a sub-minimum cutter polygon prints as is a dimple no
  * nozzle reaches, i.e. solid base; what dropping it prints as is a fin.
  *
- * **Frame-off only, and that is a scoping decision rather than a geometric one**
- * (`[V3-P7-fix]`). The reference runs this unconditionally. The frame-ON Chicago
- * plate carries the same ridges - 38 islands that hold no full wall and 13 thin
- * wedges at plate 180 - and merging them moves the committed default golden,
- * which the brief for this fix rules out. With the frame off there is nothing to
- * hide them: the crop edge IS the outer wall, and the reference validator fails
- * the plate over them. The frame-on case is written up for the team lead.
+ * Frame on and off alike, as the reference runs it. It was gated to the
+ * frame-off plate for v3.0.0 (`[V3-P7-fix]`, a scoping decision: merging the
+ * frame-on Chicago plate's 38 islands and 13 wedges moved the default golden
+ * days before the tag, and that plate passed every validator row as it was).
+ * The first frame-on builds of the other presets did not: Tokyo fails the
+ * reference validator's `min_wall` row at 0.168 mm and London at 0.206 mm,
+ * each on a wedge of base between the flat end of a road groove and the wall
+ * of the building it stops short of, exactly the complement this merge exists
+ * to hand to the groove (v3.1 preset matrix, 2026-09-03). The frame hides a
+ * rind at the crop edge; it hides nothing in the middle of the plate.
  */
 export function mergeRecessRidges(
   ctx: BuildContext,
   layers: readonly RepairedSurface[],
   buildingFootprint: CrossSection | null,
 ): void {
-  if (ctx.params.frame) return;
   const recessed = layers.filter((l) => l.placement.topMm < ctx.baseTopMm);
   if (recessed.length === 0) return;
   // The sink is the last recessed layer in precedence order - roads at the

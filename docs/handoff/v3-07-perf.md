@@ -1,0 +1,527 @@
+# v3-07 perf (Task 7: engine latency, and the two dead fields)
+
+Written by the engine performance agent against `docs/handoff/v3-01-pipeline.md`
+sections 4 and 10 (the measured stage split and the runner), the Task 0
+baseline in `docs/handoff/v3-00-baseline.md` section c, and the two rulings
+`[V3.1-P2-1]` and `[V3.1-P2-2]`. Every number below was measured on this host
+(Windows 11, Node through `vite-node`, the Chicago fixture) in the same session,
+before and after, with the same scripts. Other agents were running vitest on
+the machine for part of the session; each table says what the load was.
+
+## 1. The profile before
+
+`FRAMECRAFT_PERF=1 npm run export:cli` on `fixtures/chicago-scene.json`,
+`fixtures/print-params-default.json`, target `bambu-3mf`, one cold run, tree at
+`af02c98` (8 other node processes alive, none building):
+
+| stage or row | ms |
+|---|---|
+| `engine.build` | 5126 |
+| `phase.geometry` | 974 |
+| `surface-roads` | 543 |
+| `surface-parks` | 165 |
+| `repair-buildings` | 98 |
+| `attribution` | 93 |
+| `phase.region` | 1142 |
+| `sit` (the base carve, evaluated lazily here) | 270 |
+| `finish-base` | 300 |
+| `finish-buildings` | 242 |
+| `finish-roads` | 204 |
+| `finish-frame` | 58 |
+| `finish-parks` | 52 |
+| `finish.prune` (six regions) | 113 |
+| `mesh.clean` (seven calls: six regions and the merged solid) | 2586 |
+| `mesh.double` | 68 |
+| `mesh.order` | 40 |
+| `phase.audit` | 3009 |
+| `assembly` | 519 |
+| `merged` | 2031 |
+| `measure` | 447 |
+| `export.bambu-3mf` (writer) | 337 |
+| CLI wall, process start to exit | 5470 |
+
+Half of the build was `cleanMesh`. Per mesh (a scratch script calling
+`cleanMesh` on each finished region's solid and on the merged solid, each rung
+of the ladder separately):
+
+| mesh | vertices | triangles | degenerate at 1e-7 | rung that clears | ladder ms |
+|---|---|---|---|---|---|
+| base | 27 176 | 54 348 | 345 | 1e-6 (weld 114, split 117) | 501 |
+| frame | 8 848 | 17 696 | 0 | none needed | 2 |
+| buildings | 10 217 | 19 486 | 128 | 1e-6 (weld 52, split 28) | 138 |
+| roads | 16 574 | 34 636 | 72 | 1e-6 (weld 30, split 16) | 260 |
+| water | 980 | 1 920 | 8 | 1e-6 (weld 4) | 13 |
+| parks | 4 060 | 7 456 | 12 | 1e-6 (weld 6) | 47 |
+| merged | 47 022 | 94 040 | 260 | 1e-4, after 1e-6 leaves 2 and 1e-5 leaves 1 | 2253 |
+
+So the regions were one rung each and the merged solid walked all three, and a
+rung on the merged solid cost 740 to 1370 ms. Inside a rung the cost was three
+string-keyed structures: `weld`'s 27-cell grid scan built a template string
+per cell per vertex (27 per vertex), `splitNeedles` built a `Map<string,
+number>` over every directed edge of the mesh (3 per triangle, 282 000 on the
+merged solid) to answer a lookup for the 260 needles, and `openEdges` ran a
+`Map<number, number>` over the same 282 000 edges after every weld and every
+split pass. None of the geometry was the cost.
+
+The candidates the brief named, confirmed or ruled out:
+
+- Rungs that change nothing: confirmed as a symptom, not the cause. On every
+  region the first rung clears the mesh and the loop stops. On the merged
+  solid all three rungs are needed (the coarsest is the one that clears it),
+  so there was no rung to skip; each rung was simply slow.
+- The merged solid rebuilt from primitives when the finished regions exist:
+  ruled out. `assembly` is the reference recipe by ruling `[V3-P3-G7]` (the
+  additive primitives unioned, only the visible part of each recess subtracted)
+  and a union of the finished regions would carry every seam sliver into the
+  export; it is 519 ms in the audit phase and gates nothing the preview shows.
+- `pruneDebris` decomposing twice: ruled out; `pruneDebrisCounted` already made
+  it one decomposition. What that one decomposition cost was 85 ms on the
+  buildings region and 65 ms on the Overpass-path roads region, because
+  `decompose()` copies every body into a Manifold of its own to count them.
+- Per-polygon Clipper2 calls that could be batched: ruled out. Sub-rows added
+  to `repairFlatLayer` show the roads layer is one union of its 6 000 ribbon
+  primitives (393 ms over the three layers), one closing pair (102 ms) and a
+  handful of whole-layer booleans; nothing is per polygon.
+- The drape refining edges it does not need: not on this path, the Chicago
+  fixture is flat.
+- `measure`'s slice list: sub-rows show 15 slices, 30 `slice()` calls for
+  99 ms, and 245 ms in the persistence intersect (66 calls of a small region
+  against the whole unsimplified slice above). It is in the audit phase and
+  left alone; the exact speed-up available is to decompose the slice above once
+  per height and intersect each thin piece with the components whose boxes it
+  overlaps, which changes the area sum only in the last bit of a double.
+
+## 2. What changed, and why each was the real cost
+
+All in `apps/web/lib/engine/solid/mesh.ts` unless said otherwise. The output of
+`cleanMesh` is the same mesh to the last index and the same report to the
+last digit: a scratch script ran the committed `mesh.ts` beside the new one on
+every Chicago region and the merged solid, for the ladder, each single rung,
+`weld: false`, `float32`, `collapseNeedles` and `hardenForFloat32`, 56 cases,
+all identical.
+
+1. **`weld` finds its pairs with a sort and a sweep** (`vertexPairs`), once per
+   `cleanMesh` at the ladder's coarsest rung, and each rung filters the list by
+   its own epsilon. The old scan was 27 template strings and 27 `Map` lookups
+   per vertex; almost every vertex of a boolean result has no neighbour within
+   a tenth of a micrometre, and a sweep along x pays for those only when the
+   next vertex is already too far away. The choice of representative when
+   several kept vertices qualify is reproduced exactly: the old scan met cells
+   in dx, dy, dz order and a cell's bucket in insertion order, so the winner is
+   the smallest (cell rank, kept index) pair, computed from the same
+   `floor(coordinate / epsilon)` cells.
+2. **`splitNeedles` indexes only the edges a needle can ask about.** A needle
+   looks up exactly one directed edge, the twin of its longest edge; the pass
+   now collects those keys first and indexes the mesh's edges against that set
+   (numeric keys, `a * 2^32 + b`, the same key `openEdges` always used). The
+   owner of an edge is still the last triangle that carries it.
+3. **`openEdges` counts in typed arrays** (`EdgeCounts`, open addressing over a
+   `Float64Array` of keys and an `Int32Array` of counts). Same keys, same
+   counts, same definition of a bad edge.
+4. **Perf rows** under `mesh.clean`: `mesh.clean.pairs`, `.weld`, `.split`,
+   `.check`; under the surface repair: `surface.union`, `.close`, `.subtract`,
+   `.clip`, `.simplify`, `.decompose`, `.printable`, `.reunion`, `.clean`; under
+   the min-wall measurement: `measure.slice`, `.simplify`, `.decompose`,
+   `.erode`, `.persist`, `.width`. No-ops with perf mode off.
+5. **`pruneDebrisCounted` counts bodies off the mesh** (`manifold.ts`,
+   `bodiesFromMesh`) when every body is at least ten floors above the debris
+   floor: a union-find over the triangle edges of `getMesh()`, which is the
+   same vertex graph `Manifold::Decompose` splits, so the count is exactly
+   `decompose()`'s (checked on both Chicago scenes, 14 solids, every count
+   equal). Volumes on that path are summed from the float32 read-out, so any
+   body near the floor, and any inverted shell (the Overpass-path roads region
+   carries one at -0.88 mm3), sends the call to the exact decomposition as
+   before, whose numbers are the ones the findings print.
+6. **`doublePositions`** (`manifold.ts`) compares the exact read-out against the
+   float32 array directly and builds the widened copy only on the path that
+   returns it.
+
+Nothing moved from the region phase into the audit phase. The two candidates
+(`canonicalMesh`'s ordering and the repair itself) are part of the region mesh
+the preview receives, the region hash stands for, and the exporter writes; a
+region streamed unordered or unrepaired and fixed at export time would be a
+different object from the one on screen, and `triangleOwner` would have to be
+permuted with it. At 36 and about 50 ms across the six regions after the
+rewrite, neither was worth the protocol change.
+
+## 3. After
+
+### The export, cold
+
+Same command, same tree apart from this wave's changes (four other node
+processes alive, idle):
+
+| row | before ms | after ms |
+|---|---|---|
+| `engine.build` | 5126 | 2797 |
+| `phase.geometry` | 974 | 957 |
+| `phase.region` | 1142 | 525 |
+| `mesh.clean` (seven calls) | 2586 | 355 |
+| `finish.prune` (six regions) | 113 | 13 |
+| `phase.audit` | 3009 | 1314 |
+| `merged` | 2031 | 314 |
+| CLI wall | 5470 | 3170 |
+
+The Task 0 baseline for the same export was 13 418 ms wall (median of three)
+from the Export button to the download link in the browser, which included a
+full rebuild in the worker; this session's like-for-like number is the CLI
+wall, 5470 ms before and 3170 ms after, a 42 per cent cut in the
+same process on the same host. Against the 13.4 s figure it is
+76 per cent faster, with the caveat that the two were measured
+in different processes.
+
+### The eight warm changes
+
+Node, one `StageCache`, `runPipeline` with `regionBatchMs: 0`, the default
+parameters plus one frame-edge `{city}` line, every change measured from the
+same warm default (the scratch harness resets to the default between changes).
+"Before" is `docs/handoff/v3-01-pipeline.md` section 4, measured on this host
+by the pipeline wave. The after numbers are the last of three runs of the
+harness, taken with four other node processes alive; the five cheap changes
+agreed to within 20 ms across the runs, but the three heavy ones did not
+(`road_mode` 1076, 1349 and 1133 ms to the preview; `plate_mm` 1586, 1571 and
+1574; `heights.floor_height_m` 2215, 2430 and 2359, with `normalise` alone
+reading 492, 505 and 570 ms), so the machine was not quiet and the heavy
+numbers carry about a quarter of a second of noise. The first run predates the
+body-count change in section 2 (item 5).
+
+| change | to preview before | to preview after | to done before | to done after | target |
+|---|---|---|---|---|---|
+| `engravings[0].text` | 118 | 74 | 4600 | 1464 | 400, met |
+| `north_arrow.enabled` | 75 | 63 | 4600 | 1406 | 400, met |
+| `frame_style.profile` (plain to chamfer) | 355 | 159 | 5000 | 1494 | 400, met |
+| `colour.region_colors.buildings` | 312 | 102 | 4700 | 1703 | 400, met |
+| `hanger` (none to keyhole) | 210 | 163 | 4700 | 1659 | 400, met |
+| `road_mode` | 2053 | 1133 | 6600 | 2512 | 2000, met |
+| `plate_mm` (180 to 200) | 2937 | 1574 | 5300 | 2878 | 2000, met |
+| `heights.floor_height_m` (Overpass path) | 3983 | 2359 | 10300 | 4401 | 2000, missed |
+
+Cold, fixture scene: 1466 ms to the last region, 2746 ms
+to done (was 2500 and 7000). Cold, Overpass path from the committed response:
+2803 ms to the last region, 4886 ms to done (was 4400 and 10 600).
+
+### The one miss, with its split
+
+`heights.floor_height_m` re-runs `normalise` from the cached response and then
+everything, on the Overpass-shaped scene, which carries the rail layer and the
+bridge decks the fixture scene does not. To the preview after this wave:
+
+| stage | ms |
+|---|---|
+| `normalise` | 570 |
+| `surface-roads` | 475 |
+| `finish-roads` (bridge decks unioned in; the decompose is exact here because of the inverted shell) | 350 |
+| `sit` (the base carve) | 285 |
+| `bridges` | 200 |
+| `surface-parks` | 158 |
+| `finish-buildings` | 71 |
+| everything else | 250 |
+| to the last region | 2359 |
+
+What would be needed: about 360 ms more on this run, 215 ms on the quietest of
+the three (2215 ms to the preview, with `normalise` at 492). `normalise` is
+`lib/engine/osm`, outside this wave's ownership, and is a quarter of the path;
+the rest is Clipper2 (the ribbon union and the closing pair of the roads layer)
+and one manifold3d boolean (the plate against the pocket prisms), neither of
+which has an exact shortcut left in JavaScript. The two levers are a faster
+normaliser and the roads union, in that order.
+
+## 4. Part B: the two dead fields
+
+### `regions.rail.width_m` (`[V3.1-P2-1]`)
+
+`solid/roads.ts:railWidthGroundM` now reads the parameter only:
+`max(regions.rail.width_m * road_scale, min_wall_ground)`. The way's own
+`width_m` stays on the `RailWay` type and in the scene (the normaliser's
+per-type table is SceneGraph data) and is not read by the geometry; the
+function no longer takes the way. Both callers (`surface-rail` and the bridge
+decks) go through it. The matrix probe (3 m asked where the way carries 6 m,
+the ribbon must narrow by exactly 3 ground metres) is green.
+`terrain.test.ts`'s rail test asserted the opposite of the ruling (a wider WAY
+printed wider); it now asserts a wider way prints the same and a wider
+parameter prints wider, with the ruling as the reason.
+
+### `frame_style.lip_depth_mm` (`[V3.1-P2-2]`)
+
+- **Geometry** (`solid/frame.ts`): `buildFrameLip` subtracts
+  `buildSightEdgeRebate`, a band `FRAME_SIGHT_EDGE_MM` (1.0) wide along the top
+  slab's inner edge from `lip_depth_mm` below the lip top up past it, on every
+  profile and corner style, 0 meaning a flat lip. The depth is clamped to the
+  lip's height (`transform.lip_rebate_depth_mm`, the same rule on both sides)
+  and a value past it is reported (`frame-feature-clamped`, info). The cutter
+  overshoots into the opening so it never shares a face with the wall it cuts.
+  On a styled corner the rebate's outer edge keeps the opening's own radius
+  rather than growing it by the band's width, exactly as the lip's outer and
+  inner corners share one radius: that is what keeps the frame's volume
+  independent of the corner style, which the `frame_style.corner` and
+  `corner_radius_mm` probes pin to a nanolitre (a concentric rebate moved it
+  by 2.6 and 4.5 mm3 and turned both red).
+- **The flat face**: `frameTopFaceSection` and `topFaceWidthMm` exclude the
+  rebate, so lettering, ornaments and the face texture clip to the 5 mm face;
+  `reportNarrowTextBand` compares against `lip_face_width_mm` so only a
+  profile, never the rebate, raises the narrowed-band warning.
+- **The layout keeps clear** (`lib/transform.ts` and
+  `services/bake/app/geom/transform.py`, mirrored): `FRAME_SIGHT_EDGE_MM`,
+  `LIP_DEPTH_DEFAULT_MM`, `lip_rebate_depth_mm`, `lip_face_width_mm`;
+  `edge_band_mm` is the flat face less the margin each side (4.0 mm at the
+  defaults, was 5.0), `edge_band_center_mm` and the north arrow's corner
+  square sit on the flat face (2.5 mm in from the outer edge, was 3.0), and
+  the arrow's reduction warning names the face width. Both parity fixtures
+  were regenerated from the Python side (`FRAMECRAFT_WRITE_PARITY=1`):
+  `fixtures/lettering-expected.json` moved (every case with frame text),
+  `fixtures/parity-expected.json` came back byte-identical; the TS suites
+  assert against them and pass. Consequences a user will see: an
+  auto-fitted frame line is 20 per cent smaller (the default `{city}` line on
+  a 180 mm plate goes from 4.28 to about 3.4 mm), the north arrow's cap is
+  3.43 mm (was 4.29, so a 4 mm arrow is now reduced with the warning), and an
+  embossed "Chicago" no longer fits the default lip (its counters close at
+  the 3.62 mm the band allows). Six Python lettering tests that pinned the
+  5 mm band were updated with the ruling as the reason (the corner offset,
+  the arrow cap and its warning text, and three strings that no longer fit
+  in emboss or serif on the narrower band).
+- **The attribution band starts below it** (`solid/attribution.ts`):
+  `frameInnerWalls` ends the exposed wall at `top - lip_depth_mm`, so the
+  mark is fitted to and centred in the wall under the step (1.36 mm text on
+  the default, was 1.78). `WALL_MARK_MIN_HEIGHT_MM` is now
+  `FRAME_LIP_MM - LIP_DEPTH_DEFAULT_MM` (1.6 mm): the plain lip's exposed
+  wall at the default rebate, in place of the 2.0 mm `[V3-P7-A5]` set as the
+  plain lip's full wall. At the default this keeps A5's classification
+  (bevel_in, floating at 1.2 mm and a separate frame at 1.4 mm still fall back
+  to the second underside mark); a rebate deeper than 0.4 mm takes the plain
+  lip under it too, and a flat lip lets a floating or a separate frame carry
+  the mark as well. The no-wall finding and the skipped line now say when the
+  rebate is what shortened the wall.
+- **Goldens moved, with this ruling as the reason.** The default frame volume
+  on the 180 mm plate goes from 9159.31 to 8900.74 mm3, a 258.57 mm3 drop:
+  270.40 mm3 of rebate (`4 * (85^2 - 84^2) * 0.4`) less 11.83 mm3 the smaller
+  wall mark no longer cuts (15.81 mm3 of mark on `frame.test.ts`'s date, 16.16
+  on `synthetic.test.ts`'s, 27.6 and 28.08 before). Updated: `frame.test.ts`
+  (the default build, the top-face widths, the corner test's face area, plus
+  a new check that the rebate floor is a ring from 84 to 85 mm and nothing
+  else sits on that plane), `synthetic.test.ts` (the empty scene),
+  `attribution.test.ts` (the threshold is the wall under the default rebate).
+  On the Chicago export the gate's numbers are in section 5.
+
+## 5. Validator results
+
+`sh scripts/gate-web-engine.sh make`, this tree, both modes: **ALL CHECKS
+PASS**. Single mode: watertight (euler 2, bodies 1), volume 1.721e5 mm3,
+min_wall 0.8746 against 0.72, degenerate_faces 0, bodies 1. Parts mode:
+watertight, volume 1.722e5 mm3, min_wall 0.9379, degenerate_faces 0, six parts,
+462 shells, union 1, part_meshes 133 804 triangles each manifold and
+watertight. The engine's own suites: `parity`, `incremental`, `engine`,
+`synthetic`, `frame`, `terrain`, `tiling`, `attribution`, `stl`, `mesh`,
+`text`, `ornaments`, `lettering`, `previewText`, `bambu3mf`, `generic3mf`,
+`obj`, `step`, `colorchange`, `graph`, `client` all green;
+`services/bake`: `test_lettering`, `test_transform`, `test_bake`,
+`test_tokens`, `test_contracts`, `test_v1_compat` all green (409 and 99).
+
+## 6. The matrix readings the rebate changed
+
+Ten probes went red when `[V3.1-P2-2]` landed on a probe table written for a
+rebate-free lip, and the orchestrator ruled that this wave owns those readings
+in `lib/engine/pipeline/matrix.probes.ts` on one standard: every edited
+reading asks the same physical question about the same field, more precisely,
+and still fails if the field stops working. Nothing in the geometry could make
+them green, for two reasons that are both the contract's own defaults: the
+default engraving depth and the default rebate depth are both 0.4 mm, so a
+lettering pocket's floor and the rebate's floor share a plane, and the
+mandatory inner-wall attribution's glyphs occupy the opening's walls between
+z 3.15 and 4.45 mm on every default lip (3.15 to 4.85 before the rebate, so
+the pre-rebate lip already had 88 vertices on the plane the lip probe asks to
+be empty; the line was never reached because the volume line failed first).
+
+| probe | reading before | reading after | why |
+|---|---|---|---|
+| `frame_style.lip_depth_mm` | `ringAt` over the whole plane: a ring at `top - 0.4` before (count over 0), none at `top - 1.5` before (count 0), a ring at `top - 1.5` after that is 1.00 mm wide; the volume line | `cornerRingAt`: the same four reads restricted to the plate's four corner squares (vertices at least `innerHalf - 1` from the centre on BOTH axes), plus a fifth, that the default's floor at `top - 0.4` is gone after; the volume line unchanged, on the preview and the file | the rebate floor's vertices are its eight corners, all inside the corner squares; the attribution glyphs sit at the opening's half-width on one axis and inside it on the other, so both axes have to be banded (an x band alone keeps the east and west walls' glyphs). The count at `top - 1.5` read 328 whole-plane. |
+| `engravings[].edge`, `engravings[].align` | `pocketFloor` and `filePocketFloor`: the extent of every vertex on the pocket floor's plane | on the frame, the extent of the vertices on the lip's flat face: `max(abs x, abs y)` at least `innerHalf + FRAME_SIGHT_EDGE_MM + LIP_TEXT_MARGIN_MM / 2` (85.25 mm on the 180 mm plate); other regions unchanged; every threshold unchanged | the rebate floor's corners at 84 and 85 mm entered the extent and every pocket read 170 mm wide and from -85 to 85. Ink is laid out on the flat face and never on the rebate, so the banded read is the pocket and nothing else. |
+| `engravings[].font`, `place.country`, `place.state`, `place.neighbourhood`, `place.author` | `letteringSpan`: `extentAtZ` with a y half-plane window picking the edge | the same half-plane window, over the flat-face vertices only; every threshold unchanged | as above |
+| `engravings[].size_mm = 7` | before reports 4.0; after reports over 6 | before 4.0; after strictly over 4, strictly under 7, and 5.41 to two decimals (`BAND_LIMIT_BLOCKTON_SANS_MM`, the fit of "Blockton" in sans to the 4 mm band) | the 5 mm band held this string at over 6 mm; the 4 mm band holds it at 5.41. A regression that stopped honouring `size_mm` (still 4), stopped clamping (7) or clamped to another band all fail. |
+| `north_arrow.size_mm = 2` | before (a 6 mm request) reports over 4; after 2 | before reports 3.43 to two decimals and equals `transform.north_arrow_max_size_mm`; after 2, strictly under before | the arrow's cap on the 4 mm band is 3.43 mm (4.29 on the 5 mm band) |
+
+With those readings every probe in the matrix passes on the current tree, and
+both `KNOWN_DEFECTS` rows were deleted from `matrix.probes.ts` (the map is
+empty), since `lib/controlCatalog.test.ts` reads it to refuse a control for a
+field it names and the panel wave is shipping the rail width slider; that
+test's "not vacuous" line, which asserted the lip row was present, is the
+settings owner's to drop with the slider (`[V3.1-P2-6]`).
+`lib/engine/export/tiles.test.ts`'s single-plate byte hash was re-pinned on
+this tree with both causes named in its comment: the rebate (the frame mesh)
+and the `schema_version` 4 default another wave put into `contracts.ts`
+during the session (the Description metadata); the writer is untouched. The
+same table is appended to `docs/handoff/v3-01-matrix-audit.md` as section 7.
+
+## 7. Lines for DECISIONS.md (the orchestrator appends; this agent does not edit it)
+
+- [V3.1-P7-13] The four surface stages, `bridges` and `trees` are keyed on
+  `normalise#ground` (a content hash of the scene's bounds, centre, roads,
+  rail, water, green and trees) and `repair-buildings#footprint` (a hash of
+  the footprint union's polygons) instead of the whole scene and the whole
+  repair, because `heights.*` moves a building's height and nothing outside
+  `buildings` and `stats`, and the footprint union reads no height. A stage
+  keyed on a scene part is handed a view of the scene whose other layers
+  throw on read, so the digest stays honest by construction.
+- [V3.1-P7-14] `normalise` projects a fetched response once
+  (`osm/normalize.ts:projectOverpass`, every layer with the buildings'
+  heights deferred as a `HeightPick`) and applies `PrintParams.heights` per
+  run (`sceneFromProjected`); the projection is memoised on the `fetch`
+  output object and lives exactly as long as that cache entry. Output is
+  byte-identical to the one-pass normaliser at every rule set checked.
+  `heights.floor_height_m` on the Chicago Overpass path went from 2359 ms
+  (2668 on this host today) to about 210 ms to the preview.
+
+- [V3.1-P7-7] `cleanMesh` finds coincident vertices with one sort and a sweep
+  (`mesh.vertexPairs`, built once per call at the ladder's coarsest rung and
+  filtered per rung), indexes only the directed edges a needle can ask about,
+  and counts open edges in typed arrays. The output is the same mesh to the
+  last index and the same report to the last digit, checked against the
+  committed implementation on every Chicago region and the merged solid across
+  every option; the merged solid's repair went from 2253 to 277 ms and the
+  Chicago export's engine time from 5.1 to 3.0 s. The ladder is unchanged:
+  every rung still starts from the kernel's mesh.
+- [V3.1-P7-8] `pruneDebrisCounted` counts bodies with a union-find over
+  `getMesh()`'s triangle edges when every body is at least ten debris floors
+  up, which is exactly `Manifold::Decompose`'s vertex graph; any body near the
+  floor or of negative volume goes to the exact decomposition as before, so
+  every number a finding prints is still manifold3d's.
+- [V3.1-P7-9] The sight-edge rebate's outer edge keeps the opening's own
+  corner radius on a mitred or rounded frame, as the lip's two edges do, so
+  the frame's volume does not depend on the corner style; a concentric step
+  moved it by 2.6 mm3 at radius 3 and 4.5 mm3 at radius 9.
+- [V3.1-P7-10] `WALL_MARK_MIN_HEIGHT_MM` is the plain lip's exposed inner wall
+  at the default sight-edge rebate, `FRAME_LIP_MM - LIP_DEPTH_DEFAULT_MM` =
+  1.6 mm, superseding the 2.0 mm of [V3-P7-A5] for the same reason A5 gave:
+  the plain lip qualifies exactly, and the profiles A5 named still fall back.
+- [V3.1-P7-11] The lettering band is the lip's flat face less the text margin
+  each side: 4.0 mm at the defaults. The layout, the ornaments and the north
+  arrow's corner square are sized and centred on that face in both mirrors,
+  and the parity fixtures were regenerated for it.
+- [V3.1-P7-12] A matrix reading of a plane on the frame is banded to the
+  feature it asks about: the lip's flat face for a lettering or ornament
+  pocket, the plate's corner squares for the sight-edge rebate's ring. The
+  default engraving depth and the default rebate depth are both 0.4 mm, so
+  the two floors share a plane, and the mandatory inner-wall attribution's
+  glyphs occupy the opening's walls, so a whole-plane count can never be
+  empty there; the band is a hard boundary in plan, not a tolerance, and every
+  threshold the probes asserted before is unchanged. The two size probes pin
+  the 4 mm band's own limits (5.41 mm for "Blockton" in sans, 3.43 mm for the
+  north arrow) between the default and the request, so a field that stopped
+  working or stopped clamping still fails. `KNOWN_DEFECTS` is empty.
+
+## 8. The one miss, closed (Task 7 close-out)
+
+Section 3 left `heights.floor_height_m` at 2359 ms to the preview against
+2000, with `normalise` a quarter of it and the roads union, the road finish
+and the base carve most of the rest. Both halves turned out to be cache
+misses rather than geometry, and neither needed `solid/**` to change.
+
+**Why the stage graph did not skip it.** `normalise` claims `heights.*`,
+correctly: the rules decide every building's height. So a storey-height
+change re-ran the whole ingest, and because the scene is not plain data under
+the digest limit its digest is its key, so every stage that lists
+`normalise` as an input re-ran too. That included the four surface stages,
+`bridges` and `trees`, none of which reads a building: they read the roads,
+rail, water, green and trees, plus the repair's footprint union, which reads
+no height either (`solid/repair.ts` step 4: the union of the closed, cropped,
+widened components). And because a surface stage re-ran, its solids were new
+handles, so `base`, `region-base`, `sit` and every ground region followed.
+
+**What changed.**
+
+1. **Two named part digests** (`pipeline/stages.ts`). `normalise#ground` is a
+   content hash of `bounds`, `center`, `roads`, `rail`, `water`, `green` and
+   `trees` (`SCENE_GROUND_LAYERS`; 5 to 10 ms on Chicago, `digest.ground`),
+   and `repair-buildings#footprint` is a hash of the footprint union's
+   polygons (2 to 4 ms, `digest.section`). `surface-water`, `surface-rail`,
+   `surface-roads`, `surface-parks`, `bridges` and `trees` are keyed on those
+   two instead of the whole scene and the whole repair. `surface-overrides`
+   stays keyed on the whole scene, because `reportOverrides` walks the
+   buildings' ids; with no overrides its output is plain data with a stable
+   digest, so nothing under it moves.
+2. **A stage keyed on a scene part sees only that part** (`runner.ts:
+   scenePartView`). The runner hands such a stage a view of the scene with
+   every other layer behind a getter that throws, naming the stage and the
+   part. A part digest is honest only while the stage reads nothing outside
+   the part; this makes a ground stage that starts reading `buildings` a
+   failed run rather than a stale cache. The seeded-scene path stores the
+   same part digests, so a job carrying a finished scene keys identically.
+3. **`normalise` projects once per fetched response** (`osm/normalize.ts`).
+   Measured with the new `osm.normalize.*` rows, the 646 ms ingest was
+   `areas` (the water and green dissolve) 508, `classify` 45, `buildings`
+   (hygiene steps 1 to 7) 37, `emit-roads` 24, and the height rules under
+   5. `sceneFromOverpass` is now `sceneFromProjected(projectOverpass(raw,
+   request), rules)`: the projection carries every building with a deferred
+   `HeightPick` (a leaf is one element's tags; a merge from steps 6 and 7 is
+   the members' picks with the outline areas the tie-break used, so the
+   tallest member is chosen per run exactly as `mergeGroup` chose it), and
+   the second half applies the rules and builds the stats. The stage keeps
+   the projection in a `WeakMap` on the `fetch` output, so it lives exactly
+   as long as the fetch entry and a new response projects again. Not a stage
+   of its own: the stage list is what the HUD, the plan events and the
+   protocol's test seams name, and none of them needs to know. Output is
+   byte-identical: the JSON of both Chicago and New York at five rule sets
+   (frozen, defaults, 4 m storeys, 1 m storeys with a 40 m default, six
+   changed type defaults) matched the committed implementation exactly, and
+   `normalize.test.ts` now pins that a rule change moves `height_m`,
+   `min_height_m`, `is_tall` and `height_source` and no other field, and
+   that the ground arrays are shared, not copied.
+
+**Measured**, same harness as section 3 (Node, one `StageCache`, the Chicago
+Overpass fixture through `fetchImpl`, `regionBatchMs: 0`, defaults plus one
+frame-edge `{city}` line, every change from a warm default, ms to the end of
+the region phase and to `done`), on this host with 12 to 15 other node
+processes alive the whole session (other agents running vitest), so every
+number carries that load and the heavy rows read a third above section 3's:
+
+| `heights.floor_height_m` | to preview | to done | stages run | normalise |
+|---|---:|---:|---:|---:|
+| this tree before the change | 2668 | 4787 | 58 | 669 |
+| part digests only | 1012 | 4073 | 41 | 758 |
+| part digests and the projection, three runs | 203, 234, 265 | 2421 to 2544 | 41 | 32 to 50 |
+| the same, final tree, three runs | 206, 208, 223 | 2025 to 2133 | 41 | 31 to 37 |
+
+The 41 stages that still run are the ones a height really reaches: `context`,
+`heroes`, `repair-buildings` (94 to 124 ms, the largest), `buildings`,
+`tokens`, `labels`, the building regions (`finish-buildings` 51 to 71) and
+the audit phase. The ground, the plate, its seat and every ground region are
+cached. `normalise`'s remaining 30 ms is the runner's own walk over the
+1.4 MB scene for handles and plain-data checks, not the ingest.
+
+The other seven, re-measured on the final tree in the same session
+(one run each, this load):
+
+| change | to preview | target |
+|---|---:|---|
+| `engravings[0].text` | 88 | 400, met |
+| `north_arrow.enabled` | 66 | 400, met |
+| `frame_style.profile` | 152 | 400, met |
+| `colour.region_colors.buildings` | 80 | 400, met |
+| `hanger` | 146 | 400, met |
+| `road_mode` | 2127, 2289, 2822 (1705 on this tree before the change) | 2000, see below |
+| `plate_mm` | 3104, 3210, 3228 (2184 before) | 2000, see below |
+
+`road_mode` and `plate_mm` are untouched by this change (they re-run the
+same stages before and after: the roads union, the road finish, the base
+carve) and read over 2000 on this host today, before and after alike, where
+section 3 measured them at 1133 and 1574 on a quieter machine; the spread
+between the `plate_mm` readings taken an hour apart on the same tree (2184,
+then 3104 to 3228 with 16 node processes alive) is the load, not the code:
+`surface-roads` alone read 479 ms in one run and 628 in the next. They should be re-measured on a
+quiet host before anything is concluded about them.
+
+**Tests.** `incremental.test.ts`: on the Overpass path a `floor_height_m`
+change leaves `surface-*`, `bridges`, `trees`, `base`, `region-base`, `sit`,
+`region-roads` and `finish-roads` cached while `heroes`, `repair-buildings`,
+`buildings` and the building regions run, and the perf rows show one
+`osm.project` against four `osm.normalize`; `scenePartView` exposes the
+part's layers as they are, throws for the rest naming the stage and the part,
+refuses a part the registry does not define, and the registry's six
+ground-keyed stages run clean through it on a scene with every layer.
+`normalize.test.ts`: the composition, the field-level "only the heights
+moved", the shared ground arrays. `graph.test.ts`'s note pin required the
+`describeGraph` block in `v3-01-pipeline.md` to be regenerated; the diff is
+mostly stages and leaves other waves had added since the block was written,
+plus the two parts here.
+
+**Also in this close-out:** `next.config.test.ts`, the build-level test the
+v3-08 note lacked for its webpack hook (section 3 and 10.5 of that note).

@@ -291,7 +291,13 @@
   --shadow-raised: var(--fc-shadow-raised);
   --shadow-lifted: var(--fc-shadow-lifted);
 
-  /* Column widths, so the three-up layout is stated once. */
+  /*
+   * Column widths, so the three-up layout is stated once. Since the shell
+   * became resizable (v3.1) these are the DEFAULTS the user drags away from:
+   * `lib/layout.ts:DEFAULT_SIZES` mirrors them in pixels at a 16px root, and
+   * `lib/layout.test.ts` reads these two declarations and fails if the mirror
+   * drifts, so the token file stays the source of the default.
+   */
   --spacing-rail: 23rem;
   --spacing-atlas: 25rem;
 }

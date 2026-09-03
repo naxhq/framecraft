@@ -91,7 +91,8 @@ Blob URLs, marks `export.bytes`, and keeps `EXPORT_STALE_NOTE` and
 
 - `components/scene/BasePlate.tsx`, `RoadRibbons.tsx`, `AreaSurfaces.tsx`
   (+ its test), `TreeInstances.tsx`. `InstancedBuildings.tsx` became
-  `BuildingPickProxies.tsx` (test renamed with it).
+  `BuildingPickProxies.tsx` (test renamed with it), and that file was itself
+  deleted in v3-10 once picking moved onto the real solids (section 3).
 - `lib/preview.ts`: `buildRoads`, `buildAreas`, `buildTrees`,
   `treeInstanceMatrices`, `buildPreview`, `mergeNoticeMetres`,
   `PreviewRibbons`, `PreviewTree`, `PreviewModel`. What remains is the pick
@@ -118,18 +119,28 @@ Blob URLs, marks `export.bytes`, and keeps `EXPORT_STALE_NOTE` and
 `components/scene/PreviewScene.tsx` is new and holds everything inside
 `<Canvas>`. That is what makes the invariant enforceable rather than
 aspirational: `CityPreview.test.ts` reads every file under
-`components/scene/`, and only `BuildingPickProxies.tsx` (named exception 1)
-and the two HUD hosts outside the canvas (`CityPreview.tsx`,
-`PreviewPane.tsx`) may read a `PrintParams` field at all. `PreviewScene` may
-name the type twice, to declare the prop it hands the pick proxies untouched.
+`components/scene/`, and only the two HUD hosts outside the canvas
+(`CityPreview.tsx`, `PreviewPane.tsx`) may read a `PrintParams` field at all.
 The same suite cross-checks the fifteen parameter groups the HUD does not read
 against `claimedPaths()` from the stage registry, so "the viewport ignores it"
 now has to mean "a stage reads it".
 
-`RegionMeshes` takes the region map, `recessBands`, `dimmed` and the two
-multipliers. `RegionGeometryCache` (a plain class, so it can be driven twice
-in a test without a React renderer) rebuilds a region if and only if its
-`RegionMesh` object, its band list or the shade changed.
+**Named exception 1 is gone (v3-06 audit, finding C2, closed in v3-10).**
+`BuildingPickProxies.tsx` was the one file inside the canvas allowed to read
+parameters, and `PreviewScene` named the `PrintParams` type twice to hand it
+the object untouched. Its stated reason -- "the fused region meshes carry no
+per-building identity" -- stopped being true at `[V3.1-P1-18]`, so hero picking
+now raycasts the buildings mesh and maps `faceIndex` through `triangleOwner` to
+`owners`. The layer, its test and the `pickBuildings`/`pickParams`/`pickScale`
+props are deleted, and the rule is stronger than it was: no `PrintParams`
+object crosses the canvas boundary at all, not even to be passed through.
+
+`RegionMeshes` takes the region map, `recessBands`, `dimmed`, the two
+multipliers, the per-building `tints` and the two interaction callbacks
+(`onHover`, `onPick`). `RegionGeometryCache` (a plain class, so it can be
+driven twice in a test without a React renderer) rebuilds a region if and only
+if its `RegionMesh` object, its band list, the shade or the tint colours
+changed.
 
 Recess shading: a region with no bands keeps the indexed mesh exactly as
 before and pays nothing. A region WITH bands is expanded to per-triangle
@@ -157,13 +168,13 @@ with it.
 
 Unchanged from `v3-01-pipeline.md` section 5, and no new entry:
 
-1. **Building pick proxies** — invisible per-building boxes for raycasting
+1. **Building pick proxies** - invisible per-building boxes for raycasting
    only. `colorWrite: false` and `depthWrite: false` on a transparent
    material, never `visible={false}` (three's `Raycaster` checks `visible` and
    stops), no shadows, and no colour of any kind.
-2. **Recess shading** — vertex colour multipliers on the declared bands,
+2. **Recess shading** - vertex colour multipliers on the declared bands,
    geometry untouched.
-3. **Map overlay and stats use the SceneGraph, not the solids** — the HUD's
+3. **Map overlay and stats use the SceneGraph, not the solids** - the HUD's
    building count is the scene's repaired footprint count, settled when the
    scene lands; the triangle count next to it is the model's, measured.
 
@@ -195,7 +206,7 @@ E2E budgets observed, `E2E_BUDGET_FACTOR=3`:
 | lettering change to the frame region on screen | 530 ms (525, 542, 556, 615 across runs) | 1200 ms |
 | warm preset click to preview (A1) | 1.33 s | 15 s |
 | export to download (A4) | 2.1 s | 270 s |
-| full Chicago parts export | 3.0 s | — |
+| full Chicago parts export | 3.0 s | - |
 
 The lettering number is measured INSIDE the page, from the input event to the
 animation frame on which the frame region's version attribute moved. Polling

@@ -160,5 +160,11 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(port, "127.0.0.1", () => {
-  console.log(`serving ${root} at http://127.0.0.1:${port}${base === "" ? "" : `${base}/`}`);
+  // The BOUND port, not the requested one: `--port 0` lets the OS pick a free
+  // one, which is how `e2e/siteperf.spec.ts` runs its own copy of this server
+  // beside the suite's shared one without having to guess a number that
+  // another agent or another run is not already sitting on.
+  const address = server.address();
+  const bound = address !== null && typeof address === "object" ? address.port : port;
+  console.log(`serving ${root} at http://127.0.0.1:${bound}${base === "" ? "" : `${base}/`}`);
 });

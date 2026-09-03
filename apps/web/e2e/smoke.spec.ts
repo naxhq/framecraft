@@ -73,6 +73,20 @@ async function setSlider(page: Page, id: string, value: number): Promise<void> {
 }
 
 /** Press a range input's arrow key, which DOES commit (radius / rotation). */
+/**
+ * Open one settings group if it is not already open.
+ *
+ * Since Task 5 only Location and Scale start open (`lib/groups.ts`), and a
+ * collapsed group is unmounted, so the Buildings sliders this file drives have
+ * to be brought on screen first.
+ */
+async function openGroup(page: Page, id: string): Promise<void> {
+  const toggle = page.getByTestId(`group-${id}-toggle`);
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") {
+    await toggle.click();
+  }
+}
+
 async function nudgeSlider(page: Page, id: string, key: string): Promise<void> {
   const slider = page.locator(`#${id}`);
   await slider.focus();
@@ -237,6 +251,9 @@ test("happy path: Chicago preset previews, sliders stay local, export downloads 
 
   await setSlider(page, "plate_mm", 200);
   await expect(page.getByTestId("plate_mm-value")).toHaveText("200 mm");
+  // The two building multipliers are in the Buildings group, which starts
+  // collapsed since Task 5, and step 5b below drives `small_scale` by hand.
+  await openGroup(page, "buildings");
   await setSlider(page, "large_scale", 120);
   await expect(page.getByTestId("large_scale-value")).toHaveText("120 %");
   await page.getByRole("radio", { name: "emboss" }).click();

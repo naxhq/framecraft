@@ -32,6 +32,7 @@
  */
 
 import type { Point, Road } from "../../contracts";
+import { perfSpan } from "../../perf";
 import * as T from "../../transform";
 import type { BuildContext } from "./context";
 import { CIRCLE_SEGMENTS, LAYER_SEPARATION_MM, SIMPLIFY_EPS_MM } from "./context";
@@ -47,6 +48,7 @@ import {
   sectionOf,
   signedArea2,
   cleanSection,
+  snapSection,
   subtractSection,
   unionSections,
 } from "./manifold";
@@ -55,6 +57,13 @@ import {
   REPAIR_OPENING_SEGMENTS,
   openingWidthMm,
 } from "./measure";
+import {
+  baseOsmIdOfBuilding,
+  baseOsmIdOfRoad,
+  heightScaleOverrides,
+  hiddenOverrideIds,
+  widthScaleOverrides,
+} from "./overrides";
 
 /**
  * Erosion probe factor for isolating an APPENDAGE
@@ -184,9 +193,24 @@ export interface RepairedBuildings {
   dropped: number;
   /** Buildings whose height came from `height_source === "default"`. */
   heightFallbacks: number;
+  /**
+   * Buildings an `object_overrides` row hid (v3.1 Task 11).
+   *
+   * They are removed HERE, before anything is repaired, which is what makes a
+   * hidden building leave no hole: it never enters the union the base is
+   * socketed with and never blocks a surface layer, so whatever else covers
+   * that ground simply covers it.
+   */
+  hidden: number;
   heroUnknown: string[];
   heroBuried: string[];
   heroDropped: string[];
+  /**
+   * Patches from {@link repairSliceProfiles}: necks that exist only in a
+   * horizontal slice of the stack, widened to a wall and unioned into the
+   * footprint of the solid whose height band they belong to.
+   */
+  slicePatches: number;
 }
 
 /**
@@ -688,11 +712,14 @@ export function repairFlatLayer(
   },
 ): RepairedLayer {
   const { arena, wasm } = ctx;
-  const raw = sectionOf(wasm, arena, contours);
+  // Perf rows per step (no-ops with perf mode off): a slow surface layer has
+  // to say whether it is the union of its contours, the closing pair or the
+  // per-component printability pass that cost it.
+  const raw = perfSpan("surface.union", () => sectionOf(wasm, arena, contours));
   if (raw === null) return { section: null, dropped: 0 };
 
   const closeMm = options.closeMm ?? ctx.thresholdsMm.minWall / 2;
-  let section = closeSection(arena, raw, closeMm);
+  let section = perfSpan("surface.close", () => closeSection(arena, raw, closeMm));
   if (section !== raw) arena.drop(raw);
   if (section === null) return { section: null, dropped: 0 };
 
@@ -712,8 +739,9 @@ export function repairFlatLayer(
     const held = blocker.separate
       ? offsetSection(arena, other, LAYER_SEPARATION_MM)
       : other;
+    const live: CrossSection = section;
     const cut: CrossSection | null =
-      held === null ? section : subtractSection(arena, section, held);
+      held === null ? live : perfSpan("surface.subtract", () => subtractSection(arena, live, held));
     if (held !== null && held !== other) arena.drop(held);
     if (section !== cut) arena.drop(section);
     section = cut;
@@ -721,24 +749,25 @@ export function repairFlatLayer(
   }
 
   const clip = cropSection(ctx, options.clipHalfMm);
-  const clipped = intersectSection(arena, section, clip);
+  const unclipped: CrossSection = section;
+  const clipped = perfSpan("surface.clip", () => intersectSection(arena, unclipped, clip));
   arena.drop(clip);
   if (clipped !== section) arena.drop(section);
   if (clipped === null) return { section: null, dropped: 0 };
 
-  const simplified = clipped.simplify(SIMPLIFY_EPS_MM);
+  const simplified = perfSpan("surface.simplify", () => clipped.simplify(SIMPLIFY_EPS_MM));
   arena.keep(simplified);
   arena.drop(clipped);
 
-  const components = arena.keepAll(simplified.decompose());
+  const components = perfSpan("surface.decompose", () => arena.keepAll(simplified.decompose()));
   arena.drop(simplified);
-  const { kept, dropped } = keepPrintable(ctx, components, options.thinMode ?? "strip");
-  const merged = unionSections(wasm, arena, kept);
+  const { kept, dropped } = perfSpan("surface.printable", () => keepPrintable(ctx, components, options.thinMode ?? "strip"));
+  const merged = perfSpan("surface.reunion", () => unionSections(wasm, arena, kept));
   for (const component of kept) {
     if (component !== merged) arena.drop(component);
   }
   if (merged === null) return { section: null, dropped };
-  const clean = cleanSection(arena, merged);
+  const clean = perfSpan("surface.clean", () => cleanSection(arena, merged));
   if (clean !== merged) arena.drop(merged);
   return { section: clean, dropped };
 }
@@ -805,15 +834,30 @@ export function ribbonContours(
   return out;
 }
 
-/** Every road centreline as ribbon contours, at the clamped printed width. */
+/**
+ * Every road centreline as ribbon contours, at the clamped printed width.
+ *
+ * A per-road `width_scale` override multiplies the GROUND width alongside
+ * `road_scale` and before the minimum-feature clamp, which is exactly where
+ * `road_scale` itself applies: a road scaled below the clamp still prints at a
+ * full wall, because a ribbon thinner than the nozzle is a scratch.
+ */
 export function roadContours(
   ctx: BuildContext,
   roads: readonly Road[],
 ): Contour[] {
+  const widthScales = widthScaleOverrides(ctx.params);
   const out: Contour[] = [];
   for (const road of roads) {
     if (road.path.length < 2) continue;
-    const groundM = T.road_width_ground_m(road, ctx.params, ctx.thresholdsGroundM);
+    const scale = widthScales.size === 0 ? 1 : (widthScales.get(baseOsmIdOfRoad(road)) ?? 1);
+    // The clamp is inside `road_width_ground_m`, so a road scaled below a full
+    // wall still prints at one: a ribbon thinner than the nozzle is a scratch.
+    const groundM = T.road_width_ground_m(
+      scale === 1 ? road : { width_m: road.width_m * scale },
+      ctx.params,
+      ctx.thresholdsGroundM,
+    );
     out.push(...ribbonContours(road.path, groundM * ctx.scale, ctx.scale));
   }
   return out;
@@ -852,16 +896,31 @@ export function repairBuildings(
     merged: 0,
     dropped: 0,
     heightFallbacks: 0,
+    hidden: 0,
     heroUnknown: [],
     heroBuried: [],
     heroDropped: [],
+    slicePatches: 0,
   };
-  const buildings = ctx.scene.buildings;
+  const all = ctx.scene.buildings;
+  if (all.length === 0) return result;
+
+  // v3.1 Task 11: the hidden ones never reach the repair at all, and the
+  // heroes among them are dropped from the ask rather than reported as
+  // unknown - "you hid it" is not "it is not in this scene".
+  const hiddenBaseIds = hiddenOverrideIds(params, "building");
+  const heightScales = heightScaleOverrides(params);
+  const buildings = hiddenBaseIds.size === 0 ? all : all.filter((b) => !hiddenBaseIds.has(baseOsmIdOfBuilding(b)));
+  result.hidden = all.length - buildings.length;
   if (buildings.length === 0) return result;
 
   const known = new Set(buildings.map((b) => String(b.id)));
-  result.heroUnknown = heroIds.filter((id) => !known.has(id));
-  const heroSet = new Set(heroIds.filter((id) => known.has(id)));
+  const hiddenEntityIds = new Set(
+    result.hidden === 0 ? [] : all.filter((b) => hiddenBaseIds.has(baseOsmIdOfBuilding(b))).map((b) => String(b.id)),
+  );
+  const wantedHeroes = result.hidden === 0 ? heroIds : heroIds.filter((id) => !hiddenEntityIds.has(id));
+  result.heroUnknown = wantedHeroes.filter((id) => !known.has(id));
+  const heroSet = new Set(wantedHeroes.filter((id) => known.has(id)));
   const heroTrueHeight = T.hero_true_height(params);
 
   // --- steps 1 to 3, per footprint --------------------------------------
@@ -911,14 +970,22 @@ export function repairBuildings(
       section = thick;
     }
     const id = String(building.id);
+    // v3.1 Task 11: the override multiplies the GROUND height, before every
+    // other height rule, so the block percentile, the 1.5x stack test, the
+    // is_tall split and `height_exaggeration` all see the number the user
+    // asked for rather than the one the OSM tag carried. `is_tall` is
+    // recomputed for the same reason: the SceneGraph's copy answers a question
+    // about a height this build no longer uses.
+    const heightScale = heightScales.get(baseOsmIdOfBuilding(building)) ?? 1;
+    const heightM = building.height_m * heightScale;
     footprints.push({
       section,
       areaMm2: section.area(),
       centroid: contourCentroid(contours[0]),
       bounds: boundsOfContours([contours[0]]),
       height: {
-        height_m: building.height_m,
-        is_tall: building.is_tall,
+        height_m: heightM,
+        is_tall: heightScale === 1 ? building.is_tall : heightM >= T.TALL_BUILDING_M,
         is_hero: heroSet.has(id) && heroTrueHeight,
       },
       sourceId: id,
@@ -1108,14 +1175,62 @@ export function repairBuildings(
   // near-duplicate vertex on an outline is invisible in 2D and extrudes into a
   // pair of zero-area side triangles; 41 of the Chicago plate's buildings
   // carried one before this pass.
+  //
+  // And put on one XY grid first (`manifold.snapSection`): a tower clipped to
+  // its block and two parts of one building meeting along an edge only share
+  // that edge in the 3D union if their outlines carry the same coordinates
+  // there, which two separate Clipper2 operations do not guarantee at the
+  // 1e-8 mm level. The reference implementation snaps every layer to its print
+  // grid for the same reason (`thicken.snap`).
   const finished: BuildingSolid[] = [];
   for (const solid of solids) {
     const clean = cleanSection(arena, solid.section);
-    if (clean === solid.section) finished.push(solid);
-    else finished.push({ ...solid, section: clean });
+    const snapped = snapSection(wasm, arena, clean);
+    if (snapped !== clean && clean !== solid.section) arena.drop(clean);
+    if (snapped === solid.section) finished.push(solid);
+    else finished.push({ ...solid, section: snapped });
   }
   const blockSections = finished.filter((s) => s.standsOn === null).map((s) => s.section);
-  const blockUnion = unionSections(wasm, arena, blockSections);
+  let blockUnion = unionSections(wasm, arena, blockSections);
+
+  // What prints at height z is the union of every solid that reaches that
+  // high, and no per-footprint repair can see a neck two of them make between
+  // themselves above the block top (`repairSliceProfiles`). A patch spans
+  // exactly its solid's own height band, so it is unioned into that solid's
+  // FOOTPRINT rather than extruded beside it: the solid is the same either
+  // way, and one prism has no coplanar roof to leave a T-junction on.
+  const patches = perfSpan("buildings.slices", () => repairSliceProfiles(ctx, finished, blockUnion));
+  if (patches.length > 0) {
+    result.slicePatches = patches.length;
+    const byIndex = new Map<number, CrossSection[]>();
+    for (const patch of patches) {
+      const list = byIndex.get(patch.index);
+      if (list === undefined) byIndex.set(patch.index, [patch.section]);
+      else list.push(patch.section);
+    }
+    let blocksGrew = false;
+    for (const [index, extra] of byIndex) {
+      const solid = finished[index];
+      const merged = unionSections(wasm, arena, [solid.section, ...extra]);
+      for (const piece of extra) if (piece !== merged) arena.drop(piece);
+      if (merged === null || merged === solid.section) continue;
+      const clean = cleanSection(arena, merged);
+      if (clean !== merged) arena.drop(merged);
+      const snapped = snapSection(wasm, arena, clean);
+      if (snapped !== clean) arena.drop(clean);
+      if (!ownFootprint.has(solid.section) && !components.includes(solid.section)) arena.drop(solid.section);
+      finished[index] = { ...solid, section: snapped };
+      if (solid.standsOn === null) blocksGrew = true;
+    }
+    if (blocksGrew) {
+      const grownBlocks = unionSections(
+        wasm,
+        arena,
+        finished.filter((s) => s.standsOn === null).map((s) => s.section),
+      );
+      if (grownBlocks !== null) blockUnion = grownBlocks;
+    }
+  }
 
   // Free the footprints that neither became a block nor were stacked.
   const used = new Set(finished.map((s) => s.section));
@@ -1135,6 +1250,152 @@ export function repairBuildings(
   result.solids = finished;
   result.footprint = blockUnion;
   return result;
+}
+
+/**
+ * A point strictly inside a section, print mm, for finding which component
+ * of a union it belongs to.
+ *
+ * The midpoint of the first outer contour's first edge, nudged inward along
+ * that edge's normal by a thousandth of a millimetre and checked; the centroid
+ * when that lands outside (a footprint thinner than the nudge at that edge,
+ * which a repaired one is not). A centroid alone is the wrong answer for an
+ * L-shaped block.
+ */
+function insidePoint(contours: readonly Contour[]): [number, number] | null {
+  const outer = contours.find((ring) => ring.length >= 3 && signedArea2(ring) > 0) ?? contours[0];
+  if (outer === undefined || outer.length < 3) return null;
+  for (let i = 0; i < outer.length; i += 1) {
+    const a = outer[i];
+    const b = outer[(i + 1) % outer.length];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const length = Math.hypot(dx, dy);
+    if (!(length > 0)) continue;
+    const nudge = 1e-3;
+    const x = (a[0] + b[0]) / 2 - (dy / length) * nudge;
+    const y = (a[1] + b[1]) / 2 + (dx / length) * nudge;
+    if (pointInContours(x, y, contours)) return [x, y];
+  }
+  const centroid = contourCentroid(outer);
+  return pointInContours(centroid[0], centroid[1], contours) ? centroid : null;
+}
+
+/**
+ * Widen the necks that exist only in a horizontal SLICE of the stack
+ * (`thicken.repair_slice_profiles`).
+ *
+ * A footprint is not what prints at height z: what prints is the union of
+ * every solid that reaches that high. Two preserved towers that meet along an
+ * edge, or overlap by a corner, make a neck in their union above the block top
+ * that neither footprint has on its own, and no per-footprint repair can see
+ * it. Measured on the New York preset before this existed: seven slice regions
+ * under 0.72 mm between z = 5 and 20 mm, the narrowest 0.134 mm, every one a
+ * wing on the union of two or more stacked towers, on a plate whose every
+ * footprint had passed the appendage repair.
+ *
+ * Sorted by printed top, the set of solids present at z is exactly a PREFIX of
+ * the sorted list, so walking the prefixes checks every cross-section the
+ * model can have. Each neck gets 04's dilation rule (`(min_wall - w) / 2`, `w`
+ * measured on the neck) and the patch is given to the SHORTEST solid of the
+ * prefix - the band where that cross-section is the one that prints - so it is
+ * extruded over exactly the heights where the neck exists. A patch belonging
+ * to a stacked solid is clipped to the block union so it can never be left
+ * floating, and one belonging to a block is clipped to the crop, the same rule
+ * the solids themselves follow. Returns the patches as `(index into solids,
+ * section)`; the caller unions each into that solid's footprint. The reference
+ * keeps its patches as solids of their own; here that made a second prism with
+ * a roof coplanar to its solid's, and the union of the two left a T-junction
+ * needle on it (measured: one on New York, five on Tokyo), where one footprint
+ * leaves nothing.
+ */
+export function repairSliceProfiles(
+  ctx: BuildContext,
+  solids: readonly BuildingSolid[],
+  blockUnion: CrossSection | null,
+): Array<{ index: number; section: CrossSection }> {
+  const { arena, wasm, params, scale } = ctx;
+  const { minWall } = ctx.thresholdsMm;
+  if (solids.length < 2 || !(minWall > 0)) return [];
+
+  // Solids that touch or overlap share a component of the union of all of
+  // them; a solid alone in its component has nothing to make a neck with.
+  const whole = unionSections(
+    wasm,
+    arena,
+    solids.map((s) => s.section),
+  );
+  if (whole === null) return [];
+  const components = arena.keepAll(whole.decompose());
+  if (!solids.some((s) => s.section === whole)) arena.drop(whole);
+  if (components.length === 0) return [];
+  const polygons = components.map((c) => c.toPolygons() as Contour[]);
+  const index = new GridIndex(polygons.map(boundsOfContours));
+  const groups: number[][] = components.map(() => []);
+  for (let i = 0; i < solids.length; i += 1) {
+    const own = solids[i].section.toPolygons() as Contour[];
+    const point = insidePoint(own);
+    if (point === null) continue;
+    const hit = index.find(point[0], point[1], polygons, boundsOfContours(own));
+    if (hit >= 0) groups[hit].push(i);
+  }
+  for (const component of components) arena.drop(component);
+
+  const topOf = (solid: BuildingSolid): number =>
+    T.building_top_mm_exaggerated(solid.height, params, scale, solid.height.is_hero);
+  const crop = cropSection(ctx, ctx.cropHalfMm);
+  // The least a neck is grown by, and the resolution its width was measured
+  // at: a fortieth of a wall (`appendageWidthMm`).
+  const leastGrowth = minWall / 40;
+  const patches: Array<{ index: number; section: CrossSection }> = [];
+  const owned = new Set(solids.map((s) => s.section));
+  for (const members of groups) {
+    if (members.length < 2) continue;
+    members.sort((a, b) => topOf(solids[b]) - topOf(solids[a]) || a - b);
+    let accumulated: CrossSection | null = null;
+    for (const i of members) {
+      const solid = solids[i];
+      const next: CrossSection | null =
+        accumulated === null ? solid.section : unionSections(wasm, arena, [accumulated, solid.section]);
+      if (next === null) break;
+      if (accumulated !== null && next !== accumulated && !owned.has(accumulated)) arena.drop(accumulated);
+      accumulated = next;
+      const limit = solid.standsOn === null ? crop : (blockUnion ?? crop);
+      for (let round = 0; round < APPENDAGE_ROUNDS; round += 1) {
+        const current: CrossSection = accumulated;
+        const necks = thinParts(ctx, current);
+        if (necks === null || necks.length === 0) break;
+        const grown: CrossSection[] = [];
+        for (const neck of necks) {
+          const width = appendageWidthMm(neck, minWall);
+          const fatter = offsetSection(arena, neck, Math.max((minWall - width) / 2, leastGrowth));
+          if (fatter !== neck) arena.drop(neck);
+          if (fatter !== null) grown.push(fatter);
+        }
+        if (grown.length === 0) break;
+        const merged = unionSections(wasm, arena, grown);
+        const inside = merged === null ? null : intersectSection(arena, merged, limit);
+        if (merged !== null && inside !== merged) arena.drop(merged);
+        for (const part of grown) if (part !== merged && part !== inside) arena.drop(part);
+        if (inside === null) break;
+        const pieces = arena.keepAll(inside.decompose()).filter((piece) => {
+          if (piece.area() > 0) return true;
+          arena.drop(piece);
+          return false;
+        });
+        arena.drop(inside);
+        if (pieces.length === 0) break;
+        const widened = unionSections(wasm, arena, [current, ...pieces]);
+        if (widened === null) break;
+        if (widened !== current && !owned.has(current)) arena.drop(current);
+        accumulated = widened;
+        for (const piece of pieces) patches.push({ index: i, section: piece });
+      }
+    }
+    if (accumulated !== null && !owned.has(accumulated)) arena.drop(accumulated);
+  }
+  arena.drop(crop);
+  return patches;
 }
 
 /**

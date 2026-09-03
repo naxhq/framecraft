@@ -1,6 +1,11 @@
 {
   "name": "framecraft-web",
-  "version": "3.0.0",
+  "version": "3.1.0",
+  "description": "FrameCraft: turn a map location into a 3D-printable framed miniature city",
+  "author": "NAXHQ",
+  "license": "MIT",
+  "homepage": "https://github.com/naxhq/framecraft",
+  "repository": { "type": "git", "url": "https://github.com/naxhq/framecraft.git" },
   "private": true,
   "scripts": {
     "predev": "node scripts/copy-maplibre-worker.mjs && node scripts/copy-manifold-wasm.mjs",
@@ -14,7 +19,9 @@
     "test:e2e": "playwright test --project=chromium",
     "test:e2e:smoke": "playwright test --project=chromium-smoke",
     "export:cli": "vite-node scripts/export-cli.ts --",
-    "bake:cli": "npm run export:cli --"
+    "bake:cli": "npm run export:cli --",
+    "version:check": "node scripts/stamp-version.mjs --check",
+    "version:stamp": "node scripts/stamp-version.mjs --write"
   },
   "dependencies": {
     "@fontsource-variable/archivo": "5.3.0",

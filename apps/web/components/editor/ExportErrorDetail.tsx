@@ -29,13 +29,31 @@ export interface ErrorDetailModel {
   detail: string;
 }
 
+/**
+ * `danger` for something that went wrong; `note` for something the user did on
+ * purpose.
+ *
+ * A cancelled export takes this same surface -- it wants the stage, the
+ * copyable block and the same position in the bar -- but painting a
+ * user-pressed Cancel in the danger palette says "this broke" about an action
+ * that worked exactly as asked ([V3.1-T6] 2).
+ */
+export type ErrorDetailTone = "danger" | "note";
+
+const TONES: Readonly<Record<ErrorDetailTone, { box: string; text: string }>> = {
+  danger: { box: "border-danger/40 bg-danger-soft", text: "text-danger" },
+  note: { box: "border-line bg-plate-sunken", text: "text-ink-muted" },
+};
+
 export function ExportErrorDetail({
   model,
   testId,
+  tone = "danger",
 }: {
   model: ErrorDetailModel;
-  /** So a run failure and an export refusal are separately addressable. */
+  /** So a run failure, an export refusal and a cancel are separately addressable. */
   testId: string;
+  tone?: ErrorDetailTone;
 }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "manual">("idle");
   const revealed = copyState !== "idle";
@@ -57,9 +75,10 @@ export function ExportErrorDetail({
       data-testid={testId}
       data-stage={model.stage ?? ""}
       data-findings={model.findingIds.join(",")}
-      className="space-y-1.5 rounded-milled border border-danger/40 bg-danger-soft px-2 py-1.5"
+      data-tone={tone}
+      className={`space-y-1.5 rounded-milled border px-2 py-1.5 ${TONES[tone].box}`}
     >
-      <p data-testid={`${testId}-message`} className="text-2xs leading-snug text-danger">
+      <p data-testid={`${testId}-message`} className={`text-2xs leading-snug ${TONES[tone].text}`}>
         {model.headline}
       </p>
       <div className="flex items-center gap-2">

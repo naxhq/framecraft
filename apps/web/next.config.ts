@@ -1,6 +1,6 @@
-import { execFileSync } from "node:child_process";
-
 import type { NextConfig } from "next";
+
+import { versionInfo } from "./scripts/version.mjs";
 
 /**
  * FrameCraft v3 P8: the app is a fully static site (`output: "export"`).
@@ -19,6 +19,14 @@ import type { NextConfig } from "next";
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
 /**
+ * The version, the commit and the build date, resolved ONCE for this build by
+ * `scripts/version.mjs` -- the same module that stamps the desktop manifests,
+ * so the web footer, the desktop About dialog and the installer metadata can
+ * never disagree. `lib/version.ts` reads the three inlined values back.
+ */
+const build = versionInfo();
+
+/**
  * An identifier for THIS build, inlined as `NEXT_PUBLIC_BUILD_ID`.
  *
  * `lib/serviceWorker.ts` registers `sw.js?v=<this>`, which is what makes a
@@ -35,15 +43,8 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 function buildId(): string {
   const fromEnv = process.env.NEXT_PUBLIC_BUILD_ID;
   if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
-  try {
-    return execFileSync("git", ["rev-parse", "--short=12", "HEAD"], {
-      cwd: process.cwd(),
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return `t${Date.now().toString(36)}`;
-  }
+  if (build.commit !== "") return build.commit;
+  return `t${Date.now().toString(36)}`;
 }
 
 const nextConfig: NextConfig = {
@@ -55,7 +56,12 @@ const nextConfig: NextConfig = {
   // trailing-slash routing makes the exported tree match that shape.
   trailingSlash: true,
   images: { unoptimized: true },
-  env: { NEXT_PUBLIC_BUILD_ID: buildId() },
+  env: {
+    NEXT_PUBLIC_BUILD_ID: buildId(),
+    NEXT_PUBLIC_APP_VERSION: build.version,
+    NEXT_PUBLIC_COMMIT_SHA: build.commit,
+    NEXT_PUBLIC_BUILD_DATE: build.buildDate,
+  },
   webpack: (config, { dev, isServer, webpack }) => {
     // `manifold-3d`'s emscripten glue (`lib/engine/solid/manifold.ts`'s only
     // dependency) branches on `ENVIRONMENT_IS_NODE` and only then does
@@ -70,22 +76,70 @@ const nextConfig: NextConfig = {
     // vitest paths already rely on working.
     if (!isServer) {
       config.plugins.push(new webpack.IgnorePlugin({ resourceRegExp: /^node:/ }));
+
+      /*
+       * Stop the client build emitting its own copy of `manifold.wasm`.
+       *
+       * The export used to carry the same 541 470 bytes twice
+       * (`docs/handoff/v3-00-baseline.md`, and section 9 of the v3-08 note):
+       * `manifold/manifold.wasm`, which `scripts/copy-manifold-wasm.mjs` puts
+       * in `public/` and which is the one actually fetched, and
+       * `_next/static/media/manifold.<hash>.wasm`, which the baseline recorded
+       * as NEVER REQUESTED.
+       *
+       * The second copy comes from one line of emscripten glue:
+       *
+       *   if (Module["locateFile"]) { return locateFile("manifold.wasm") }
+       *   return new URL("manifold.wasm", import.meta.url).href
+       *
+       * webpack sees the `new URL(..., import.meta.url)` and emits the file as
+       * an asset whether or not the expression can ever run, and here it
+       * cannot: `lib/engine/solid/manifold.ts` passes `locateFile` on every
+       * non-Node path, so the first branch always wins in a browser and the
+       * second is dead. `emit: false` keeps the URL webpack rewrites the
+       * expression to -- nothing reads it -- and skips writing the file.
+       *
+       * Client only. The server compilation and vitest read the wasm through
+       * `require.resolve("manifold-3d/manifold.wasm")` off disk in
+       * `node_modules`, which this does not touch.
+       */
+      config.module.rules.push({
+        test: /[\\/]manifold-3d[\\/]manifold\.wasm$/,
+        type: "asset/resource",
+        generator: { emit: false },
+      });
     }
 
     /*
      * Give the two big vendors a chunk each.
      *
-     * This does not make the page load fewer bytes: maplibre-gl and three are
-     * imported by components that mount on the landing page, so they are on
-     * the critical path either way and only `components/**` can change that.
-     * What it changes is WHICH FILE they live in across deploys. Measured on
-     * the deployed build, vendor code is smeared over mixed chunks (one 420 kB
-     * chunk holds glyph handling, projection and geometry together), so any
-     * app-code edit that shifts webpack's module ids rewrites their content
-     * hashes and a returning visitor re-downloads all of it. Pinned to their
-     * own cache groups, a deploy that only touched the editor leaves
-     * maplibre-gl (543 kB) and three (742 kB) byte-identical, so the service
-     * worker's cache-first copies stay valid and the update costs nothing.
+     * MEASURED, not asserted. Two builds of the same commit differing only in
+     * this block, served and driven three times each
+     * (docs/handoff/v3-08-siteperf.md section 7.4):
+     *
+     *                    first load JS   cold wire   requests   JS on disk
+     *   with these        293 kB         3 184 328 B   17       4 282 554 B
+     *   without them      293 kB         3 193 662 B   20       4 291 148 B
+     *
+     * So it is worth 9 334 B and three requests on a cold load, and nothing at
+     * all on the first-load figure `next build` reports. maplibre-gl and three
+     * are imported by components that mount on the landing page, so they are
+     * on the critical path either way and only `components/**` can change
+     * that. Nobody should read this block as a first-load optimisation.
+     *
+     * An earlier version of this comment also claimed the split keeps the
+     * vendor chunks byte-identical across deploys that only touch app code,
+     * where webpack would otherwise renumber and re-hash them. That was not
+     * reproducible: adding a new module and importing it from `app/page.tsx`
+     * left `vendor-maplibre` and `vendor-three` on the same content hash WITH
+     * these groups, and left the four mixed chunks that hold the same
+     * libraries on THEIR same hashes without them. Deterministic module ids
+     * already do that job. The claim is withdrawn rather than restated.
+     *
+     * What is left is small and real: three fewer files, 9 kB less on the
+     * wire, and two chunks named after what is in them, so the service
+     * worker's cache and any future measurement can refer to them by name
+     * instead of by a hash that means nothing.
      *
      * Production client build only: `next dev` has no content hashes to keep
      * stable, and the server compilation does not ship to a browser.

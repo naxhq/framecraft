@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
+import DesktopProjectOpener from "@/components/editor/DesktopProjectOpener";
+import SiteFooter from "@/components/editor/SiteFooter";
+
 /*
  * Both typefaces are SELF-HOSTED: these two imports pull the woff2 files out
  * of node_modules and Next serves them from this origin under
@@ -110,6 +113,13 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }} />
       </head>
       <body className="flex min-h-screen flex-col bg-bench text-ink">
+        {/*
+          Renders nothing. It is here, and not inside the editor, so that a
+          project file the desktop app was launched with (or double-clicked
+          while it was already running) cannot arrive while a route is still
+          mounting. A no-op in a browser tab.
+        */}
+        <DesktopProjectOpener />
         <main className="flex-1">{children}</main>
         <div
           id="fc-boot"
@@ -122,22 +132,14 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <span id="fc-boot-label">Starting FrameCraft</span>
         </div>
         {/*
-          The OSM attribution is a licence obligation, not decoration: it is in
-          the layout so it survives every route, and it is also written into the
-          3MF metadata and CREDITS.txt by the export. Photon and Nominatim join
-          it here ([V3-P9]) because the app queries both by name: Photon for the
-          type-ahead, Nominatim for the reverse lookup that names a dropped pin.
-          The same line appears in the search popover's own footer, where the
-          two services are actually being used.
+          The footer is in the LAYOUT, not in the editor, because the OSM
+          attribution it carries is a licence obligation and has to survive
+          every route; the same credit is written into the 3MF metadata and
+          CREDITS.txt by the export. It also names the build (version, commit,
+          date) and the copyright holder, all of them read from
+          `lib/version.ts` rather than typed. See `components/editor/SiteFooter`.
         */}
-        <footer className="fc-scored flex items-center justify-center gap-2 bg-bench px-4 py-2 text-2xs text-ink-faint">
-          <span aria-hidden="true" className="h-px w-6 bg-line-strong" />
-          <span>
-            Search by Photon (komoot), geocoding by Nominatim, map data © OpenStreetMap
-            contributors
-          </span>
-          <span aria-hidden="true" className="h-px w-6 bg-line-strong" />
-        </footer>
+        <SiteFooter />
         {/* Last in the body, so `document.body` and #fc-boot both exist when it runs. */}
         <script dangerouslySetInnerHTML={{ __html: BOOT_STATUS }} />
       </body>

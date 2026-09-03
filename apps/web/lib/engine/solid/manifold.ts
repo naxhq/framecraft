@@ -35,7 +35,7 @@ import type {
 import type { Point } from "../../contracts";
 import { perfEnabled, perfRecord, perfSpan } from "../../perf";
 import type { Bbox3, RegionMesh, RegionName } from "../types";
-import { canonicalMesh, cleanMesh } from "./mesh";
+import { REPAIR_AREA_MM2, canonicalMesh, cleanMesh, componentCount, degenerateFaces, type Mesh } from "./mesh";
 
 export type { CrossSection, Manifold, ManifoldToplevel, Vec2 };
 
@@ -444,6 +444,75 @@ export const EXTRUDE_SIMPLIFY_MM = 1e-4;
 export const DEBURR_MM = 1e-5;
 
 /**
+ * The XY grid every building footprint is put on before it is extruded, mm.
+ *
+ * The reference implementation's `thicken.PRINT_GRID_MM` (0.01 mm, GEOS
+ * `set_precision`) and the reason its buildings union is clean: two solids
+ * that are meant to share a wall - a tower and the block it was clipped to,
+ * two parts of one building that meet along an edge - only share it if their
+ * outlines carry the SAME coordinates there, and two Clipper2 operations that
+ * compute the same point from different inputs round it differently at the
+ * 1e-8 mm level. manifold3d's union of those prisms is exact, so the
+ * difference becomes a wall 4e-9 mm wide with real triangles in it: 180 faces
+ * under 1e-7 mm^2 on the Paris buildings region, none of which the mesh weld
+ * can close (the two sheets are joined through their neighbours, and merging
+ * the pair opens the mesh). Snapped to one grid, the shared point IS one point
+ * and the union has nothing to sliver.
+ *
+ * A binary fraction, so the snapped coordinate is exact in floating point and
+ * the kernel's own integer conversion cannot move it again; about a
+ * hundredth of the reference grid and two orders of magnitude under anything
+ * a printer can lay down, and applied to REPAIRED footprints only, so no
+ * minimum-feature rule can be undone by a move of half a step.
+ */
+export const XY_GRID_MM = 1 / 1024;
+
+/**
+ * Every vertex of `section` onto {@link XY_GRID_MM}.
+ *
+ * Rebuilt through the constructor, which unions the snapped contours under
+ * the positive fill rule, so a contour the rounding folded onto itself comes
+ * back as a valid section rather than a self-intersecting one. Hands the
+ * input back when nothing moved or the snapped section would be empty.
+ */
+export function snapSection(
+  wasm: ManifoldToplevel,
+  arena: Arena,
+  section: CrossSection,
+  gridMm: number = XY_GRID_MM,
+): CrossSection {
+  if (!(gridMm > 0)) return section;
+  const contours = section.toPolygons() as Contour[];
+  let moved = false;
+  const snapped: Contour[] = [];
+  for (const contour of contours) {
+    const ring: Contour = [];
+    for (const [x, y] of contour) {
+      const sx = Math.round(x / gridMm) * gridMm;
+      const sy = Math.round(y / gridMm) * gridMm;
+      if (sx !== x || sy !== y) moved = true;
+      const last = ring[ring.length - 1];
+      if (last !== undefined && last[0] === sx && last[1] === sy) continue;
+      ring.push([sx, sy]);
+    }
+    if (ring.length >= 2) {
+      const first = ring[0];
+      const last = ring[ring.length - 1];
+      if (first[0] === last[0] && first[1] === last[1]) ring.pop();
+    }
+    if (ring.length >= 3) snapped.push(ring);
+  }
+  if (!moved) return section;
+  if (snapped.length === 0) return section;
+  const out = new wasm.CrossSection(snapped as Vec2[][], FILL_RULE);
+  if (out.isEmpty()) {
+    out.delete();
+    return section;
+  }
+  return arena.keep(out);
+}
+
+/**
  * Deburr and vertex-clean a section just before it is extruded.
  *
  * Both halves earn their place: the opening removes pinch points (see
@@ -710,6 +779,20 @@ export function pruneDebrisCounted(
   dropped: number;
   bodies: { real: number; debris: number; debrisVolume: number; smallestMm3: number };
 } {
+  // The common case first, without a decomposition: every body is clearly
+  // printable, so the solid is unchanged and only its body count is wanted.
+  // `decompose()` copies each body into a Manifold of its own, which on a
+  // 278-body buildings region costs 85 ms and on the Overpass-path roads
+  // region (29 bodies, 71 000 triangles) 65 ms; the count is a union-find
+  // over the mesh manifold3d already holds, a few milliseconds.
+  const quick = bodiesFromMesh(solid, minVolume);
+  if (quick !== null) {
+    return {
+      solid,
+      dropped: 0,
+      bodies: { real: quick.count, debris: 0, debrisVolume: 0, smallestMm3: quick.count === 1 ? solid.volume() : quick.smallestMm3 },
+    };
+  }
   const bodies = arena.keepAll(solid.decompose());
   const volumes = bodies.map((body) => body.volume());
   let real = 0;
@@ -744,6 +827,75 @@ export function pruneDebrisCounted(
     dropped: debris,
     bodies: { real, debris: 0, debrisVolume: 0, smallestMm3: smallestKept },
   };
+}
+
+/**
+ * How many bodies a solid has, read off its mesh, when every one of them is
+ * clearly above the debris floor; null when any body is near or under it.
+ *
+ * The count is exactly `decompose()`'s: manifold3d splits a solid into the
+ * connected components of its vertex graph (`Manifold::Decompose` is a
+ * union-find over the halfedges), and `getMesh()` hands back that same graph
+ * with its vertices as manifold3d indexes them, so a union-find over the
+ * triangle edges finds the same components. The volumes are NOT exactly
+ * `decompose()`'s: they are summed from the float32 read-out, which is good to
+ * a few parts in a million of a body. That is why this answers only when every
+ * body is at least ten floors up from `minVolume`; a body anywhere near the
+ * floor sends the caller to the exact decomposition, whose numbers are the
+ * ones the findings print. Nothing this returns is reported as a volume
+ * except `smallestMm3`, which no reader consumes.
+ */
+export function bodiesFromMesh(solid: Manifold, minVolume: number): { count: number; smallestMm3: number } | null {
+  const mesh = solid.getMesh();
+  const stride = mesh.numProp;
+  const p = mesh.vertProperties;
+  const tris = mesh.triVerts;
+  const vertexCount = Math.floor(p.length / Math.max(1, stride));
+  if (vertexCount === 0 || tris.length === 0) return null;
+  const parent = new Int32Array(vertexCount);
+  for (let v = 0; v < vertexCount; v += 1) parent[v] = v;
+  const find = (v: number): number => {
+    let root = v;
+    while (parent[root] !== root) root = parent[root];
+    let walk = v;
+    while (parent[walk] !== root) {
+      const next = parent[walk];
+      parent[walk] = root;
+      walk = next;
+    }
+    return root;
+  };
+  const join = (a: number, b: number): void => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+  };
+  for (let i = 0; i + 2 < tris.length; i += 3) {
+    join(tris[i], tris[i + 1]);
+    join(tris[i + 1], tris[i + 2]);
+  }
+  // Signed volume per component, by the divergence theorem over its triangles.
+  const volume = new Float64Array(vertexCount);
+  for (let i = 0; i + 2 < tris.length; i += 3) {
+    const a = tris[i] * stride;
+    const b = tris[i + 1] * stride;
+    const c = tris[i + 2] * stride;
+    volume[find(tris[i])] +=
+      p[a] * (p[b + 1] * p[c + 2] - p[b + 2] * p[c + 1]) -
+      p[a + 1] * (p[b] * p[c + 2] - p[b + 2] * p[c]) +
+      p[a + 2] * (p[b] * p[c + 1] - p[b + 1] * p[c]);
+  }
+  let count = 0;
+  let smallest = Infinity;
+  const clear = 10 * minVolume;
+  for (let v = 0; v < vertexCount; v += 1) {
+    if (parent[v] !== v) continue;
+    const mm3 = volume[v] / 6;
+    if (!(mm3 >= clear)) return null;
+    count += 1;
+    if (mm3 < smallest) smallest = mm3;
+  }
+  return count === 0 ? null : { count, smallestMm3: smallest };
 }
 
 /** Drop zero-volume boolean debris left floating beside a region's real bodies. */
@@ -798,6 +950,67 @@ export function bodyCount(solid: Manifold): number {
  * properties (nothing in this engine makes one) is de-interleaved instead of
  * being silently mis-read.
  */
+/**
+ * Tolerance of the kernel-side sliver sweep a region gets before its mesh is
+ * read out, mm. The reference implementation's `assemble.SIMPLIFY_TOL_MM`.
+ */
+export const SWEEP_TOLERANCE_MM = 1e-6;
+
+/**
+ * Relative volume a sweep may move and still be the same solid
+ * (`assemble.WELD_VOLUME_TOLERANCE`).
+ */
+export const SWEEP_VOLUME_TOLERANCE = 1e-6;
+
+export interface SweptSolid {
+  solid: Manifold;
+  mesh: Mesh;
+  /** Faces under `REPAIR_AREA_MM2` before and after the sweep. */
+  degenerate: { before: number; after: number };
+}
+
+/**
+ * `Manifold.simplify` at a micrometre, accepted only when it is the same solid.
+ *
+ * The union of a few thousand building prisms leaves what the mesh-level weld
+ * (`mesh.cleanMesh`) cannot touch: a SLIT, two sheets of one surface a few
+ * nanometres apart and joined through their neighbours, so that welding the
+ * pair opens edges and splits bodies and the rung is rightly thrown away.
+ * Measured on the Paris preset: 180 faces under 1e-7 mm^2 on the buildings
+ * region, 143 of them across an edge under 1e-4 mm, and every rung of the
+ * ladder rejected (six open edges, 306 bodies to 308). The reference
+ * implementation never sees them because `assemble.finalize` runs the kernel's
+ * own simplify FIRST, and the kernel collapses a slit as a topological edge
+ * collapse, which is the one repair that keeps the surface closed.
+ *
+ * Transactional, like the mesh repairs: the swept solid is kept only when it
+ * is `NoError`, holds the same volume to a relative 1e-6, has no more
+ * connected bodies than it came in with, and carries fewer faces under the
+ * repair threshold. A region that had nothing to sweep costs one count and
+ * nothing else. The caller owns the returned solid and must `delete()` it.
+ */
+export function sweepSlivers(solid: Manifold, mesh: Mesh): SweptSolid | null {
+  const before = degenerateFaces(mesh, REPAIR_AREA_MM2);
+  if (before === 0) return null;
+  const swept = solid.simplify(SWEEP_TOLERANCE_MM);
+  const reject = (): null => {
+    swept.delete();
+    return null;
+  };
+  if (swept.isEmpty() || swept.status() !== "NoError") return reject();
+  const reference = solid.volume();
+  if (Math.abs(swept.volume() - reference) > SWEEP_VOLUME_TOLERANCE * Math.max(Math.abs(reference), 1)) return reject();
+  const raw = swept.getMesh();
+  const candidate: Mesh = {
+    positions: doublePositions(swept, raw.vertProperties, raw.numProp),
+    indices: new Uint32Array(raw.triVerts),
+  };
+  const after = degenerateFaces(candidate, REPAIR_AREA_MM2);
+  if (after >= before) return reject();
+  if (componentCount(candidate) > componentCount(mesh)) return reject();
+  return { solid: swept, mesh: candidate, degenerate: { before, after } };
+}
+
 export function toRegionMesh(
   solid: Manifold,
   region: RegionName,
@@ -817,22 +1030,33 @@ export function toRegionMesh(
   // Four perf rows under the finish and merged stages, because the split
   // matters: `mesh.clean` is the repair ladder, which is the whole cost of a
   // merged solid that carries degenerate seams and nothing on a clean region.
-  const mesh = perfSpan("mesh.get", () => solid.getMesh());
-  const positions = perfSpan("mesh.double", () => doublePositions(solid, mesh.vertProperties, mesh.numProp));
-  const cleaned = perfSpan("mesh.clean", () => cleanMesh({ positions, indices: new Uint32Array(mesh.triVerts) }, clean));
-  // History-free byte order (`mesh.canonicalMesh`): a warm incremental run and
-  // a cold run of the same parameters write the same file.
-  const ordered = perfSpan("mesh.order", () => canonicalMesh(cleaned.mesh));
-  return {
-    region,
-    positions: ordered.positions,
-    indices: ordered.indices,
-    volumeMm3: solid.volume(),
-    bbox: bboxOf(solid),
-    bodies: bodies ?? bodyCount(solid),
-    slot,
-    colorHex,
+  const raw = perfSpan("mesh.get", () => solid.getMesh());
+  const read: Mesh = {
+    positions: perfSpan("mesh.double", () => doublePositions(solid, raw.vertProperties, raw.numProp)),
+    indices: new Uint32Array(raw.triVerts),
   };
+  // The kernel's own sweep first (`sweepSlivers`), for the slits the mesh
+  // repair below cannot close; then the mesh repair for what is left.
+  const swept = perfSpan("mesh.sweep", () => sweepSlivers(solid, read));
+  const source = swept === null ? solid : swept.solid;
+  try {
+    const cleaned = perfSpan("mesh.clean", () => cleanMesh(swept === null ? read : swept.mesh, clean));
+    // History-free byte order (`mesh.canonicalMesh`): a warm incremental run and
+    // a cold run of the same parameters write the same file.
+    const ordered = perfSpan("mesh.order", () => canonicalMesh(cleaned.mesh));
+    return {
+      region,
+      positions: ordered.positions,
+      indices: ordered.indices,
+      volumeMm3: source.volume(),
+      bbox: bboxOf(source),
+      bodies: bodies ?? bodyCount(source),
+      slot,
+      colorHex,
+    };
+  } finally {
+    if (swept !== null) swept.solid.delete();
+  }
 }
 
 /**
@@ -858,13 +1082,16 @@ export function doublePositions(
   stride: number,
 ): Float64Array {
   const count = float32.length / stride;
-  const widened = new Float64Array(count * 3);
-  for (let i = 0; i < count; i += 1) {
-    widened[i * 3] = float32[i * stride];
-    widened[i * 3 + 1] = float32[i * stride + 1];
-    widened[i * 3 + 2] = float32[i * stride + 2];
-  }
-  if (stride !== 3) return widened;
+  const widen = (): Float64Array => {
+    const widened = new Float64Array(count * 3);
+    for (let i = 0; i < count; i += 1) {
+      widened[i * 3] = float32[i * stride];
+      widened[i * 3 + 1] = float32[i * stride + 1];
+      widened[i * 3 + 2] = float32[i * stride + 2];
+    }
+    return widened;
+  };
+  if (stride !== 3) return widen();
 
   const capture: { exact: Float64Array | null } = { exact: null };
   const echo = solid.warpBatch((verts) => {
@@ -872,10 +1099,12 @@ export function doublePositions(
   });
   echo.delete();
   const found = capture.exact;
-  if (found === null || found.length !== widened.length) return widened;
-  for (let i = 0; i < widened.length; i += 1) {
+  if (found === null || found.length !== count * 3) return widen();
+  // The guard compares against the float32 array directly; the widened copy
+  // is only ever built on the path that returns it.
+  for (let i = 0; i < found.length; i += 1) {
     // One float32 ulp at 1024 mm, far above the 7.6e-6 mm the model can show.
-    if (Math.abs(found[i] - widened[i]) > 1e-3) return widened;
+    if (Math.abs(found[i] - float32[i]) > 1e-3) return widen();
   }
   return found;
 }

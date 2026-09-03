@@ -21,6 +21,12 @@ import type { BuildContext } from "./context";
 import { addFinding } from "./context";
 import type { Contour } from "./manifold";
 import { ribbonContours, roadContours } from "./repair";
+import {
+  baseOsmIdOfRoad,
+  hiddenOverrideIds,
+  overrideGroups,
+  type OverrideGroup,
+} from "./overrides";
 
 /** A rail centreline, if the ingest side put one in the SceneGraph. */
 export interface RailWay {
@@ -100,33 +106,84 @@ export function bridgeRailWays(scene: unknown): RailWay[] {
   return railWays(scene).filter(isElevated);
 }
 
+/** The contract's default for `regions.rail.width_m`, ground metres. */
+export const RAIL_WIDTH_DEFAULT_M = 6.0;
+
 /**
  * Printed ground width of one rail way, metres.
  *
- * `params.regions.rail.width_m` unless the way carries its own, clamped up to a
- * minimum wall exactly as a road's is: a rail line printed thinner than two
- * perimeters is a scratch, not a track.
+ * `params.regions.rail.width_m` is authoritative for EVERY rail ribbon
+ * (`[V3.1-P2-1]`): it is scaled by `road_scale` and clamped up to a minimum
+ * wall exactly as a road's is, because a rail line printed thinner than two
+ * perimeters is a scratch, not a track. The way's own `width_m` stays what the
+ * normaliser wrote (the per-type table is SceneGraph data) and is not read
+ * here: it used to be the primary value with the parameter as a fallback, and
+ * since the normaliser fills every way, the parameter never fired.
  */
-export function railWidthGroundM(ctx: BuildContext, way: RailWay): number {
-  const fallback = ctx.params.regions?.rail?.width_m ?? 6.0;
-  return Math.max(
-    (way.width_m ?? fallback) * ctx.params.road_scale,
-    ctx.thresholdsGroundM.min_wall,
-  );
+export function railWidthGroundM(ctx: BuildContext): number {
+  const widthM = ctx.params.regions?.rail?.width_m ?? RAIL_WIDTH_DEFAULT_M;
+  return Math.max(widthM * ctx.params.road_scale, ctx.thresholdsGroundM.min_wall);
 }
 
 /**
- * Ribbon contours for the road layer, print mm. Empty when roads are off.
+ * The roads this build lays flat on the plate, before any override touches
+ * them.
  *
  * With `bridges.enabled` the elevated segments are removed here and rebuilt by
  * `solid/bridges.ts`, so the ground under a viaduct keeps whatever is really
  * there. With bridges off every segment is laid at grade, which is v2's
  * behaviour and the reason this reads `bridgesEnabled` rather than assuming it.
  */
+function gradeRoads(ctx: BuildContext): readonly Road[] {
+  const enabled = ctx.params.bridges?.enabled ?? true;
+  return enabled ? splitRoadsByLevel(ctx.scene).grade : ctx.scene.roads;
+}
+
+/**
+ * Ribbon contours for the road layer, print mm. Empty when roads are off.
+ *
+ * Two kinds of `object_overrides` row take a road out of THIS layer (v3.1 Task
+ * 11): one that hides it (or switches it off), which leaves no ribbon at all,
+ * and one that gives it a filament or a mode of its own, which moves it into an
+ * `override_N` region built by {@link overrideRoadContours}. Both work by
+ * leaving the road out of the contours BEFORE the repair, so the layer closes
+ * over the ground it had rather than carrying a hole where it was.
+ */
 export function roadLayerContours(ctx: BuildContext): Contour[] {
   if (ctx.params.road_mode === "off") return [];
-  const enabled = ctx.params.bridges?.enabled ?? true;
-  const roads = enabled ? splitRoadsByLevel(ctx.scene).grade : ctx.scene.roads;
+  const hidden = hiddenOverrideIds(ctx.params, "road");
+  const grouped = overrideGroups(ctx.params).byId;
+  const all = gradeRoads(ctx);
+  if (hidden.size === 0 && grouped.size === 0) return roadContours(ctx, all);
+  const roads = all.filter((road) => {
+    const id = baseOsmIdOfRoad(road);
+    if (hidden.has(id)) return false;
+    return grouped.get(id)?.layer !== "road";
+  });
+  return roadContours(ctx, roads);
+}
+
+/**
+ * Ribbon contours for one override group's roads, print mm.
+ *
+ * Built whatever the top-level `road_mode` says, because the point of the
+ * override is that this road disagrees with it: a scene with roads off and one
+ * road embossed prints exactly that one road.
+ *
+ * Elevated segments are NOT taken. A bridge deck is built by `solid/bridges.ts`
+ * from its own geometry and is welded into the roads region there; pulling one
+ * into a flat override layer would lay it on the ground. A road that is only a
+ * bridge therefore contributes nothing here, and `surface-overrides` reports the
+ * group that came out empty.
+ */
+export function overrideRoadContours(ctx: BuildContext, group: OverrideGroup): Contour[] {
+  if (group.layer !== "road") return [];
+  const hidden = hiddenOverrideIds(ctx.params, "road");
+  const wanted = new Set(group.ids);
+  const roads = gradeRoads(ctx).filter((road) => {
+    const id = baseOsmIdOfRoad(road);
+    return wanted.has(id) && !hidden.has(id);
+  });
   return roadContours(ctx, roads);
 }
 
@@ -137,7 +194,7 @@ export function railLayerContours(ctx: BuildContext): Contour[] {
   if (ways.length === 0) return [];
   const out: Contour[] = [];
   for (const way of ways) {
-    out.push(...ribbonContours(way.path, railWidthGroundM(ctx, way) * ctx.scale, ctx.scale));
+    out.push(...ribbonContours(way.path, railWidthGroundM(ctx) * ctx.scale, ctx.scale));
   }
   return out;
 }

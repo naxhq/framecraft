@@ -58,6 +58,7 @@ import {
   rectContour,
   sectionOf,
   subtractSection,
+  subtractSolids,
   unionSections,
   batchedUnion,
 } from "./manifold";
@@ -100,6 +101,14 @@ export const DOT_DIAMETER_FRACTION = 0.5;
 
 /** Segments per dimple: a shallow round pit needs no more than a dodecagon. */
 export const DOT_SEGMENTS = 12;
+
+/**
+ * Width of the sight-edge rebate on the lip's inner top edge, mm
+ * (`transform.FRAME_SIGHT_EDGE_MM`, re-exported so the geometry and the
+ * layout are read from one number). `frame_style.lip_depth_mm` is how deep
+ * the step is; see {@link lipRebateDepthMm} and `[V3.1-P2-2]`.
+ */
+export const FRAME_SIGHT_EDGE_MM = T.FRAME_SIGHT_EDGE_MM;
 
 // ---------------------------------------------------------------------------
 // The resolved style
@@ -203,6 +212,26 @@ export function frameIsSeparate(ctx: BuildContext): boolean {
   return Boolean(ctx.params.frame) && frameStyle(ctx.params).separate !== null;
 }
 
+/**
+ * Depth of the sight-edge rebate cut into the lip's inner top edge, mm.
+ *
+ * `frame_style.lip_depth_mm` (`[V3.1-P2-2]`): a step this deep and
+ * {@link FRAME_SIGHT_EDGE_MM} wide, running round the opening on the lip's
+ * top face, 0 meaning a flat lip. Clamped to the lip's own height, which is
+ * `transform.lip_rebate_depth_mm`'s rule as well, so the layout and the
+ * geometry agree on where the flat face ends; a value past the lip is
+ * reported by {@link buildSightEdgeRebate}. Zero with the frame off.
+ */
+export function lipRebateDepthMm(ctx: BuildContext): number {
+  if (!ctx.params.frame) return 0;
+  return T.lip_rebate_depth_mm(ctx.params);
+}
+
+/** How far the rebate moves the flat top face's inner edge outward, mm. */
+export function sightEdgeInsetMm(ctx: BuildContext): number {
+  return lipRebateDepthMm(ctx) > 0 ? FRAME_SIGHT_EDGE_MM : 0;
+}
+
 // ---------------------------------------------------------------------------
 // Plan shapes
 // ---------------------------------------------------------------------------
@@ -256,11 +285,21 @@ export function frameRingAt(
   ctx: BuildContext,
   outerDeltaMm: number,
   innerDeltaMm: number,
+  /**
+   * How far the inner edge is moved outward WITHOUT its corner radius
+   * following: the sight-edge rebate's width. A profile inset carries the
+   * radius with it (concentric all the way up); the rebate's outer boundary
+   * keeps the opening's own radius instead, exactly as the lip's outer and
+   * inner corners share one radius, so a styled corner takes the same area
+   * off the rebate's band that it takes off the lip's, and the frame's volume
+   * does not depend on the corner style (`[V3.1-P2-2]`).
+   */
+  innerShiftMm = 0,
 ): CrossSection | null {
   const frame = T.frame_geometry_mm(ctx.params);
   const style = frameStyle(ctx.params);
   const outerHalf = frame.outer_half_mm - outerDeltaMm;
-  const innerHalf = frame.inner_half_mm + innerDeltaMm;
+  const innerHalf = frame.inner_half_mm + innerDeltaMm + innerShiftMm;
   if (!(outerHalf > innerHalf)) return null;
   if (style.corner === "square") {
     // The pre-phase-5 construction, verbatim: one section, the outer square
@@ -442,41 +481,100 @@ export function buildFrameLip(ctx: BuildContext): Manifold | null {
   if (!frame.enabled) return null;
   const style = frameStyle(ctx.params);
   const bottom = frameBottomMm(ctx);
+  const slabs = profileSlabs(ctx, bottom, frame.bottom_mm, frame.top_mm);
+  let lip: Manifold | null;
   if (style.profile === "plain" && style.corner === "square") {
-    // The pre-phase-5 path, untouched: one ring, one extrusion.
+    // The pre-phase-5 path: one ring, one extrusion.
     const ring = frameRingSection(ctx);
     if (ring === null) return null;
-    const solid = extrudeSection(ctx.wasm, ctx.arena, ring, bottom, frame.top_mm);
+    lip = extrudeSection(ctx.wasm, ctx.arena, ring, bottom, frame.top_mm);
     ctx.arena.drop(ring);
-    return solid;
+  } else {
+    const pieces: Manifold[] = [];
+    for (const slab of slabs) {
+      if (!(slab.z1Mm > slab.z0Mm)) continue;
+      const ring = frameRingAt(ctx, slab.outerDeltaMm, slab.innerDeltaMm);
+      if (ring === null) continue;
+      const solid = extrudeSection(ctx.wasm, ctx.arena, ring, slab.z0Mm, slab.z1Mm);
+      ctx.arena.drop(ring);
+      if (solid !== null) pieces.push(solid);
+    }
+    lip = batchedUnion(ctx.wasm, ctx.arena, pieces);
   }
-  const slabs = profileSlabs(ctx, bottom, frame.bottom_mm, frame.top_mm);
-  const pieces: Manifold[] = [];
-  for (const slab of slabs) {
-    if (!(slab.z1Mm > slab.z0Mm)) continue;
-    const ring = frameRingAt(ctx, slab.outerDeltaMm, slab.innerDeltaMm);
-    if (ring === null) continue;
-    const solid = extrudeSection(ctx.wasm, ctx.arena, ring, slab.z0Mm, slab.z1Mm);
-    ctx.arena.drop(ring);
-    if (solid !== null) pieces.push(solid);
-  }
-  return batchedUnion(ctx.wasm, ctx.arena, pieces);
+  if (lip === null) return null;
+  // The sight-edge rebate, last: a step along the top slab's inner edge.
+  const top = slabs[slabs.length - 1];
+  const cutter = top === undefined ? null : buildSightEdgeRebate(ctx, top.innerDeltaMm);
+  if (cutter === null) return lip;
+  const rebated = subtractSolids(ctx.wasm, ctx.arena, lip, [cutter]);
+  ctx.arena.drop(cutter);
+  return rebated;
 }
 
 /**
- * The lip's flat TOP face in plan: the topmost slab's ring.
+ * The sight-edge rebate as a cutter, or null for a flat lip.
+ *
+ * A band {@link FRAME_SIGHT_EDGE_MM} wide along the top slab's inner edge,
+ * from `lip_depth_mm` below the lip top up past it. On a styled corner its
+ * outer boundary keeps the opening's own corner radius rather than growing it
+ * by the band's width (see `frameRingAt`'s `innerShiftMm`): the same
+ * construction the lip's two edges use, which is what keeps the frame's
+ * volume independent of the corner style. The cutter overshoots INTO the
+ * opening so its near face is never coincident with the wall it is cutting;
+ * the opening is empty as far as the lip solid is concerned, so the overshoot
+ * removes nothing (`[V3.1-P2-2]`).
+ */
+export function buildSightEdgeRebate(ctx: BuildContext, innerDeltaMm: number): Manifold | null {
+  const frame = T.frame_geometry_mm(ctx.params);
+  const depth = lipRebateDepthMm(ctx);
+  if (!frame.enabled || !(depth > 0)) return null;
+  const style = frameStyle(ctx.params);
+  const asked = style.lipDepthMm;
+  if (asked > depth + 1e-9) {
+    addFinding(
+      ctx,
+      finding(
+        "frame-feature-clamped",
+        "info",
+        "The sight-edge rebate was cut to the lip's full height",
+        `A ${asked.toFixed(2)} mm rebate is deeper than the ${(frame.top_mm - frame.bottom_mm).toFixed(2)} mm lip, ` +
+          `so it was cut ${depth.toFixed(2)} mm deep: the inner ${FRAME_SIGHT_EDGE_MM.toFixed(1)} mm of the ` +
+          "lip is removed down to the base top.",
+        "frame",
+      ),
+    );
+  }
+  const innerHalf = frame.inner_half_mm + innerDeltaMm;
+  const radius = style.cornerRadiusMm + innerDeltaMm;
+  const outer = cornerSquareSection(ctx, innerHalf + FRAME_SIGHT_EDGE_MM, radius, style.corner);
+  if (outer === null) return null;
+  const inner = cornerSquareSection(ctx, innerHalf - CUTTER_OVERSHOOT_MM, radius, style.corner);
+  const band = inner === null ? outer : subtractSection(ctx.arena, outer, inner);
+  if (inner !== null) ctx.arena.drop(inner);
+  if (band !== outer) ctx.arena.drop(outer);
+  if (band === null) return null;
+  const cutter = extrudeSection(ctx.wasm, ctx.arena, band, frame.top_mm - depth, frame.top_mm + CUTTER_OVERSHOOT_MM);
+  ctx.arena.drop(band);
+  return cutter;
+}
+
+/**
+ * The lip's flat TOP face in plan: the topmost slab's ring, less the
+ * sight-edge rebate along its inner edge.
  *
  * Everything that lands on the lip - text, ornaments, texture - is clipped to
  * this, so a chamfered or stepped profile carries its ink on the material that
- * is actually there rather than over the void the profile cut away.
+ * is actually there rather than over the void the profile cut away, and
+ * nothing lands on the rebate's step.
  */
 export function frameTopFaceSection(ctx: BuildContext): CrossSection | null {
   const frame = T.frame_geometry_mm(ctx.params);
   if (!frame.enabled) return null;
   const slabs = profileSlabs(ctx, frameBottomMm(ctx), frame.bottom_mm, frame.top_mm);
   const top = slabs[slabs.length - 1];
-  if (top === undefined) return frameRingSection(ctx);
-  return frameRingAt(ctx, top.outerDeltaMm, top.innerDeltaMm);
+  const inset = sightEdgeInsetMm(ctx);
+  if (top === undefined) return inset > 0 ? frameRingAt(ctx, 0, 0, inset) : frameRingSection(ctx);
+  return frameRingAt(ctx, top.outerDeltaMm, top.innerDeltaMm, inset);
 }
 
 /** Width of the flat top face, mm: what a line of text has to fit inside. */
@@ -484,8 +582,9 @@ export function topFaceWidthMm(ctx: BuildContext): number {
   const frame = T.frame_geometry_mm(ctx.params);
   const slabs = profileSlabs(ctx, frameBottomMm(ctx), frame.bottom_mm, frame.top_mm);
   const top = slabs[slabs.length - 1];
-  if (top === undefined) return frame.width_mm;
-  return Math.max(0, frame.width_mm - top.outerDeltaMm - top.innerDeltaMm);
+  const inset = sightEdgeInsetMm(ctx);
+  if (top === undefined) return Math.max(0, frame.width_mm - inset);
+  return Math.max(0, frame.width_mm - top.outerDeltaMm - top.innerDeltaMm - inset);
 }
 
 /**
@@ -527,7 +626,9 @@ export function lipTopMm(ctx: BuildContext): number {
 export function reportNarrowTextBand(ctx: BuildContext, hasEdgeText: boolean): void {
   if (!hasEdgeText) return;
   const face = topFaceWidthMm(ctx);
-  if (face >= T.FRAME_WIDTH_MM - 1e-9) return;
+  // The layout already keeps clear of the sight-edge rebate
+  // (`transform.lip_face_width_mm`), so only a PROFILE narrows the band.
+  if (face >= T.lip_face_width_mm(ctx.params) - 1e-9) return;
   const band = T.edge_band_mm(ctx.params);
   const keep = face - 2 * T.lip_text_margin_mm(ctx.params);
   if (keep >= band - 1e-9) return;

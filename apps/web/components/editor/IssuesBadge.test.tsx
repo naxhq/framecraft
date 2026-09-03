@@ -17,8 +17,9 @@
 
 import { describe, expect, it } from "vitest";
 
+import type { AuditFinding } from "@/lib/engine/types";
 import type { Issue } from "@/lib/issues";
-import { survivingFixedIds } from "./IssuesBadge";
+import { survivingFixedIds, withExportFindings } from "./IssuesBadge";
 
 function issue(id: string): Issue {
   return {
@@ -29,6 +30,10 @@ function issue(id: string): Issue {
     source: "engine",
     fix: { label: `Fix ${id}`, safe: true, patch: {} },
   };
+}
+
+function finding(id: string, detail = `detail ${id}`): AuditFinding {
+  return { id, severity: "warning", title: `title ${id}`, detail };
 }
 
 describe("survivingFixedIds", () => {
@@ -65,5 +70,58 @@ describe("survivingFixedIds", () => {
     expect(survivingFixedIds(marked, [issue("a"), issue("z")])).toBe(marked);
     const empty: ReadonlySet<string> = new Set();
     expect(survivingFixedIds(empty, [issue("a")])).toBe(empty);
+  });
+});
+
+/**
+ * The export writer's findings, which reached the sidecar and the CLI and
+ * stopped there ([V3.1-T6] 4).
+ *
+ * `DECISIONS.md [V3.1-P7-5]` says a face that float32 hardening cannot clear
+ * "is reported as a `float32-degenerate` warning that reaches the sidecar, the
+ * CLI and the Issues badge". `lib/exportFlow.ts:exportDone` put it on
+ * `exportState.findings` and nothing ever read that field: the badge's list
+ * came from `pipeline.result.findings` alone, which is the pre-writer list, so
+ * the one row this rule exists to raise was visible only in a downloaded file.
+ */
+describe("withExportFindings", () => {
+  it("adds the writer's own row to the live list", () => {
+    const rows = withExportFindings(
+      [issue("wall-too-thin")],
+      [finding("float32-degenerate", "1 face could not be separated.")],
+    );
+    expect(rows.map((row) => row.id)).toEqual(["wall-too-thin", "float32-degenerate"]);
+    expect(rows[1].detail).toBe("1 face could not be separated.");
+    expect(rows[1].source).toBe("engine");
+  });
+
+  it("never lets the export's stale copy of a row overwrite the live one", () => {
+    /*
+      `exportState.findings` OPENS with a copy of the model's findings as they
+      stood when the file was written, so a naive merge would let a finished
+      export's old measurement replace the current build's row. The live list
+      wins, always; only ids it does not carry are added.
+    */
+    const live = issue("wall-too-thin");
+    const rows = withExportFindings(
+      [live],
+      [finding("wall-too-thin", "an old measurement"), finding("float32-degenerate")],
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toBe(live);
+    expect(rows.map((row) => row.id)).toEqual(["wall-too-thin", "float32-degenerate"]);
+  });
+
+  it("deduplicates the export's own list, so one row cannot appear twice", () => {
+    const rows = withExportFindings([], [finding("float32-degenerate"), finding("float32-degenerate")]);
+    expect(rows.map((row) => row.id)).toEqual(["float32-degenerate"]);
+  });
+
+  it("returns the SAME array when it adds nothing, so a mark keyed on the list survives", () => {
+    // The "Fixed" marks are keyed on the joined ids of this list. An export
+    // that had nothing new to say must not disturb them.
+    const issues = [issue("slot-beyond-profile")];
+    expect(withExportFindings(issues, [])).toBe(issues);
+    expect(withExportFindings(issues, [finding("slot-beyond-profile")])).toBe(issues);
   });
 });

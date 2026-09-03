@@ -49,6 +49,7 @@ import {
   frameBottomMm,
   frameRingSection,
   frameStyle,
+  lipRebateDepthMm,
   profileSlabs,
   type FrameCorner,
 } from "./frame";
@@ -153,8 +154,20 @@ export const MARK_LINE_PITCH = 1.6;
  */
 export const MARK_ONE_LINE_MIN_MM = 3.0;
 
-/** Exposed frame inner wall under which that wall segment is skipped, mm. */
-export const WALL_MARK_MIN_HEIGHT_MM = 2.0;
+/**
+ * Exposed frame inner wall under which that wall segment is skipped, mm.
+ *
+ * The plain lip's exposed inner wall at the contract's default sight-edge
+ * rebate: `FRAME_LIP_MM` less `lip_depth_mm`'s default, 1.6 mm, because the
+ * rebate takes the top of the wall with it and the mark starts below the step
+ * (`[V3.1-P2-2]`, which moved this from the 2.0 mm of `[V3-P7-A5]`). At that
+ * default a `bevel_in`, a `floating` (1.2 mm) and a separate frame (1.4 mm)
+ * still report under it and fall back to the second underside mark exactly as
+ * `[V3-P7-A5]` classified them; a deeper rebate takes the plain lip under it
+ * too, and a flat lip (`lip_depth_mm` 0) lets a floating or a separate frame
+ * carry the mark as well, which is more copies of a mandatory mark, not fewer.
+ */
+export const WALL_MARK_MIN_HEIGHT_MM = T.FRAME_LIP_MM - T.LIP_DEPTH_DEFAULT_MM;
 
 /** How deep the frame inner-wall mark is cut into the wall, mm. */
 export const WALL_MARK_DEPTH_MM = 0.4;
@@ -492,7 +505,10 @@ export function frameInnerWalls(ctx: BuildContext): WallFace[] {
     bottomMm = slabs[i].z0Mm;
   }
   const z0 = Math.max(bottomMm, frame.bottom_mm);
-  const z1 = frame.top_mm;
+  // The wall ends where the sight-edge rebate begins: above `top - lip_depth`
+  // the inner face is set back by `FRAME_SIGHT_EDGE_MM` and belongs to the
+  // step, so the mark's band starts below it (`[V3.1-P2-2]`).
+  const z1 = frame.top_mm - lipRebateDepthMm(ctx);
   const innerHalf = frame.inner_half_mm + top.innerDeltaMm;
   const span = 2 * innerHalf - 2 * (cornerSetbackMm(style.corner, style.cornerRadiusMm) + WALL_MARK_END_MM);
   const sides: Array<[string, number]> = [
@@ -1052,6 +1068,9 @@ function reportNoWall(ctx: BuildContext, date: string): void {
   }
   const walls = frameInnerWalls(ctx);
   const height = walls.length === 0 ? 0 : walls[0].z1Mm - walls[0].z0Mm;
+  // The profile or the sight-edge rebate, whichever shortened the wall.
+  const rebate = lipRebateDepthMm(ctx);
+  const below = rebate > 0 ? ` below its ${rebate.toFixed(2)} mm sight-edge rebate` : "";
   ctx.resolvedText.push(
     resolvedLine(
       "attribution-frame-wall",
@@ -1060,7 +1079,7 @@ function reportNoWall(ctx: BuildContext, date: string): void {
       "skipped",
       WALL_MARK_DEPTH_MM,
       0,
-      `this frame profile leaves ${height.toFixed(2)} mm of vertical inner wall against ` +
+      `this frame leaves ${height.toFixed(2)} mm of vertical inner wall${below} against ` +
         `the ${WALL_MARK_MIN_HEIGHT_MM.toFixed(1)} mm a mark needs`,
     ),
   );
@@ -1068,8 +1087,8 @@ function reportNoWall(ctx: BuildContext, date: string): void {
     ctx,
     info(
       "attribution-frame-wall-unavailable",
-      "The frame profile has no wall to engrave",
-      `Its vertical inner wall measures ${height.toFixed(2)} mm, under the ` +
+      "The frame has no inner wall to engrave",
+      `Its vertical inner wall${below} measures ${height.toFixed(2)} mm, under the ` +
         `${WALL_MARK_MIN_HEIGHT_MM.toFixed(1)} mm the attribution mark needs, so a second ` +
         "underside mark was cut instead.",
       "frame",

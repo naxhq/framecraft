@@ -71,7 +71,9 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "extra": [
         "scene-request"
       ],
-      "digests": []
+      "digests": [
+        "ground"
+      ]
     },
     {
       "id": "context",
@@ -115,7 +117,10 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "params": [
         "hero_building_ids",
         "hero_auto.enabled",
-        "hero_auto.count"
+        "hero_auto.count",
+        "object_overrides[].osm_id",
+        "object_overrides[].layer",
+        "object_overrides[].hero"
       ],
       "inputs": [
         "normalise"
@@ -132,12 +137,50 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "base_thickness_mm",
         "small_scale",
         "large_scale",
-        "hero_mode"
+        "hero_mode",
+        "height_exaggeration.multiplier",
+        "height_exaggeration.curve",
+        "object_overrides[].osm_id",
+        "object_overrides[].layer",
+        "object_overrides[].hidden",
+        "object_overrides[].height_scale"
       ],
       "inputs": [
         "normalise",
         "context",
         "heroes"
+      ],
+      "extra": [],
+      "digests": [
+        "footprint"
+      ]
+    },
+    {
+      "id": "surface-overrides",
+      "phase": "geometry",
+      "params": [
+        "road_scale",
+        "water",
+        "regions.roads.depth_mm",
+        "regions.roads.proud_mm",
+        "regions.water.depth_mm",
+        "regions.water.proud_mm",
+        "regions.parks.depth_mm",
+        "regions.parks.proud_mm",
+        "bridges.enabled",
+        "object_overrides[].osm_id",
+        "object_overrides[].layer",
+        "object_overrides[].hidden",
+        "object_overrides[].slot",
+        "object_overrides[].color",
+        "object_overrides[].road_mode",
+        "object_overrides[].width_scale",
+        "object_overrides[].raise_mm"
+      ],
+      "inputs": [
+        "normalise",
+        "context",
+        "repair-buildings"
       ],
       "extra": [],
       "digests": []
@@ -148,12 +191,20 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "params": [
         "water",
         "regions.water.depth_mm",
-        "regions.water.proud_mm"
+        "regions.water.proud_mm",
+        "object_overrides[].osm_id",
+        "object_overrides[].layer",
+        "object_overrides[].hidden",
+        "object_overrides[].slot",
+        "object_overrides[].color",
+        "object_overrides[].road_mode",
+        "object_overrides[].raise_mm"
       ],
       "inputs": [
-        "normalise",
+        "normalise#ground",
         "context",
-        "repair-buildings"
+        "repair-buildings#footprint",
+        "surface-overrides"
       ],
       "extra": [],
       "digests": []
@@ -169,9 +220,10 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "bridges.enabled"
       ],
       "inputs": [
-        "normalise",
+        "normalise#ground",
         "context",
-        "repair-buildings",
+        "repair-buildings#footprint",
+        "surface-overrides",
         "surface-water"
       ],
       "extra": [],
@@ -185,12 +237,21 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "road_scale",
         "regions.roads.depth_mm",
         "regions.roads.proud_mm",
-        "bridges.enabled"
+        "bridges.enabled",
+        "object_overrides[].osm_id",
+        "object_overrides[].layer",
+        "object_overrides[].hidden",
+        "object_overrides[].slot",
+        "object_overrides[].color",
+        "object_overrides[].road_mode",
+        "object_overrides[].width_scale",
+        "object_overrides[].raise_mm"
       ],
       "inputs": [
-        "normalise",
+        "normalise#ground",
         "context",
-        "repair-buildings",
+        "repair-buildings#footprint",
+        "surface-overrides",
         "surface-water",
         "surface-rail"
       ],
@@ -203,12 +264,20 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "params": [
         "frame",
         "regions.parks.depth_mm",
-        "regions.parks.proud_mm"
+        "regions.parks.proud_mm",
+        "object_overrides[].osm_id",
+        "object_overrides[].layer",
+        "object_overrides[].hidden",
+        "object_overrides[].slot",
+        "object_overrides[].color",
+        "object_overrides[].road_mode",
+        "object_overrides[].raise_mm"
       ],
       "inputs": [
-        "normalise",
+        "normalise#ground",
         "context",
-        "repair-buildings",
+        "repair-buildings#footprint",
+        "surface-overrides",
         "surface-water",
         "surface-rail",
         "surface-roads"
@@ -233,9 +302,17 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "colour.gradient.enabled",
         "colour.gradient.slots",
         "height_exaggeration.multiplier",
-        "height_exaggeration.curve"
+        "height_exaggeration.curve",
+        "object_overrides[].osm_id",
+        "object_overrides[].layer",
+        "object_overrides[].tint",
+        "object_overrides[].slot",
+        "object_overrides[].color",
+        "object_overrides[].road_mode",
+        "object_overrides[].raise_mm"
       ],
       "inputs": [
+        "normalise",
         "context",
         "terrain",
         "repair-buildings"
@@ -256,13 +333,18 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "regions.rail.width_m",
         "bridges.enabled",
         "bridges.clearance_mm",
-        "bridges.abutments"
+        "bridges.abutments",
+        "object_overrides[].osm_id",
+        "object_overrides[].layer",
+        "object_overrides[].hidden",
+        "object_overrides[].road_mode",
+        "object_overrides[].width_scale"
       ],
       "inputs": [
-        "normalise",
+        "normalise#ground",
         "context",
         "terrain",
-        "repair-buildings"
+        "repair-buildings#footprint"
       ],
       "extra": [],
       "digests": []
@@ -275,10 +357,10 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "trees"
       ],
       "inputs": [
-        "normalise",
+        "normalise#ground",
         "context",
         "terrain",
-        "repair-buildings",
+        "repair-buildings#footprint",
         "surface-parks"
       ],
       "extra": [],
@@ -316,11 +398,55 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "engravings[].font",
         "scale_bar.enabled",
         "tiling.enabled",
-        "tiling.index_mark"
+        "tiling.index_mark",
+        "labels[].font"
       ],
       "inputs": [],
       "extra": [],
       "digests": []
+    },
+    {
+      "id": "labels",
+      "phase": "geometry",
+      "params": [
+        "plate_mm",
+        "base_thickness_mm",
+        "nozzle_mm",
+        "small_scale",
+        "large_scale",
+        "road_scale",
+        "frame",
+        "hero_mode",
+        "regions.building_skirt_mm",
+        "height_exaggeration.multiplier",
+        "height_exaggeration.curve",
+        "labels[].target_osm_id",
+        "labels[].layer",
+        "labels[].surface",
+        "labels[].u",
+        "labels[].v",
+        "labels[].rotation_deg",
+        "labels[].size_mm",
+        "labels[].mode",
+        "labels[].depth_mm",
+        "labels[].font",
+        "labels[].text",
+        "labels[].follow"
+      ],
+      "inputs": [
+        "normalise",
+        "context",
+        "terrain",
+        "repair-buildings",
+        "surface-parks",
+        "fonts"
+      ],
+      "extra": [],
+      "digests": [
+        "base",
+        "roofs",
+        "ground"
+      ]
     },
     {
       "id": "lettering",
@@ -543,6 +669,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "terrain",
         "surface-parks",
         "buildings#socket",
+        "labels#base",
         "lettering#base",
         "ornaments#base",
         "attribution#base",
@@ -675,7 +802,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "phase": "region",
       "params": [],
       "inputs": [
-        "buildings"
+        "buildings",
+        "labels#roofs"
       ],
       "extra": [],
       "digests": []
@@ -703,7 +831,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "phase": "region",
       "params": [],
       "inputs": [
-        "buildings"
+        "buildings",
+        "labels#roofs"
       ],
       "extra": [],
       "digests": []
@@ -736,7 +865,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "context",
         "terrain",
         "surface-parks",
-        "bridges"
+        "bridges",
+        "labels#ground"
       ],
       "extra": [],
       "digests": []
@@ -762,7 +892,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "inputs": [
         "context",
         "terrain",
-        "surface-parks"
+        "surface-parks",
+        "labels#ground"
       ],
       "extra": [],
       "digests": []
@@ -789,7 +920,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "context",
         "terrain",
         "surface-parks",
-        "trees"
+        "trees",
+        "labels#ground"
       ],
       "extra": [],
       "digests": []
@@ -931,7 +1063,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "phase": "region",
       "params": [],
       "inputs": [
-        "buildings"
+        "buildings",
+        "labels#roofs"
       ],
       "extra": [],
       "digests": []
@@ -958,7 +1091,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "phase": "region",
       "params": [],
       "inputs": [
-        "buildings"
+        "buildings",
+        "labels#roofs"
       ],
       "extra": [],
       "digests": []
@@ -985,7 +1119,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "phase": "region",
       "params": [],
       "inputs": [
-        "buildings"
+        "buildings",
+        "labels#roofs"
       ],
       "extra": [],
       "digests": []
@@ -1012,7 +1147,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "phase": "region",
       "params": [],
       "inputs": [
-        "buildings"
+        "buildings",
+        "labels#roofs"
       ],
       "extra": [],
       "digests": []
@@ -1039,7 +1175,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "phase": "region",
       "params": [],
       "inputs": [
-        "buildings"
+        "buildings",
+        "labels#roofs"
       ],
       "extra": [],
       "digests": []
@@ -1066,7 +1203,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "phase": "region",
       "params": [],
       "inputs": [
-        "buildings"
+        "buildings",
+        "labels#roofs"
       ],
       "extra": [],
       "digests": []
@@ -1093,7 +1231,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "phase": "region",
       "params": [],
       "inputs": [
-        "buildings"
+        "buildings",
+        "labels#roofs"
       ],
       "extra": [],
       "digests": []
@@ -1116,6 +1255,170 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "digests": []
     },
     {
+      "id": "region-override_1",
+      "phase": "region",
+      "params": [],
+      "inputs": [
+        "context",
+        "terrain",
+        "surface-parks",
+        "buildings",
+        "labels#roofs"
+      ],
+      "extra": [],
+      "digests": []
+    },
+    {
+      "id": "finish-override_1",
+      "phase": "region",
+      "params": [
+        "colour.region_slots.buildings",
+        "colour.region_slots.roads",
+        "colour.region_slots.water",
+        "colour.region_slots.parks",
+        "colour.region_colors.buildings",
+        "colour.region_colors.roads",
+        "colour.region_colors.water",
+        "colour.region_colors.parks",
+        "object_overrides[].osm_id",
+        "object_overrides[].layer",
+        "object_overrides[].slot",
+        "object_overrides[].color",
+        "object_overrides[].road_mode",
+        "object_overrides[].raise_mm"
+      ],
+      "inputs": [
+        "region-override_1",
+        "sit",
+        "buildings"
+      ],
+      "extra": [],
+      "digests": []
+    },
+    {
+      "id": "region-override_2",
+      "phase": "region",
+      "params": [],
+      "inputs": [
+        "context",
+        "terrain",
+        "surface-parks",
+        "buildings",
+        "labels#roofs"
+      ],
+      "extra": [],
+      "digests": []
+    },
+    {
+      "id": "finish-override_2",
+      "phase": "region",
+      "params": [
+        "colour.region_slots.buildings",
+        "colour.region_slots.roads",
+        "colour.region_slots.water",
+        "colour.region_slots.parks",
+        "colour.region_colors.buildings",
+        "colour.region_colors.roads",
+        "colour.region_colors.water",
+        "colour.region_colors.parks",
+        "object_overrides[].osm_id",
+        "object_overrides[].layer",
+        "object_overrides[].slot",
+        "object_overrides[].color",
+        "object_overrides[].road_mode",
+        "object_overrides[].raise_mm"
+      ],
+      "inputs": [
+        "region-override_2",
+        "sit",
+        "buildings"
+      ],
+      "extra": [],
+      "digests": []
+    },
+    {
+      "id": "region-override_3",
+      "phase": "region",
+      "params": [],
+      "inputs": [
+        "context",
+        "terrain",
+        "surface-parks",
+        "buildings",
+        "labels#roofs"
+      ],
+      "extra": [],
+      "digests": []
+    },
+    {
+      "id": "finish-override_3",
+      "phase": "region",
+      "params": [
+        "colour.region_slots.buildings",
+        "colour.region_slots.roads",
+        "colour.region_slots.water",
+        "colour.region_slots.parks",
+        "colour.region_colors.buildings",
+        "colour.region_colors.roads",
+        "colour.region_colors.water",
+        "colour.region_colors.parks",
+        "object_overrides[].osm_id",
+        "object_overrides[].layer",
+        "object_overrides[].slot",
+        "object_overrides[].color",
+        "object_overrides[].road_mode",
+        "object_overrides[].raise_mm"
+      ],
+      "inputs": [
+        "region-override_3",
+        "sit",
+        "buildings"
+      ],
+      "extra": [],
+      "digests": []
+    },
+    {
+      "id": "region-override_4",
+      "phase": "region",
+      "params": [],
+      "inputs": [
+        "context",
+        "terrain",
+        "surface-parks",
+        "buildings",
+        "labels#roofs"
+      ],
+      "extra": [],
+      "digests": []
+    },
+    {
+      "id": "finish-override_4",
+      "phase": "region",
+      "params": [
+        "colour.region_slots.buildings",
+        "colour.region_slots.roads",
+        "colour.region_slots.water",
+        "colour.region_slots.parks",
+        "colour.region_colors.buildings",
+        "colour.region_colors.roads",
+        "colour.region_colors.water",
+        "colour.region_colors.parks",
+        "object_overrides[].osm_id",
+        "object_overrides[].layer",
+        "object_overrides[].slot",
+        "object_overrides[].color",
+        "object_overrides[].road_mode",
+        "object_overrides[].raise_mm"
+      ],
+      "inputs": [
+        "region-override_4",
+        "sit",
+        "buildings"
+      ],
+      "extra": [],
+      "digests": []
+    },
+    {
       "id": "assembly",
       "phase": "audit",
       "params": [],
@@ -1126,6 +1429,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "buildings",
         "bridges",
         "trees",
+        "labels",
         "lettering",
         "ornaments",
         "attribution",
@@ -1172,7 +1476,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "inputs": [
         "context",
         "terrain",
-        "assembly"
+        "assembly",
+        "labels"
       ],
       "extra": [],
       "digests": []
@@ -1219,7 +1524,11 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "finish-buildings_band_5",
         "finish-buildings_band_6",
         "finish-buildings_band_7",
-        "finish-buildings_band_8"
+        "finish-buildings_band_8",
+        "finish-override_1",
+        "finish-override_2",
+        "finish-override_3",
+        "finish-override_4"
       ],
       "extra": [],
       "digests": []
@@ -1269,7 +1578,11 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "finish-buildings_band_5",
         "finish-buildings_band_6",
         "finish-buildings_band_7",
-        "finish-buildings_band_8"
+        "finish-buildings_band_8",
+        "finish-override_1",
+        "finish-override_2",
+        "finish-override_3",
+        "finish-override_4"
       ],
       "extra": [],
       "digests": []
@@ -1319,7 +1632,11 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "finish-buildings_band_5",
         "finish-buildings_band_6",
         "finish-buildings_band_7",
-        "finish-buildings_band_8"
+        "finish-buildings_band_8",
+        "finish-override_1",
+        "finish-override_2",
+        "finish-override_3",
+        "finish-override_4"
       ],
       "extra": [],
       "digests": []
@@ -1357,13 +1674,20 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "tiling.joint",
         "tiling.tolerance_mm",
         "tiling.index_mark",
-        "frame_style.profile"
+        "frame_style.profile",
+        "object_overrides[].osm_id",
+        "object_overrides[].layer",
+        "object_overrides[].slot",
+        "object_overrides[].color",
+        "object_overrides[].road_mode",
+        "object_overrides[].raise_mm"
       ],
       "inputs": [
         "normalise",
         "context",
         "terrain",
         "repair-buildings",
+        "surface-overrides",
         "buildings",
         "bridges",
         "trees",
@@ -1391,7 +1715,11 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "finish-buildings_band_5",
         "finish-buildings_band_6",
         "finish-buildings_band_7",
-        "finish-buildings_band_8"
+        "finish-buildings_band_8",
+        "finish-override_1",
+        "finish-override_2",
+        "finish-override_3",
+        "finish-override_4"
       ],
       "extra": [],
       "digests": []
@@ -1444,7 +1772,11 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "finish-buildings_band_5",
         "finish-buildings_band_6",
         "finish-buildings_band_7",
-        "finish-buildings_band_8"
+        "finish-buildings_band_8",
+        "finish-override_1",
+        "finish-override_2",
+        "finish-override_3",
+        "finish-override_4"
       ],
       "extra": [
         "export-request",
@@ -1675,6 +2007,18 @@ meshes). `base` is keyed on those parts, so a frame-edge text, an ornament on
 the lip or a profile change no longer re-carves the plate and re-finishes it.
 Exact, because two solids with the same mesh are the same solid; cheap,
 because the cutters are text pockets and a keyhole.
+
+Two more parts, from the Task 7 close-out (`v3-07-perf.md` section 8):
+`normalise#ground` is a content hash of the scene's `bounds`, `center`,
+`roads`, `rail`, `water`, `green` and `trees` (`stages.SCENE_GROUND_LAYERS`),
+and `repair-buildings#footprint` is a hash of the polygons of the union the
+base is socketed with. The four surface stages, `bridges` and `trees` are
+keyed on those two instead of the whole scene and the whole repair, because
+`heights.*` moves a building's height and nothing outside `buildings` and
+`stats`, and the footprint union reads no height. A stage keyed on a scene
+part is handed a view of the scene with every other layer behind a getter
+that throws (`runner.scenePartView`), so a ground stage that started reading
+a building would fail its run rather than be served stale ground.
 
 **Canonical mesh order.** `toRegionMesh` now sorts vertices by coordinate and
 triangles by their lowest vertex (`mesh.canonicalMesh`). manifold3d orders

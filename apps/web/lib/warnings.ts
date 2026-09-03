@@ -25,6 +25,11 @@
 import type { PrintParams, SceneGraph } from "./contracts";
 import type { EngineBuilding } from "./engine/osm/types";
 import { effectiveHeroHeightKey, effectiveHeroIds } from "./heroes";
+import {
+  baseOsmIdOfBuilding,
+  heightScaleOverrides,
+  hiddenOverrideIds,
+} from "./engine/solid/overrides";
 import { resolveProfile } from "./printers";
 import { resolvedOutputLines } from "./resolvedOutput";
 import { tintIsPreviewOnly } from "./tint";
@@ -85,6 +90,65 @@ function effectiveParamsForHeight(graph: SceneGraph, params: PrintParams): Print
 }
 
 /**
+ * The scene as the HEIGHT prediction should see it, with the per-object
+ * overrides applied (v3.1 Task 11).
+ *
+ * `transform.predicted_top_mm` walks `scene.buildings` and reads each one's
+ * `height_m` and `is_tall`, which is exactly what a `height_scale` override
+ * moves and what hiding a building takes away. The override is applied to the
+ * SCENE here rather than inside `transform.ts`, and for a reason: that file is
+ * mirrored in `services/bake/app/geom/transform.py` against parity fixtures,
+ * and the reference implementation has no overrides at all. Applying them to
+ * the input keeps the shared function the same function on both sides while
+ * still giving the 60 mm guard the height the plate will really reach.
+ *
+ * The rule is the engine's own (`solid/repair.ts`): the multiplier is applied
+ * to the ground height before every other height rule, and `is_tall` is
+ * recomputed from the result, because the SceneGraph's copy answers a question
+ * about a height this build no longer uses.
+ */
+function effectiveSceneForHeight(graph: SceneGraph, params: PrintParams): SceneGraph {
+  const hidden = hiddenOverrideIds(params, "building");
+  const scales = heightScaleOverrides(params);
+  if (hidden.size === 0 && scales.size === 0) return graph;
+  const buildings = [];
+  for (const building of graph.buildings) {
+    const baseId = baseOsmIdOfBuilding(building);
+    if (hidden.has(baseId)) continue;
+    const scale = scales.get(baseId) ?? 1;
+    if (scale === 1) {
+      buildings.push(building);
+      continue;
+    }
+    const height_m = building.height_m * scale;
+    buildings.push({ ...building, height_m, is_tall: height_m >= T.TALL_BUILDING_M });
+  }
+  return { ...graph, buildings };
+}
+
+/**
+ * The height-relevant overrides as one string, so the memo key stays primitive.
+ *
+ * `previewDeps.height` is `predictedTopDeps`, and `CityPreview.test.ts` asserts
+ * every entry of it is a primitive or the graph: an array's identity changes on
+ * every write regardless of its contents, so naming `params.object_overrides`
+ * would re-run the height pass on a colour change. Only the two members that
+ * move a printed height are in the string.
+ */
+export function overrideHeightKey(params: PrintParams): string {
+  const rows = params.object_overrides ?? [];
+  const parts: string[] = [];
+  for (const row of rows) {
+    if (row.layer !== "building") continue;
+    const hidden = row.hidden === true;
+    const scale = row.height_scale ?? 1;
+    if (!hidden && scale === 1) continue;
+    parts.push(`${row.osm_id}:${hidden ? "x" : scale}`);
+  }
+  return parts.join(",");
+}
+
+/**
  * Height the finished print would reach, mm, or null when there is no scene.
  *
  * Straight from `transform.predicted_top_mm`, the function the build's own guard
@@ -98,7 +162,11 @@ export function predictedTopMm(
   if (!graph) return null;
   const radius_m = T.radius_m_from_bounds(graph.bounds);
   if (!(radius_m > 0)) return null;
-  return T.predicted_top_mm(graph, effectiveParamsForHeight(graph, params), radius_m);
+  return T.predicted_top_mm(
+    effectiveSceneForHeight(graph, params),
+    effectiveParamsForHeight(graph, params),
+    radius_m,
+  );
 }
 
 /**
@@ -185,6 +253,10 @@ export function predictedTopDeps(
     params.large_scale,
     params.trees,
     effectiveHeroHeightKey(graph ? (graph.buildings as EngineBuilding[]) : undefined, params),
+    // v3.1 Task 11: a per-object height scale, and hiding a building, both move
+    // the tallest thing on the plate. A STRING of just those two members, for
+    // the same reason the hero set is one.
+    overrideHeightKey(params),
     params.printer_profile,
     params.custom_profile?.max_height_mm,
   ];

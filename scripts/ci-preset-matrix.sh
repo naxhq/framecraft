@@ -136,7 +136,7 @@ if [ -z "$web_rows" ]; then
 	rc=1
 fi
 web_built=0
-rm -f "$OUT/.web-failures" "$OUT/.web-built"
+rm -f "$OUT/.web-failures" "$OUT/.web-built" "$OUT/.web-passed"
 echo "$web_rows" | while read -r id fixture lat lon radius rotation; do
 	[ -z "$id" ] && continue
 	echo "-- web $id"
@@ -157,9 +157,13 @@ echo "$web_rows" | while read -r id fixture lat lon radius rotation; do
 		echo "fail" >> "$OUT/.web-failures"
 		continue
 	fi
-	judge "web-$id" "$OUT/web-$id.3mf" || echo "fail" >> "$OUT/.web-failures"
 	web_built=$((web_built + 1))
 	echo "$web_built" > "$OUT/.web-built"
+	if judge "web-$id" "$OUT/web-$id.3mf"; then
+		echo "pass" >> "$OUT/.web-passed"
+	else
+		echo "fail" >> "$OUT/.web-failures"
+	fi
 done
 # The loop above runs in a `while read` subshell (POSIX sh has no process
 # substitution), so its `rc` assignments do not survive it. The two files are
@@ -175,10 +179,19 @@ if [ -f "$OUT/.web-built" ]; then
 	web_total=$(cat "$OUT/.web-built")
 	rm -f "$OUT/.web-built"
 fi
+web_passed=0
+if [ -f "$OUT/.web-passed" ]; then
+	web_passed=$(wc -l < "$OUT/.web-passed" | tr -d ' ')
+	rm -f "$OUT/.web-passed"
+fi
 
 echo
 echo "preset-matrix: $built of $count preset(s) built and validated through the reference pipeline"
-echo "preset-matrix: $web_total of $count preset(s) built and validated through the browser engine"
+# Two numbers, not one. A build that succeeds and then fails the validator is a
+# different failure from one that never produced a file, and a single "built and
+# validated" count would report the first as if it were a success.
+echo "preset-matrix: $web_total of $count preset(s) BUILT through the browser engine"
+echo "preset-matrix: $web_passed of $count preset(s) VALIDATED CLEAN through the browser engine"
 if [ "$web_total" -lt "$count" ]; then
 	echo "preset-matrix: the browser engine did not build every preset" >&2
 	rc=1

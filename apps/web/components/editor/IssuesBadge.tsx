@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AuditFinding } from "@/lib/engine/types";
 import {
   groupIssuesBySeverity,
+  issueFromFinding,
   issuesLabel,
   safeFixesSummary,
   type Issue,
@@ -17,7 +18,8 @@ import { useEditorStore } from "@/store/editor";
  *
  * One badge, severity-grouped: every current `Issue` (`lib/issues.ts`'s merge
  * of `lib/warnings.ts`'s client-side `SceneWarning`s and the live engine's
- * `AuditFinding`s, engine winning a shared id) rendered as a colour-coded chip
+ * `AuditFinding`s, engine winning a shared id, plus the export writer's own
+ * rows folded in behind them by `withExportFindings`) rendered as a colour-coded chip
  * under "Blocks the print" / "Worth a look" / "For your information", each
  * row showing its title and its plain-language detail (the measured numbers,
  * verbatim from the source), with a real fix button wherever `issue.fix`
@@ -65,7 +67,55 @@ export function survivingFixedIds(
   return new Set(kept);
 }
 
+/**
+ * The rows the EXPORT WRITER raised, folded in behind the live ones.
+ *
+ * `lib/exportFlow.ts:exportDone` builds `exportState.findings` as the model's
+ * findings plus the writer's own for the FILE -- `float32-degenerate` from the
+ * STL hardening is the one that exists today, and `DECISIONS.md [V3.1-P7-5]`
+ * says it "reaches the sidecar, the CLI and the Issues badge". It reached the
+ * first two: `exportState.findings` was written and never read by anything
+ * ([V3.1-T6] 4). The badge's `issues` prop comes from the pipeline result, so
+ * the writer's rows can only arrive here.
+ *
+ * Deduplicated with the LIVE list winning, not the export's. That direction
+ * matters: `exportState.findings` opens with a COPY of the model's findings as
+ * they stood when the file was written, so merging the other way would let a
+ * finished export's stale `wall-too-thin` overwrite the current build's own row
+ * with an old measurement. Only ids the live list does not carry are added.
+ *
+ * Returns the SAME array when it adds nothing, so the drawer's `issueKey` and
+ * the "Fixed" marks keyed on it are not disturbed by an export that had nothing
+ * new to say.
+ */
+export function withExportFindings(
+  issues: readonly Issue[],
+  findings: readonly AuditFinding[],
+): readonly Issue[] {
+  if (findings.length === 0) return issues;
+  const present = new Set(issues.map((issue) => issue.id));
+  const extra: Issue[] = [];
+  for (const finding of findings) {
+    if (present.has(finding.id)) continue;
+    present.add(finding.id);
+    extra.push(issueFromFinding(finding));
+  }
+  return extra.length === 0 ? issues : [...issues, ...extra];
+}
+
 export function IssuesBadge({ issues }: { issues: readonly Issue[] }) {
+  /*
+    Only while the export is CURRENT. Once a parameter moves, the file those
+    findings describe no longer describes what is on screen (`markExportStale`,
+    and the same reason `exportDownloadLinks` withdraws the links), so a
+    `float32-degenerate` row from a superseded file would be a claim about a
+    model the user cannot download any more.
+  */
+  const exportFindings = useEditorStore((state) =>
+    state.exportState.stale ? NO_EXPORT_FINDINGS : state.exportState.findings,
+  );
+  const rows = withExportFindings(issues, exportFindings);
+
   const open = useEditorStore((state) => state.issuesOpen);
   const setOpen = useEditorStore((state) => state.setIssuesOpen);
   const applyFinding = useEditorStore((state) => state.applyFinding);
@@ -79,8 +129,8 @@ export function IssuesBadge({ issues }: { issues: readonly Issue[] }) {
   /** The rows the current auto-fix report is about, so it can be retired with them. */
   const reportedIds = useRef<ReadonlySet<string>>(new Set());
 
-  const count = issues.length;
-  const issueKey = issues.map((issue) => issue.id).join(",");
+  const count = rows.length;
+  const issueKey = rows.map((issue) => issue.id).join(",");
 
   // A scene with nothing to report closes the drawer behind itself.
   useEffect(() => {
@@ -107,17 +157,17 @@ export function IssuesBadge({ issues }: { issues: readonly Issue[] }) {
    * of keying on the ids rather than on the array.
    */
   useEffect(() => {
-    setFixedIds((previous) => survivingFixedIds(previous, issues));
+    setFixedIds((previous) => survivingFixedIds(previous, rows));
     setReport((current) =>
-      current !== null && !issues.some((issue) => reportedIds.current.has(issue.id)) ? null : current,
+      current !== null && !rows.some((issue) => reportedIds.current.has(issue.id)) ? null : current,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issueKey]);
 
   if (count === 0) return null;
-  const sections = groupIssuesBySeverity(issues);
+  const sections = groupIssuesBySeverity(rows);
   const worstSeverity: IssueSeverity = sections[0]?.severity ?? "info";
-  const hasSafeFix = issues.some((issue) => issue.fix?.safe === true);
+  const hasSafeFix = rows.some((issue) => issue.fix?.safe === true);
 
   const asFinding = (issue: Issue): AuditFinding => ({
     id: issue.id,
@@ -160,7 +210,7 @@ export function IssuesBadge({ issues }: { issues: readonly Issue[] }) {
         className="flex items-center gap-1.5 rounded-milled border border-control bg-plate/95 px-2 py-1 text-2xs text-ink shadow-raised transition-colors hover:border-ink-faint"
       >
         <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${DOT_TONE[worstSeverity]}`} />
-        Issues: {issuesLabel(issues)}
+        Issues: {issuesLabel(rows)}
         <span aria-hidden="true" className="text-ink-faint">
           {open ? "×" : "›"}
         </span>
@@ -171,7 +221,7 @@ export function IssuesBadge({ issues }: { issues: readonly Issue[] }) {
           id="issues-drawer"
           data-testid="issues-drawer"
           role="group"
-          aria-label={`Issues: ${issuesLabel(issues)}`}
+          aria-label={`Issues: ${issuesLabel(rows)}`}
           tabIndex={0}
           className="mt-1.5 max-h-72 w-96 max-w-[85vw] overflow-y-auto rounded-plate border border-line bg-plate p-3 shadow-lifted"
         >
@@ -229,6 +279,9 @@ export function IssuesBadge({ issues }: { issues: readonly Issue[] }) {
     </div>
   );
 }
+
+/** A stable empty list, so a stale export does not hand the selector a new array every render. */
+const NO_EXPORT_FINDINGS: readonly AuditFinding[] = [];
 
 const DOT_TONE: Record<IssueSeverity, string> = {
   error: "bg-danger",

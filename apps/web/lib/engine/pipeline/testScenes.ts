@@ -9,7 +9,7 @@
  * script that keeps the registry honest.
  */
 
-import type { SceneGraph } from "../../contracts";
+import type { Point, SceneGraph } from "../../contracts";
 import { area, building, hillGrid, road, scene, square, type RailPart } from "../solid/fixture";
 import type { TerrainGrid } from "../types";
 
@@ -55,12 +55,54 @@ export function bridgeScene(): SceneGraph {
   };
 }
 
+/**
+ * The block with an OSM id on its pond and its park (v3.1 Task 11).
+ *
+ * An `object_overrides` row is keyed by the BASE OSM element id, and an
+ * `AreaFeature` carries no `id` at all: its `osm_id` is the only identity it
+ * has, and a dissolved polygon the ingest could not attribute has none, which
+ * is a polygon no override can name. The plain `blockScene` is that second
+ * case, so the override probes need a scene that is the first.
+ *
+ * Byte-identical to `blockScene()` apart from those two strings, which are
+ * SceneGraph identity and move no geometry.
+ */
+export function overrideScene(): SceneGraph {
+  const base = blockScene();
+  return {
+    ...base,
+    water: [area(square(-120, -110, 60), [], "w-pond")],
+    green: [area(square(110, -90, 90), [], "w-park")],
+  };
+}
+
 /** The block on a hillside: the scene plus the heightfield that drapes it. */
 export function terrainScene(): { scene: SceneGraph; grid: TerrainGrid } {
   return { scene: blockScene(), grid: hillGrid(TEST_RADIUS_M, 30) };
 }
 
-export type TestSceneName = "block" | "rail" | "bridge" | "terrain";
+/**
+ * The block with names on its buildings and a wide bend to the north, for the
+ * surface-label probes (Task 12): a label needs a NAMED target, and `follow`
+ * needs a road that actually turns.
+ */
+export function labelledScene(): SceneGraph {
+  const base = blockScene();
+  const bend: Point[] = [];
+  for (let deg = 0; deg <= 90; deg += 6) {
+    const t = (deg * Math.PI) / 180;
+    bend.push([-60 + 100 * Math.sin(t), 100 + 100 * (1 - Math.cos(t))]);
+  }
+  return {
+    ...base,
+    buildings: base.buildings.map((entry) =>
+      entry.id === "b-tall" ? { ...entry, name: "Tower" } : entry.id === "b-low" ? { ...entry, name: "Low Hall" } : entry,
+    ),
+    roads: [...base.roads, { ...road("r-bend", bend, 20), name: "Bend Road" }],
+  };
+}
+
+export type TestSceneName = "block" | "rail" | "bridge" | "terrain" | "labelled";
 
 /** Every synthetic scene by name, for a probe table. */
 export function testScene(name: TestSceneName): { scene: SceneGraph; grid: TerrainGrid | null } {
@@ -75,6 +117,8 @@ export function testScene(name: TestSceneName): { scene: SceneGraph; grid: Terra
       const built = terrainScene();
       return { scene: built.scene, grid: built.grid };
     }
+    case "labelled":
+      return { scene: labelledScene(), grid: null };
     default: {
       const never: never = name;
       throw new Error(`unknown test scene ${String(never)}`);

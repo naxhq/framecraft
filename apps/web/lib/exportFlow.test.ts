@@ -13,6 +13,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  EXPORT_FAILED_LABEL,
   EXPORT_STALE_NOTE,
   exportDone,
   exportDownloadLinks,
@@ -102,9 +103,41 @@ describe("state transitions", () => {
   it("exportFailedLocally carries the message and is terminal", () => {
     const state = exportFailedLocally(initialExportState, "The engine could not build a model.");
     expect(state.phase).toBe("failed");
+    // The message is KEPT: the action bar's failure surface is what reads it,
+    // and its copyable detail block quotes it verbatim.
     expect(state.error).toBe("The engine could not build a model.");
     expect(isTerminal(state.phase)).toBe(true);
-    expect(exportStatusLabel(state)).toBe("The engine could not build a model.");
+  });
+
+  it("labels a failed export by its phase, never by echoing the message", () => {
+    // The store writes ONE string for two different events -- a refusal by the
+    // printability gate and a run the user cancelled out from under an export
+    // ([V3.1-T6] 2) -- so the results panel's phase row must not repeat it as
+    // if it were a verdict. What is true of every failed export is that no file
+    // came out of it ([V3.1-P1-15]).
+    for (const message of [
+      "The engine could not build a model.",
+      "export refused: the printability gate failed a check (exceeds-height): ...",
+      "Preview a location first.",
+    ]) {
+      const state = exportFailedLocally(initialExportState, message);
+      expect(exportStatusLabel(state)).toBe(EXPORT_FAILED_LABEL);
+      expect(exportStatusLabel(state)).not.toContain(message);
+    }
+  });
+
+  it("leaves a previous export's files and Blob URLs exactly where they were", () => {
+    // [V3.1-P1-15]: a failing export ships nothing, and it also TAKES nothing.
+    // A refusal or a cancel must not revoke the download the user already has.
+    const done = exportDone(initialExportState, fakeOutput(), []);
+    const hrefs = done.files.map((file) => file.href);
+    const failed = exportFailedLocally(done, "The engine could not build a model.");
+    expect(failed.files).toBe(done.files);
+    expect(failed.files.map((file) => file.href)).toEqual(hrefs);
+    expect(failed.target).toBe(done.target);
+    // Still current, so they are still offered.
+    expect(exportDownloadLinks(failed)).toHaveLength(2);
+    revokeExportUrls(failed);
   });
 });
 

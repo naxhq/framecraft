@@ -41,6 +41,7 @@
 import { create } from "zustand";
 
 import {
+  EXPORT_STOPPED_MESSAGE,
   exportDone,
   exportStarted,
   exportFailedLocally,
@@ -51,6 +52,16 @@ import {
 } from "@/lib/exportFlow";
 import { DEFAULT_PRINT_PARAMS, PARAM_RANGES, defaultPrintParams } from "@/lib/contracts";
 import type { PrintParams, SceneGraph, SceneRequest } from "@/lib/contracts";
+import {
+  addedLabel,
+  movedLabel,
+  nudgedLabel,
+  patchedLabel,
+  removedLabel,
+  rotatedLabel,
+  type LabelLayer,
+  type LabelPatch,
+} from "@/lib/labelAnchor";
 import { createPipelineClient, EngineClientError, PipelineStageError } from "@/lib/engine/client";
 import type { RunHandle } from "@/lib/engine/client";
 import type { Phase } from "@/lib/engine/pipeline";
@@ -366,6 +377,37 @@ export interface EditorState {
   // --- hero buildings (a click in the preview; still just a param write) ---
   toggleHero: (id: string) => void;
   clearHeroes: () => void;
+
+  // --- surface labels (v3.1 Task 12: placed and dragged in the viewport) ---
+  /**
+   * The label the gizmo and the labels panel are acting on, as an index into
+   * `params.labels`, or null. May point past the array after an undo or a
+   * project load shortened it; readers treat that as null.
+   */
+  selectedLabel: number | null;
+  /** True after `addLabel` refused because the cap of 12 was already reached; cleared by any label write. */
+  labelCapHit: boolean;
+  /**
+   * A new label on `target`, at the plan point `at` (engine mm) when one is
+   * given, else at the target's centre. Selects it. Returns its index, or null
+   * when the cap refused it (`labelCapHit` is then set) or the scene has no
+   * such object.
+   */
+  addLabel: (target: { osmId: string; layer: LabelLayer }, at?: { xMm: number; yMm: number }) => number | null;
+  selectLabel: (index: number | null) => void;
+  /** Drag: the label's centre to a plan point, engine mm. `lib/labelAnchor.ts` turns it into `u`, `v`. */
+  moveLabel: (index: number, xMm: number, yMm: number) => void;
+  /** Rotation handle: the label reads in the ABSOLUTE plan direction `angleDeg`, stored relative to its target's axis. */
+  rotateLabel: (index: number, angleDeg: number) => void;
+  /** Arrow keys: `dx`, `dy` mm in the label's own reading frame. */
+  nudgeLabel: (index: number, dxMm: number, dyMm: number) => void;
+  /** The panel's fields: text, size, depth, mode, font, follow, rotation. Clamped by `patchedLabel`. */
+  patchLabel: (index: number, patch: LabelPatch) => void;
+  /** `[` and `]`: turn by `deltaDeg` from where it reads now. */
+  turnLabel: (index: number, deltaDeg: number) => void;
+  /** `+` and `-`: grow or shrink the cap height by `deltaMm`, inside the contract range. */
+  resizeLabel: (index: number, deltaMm: number) => void;
+  removeLabel: (index: number) => void;
 
   // --- undo/redo ([V3-P6]: `store/history.ts` calls this, never a fetch) ---
   /**
@@ -997,6 +1039,8 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   theme: "light",
   presetChosen: false,
   heroCapHit: false,
+  selectedLabel: null,
+  labelCapHit: false,
   adjustmentsOpen: false,
   issuesOpen: false,
   shareNotice: null,
@@ -1117,6 +1161,8 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       pipeline: markPipelineStale(state.pipeline),
       exportState: markExportStale(state.exportState),
       heroCapHit: false,
+      selectedLabel: null,
+      labelCapHit: false,
     }));
     schedulePipelineRun(get, set);
     scheduleTerrainJob(get, set);
@@ -1262,6 +1308,94 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     get().setParam("hero_building_ids", []);
   },
 
+  /*
+    Surface labels (v3.1 Task 12). Every action is one `setParam("labels", ...)`
+    over `lib/labelAnchor.ts`'s pure edits, so a drag, a keyboard nudge and a
+    typed field all stale-mark the model, reschedule the build and land in the
+    undo history exactly like a slider. The anchor maths runs HERE, where the
+    scene and the params may be read, because nothing drawn in the viewport
+    may read a parameter: the gizmo hands over engine millimetres and gets a
+    finished band back from the pipeline.
+  */
+  addLabel: (target, at) => {
+    const graph = get().scene.graph;
+    if (graph === null) return null;
+    const result = addedLabel(graph, get().params, target, at);
+    if (!result.ok) {
+      set({ labelCapHit: result.reason === "capped" });
+      return null;
+    }
+    set({ labelCapHit: false, selectedLabel: result.index });
+    get().setParam("labels", result.labels);
+    return result.index;
+  },
+
+  selectLabel: (index) => {
+    set({ selectedLabel: index });
+  },
+
+  moveLabel: (index, xMm, yMm) => {
+    const graph = get().scene.graph;
+    if (graph === null) return;
+    const result = movedLabel(graph, get().params, index, xMm, yMm);
+    if (!result.ok) return;
+    set({ labelCapHit: false });
+    get().setParam("labels", result.labels);
+  },
+
+  rotateLabel: (index, angleDeg) => {
+    const graph = get().scene.graph;
+    if (graph === null) return;
+    const result = rotatedLabel(graph, get().params, index, angleDeg);
+    if (!result.ok) return;
+    set({ labelCapHit: false });
+    get().setParam("labels", result.labels);
+  },
+
+  nudgeLabel: (index, dxMm, dyMm) => {
+    const graph = get().scene.graph;
+    if (graph === null) return;
+    const result = nudgedLabel(graph, get().params, index, dxMm, dyMm);
+    if (!result.ok) return;
+    set({ labelCapHit: false });
+    get().setParam("labels", result.labels);
+  },
+
+  patchLabel: (index, patch) => {
+    const result = patchedLabel(get().params, index, patch);
+    if (!result.ok) return;
+    set({ labelCapHit: false });
+    get().setParam("labels", result.labels);
+  },
+
+  turnLabel: (index, deltaDeg) => {
+    const label = (get().params.labels ?? [])[index];
+    if (label === undefined) return;
+    get().patchLabel(index, {
+      rotation_deg: (label.rotation_deg ?? PARAM_RANGES.labels.rotation_deg.default) + deltaDeg,
+    });
+  },
+
+  resizeLabel: (index, deltaMm) => {
+    const label = (get().params.labels ?? [])[index];
+    if (label === undefined) return;
+    get().patchLabel(index, { size_mm: (label.size_mm ?? PARAM_RANGES.labels.size_mm.default) + deltaMm });
+  },
+
+  removeLabel: (index) => {
+    const labels = get().params.labels ?? [];
+    if (index < 0 || index >= labels.length) return;
+    const selected = get().selectedLabel;
+    set({
+      labelCapHit: false,
+      // The selection follows the row it was on: a removal above it shifts it
+      // up by one, a removal OF it clears it.
+      selectedLabel:
+        selected === null ? null : selected === index ? null : selected > index ? selected - 1 : selected,
+    });
+    get().setParam("labels", removedLabel(get().params, index));
+  },
+
   applyHistorySnapshot: (snapshot) => {
     // Captured BEFORE the write: after `set()`, `get().location` IS
     // `snapshot.location` (same reference), so comparing against it there
@@ -1291,6 +1425,8 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       terrain: { ...initialTerrainState },
       presetChosen: false,
       heroCapHit: false,
+      selectedLabel: null,
+      labelCapHit: false,
       placeDetect: {
         status: "idle",
         source: "none",
@@ -1433,10 +1569,28 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     // second build of parameters the worker has already built.
     const result = await resultForExport(get, set);
     if (result === null) {
+      /*
+       * Two different endings arrive here and only one of them is a failure.
+       *
+       * `resultForExport` resolves null when the run it was waiting on
+       * FAILED, in which case `pipeline.error` carries the engine's own
+       * message; and when that run simply ended without a result, which is a
+       * user-pressed Cancel or a run superseded by a newer one. `cancelPipeline`
+       * deliberately leaves `pipeline.error` at null, because a cancel is not
+       * an error -- so the absence of an error is the signal, and writing
+       * "The engine could not build a model." into it was false in both
+       * halves: nothing failed and nothing was refused ([V3.1-T6] 2).
+       *
+       * `ActionBar` classifies the same ending from the TRANSITION it watched
+       * and shows its own cancelled notice; this is the string everything
+       * else reads, including the results panel and any future surface that
+       * has no transition to watch.
+       */
+      const failure = get().pipeline.error;
       set((state) => ({
         exportState: exportFailedLocally(
           state.exportState,
-          state.pipeline.error?.message ?? "The engine could not build a model.",
+          failure === null ? EXPORT_STOPPED_MESSAGE : failure.message,
         ),
       }));
       return;

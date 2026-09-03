@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "FrameCraft",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "identifier": "io.nax.framecraft",
   "build": {
     "beforeDevCommand": "npm run dev --prefix ../web",
@@ -27,12 +27,34 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "NAXHQ",
+    "copyright": "Copyright (c) 2026 NAXHQ",
+    "license": "MIT",
+    "licenseFile": "../../../LICENSE",
+    "homepage": "https://github.com/naxhq/framecraft",
+    "shortDescription": "Turn a map location into a 3D-printable framed miniature city",
+    "longDescription": "FrameCraft turns any place on the map into a framed, 3D-printable miniature city. Map data (c) OpenStreetMap contributors, available under the Open Database Licence.",
+    "category": "GraphicsAndDesign",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["framecraft"],
+        "name": "FrameCraft Project",
+        "description": "FrameCraft Project",
+        "mimeType": "application/vnd.naxhq.framecraft+json",
+        "role": "Editor",
+        "rank": "Owner",
+        "exportedType": {
+          "identifier": "io.nax.framecraft.project",
+          "conformsTo": ["public.json"]
+        }
+      }
     ]
   }
 }

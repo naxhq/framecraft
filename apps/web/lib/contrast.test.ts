@@ -138,6 +138,11 @@ const BOUNDARY_PAIRS: Array<[string, string, string]> = [
   ],
   ["primary", "plate", "the primary button against the panel"],
   ["accent", "plate-sunken", "the export progress fill against its track"],
+  [
+    "accent",
+    "plate",
+    "a pressed layout toggle in the header, and the resize handle under the pointer",
+  ],
   ["focus", "plate", "the focus ring on the panel"],
   ["focus", "plate-raised", "the focus ring on an input"],
   ["focus", "plate-sunken", "the focus ring in a well"],
@@ -235,10 +240,24 @@ describe("the components use the boundary token for control boundaries", () => {
     ["components/editor/EstimateCard.tsx", ["border-control-strong"]],
     ["components/editor/groups/ColourGroup.tsx", ["border-control", "border-control-strong"]],
     ["components/editor/groups/FrameTextGroup.tsx", ["border-control"]],
+    // The panel shell's own controls (Task 5): the search box and the clear
+    // button that sits inside it, and the changes list's per-row revert.
+    ["components/editor/SettingsSearch.tsx", ["border-control"]],
+    ["components/editor/ChangesFromDefault.tsx", ["border-control"]],
+    // The surface labels' card (Task 12): its Remove button.
+    ["components/editor/LabelsPanel.tsx", ["border-control"]],
+    // The shell's own controls (Task 4): the hide, show and maximise buttons
+    // in the header, and the strip that brings a hidden column back. Their
+    // idle edge IS their only boundary; the active state fills with `accent`,
+    // a pair already held above at the stricter 4.5:1 text floor.
+    ["components/editor/PaneChrome.tsx", ["border-control"]],
     // The action bar and everything mounted inside it (Task 6).
     ["components/editor/ActionBar.tsx", ["border-control"]],
     ["components/editor/ExportErrorDetail.tsx", ["border-control"]],
     ["components/editor/ExportMenu.tsx", ["border-control"]],
+    // The About dialog (Task 8 distribution): its close button and the two
+    // copy actions on the version block.
+    ["components/editor/AboutDialog.tsx", ["border-control"]],
     // The viewport's own chrome.
     ["components/editor/AdjustmentsChip.tsx", ["border-control"]],
     ["components/editor/HistoryChip.tsx", ["border-control"]],
@@ -313,6 +332,52 @@ describe("the components use the boundary token for control boundaries", () => {
     expect(source).not.toContain("border-");
     expect(source).toContain("bg-plate-sunken");
     expect(source).toContain("bg-accent");
+  });
+
+  it("draws the column resize handle as a fill too, and never on the hairline", () => {
+    // The second control in the tree whose boundary is a fill rather than an
+    // edge (Task 4). Its rest state is a `plate` strip between two panes and
+    // its ACTIVE state -- hover and drag, the states in which it is a control
+    // a user is aiming at -- fills with `accent`, which is held above. It is
+    // deliberately absent from the inventory for the same reason `ProgressBar`
+    // is, and this pins that absence: the day it grows an edge, it must be a
+    // `border-control` one and must join the list.
+    const source = readFileSync(
+      path.resolve(__dirname, "..", "components/editor/ResizableRegions.tsx"),
+      "utf-8",
+    );
+    const handle = source
+      .split("\n")
+      .filter((line) => line.includes("cursor-col-resize"))
+      .join("\n");
+    expect(handle, "the resize handle should still be in this file").not.toBe("");
+    expect(handle, "a resize handle drawn with a border must use the boundary token").not.toMatch(
+      /border-(?!control)/,
+    );
+    expect(handle).toContain("hover:bg-accent");
+    expect(handle).toContain("data-[dragging=true]:bg-accent");
+    // The pane dividers around it are container edges and stay on the
+    // hairline; the handle must not be confused with them.
+    expect(source).toContain("border-line");
+  });
+
+  it("leaves the two newest settings groups with no boundary of their own", () => {
+    // `RegionsGroup` and `BridgesGroup` are absent from the inventory above,
+    // and this is why rather than an oversight: both were read, and both draw
+    // NOTHING. Every control they show is a `Slider`, `Toggle`, `Field` or
+    // `Note` from `Controls.tsx`, which is in the list and owns those edges.
+    // The day either one hand-rolls a bordered control of its own, this fails
+    // and it has to join the inventory instead of reaching for the hairline.
+    for (const file of [
+      "components/editor/groups/RegionsGroup.tsx",
+      "components/editor/groups/BridgesGroup.tsx",
+    ]) {
+      const source = readFileSync(path.resolve(__dirname, "..", file), "utf-8");
+      expect(source, `${file} draws an edge now, so it needs a boundary token`).not.toMatch(/border-/);
+      expect(source, `${file} must get its controls from the shared primitives`).toMatch(
+        /from "\.\.\/Controls"/,
+      );
+    }
   });
 
   it("leaves no text input, select or toggle track on the hairline", () => {

@@ -188,6 +188,11 @@ const PARAM_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintParams]]> = 
   ["tiling", { enabled: true, cols: 2, rows: 2 }],
   ["frame_style", { profile: "chamfer", corner: "mitred" }],
   ["hanger_magnet", { diameter_mm: 8, thickness_mm: 3, count: 4 }],
+  // schema_version 4: the right-click inspector's per-object rows (v3.1 Task
+  // 11). Written through the same `setParam` every slider uses, which is what
+  // puts an override in the undo history and in the changes counter for free.
+  ["object_overrides", [{ osm_id: "w1", layer: "building", height_scale: 1.5 }]],
+  ["labels", [{ target_osm_id: "w1", layer: "building", surface: "building_top" }]],
 ];
 
 /**
@@ -1208,6 +1213,11 @@ describe("the params object the store hands out", () => {
         "tiling",
         "frame_style",
         "hanger_magnet",
+        // schema_version 4 (v3.1 Task 11): an array, and therefore one more
+        // nested value that must never be aliased to the frozen default.
+        "object_overrides",
+        // schema_version 4 (v3.1 Task 12): the surface labels, likewise.
+        "labels",
       ].sort(),
     );
   });

@@ -117,10 +117,10 @@ Overpass query and a WASM boolean pass on a keystroke.
 
 ## Fixtures
 
-- `apps/web/e2e/fixtures/photon-chicago.json` — a FeatureCollection of three
+- `apps/web/e2e/fixtures/photon-chicago.json` - a FeatureCollection of three
   features (a city, a road, a named building with a house number), so the kind
   badges, the context line and the name fallback are all exercised.
-- `apps/web/e2e/fixtures/nominatim-reverse-chicago.json` — the reverse answer.
+- `apps/web/e2e/fixtures/nominatim-reverse-chicago.json` - the reverse answer.
 - Both routed through `apps/web/e2e/photonMock.ts`. Neither geocoder is ever
   reached from a test run.
 

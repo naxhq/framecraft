@@ -81,6 +81,25 @@ describe("shortcutFor", () => {
     ).toBeNull();
   });
 
+  it("maps the four layout keys", () => {
+    expect(shortcutFor({ key: "m" })).toBe("maximize-map");
+    expect(shortcutFor({ key: "M" })).toBe("maximize-map");
+    expect(shortcutFor({ key: "v" })).toBe("maximize-viewport");
+    expect(shortcutFor({ key: "[" })).toBe("collapse-map");
+    expect(shortcutFor({ key: "]" })).toBe("collapse-settings");
+  });
+
+  it("leaves the layout keys alone while typing and under a modifier", () => {
+    // A bracket belongs to a text field as much as a letter does, and Ctrl+[
+    // is a real browser and editor accelerator.
+    expect(shortcutFor({ key: "[", target: input("text") })).toBeNull();
+    expect(shortcutFor({ key: "m", target: input("text") })).toBeNull();
+    expect(shortcutFor({ key: "]", ctrlKey: true })).toBeNull();
+    expect(shortcutFor({ key: "v", metaKey: true })).toBeNull();
+    // Cmd+V is paste, and it must reach the platform even outside a field.
+    expect(shortcutFor({ key: "v", ctrlKey: true })).toBeNull();
+  });
+
   it("still works with a slider focused, because arrows are its keys", () => {
     // A range input is not a typing target: G/B/R must work from it, and the
     // arrow keys it does answer to are not shortcuts.
@@ -116,7 +135,22 @@ describe("the shortcut sheet's own list", () => {
       ),
     );
     expect([...documented].sort()).toEqual(
-      ["export", "dismiss", "generate", "help", "redo", "reset", "undo"].sort(),
+      [
+        "export",
+        "dismiss",
+        "generate",
+        "help",
+        "redo",
+        "reset",
+        "undo",
+        // The layout keys (Task 4): two maximize toggles and two column
+        // toggles. Listed here rather than counted, so adding a shortcut
+        // without a row in the sheet fails instead of shipping undocumented.
+        "maximize-map",
+        "maximize-viewport",
+        "collapse-map",
+        "collapse-settings",
+      ].sort(),
     );
   });
 

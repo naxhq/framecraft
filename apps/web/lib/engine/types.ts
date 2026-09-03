@@ -38,6 +38,13 @@ export const COLOURABLE_REGION_NAMES = [
  *   (`colour.gradient.enabled`). Band 1 keeps the name `buildings`, so the
  *   names start at 2. Each band takes `colour.gradient.slots[N-1]` and a colour
  *   interpolated between the buildings colour and the hero colour.
+ * * `override_N` - one printed treatment asked for by
+ *   `PrintParams.object_overrides` (v3.1 Task 11): the objects the user gave
+ *   their own filament slot, colour, road mode or raise. A region IS the colour
+ *   partition, so an object given one of those cannot stay in the region its
+ *   layer prints in. There are four, the filament slot count of the default
+ *   printer profile (`solid/overrides.ts:OVERRIDE_MAX_REGIONS`); objects asking
+ *   for the SAME treatment share one.
  *
  * A consumer that renders region names should treat an unknown name as
  * "borrows the colour it was given": every one of these carries a resolved
@@ -52,6 +59,10 @@ export const DERIVED_REGION_NAMES = [
   "buildings_band_6",
   "buildings_band_7",
   "buildings_band_8",
+  "override_1",
+  "override_2",
+  "override_3",
+  "override_4",
 ] as const;
 
 export const REGION_NAMES = [
@@ -196,6 +207,24 @@ export interface EngineStats {
    * when `colour.gradient` is off (one band is not a gradient).
    */
   gradientBands?: number;
+  /**
+   * v3.1 Task 11. Per-object overrides this build applied, absent when
+   * `object_overrides` is empty (which is the default, and the case where the
+   * whole feature must be invisible).
+   */
+  overrides?: number;
+  /**
+   * Overrides whose base OSM id names nothing in THIS scene, absent when every
+   * one of them resolved. They are kept, not dropped: a smaller crop must not
+   * destroy a decision a bigger one recorded (`solid/overrides.ts`).
+   */
+  overridesUnresolved?: number;
+  /**
+   * Overrides that asked for a printed treatment of their own after the four
+   * `override_N` regions were spoken for, absent when none did. They print in
+   * their layer's own filament.
+   */
+  overridesUnplaced?: number;
 }
 
 export interface TileResult {
@@ -449,6 +478,53 @@ export interface EngineResult {
    * the pipeline existed; empty for a plate with no cuts.
    */
   recessBands?: RecessBand[];
+  /**
+   * One entry per surface label the build cut (v3.1 Task 12): its Z band, the
+   * plan rectangle its ink occupies and the face it sits on. Written into the
+   * export sidecar as `label_bands`, where the reference validator masks each
+   * rectangle out of its structural `min_wall` probe inside the band and judges
+   * the strokes and ridges inside it by its own `labels` row, exactly as the
+   * frame lettering is judged (docs/handoff/v3-12-labels.md). Absent from a
+   * result assembled before labels existed; empty for a plate with none.
+   */
+  labelBands?: LabelBand[];
+  /**
+   * The Z the `sit` stage lifted every finished region by so the model rests
+   * on the bed, mm (zero unless a terrain drape or a standing hanger part
+   * reached below the plate). The bands above are in engine coordinates, the
+   * region meshes are in sat coordinates; a consumer drawing one over the
+   * other adds this. Absent from a result assembled before it was recorded.
+   */
+  sitShiftMm?: number;
+}
+
+/**
+ * Where one cut surface label sits in the model, for the validator and the
+ * viewport gizmo (v3.1 Task 12).
+ */
+export interface LabelBand {
+  /** `label-<i>`, the `ResolvedLine.id` of the same label. */
+  id: string;
+  /** Index in `PrintParams.labels`. */
+  index: number;
+  mode: "engrave" | "emboss";
+  /** `[low, high]` engine mm: below the face for an engrave, above it for an emboss. */
+  zMm: [number, number];
+  /** Z of the face the text is cut into or stands on, engine mm. */
+  faceZMm: number;
+  /** The ink rectangle in plan, engine mm, counter-clockwise, grown by one nozzle. */
+  rect: Array<[number, number]>;
+  /** The region the cut lands in. */
+  region: RegionName;
+  /**
+   * Where the label's centre sits and which way it reads, engine mm and
+   * degrees counter-clockwise from +x: the anchor (`u`, `v`, `rotation_deg`)
+   * resolved through `lib/labelAnchor.ts` by the `labels` stage. The viewport
+   * gizmo draws its handles from this rather than re-deriving the frame,
+   * because nothing in the canvas may read a parameter. Not written to the
+   * sidecar: the validator judges the rectangle, not the pose.
+   */
+  pose?: { xMm: number; yMm: number; angleDeg: number };
 }
 
 /** Exporters take an EngineResult and return file bytes; they never touch manifold. */

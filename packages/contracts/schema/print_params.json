@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://framecraft.app/schema/print_params.json",
   "title": "PrintParams",
-  "description": "Editor parameters shared verbatim by the live preview and the bake pipeline. Ranges from 01_PRODUCT_SPEC.md's editor parameter table (percent ranges expressed as fractions), defaults from 02_TECH_SPEC.md's example. schema_version 2 added the v2 personalisation block (labelling, ornaments, colours, hero buildings). schema_version 3 adds the v3 engine block (place context, per-region solid placement, colour slots/palette/tint/gradient, printer profiles, export target, terrain, heights, bridges, height exaggeration curve, auto heroes, tiling, frame styling, a hanger magnet, and two more Engraving members) for the browser engine (docs/IMPLEMENTATION_PLAN.md). Every v2 and v3 field is optional and defaults to the behaviour the previous version had, so a v1 payload - which carries none of them - loads unchanged.",
+  "description": "Editor parameters shared verbatim by the live preview and the bake pipeline. Ranges from 01_PRODUCT_SPEC.md's editor parameter table (percent ranges expressed as fractions), defaults from 02_TECH_SPEC.md's example. schema_version 2 added the v2 personalisation block (labelling, ornaments, colours, hero buildings). schema_version 3 adds the v3 engine block (place context, per-region solid placement, colour slots/palette/tint/gradient, printer profiles, export target, terrain, heights, bridges, height exaggeration curve, auto heroes, tiling, frame styling, a hanger magnet, and two more Engraving members) for the browser engine (docs/IMPLEMENTATION_PLAN.md). schema_version 4 opened with NO field here: it named the SceneGraph revision carrying the optional per-entity `name`/`osm_id`/`kind` identity that the object popover reads (docs/handoff/v3-10-objects.md). It has since gained `object_overrides`, the per-object decisions the right-click inspector writes (docs/handoff/v3-11-overrides.md), and `labels`, the names engraved into or raised off a roof or a printed surface, placed and dragged in the viewport and cut by the `labels` stage (docs/handoff/v3-12-labels.md), which is what [V3.1-O4] said would happen: a contract addition lands with the feature that claims it, not ahead of it. Every v2, v3 and v4 field is optional and defaults to the behaviour the previous version had, so a v1 payload - which carries none of them - loads unchanged.",
   "type": "object",
   "additionalProperties": false,
   "$defs": {
@@ -456,14 +456,169 @@
         "thickness_mm": { "type": "number", "minimum": 1, "maximum": 10, "default": 2 },
         "count": { "type": "integer", "minimum": 1, "maximum": 8, "default": 2 }
       }
+    },
+    "ObjectOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 4. One decision the user took about one OSM object in the viewport's right-click inspector (docs/handoff/v3-11-overrides.md). Keyed by the BASE OSM element id and never by the per-scene entity id: a crop that splits a way gives the parts ids with a \"-N\" suffix ([V3.1-P10-3]), so an id written against one crop would name nothing after the next one. Every member below defaults to \"inherit its layer's behaviour\", so a row carrying only osm_id and layer exports byte-identical geometry.",
+      "properties": {
+        "osm_id": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "Base OSM element id (\"w123\", \"r45\"): the value apps/web/lib/objectInfo.ts:sourceOsmId resolves for the entity, which is Building.osm_id / Road.osm_id when the crop split the way and the entity id otherwise."
+        },
+        "layer": {
+          "type": "string",
+          "enum": ["building", "road", "water", "green"],
+          "description": "Which SceneGraph layer the id names. An override whose layer holds no such id is KEPT and reported as unresolved (EngineStats.overrides_unresolved), never dropped: a smaller crop must not destroy the decisions taken on a bigger one."
+        },
+        "hidden": {
+          "type": "boolean",
+          "default": false,
+          "description": "Leave this object out of the model entirely. It leaves no geometry AND no hole: it is removed before the layer repair, so the layers around it close over the ground it held."
+        },
+        "height_scale": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 4.0,
+          "default": 1.0,
+          "description": "Buildings. Multiplies the OSM height before every other height rule, so the block/stack repair, the is_tall split and height_exaggeration all see the new number."
+        },
+        "hero": {
+          "type": "string",
+          "enum": ["inherit", "on", "off"],
+          "default": "inherit",
+          "description": "Buildings. Add this building to the effective hero set or take it out, whatever hero_building_ids and hero_auto decided."
+        },
+        "tint": {
+          "type": "string",
+          "pattern": "^$|^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$",
+          "default": "",
+          "description": "Buildings. A shade of this building's own filament, empty for none. Preview and OBJ only, exactly like colour.tint: a printer has no way to lay down a shade of one filament."
+        },
+        "slot": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16,
+          "default": 0,
+          "description": "AMS/MMU filament slot for this object alone, 0 to keep its layer's. A non-zero value groups the object with every other object given the same printed treatment into one of the at most four override regions, and that region takes its slot from this row, with the layer's slot as the fallback ([V3.1-P11-1]); there is no per-region slot leaf to set, because a region IS the colour partition and this row is what names it."
+        },
+        "color": {
+          "type": "string",
+          "pattern": "^$|^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$",
+          "default": "",
+          "description": "Filament colour for this object alone, empty to keep its layer's. Like slot, it groups the object into an override region that takes its colour from this row, with the layer's colour as the fallback ([V3.1-P11-1])."
+        },
+        "road_mode": {
+          "type": "string",
+          "enum": ["inherit", "engrave", "emboss", "off"],
+          "default": "inherit",
+          "description": "Roads. This road alone engraved, embossed or left out, whatever the top-level road_mode says. \"engrave\" and \"emboss\" move it into an override region of its own; \"off\" removes it like hidden."
+        },
+        "width_scale": {
+          "type": "number",
+          "minimum": 0.25,
+          "maximum": 4.0,
+          "default": 1.0,
+          "description": "Roads. Multiplies this road's ground width on top of road_scale, before the minimum-feature clamp."
+        },
+        "raise_mm": {
+          "type": "number",
+          "minimum": -2.0,
+          "maximum": 2.0,
+          "default": 0.0,
+          "description": "Water and green. Moves this polygon's top face relative to its layer's proud_mm: negative recesses it further, positive raises it. A non-zero value moves it into an override region of its own."
+        }
+      },
+      "required": ["osm_id", "layer"]
+    },
+    "Label": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "schema_version 4. One name engraved into, or raised off, a horizontal face of the model: a building's roof, or the ground surface a road, a water body or a green area prints as (docs/handoff/v3-12-labels.md). Anchored in the TARGET's own 2D frame rather than in plate coordinates, so a label survives a plate resize, a rotation and a re-fetch: u and v are fractions of the target's minimum-area oriented rectangle (for a road, u along its centreline and v across its ribbon), rotation_deg is measured from the target's principal axis, and the target is named by its BASE OSM element id exactly as ObjectOverride names one. The engine repairs every glyph with the frame lettering's own minimum-feature rules, shrinks a label to fit inside its face, and refuses one it cannot print, naming the size that would.",
+      "properties": {
+        "target_osm_id": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "Base OSM element id (\"w123\", \"r45\") of the object the label sits on: apps/web/lib/objectInfo.ts:sourceOsmId for a building or a road, AreaFeature.osm_id for water and green."
+        },
+        "layer": {
+          "type": "string",
+          "enum": ["building", "road", "water", "green"],
+          "description": "Which SceneGraph layer the id names. A label whose target is not in the scene is kept and reported as skipped, never dropped."
+        },
+        "surface": {
+          "type": "string",
+          "enum": ["building_top", "ground"],
+          "description": "The face the text is cut into: a building's roof, or the ground surface its layer prints as (the top of the road ribbon, the water or the park). Tier A of the labels design; a vertical side face is not offered."
+        },
+        "u": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.5,
+          "description": "Position along the target's principal axis, 0 to 1 across its oriented bounding rectangle; for a road, the fraction of the centreline's length."
+        },
+        "v": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.5,
+          "description": "Position across the principal axis, 0 to 1; for a road, across the ribbon, 0.5 on the centreline."
+        },
+        "rotation_deg": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180,
+          "default": 0,
+          "description": "Reading direction relative to the target's principal axis (a road's local tangent), degrees counter-clockwise."
+        },
+        "size_mm": {
+          "type": "number",
+          "minimum": 1.5,
+          "maximum": 8.0,
+          "default": 4.0,
+          "description": "Cap height, mm, before the fit: a label is shrunk to fit inside its face and never overhangs it."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["engrave", "emboss"],
+          "default": "engrave",
+          "description": "Cut into the face, or raised off it. An emboss prints in the target's own filament."
+        },
+        "depth_mm": {
+          "type": "number",
+          "minimum": 0.2,
+          "maximum": 1.5,
+          "default": 0.4,
+          "description": "Cut depth (engrave) or raise height (emboss), mm."
+        },
+        "font": {
+          "type": "string",
+          "enum": ["sans", "serif", "mono"],
+          "default": "sans"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 64,
+          "default": "",
+          "description": "Literal text; empty means the target's OSM name. No tokens: a label names the object it sits on."
+        },
+        "follow": {
+          "type": "boolean",
+          "default": false,
+          "description": "Roads only: set each glyph along the centreline so the name curves with the street, as a map label does. Falls back to a straight line where the curve is too tight for the glyph size; docs/handoff/v3-12-labels.md states the test."
+        }
+      },
+      "required": ["target_osm_id", "layer", "surface"]
     }
   },
   "properties": {
     "schema_version": {
       "type": "integer",
-      "enum": [2, 3],
-      "default": 3,
-      "description": "Contract revision this payload was written against. Absent means v1, which is exactly this object with every v2 and v3 field at its default."
+      "enum": [2, 3, 4],
+      "default": 4,
+      "description": "Contract revision this payload was written against. Absent means v1, which is exactly this object with every v2, v3 and v4 field at its default. schema_version 4 names the SceneGraph revision that carries the optional per-entity `name`/`osm_id`/`kind` identity, and carries the `object_overrides` and the `labels` those ids are written against ([V3.1-O4]; docs/handoff/v3-11-overrides.md, docs/handoff/v3-12-labels.md)."
     },
     "plate_mm": {
       "type": "number",
@@ -686,6 +841,20 @@
       "$ref": "#/$defs/HangerMagnet",
       "default": { "diameter_mm": 6, "thickness_mm": 2, "count": 2 },
       "description": "schema_version 3. Recessed magnet dimensions, used when hanger is \"magnets\"."
+    },
+    "object_overrides": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ObjectOverride" },
+      "maxItems": 24,
+      "default": [],
+      "description": "schema_version 4. Per-object decisions taken in the viewport's right-click inspector, at most 24. Empty by default, so a default-constructed PrintParams exports exactly the geometry it always did. The cap is measured, not chosen: 24 overrides cost 0.8 s of the Chicago build (docs/handoff/v3-11-overrides.md section 2), which is a fifth of a cold run and the point past which the plate stops feeling live. At most four of them may ask for a printed treatment of their own (a slot, a colour, a road mode, a raise); the fifth and beyond print in their layer's own filament and say so, because four is the filament slot count of the default printer profile."
+    },
+    "labels": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Label" },
+      "maxItems": 12,
+      "default": [],
+      "description": "schema_version 4. Names engraved into or raised off the model's horizontal faces, placed by direct manipulation in the viewport, at most 12. Empty by default, so a default-constructed PrintParams exports exactly the geometry it always did. The cap is measured, not chosen (docs/handoff/v3-12-labels.md section 2): each label costs a glyph repair plus one boolean against its target's region, and twelve of them keep a warm Chicago rebuild after a drag under the 400 ms preview target; the editor shows the count against the cap before it is reached."
     }
   },
   "required": [

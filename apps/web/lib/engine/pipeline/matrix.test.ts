@@ -28,7 +28,11 @@ import {
   zipNames,
   type Snapshot,
 } from "./matrix.assert";
-import { EXEMPT, KNOWN_DEFECTS, PROBES, type Probe } from "./matrix.probes";
+import { LABEL_PROBES } from "./matrix.labels";
+import { EXEMPT, KNOWN_DEFECTS, PROBES as CORE_PROBES, type Probe } from "./matrix.probes";
+
+/** The core table plus the surface-label probes (Task 12), which live in their own file. */
+const PROBES: readonly Probe[] = [...CORE_PROBES, ...LABEL_PROBES];
 import { MatrixGroup, groupKeyOf, paramsFor, type MatrixScene } from "./matrix.run";
 
 const started = Date.now();
@@ -122,7 +126,7 @@ describe("the matrix covers every PrintParams leaf", () => {
 
   it("names a scene and a sentence for every probe", () => {
     for (const probe of PROBES) {
-      expect(["block", "rail", "bridge", "terrain", "osm"], probe.path).toContain(probe.scene);
+      expect(["block", "rail", "bridge", "terrain", "osm", "labelled"], probe.path).toContain(probe.scene);
       expect(probe.why.length, probe.path).toBeGreaterThan(20);
       expect(probe.why, probe.path).not.toMatch(/hash|bytes moved|differs/i);
     }
@@ -251,7 +255,7 @@ describe("matrix: the exempt leaves", () => {
   it("schema_version has no physical meaning and is echoed at the top of the sidecar", async () => {
     if (opened === null) throw new Error("the group's before build did not run");
     expect(EXEMPT.get("schema_version")).toContain("[V3.1-P1-2]");
-    expect(sidecarValue(opened.before.sidecar, "schema_version")).toBe(3);
+    expect(sidecarValue(opened.before.sidecar, "schema_version")).toBe(4);
     const after = await opened.run("schema_version", 2);
     expect(sidecarValue(after.sidecar, "schema_version")).toBe(2);
     expect(after.result.regions.map((region) => region.region)).toEqual(opened.before.result.regions.map((region) => region.region));

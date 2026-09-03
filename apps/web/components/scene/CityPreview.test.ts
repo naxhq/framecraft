@@ -20,11 +20,15 @@
  * Everything drawn comes from `state.pipeline.regions` and
  * `state.pipeline.result`.
  *
- * The exceptions are named, and there are two of them: `BuildingPickProxies`,
- * which places invisible boxes for hero picking and paints nothing (named
- * exception 1, `docs/handoff/v3-01-pipeline.md` section 5), and the two HUD
- * hosts, `CityPreview.tsx` and `PreviewPane.tsx`, whose readouts sit OUTSIDE
- * the canvas and are statements about the settings by design.
+ * The exceptions are the two HUD hosts, `CityPreview.tsx` and
+ * `PreviewPane.tsx`, whose readouts sit OUTSIDE the canvas and are statements
+ * about the settings by design. There used to be a third, `BuildingPickProxies`,
+ * which placed invisible boxes for hero picking; the v3-06 audit's finding C2
+ * showed its stated reason ("the fused region meshes carry no per-building
+ * identity") stopped being true at [V3.1-P1-18], so picking now reads the
+ * buildings mesh's own `triangleOwner`/`owners` and the layer is gone. The rule
+ * below is therefore STRONGER than it was: no `PrintParams` object crosses the
+ * canvas boundary at all now, not even to be passed through untouched.
  *
  * **2. A region re-uploads if and only if its hash changed.** That half lives
  * in `RegionMeshes.test.tsx`, where the geometry cache can be driven twice
@@ -53,12 +57,8 @@ import { previewDeps } from "./CityPreview";
 
 const SCENE_DIR = path.resolve(__dirname);
 
-/** The HUD hosts (outside the canvas) and the one named picking exception. */
-const PARAM_READERS_ALLOWED = new Set([
-  "CityPreview.tsx",
-  "PreviewPane.tsx",
-  "BuildingPickProxies.tsx",
-]);
+/** The HUD hosts, outside the canvas. Nothing inside it is exempt any more. */
+const PARAM_READERS_ALLOWED = new Set(["CityPreview.tsx", "PreviewPane.tsx"]);
 
 /** A read of a PrintParams field: `params.plate_mm`, `params?.colour`, `pickParams.frame`. */
 const PARAM_READ = /\b[A-Za-z]*[Pp]arams\??\.[A-Za-z_]/;
@@ -103,63 +103,69 @@ describe("no rendered layer reads PrintParams", () => {
     }
   });
 
-  it("names the PrintParams type in only one rendered file, and only to pass it through", () => {
-    // A file that names the type is a file about to read it. The exception is
-    // `PreviewScene`, which hands the object to the pick proxies untouched --
-    // so it may name the type exactly twice (the import and the prop) and
-    // never dereferences it, which the sweep above already proves.
+  it("names the PrintParams type in no rendered file at all", () => {
+    // A file that names the type is a file about to read it. `PreviewScene`
+    // used to name it exactly twice, to declare the prop it handed the pick
+    // proxies untouched; with the proxies gone (v3-06 audit, finding C2) the
+    // type has no business inside the canvas in any form.
     for (const name of sceneSources()) {
       if (PARAM_READERS_ALLOWED.has(name)) continue;
       const mentions = codeLines(read(name)).filter((line) => /\bPrintParams\b/.test(line));
-      if (name === "PreviewScene.tsx") {
-        expect(mentions).toEqual([
-          'import type { PrintParams } from "@/lib/contracts";',
-          "pickParams: PrintParams;",
-        ]);
-        continue;
-      }
       expect(mentions, `${name} names PrintParams`).toEqual([]);
     }
   });
 
-  it("hands the canvas nothing but pipeline output and the pick proxies' own params", () => {
+  it("hands the canvas nothing but pipeline output", () => {
     // The whole `<PreviewScene .../>` element in `CityPreview.tsx`. Every prop
-    // it takes has to come from the pipeline, the palette or the scene; the one
-    // parameter object crossing the boundary goes straight to the pick proxies
-    // without being read on the way.
+    // it takes has to come from the pipeline, the palette or the scene, and no
+    // parameter object crosses the boundary at all any more.
     const source = read("CityPreview.tsx");
     const start = source.indexOf("<PreviewScene");
     expect(start, "CityPreview no longer mounts PreviewScene").toBeGreaterThan(0);
     const element = source.slice(start, source.indexOf("/>", start));
-    // The one parameter object crossing the boundary, handed to the pick
-    // proxies by name...
-    expect(element).toContain("pickParams={params}");
-    // ...and not one field read on the way in.
     expect(paramReads(element)).toEqual([]);
+    expect(element, "a PrintParams object is still handed to the canvas").not.toMatch(
+      /=\{params\}/,
+    );
   });
 
   it("mounts no approximate layer any more", () => {
     // The v3 stack: a constant frame, oriented boxes, flat ribbons, earcut
     // fills and flat lettering. Each one is a place the preview could disagree
-    // with the file, and each is gone.
+    // with the file, and each is gone. `BuildingPickProxies` joined them at the
+    // v3-06 audit's finding C2: not a painted layer, but the same shape of
+    // defect -- a second, approximate copy of the model standing in for the
+    // real one, here for picking rather than for pixels.
     const files = sceneSources();
-    for (const gone of ["BasePlate.tsx", "RoadRibbons.tsx", "AreaSurfaces.tsx", "TreeInstances.tsx"]) {
+    for (const gone of [
+      "BasePlate.tsx",
+      "RoadRibbons.tsx",
+      "AreaSurfaces.tsx",
+      "TreeInstances.tsx",
+      "BuildingPickProxies.tsx",
+    ]) {
       expect(files, `${gone} is back`).not.toContain(gone);
     }
     const scene = read("PreviewScene.tsx");
     expect(scene).not.toMatch(/textLayers|buildRoads|buildAreas|buildTrees/);
+    // Code lines only: the file's own docstring says what was removed and why,
+    // and a check that forbade naming it in prose would forbid explaining it.
+    expect(
+      codeLines(scene).join("\n"),
+      "the canvas mounts a proxy layer again",
+    ).not.toMatch(/PickProxies|InstancedMesh/);
   });
 
-  it("keeps the pick proxies invisible: visible={false} would take raycasting with them", () => {
-    const source = codeLines(read("BuildingPickProxies.tsx")).join("\n");
-    // three's Raycaster checks `visible` and stops; it does not consult a
-    // material's opacity, so THIS is how a mesh is picked but never painted.
-    expect(source).toMatch(/colorWrite={false}/);
-    expect(source).toMatch(/depthWrite={false}/);
-    expect(source).toMatch(/opacity={0}/);
-    expect(source).not.toMatch(/visible={false}/);
-    expect(source).toMatch(/castShadow={false}/);
-    expect(source).toMatch(/receiveShadow={false}/);
+  it("picks a hero off the real solid, through the owners the engine ships", () => {
+    // The replacement for the proxy layer, asserted where the proxy layer's own
+    // invariant used to be. `RegionMeshes` is the only file that may do this,
+    // and it must do it through `ownerAt` rather than by re-deriving the index.
+    const source = codeLines(read("RegionMeshes.tsx")).join("\n");
+    expect(source).toMatch(/ownerAt\(/);
+    expect(source).toMatch(/onPick/);
+    // A merged block and an unattributed triangle are not buildings and must
+    // not be promoted to heroes.
+    expect(source).toMatch(/block-/);
   });
 });
 
@@ -287,6 +293,16 @@ const MODEL_ONLY_HUD_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintPar
   ["tiling", { enabled: true, cols: 2, rows: 2 }],
   ["frame_style", { profile: "chamfer", corner: "mitred" }],
   ["hanger_magnet", { diameter_mm: 8, thickness_mm: 3, count: 4 }],
+  // v3.1 Task 11. A per-object override moves the MODEL, and this one moves no
+  // HUD memo: it names a road, and none of the four passes below reads a road's
+  // width. The height half is different and IS keyed
+  // (`warnings.ts:overrideHeightKey`), which the case under
+  // "rebuilds the predicted height" asserts.
+  ["object_overrides", [{ osm_id: "w1", layer: "road", width_scale: 2 }]],
+  // v3.1 Task 12. A surface label is cut by the `labels` stage and drawn from
+  // the band it reports; no HUD memo reads one, and the gizmo that moves it
+  // reads pipeline output, never the parameter.
+  ["labels", [{ target_osm_id: "w1", layer: "building", surface: "building_top" }]],
 ];
 
 describe("previewDeps", () => {
@@ -420,11 +436,25 @@ describe("previewDeps", () => {
 
   it("rebuilds the predicted height and the lettering layout when a hero is picked", () => {
     // A hero stands at its hero height, so the 60 mm guard and the HUD have to
-    // follow it -- but no hull and no glyph asset fetch is touched. (The pick
-    // proxies' matrices do move; `BuildingPickProxies.test.ts` owns that key.)
+    // follow it -- but no hull and no glyph asset fetch is touched. Nor is any
+    // buffer re-uploaded for it now: the pick proxies whose matrices used to
+    // move are gone, and the hero's own geometry is the worker's business.
     // `text` rebuilds too, since [V3-P1]'s `{hero}` token counts
     // `hero_building_ids.length`.
     expect(rebuiltBy("hero_building_ids", ["w1"])).toEqual(["height", "text"]);
+  });
+
+  it("rebuilds the predicted height when a per-object override moves a building's height", () => {
+    // v3.1 Task 11. The 60 mm guard and the HUD read `predictedTopMm`, which
+    // now applies the height overrides to the scene it walks
+    // (`warnings.ts:effectiveSceneForHeight`); `overrideHeightKey` is what
+    // carries that into the memo key without putting an array in it. Nothing
+    // else rebuilds: no hull, no glyph, no advisor pass reads a height.
+    expect(rebuiltBy("object_overrides", [{ osm_id: "w1", layer: "building", height_scale: 2 }])).toEqual([
+      "height",
+    ]);
+    // ... and a member that moves no height moves no memo at all.
+    expect(rebuiltBy("object_overrides", [{ osm_id: "w1", layer: "building", tint: "#B08D57" }])).toEqual([]);
   });
 
   /** Kept out of `MODEL_ONLY_HUD_MOVES` on purpose; still needed for coverage below. */

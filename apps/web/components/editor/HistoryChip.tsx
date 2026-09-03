@@ -79,21 +79,52 @@ export function HistoryChip() {
 
   return (
     <div ref={wrapperRef} className="pointer-events-auto">
-      <button
-        ref={buttonRef}
-        type="button"
-        data-testid="history-chip"
-        aria-expanded={open}
-        aria-controls={open ? "history-drawer" : undefined}
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 rounded-milled border border-control bg-plate/95 px-2 py-1 text-2xs text-ink shadow-raised transition-colors hover:border-ink-faint"
-      >
-        <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-accent" />
-        {stepCount} {stepCount === 1 ? "change" : "changes"}
-        <span aria-hidden="true" className="text-ink-faint">
-          {open ? "×" : "›"}
-        </span>
-      </button>
+      {/*
+        Undo and redo are on the chip ROW, not only inside the drawer. They are
+        the two actions a user reaches for most and they were three interactions
+        deep (open the drawer, find the button, press it) while the shortcut
+        sheet advertised Ctrl+Z as if the buttons did not exist. The drawer
+        keeps the step LIST, which is the thing a drawer is for.
+      */}
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          data-testid="history-undo"
+          disabled={!canUndo}
+          aria-label="Undo the last change"
+          title="Undo the last change (Ctrl+Z)"
+          onClick={() => undoHistory()}
+          className="rounded-milled border border-control bg-plate/95 px-1.5 py-1 text-2xs text-ink shadow-raised transition-colors hover:border-ink-faint disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          Undo
+        </button>
+        <button
+          type="button"
+          data-testid="history-redo"
+          disabled={!canRedo}
+          aria-label="Redo the change just undone"
+          title="Redo the change just undone (Ctrl+Shift+Z)"
+          onClick={() => redoHistory()}
+          className="rounded-milled border border-control bg-plate/95 px-1.5 py-1 text-2xs text-ink shadow-raised transition-colors hover:border-ink-faint disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          Redo
+        </button>
+        <button
+          ref={buttonRef}
+          type="button"
+          data-testid="history-chip"
+          aria-expanded={open}
+          aria-controls={open ? "history-drawer" : undefined}
+          onClick={() => setOpen(!open)}
+          className="flex items-center gap-1.5 rounded-milled border border-control bg-plate/95 px-2 py-1 text-2xs text-ink shadow-raised transition-colors hover:border-ink-faint"
+        >
+          <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-accent" />
+          {stepCount} {stepCount === 1 ? "change" : "changes"}
+          <span aria-hidden="true" className="text-ink-faint">
+            {open ? "×" : "›"}
+          </span>
+        </button>
+      </div>
 
       {open ? (
         <div
@@ -104,26 +135,10 @@ export function HistoryChip() {
           tabIndex={0}
           className="mt-1.5 max-h-72 w-80 max-w-[80vw] overflow-y-auto rounded-plate border border-line bg-plate p-3 shadow-lifted"
         >
-          <div className="mb-2 flex gap-2">
-            <button
-              type="button"
-              data-testid="history-undo"
-              disabled={!canUndo}
-              onClick={() => undoHistory()}
-              className="flex-1 rounded-milled border border-control bg-plate-raised px-2 py-1 text-2xs font-medium text-ink transition-colors hover:border-ink-faint disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              Undo
-            </button>
-            <button
-              type="button"
-              data-testid="history-redo"
-              disabled={!canRedo}
-              onClick={() => redoHistory()}
-              className="flex-1 rounded-milled border border-control bg-plate-raised px-2 py-1 text-2xs font-medium text-ink transition-colors hover:border-ink-faint disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              Redo
-            </button>
-          </div>
+          <p className="mb-2 text-2xs leading-snug text-ink-faint">
+            Every step, newest last. Undo and redo are on the row above, and on
+            Ctrl+Z and Ctrl+Shift+Z.
+          </p>
 
           <ul className="space-y-1">
             {entries.map((entry, index) => {

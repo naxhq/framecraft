@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { defaultPrintParams } from "@/lib/contracts";
 import type { SceneGraph, SceneRequest } from "@/lib/contracts";
+import { EXPORT_STOPPED_MESSAGE } from "@/lib/exportFlow";
 import type { EngineResult, RegionMesh } from "@/lib/engine/types";
 
 // ---------------------------------------------------------------------------
@@ -793,6 +794,65 @@ describe("Export", () => {
     const exportState = useEditorStore.getState().exportState;
     expect(exportState.phase).toBe("failed");
     expect(exportState.error).toBe("nothing to export");
+  });
+
+  /**
+   * A cancel is not a failure, and the STORE has to say so too.
+   *
+   * `ActionBar` already classifies this ending from the transition it watched
+   * and renders its own cancelled notice, but the string in `exportState.error`
+   * is what every other reader gets -- the results panel, and anything later
+   * with no transition to watch. It used to be "The engine could not build a
+   * model.", which is false in both halves for a user-pressed Stop
+   * ([V3.1-T6] 2).
+   */
+  it("does not call a user-pressed Stop a build failure", async () => {
+    previewed();
+    useEditorStore.getState().setParam("plate_mm", 200);
+    await vi.advanceTimersByTimeAsync(PIPELINE_DEBOUNCE_MS);
+    expect(harness.client.runs).toHaveLength(1);
+
+    // The export queues behind the run in flight, and then the user stops it.
+    const exporting = useEditorStore.getState().requestExport();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.client.exports).toHaveLength(0);
+
+    useEditorStore.getState().cancelPipeline();
+    await exporting;
+
+    const state = useEditorStore.getState();
+    // Nothing was written, and nothing claims the engine broke.
+    expect(harness.client.exports).toHaveLength(0);
+    expect(state.exportState.phase).toBe("failed");
+    expect(state.exportState.error).toBe(EXPORT_STOPPED_MESSAGE);
+    expect(state.exportState.error).not.toContain("could not build");
+    // And the cancel itself stayed a non-error, which is what makes the
+    // absence of `pipeline.error` a usable signal here in the first place.
+    expect(state.pipeline.error).toBeNull();
+  });
+
+  /**
+   * The other half of the same branch: a run that really failed still quotes
+   * the engine. Without this the test above could be satisfied by writing the
+   * stopped message unconditionally.
+   */
+  it("still quotes the engine's own message when the run genuinely failed", async () => {
+    previewed();
+    useEditorStore.getState().setParam("plate_mm", 200);
+    await vi.advanceTimersByTimeAsync(PIPELINE_DEBOUNCE_MS);
+
+    const exporting = useEditorStore.getState().requestExport();
+    await vi.advanceTimersByTimeAsync(0);
+    harness.client.current.reject(
+      new harness.PipelineStageError("finish-roads", "the roads region could not be repaired", {}),
+    );
+    await exporting;
+
+    const state = useEditorStore.getState();
+    expect(state.pipeline.error?.stage).toBe("finish-roads");
+    expect(state.exportState.phase).toBe("failed");
+    expect(state.exportState.error).toBe("the roads region could not be repaired");
+    expect(state.exportState.error).not.toBe(EXPORT_STOPPED_MESSAGE);
   });
 
   it("names every check when the printability gate refuses the export", async () => {

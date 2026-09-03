@@ -22,13 +22,15 @@
  * the copy a user reads, the copy the settings search will index (Task 5) and
  * the copy the tests assert are one string in one place.
  *
- * **Scope.** The catalog covers the settings panel: the nine parameter groups
+ * **Scope.** The catalog covers the settings panel: the eleven parameter
+ * groups
  * (`components/editor/groups/**`), the lettering editor, the panel shell's own
  * two controls and the group headers, plus the export-format select, which
  * lives in the action bar but writes a `PrintParams` leaf. It does NOT cover
- * the action bar's other buttons (`OutputPanel.tsx`: Preview, Export, Copy
+ * the action bar's other buttons (`ActionBar.tsx`: Preview, Export, Copy
  * link, Save and Load project), the shell chrome (theme, shortcuts, history,
- * recents, presets, the perf HUD) or the drawers (issues, adjustments): those
+ * recents, presets, the perf HUD, the build-stamp footer and the About dialog
+ * it opens) or the drawers (issues, adjustments): those
  * run an action or move the viewport rather than writing a setting, they
  * belong to the action-bar and shell tasks, and `controlCatalog.test.ts` names
  * every one of their files with the reason it is out of scope, so the boundary
@@ -53,14 +55,31 @@ import type { GroupId } from "./groups";
  * - `location`: `LocationState` (pin, radius, rotation, preset). Location is
  *   not a parameter (DECISIONS `[V3.1-P1-10]`): it is the `fetch` stage key,
  *   so moving it marks the model stale and costs a network round trip.
- * - `object-override`: an object held outside `PrintParams` -- today only the
- *   saved-palette library, which lives in this browser's `localStorage`.
+ * - `object-override`: a control that is not part of the settings panel at all.
+ *   Three of them: the saved-palette library, which lives outside `PrintParams`
+ *   in this browser's `localStorage`; the viewport's right-click inspector
+ *   (v3.1 Task 11), which writes real `object_overrides` leaves but is opened
+ *   on an object in the 3D view rather than found in a group; and the surface
+ *   labels' card and gizmo (v3.1 Task 12), which write real `labels` leaves on
+ *   a label placed in the 3D view. Which leaves they write is not stated here:
+ *   the panel has no control for them at all, so they are named in
+ *   `controlCatalog.test.ts:CLAIMED_WITHOUT_A_CONTROL`, the list this catalog
+ *   keeps of exactly that.
  * - `viewer`: presentation only. Never reaches a stage and never reaches a
  *   file.
  * - `all-parameters`: rewrites the whole `PrintParams` object at once, so it
  *   names no single leaf.
+ * - `section-parameters`: rewrites the leaves of ONE section, or one row of the
+ *   changes list. Which leaves those are is not a property of the control: it
+ *   is `lib/settingsDiff.ts:sectionPaths(group)`, read off this catalog, so
+ *   writing them here would be the same list stated twice and free to drift.
  */
-export type NonParamTarget = "location" | "object-override" | "viewer" | "all-parameters";
+export type NonParamTarget =
+  | "location"
+  | "object-override"
+  | "viewer"
+  | "all-parameters"
+  | "section-parameters";
 
 /** How the control is drawn, so a search result can say what it will find. */
 export type ControlKind =
@@ -155,6 +174,34 @@ export const SECTIONS: readonly SectionSpec[] = [
     source: "components/editor/groups/BuildingsGroup.tsx",
   },
   {
+    id: "region-roads",
+    group: "regions",
+    label: "Roads",
+    help: "The road ribbon is a solid of its own thickness, and the base is carved to receive it.",
+    source: "components/editor/groups/RegionsGroup.tsx",
+  },
+  {
+    id: "region-water",
+    group: "regions",
+    label: "Water",
+    help: "Rivers and lakes, sunk into the plate so they read as channels rather than as flat shapes.",
+    source: "components/editor/groups/RegionsGroup.tsx",
+  },
+  {
+    id: "region-parks",
+    group: "regions",
+    label: "Parks",
+    help: "The green areas the trees stand on, flush with the plate top unless moved.",
+    source: "components/editor/groups/RegionsGroup.tsx",
+  },
+  {
+    id: "region-rail",
+    group: "regions",
+    label: "Rail",
+    help: "Railway ribbons, standing proud of the surface by default like a ballasted track bed.",
+    source: "components/editor/groups/RegionsGroup.tsx",
+  },
+  {
     id: "frame-profile",
     group: "frame",
     label: "Frame profile",
@@ -193,7 +240,7 @@ export const SECTIONS: readonly SectionSpec[] = [
     id: "lettering",
     group: "frame",
     label: "Lettering",
-    help: "Up to eight lines cut into the frame edges or the underside, with tokens expanded as the file is written.",
+    help: "Up to eight lines cut into the frame edges or the underside, one engraving each, with tokens expanded as the file is written.",
     source: "components/editor/groups/FrameTextGroup.tsx",
   },
   {
@@ -270,6 +317,8 @@ const SCALE_SOURCE = "components/editor/groups/ScaleSizeGroup.tsx";
 const BUILDINGS_SOURCE = "components/editor/groups/BuildingsGroup.tsx";
 const HEIGHTS_SOURCE = "components/editor/groups/HeightsGroup.tsx";
 const SURFACE_SOURCE = "components/editor/groups/SurfaceGroup.tsx";
+const REGIONS_SOURCE = "components/editor/groups/RegionsGroup.tsx";
+const BRIDGES_SOURCE = "components/editor/groups/BridgesGroup.tsx";
 const TERRAIN_SOURCE = "components/editor/groups/TerrainGroup.tsx";
 const FRAME_SOURCE = "components/editor/groups/FrameTextGroup.tsx";
 const ENGRAVINGS_SOURCE = "components/editor/EngravingsEditor.tsx";
@@ -278,6 +327,10 @@ const PRINTER_SOURCE = "components/editor/groups/PrinterGroup.tsx";
 const PANEL_SOURCE = "components/editor/ParamPanel.tsx";
 const COLLAPSIBLE_SOURCE = "components/editor/CollapsibleGroup.tsx";
 const EXPORT_MENU_SOURCE = "components/editor/ExportMenu.tsx";
+const SEARCH_SOURCE = "components/editor/SettingsSearch.tsx";
+const CHANGES_SOURCE = "components/editor/ChangesFromDefault.tsx";
+const INSPECTOR_SOURCE = "components/editor/ObjectInspector.tsx";
+const LABELS_SOURCE = "components/editor/LabelsPanel.tsx";
 
 export const CONTROLS: readonly ControlSpec[] = [
   // -- Location ------------------------------------------------------------
@@ -510,6 +563,140 @@ export const CONTROLS: readonly ControlSpec[] = [
     source: SURFACE_SOURCE,
   },
 
+  // -- Surface depths ------------------------------------------------------
+  {
+    id: "regions_roads_depth_mm",
+    group: "regions",
+    kind: "slider",
+    label: "Road thickness",
+    help: "How thick the road ribbon is built. The base is carved to exactly the same shape, so the two meet with no overlap for the slicer to arbitrate.",
+    writes: ["regions.roads.depth_mm"],
+    testId: "regions_roads_depth_mm",
+    source: REGIONS_SOURCE,
+  },
+  {
+    id: "regions_roads_proud_mm",
+    group: "regions",
+    kind: "slider",
+    label: "Road height",
+    help: "Where the road's top face sits against the plate top: below it leaves a groove that deep, above stands the ribbon on the surface, and zero makes the two flush.",
+    writes: ["regions.roads.proud_mm"],
+    testId: "regions_roads_proud_mm",
+    source: REGIONS_SOURCE,
+  },
+  {
+    id: "regions_water_depth_mm",
+    group: "regions",
+    kind: "slider",
+    label: "Water thickness",
+    help: "How thick the water body is built under its own surface. Together with the setting below it decides how far a river is cut into the base.",
+    writes: ["regions.water.depth_mm"],
+    testId: "regions_water_depth_mm",
+    source: REGIONS_SOURCE,
+  },
+  {
+    id: "regions_water_proud_mm",
+    group: "regions",
+    kind: "slider",
+    label: "Water height",
+    help: "Where the water's top face sits against the plate top. It is sunk by default, so a river reads as a channel rather than as a painted shape.",
+    writes: ["regions.water.proud_mm"],
+    testId: "regions_water_proud_mm",
+    source: REGIONS_SOURCE,
+  },
+  {
+    id: "regions_parks_depth_mm",
+    group: "regions",
+    kind: "slider",
+    label: "Park thickness",
+    help: "How thick the green areas are built. The trees stand on this surface, so raising it lifts them with it.",
+    writes: ["regions.parks.depth_mm"],
+    testId: "regions_parks_depth_mm",
+    source: REGIONS_SOURCE,
+  },
+  {
+    id: "regions_parks_proud_mm",
+    group: "regions",
+    kind: "slider",
+    label: "Park height",
+    help: "Where the green areas sit against the plate top. They are flush by default, which is the one case where a region shares a plane with the base.",
+    writes: ["regions.parks.proud_mm"],
+    testId: "regions_parks_proud_mm",
+    source: REGIONS_SOURCE,
+  },
+  {
+    id: "regions_rail_depth_mm",
+    group: "regions",
+    kind: "slider",
+    label: "Rail thickness",
+    help: "How thick the railway ribbon is built, under whatever height the setting below gives it.",
+    writes: ["regions.rail.depth_mm"],
+    testId: "regions_rail_depth_mm",
+    source: REGIONS_SOURCE,
+  },
+  {
+    id: "regions_rail_proud_mm",
+    group: "regions",
+    kind: "slider",
+    label: "Rail height",
+    help: "Where the railway's top face sits against the plate top. It stands above the surface by default, so track reads as an embankment rather than as a trench.",
+    writes: ["regions.rail.proud_mm"],
+    testId: "regions_rail_proud_mm",
+    source: REGIONS_SOURCE,
+  },
+  {
+    id: "regions_rail_width_m",
+    group: "regions",
+    kind: "slider",
+    label: "Rail width",
+    help: "The ground width of the railway ribbon, in real metres, before the nozzle's minimum-feature clamp widens anything too thin to print.",
+    writes: ["regions.rail.width_m"],
+    testId: "regions_rail_width_m",
+    source: REGIONS_SOURCE,
+  },
+  {
+    id: "regions_building_skirt_mm",
+    group: "regions",
+    kind: "slider",
+    label: "Building skirt",
+    help: "How far each footprint is grown before it is extruded, so a wall lands on solid plate instead of on the edge of a road pocket.",
+    writes: ["regions.building_skirt_mm"],
+    testId: "regions_building_skirt_mm",
+    source: REGIONS_SOURCE,
+  },
+
+  // -- Bridges -------------------------------------------------------------
+  {
+    id: "bridges_enabled",
+    group: "bridges",
+    kind: "toggle",
+    label: "Build bridges",
+    help: "Lifts every segment tagged as a bridge off the ground as a slab, so the river keeps its own surface underneath. Off, all of it is laid at ground level.",
+    writes: ["bridges.enabled"],
+    testId: "bridges_enabled",
+    source: BRIDGES_SOURCE,
+  },
+  {
+    id: "bridges_clearance_mm",
+    group: "bridges",
+    kind: "slider",
+    label: "Clearance",
+    help: "The air left between the deck and whatever it crosses. Too little and the two fuse into one body on the plate.",
+    writes: ["bridges.clearance_mm"],
+    testId: "bridges_clearance_mm",
+    source: BRIDGES_SOURCE,
+  },
+  {
+    id: "bridges_abutments",
+    group: "bridges",
+    kind: "toggle",
+    label: "Support the ends",
+    help: "Builds an abutment, a short column, under each end of every deck, down through the plate top. Without them the decks print as loose pieces.",
+    writes: ["bridges.abutments"],
+    testId: "bridges_abutments",
+    source: BRIDGES_SOURCE,
+  },
+
   // -- Terrain -------------------------------------------------------------
   {
     id: "terrain_enabled",
@@ -581,6 +768,16 @@ export const CONTROLS: readonly ControlSpec[] = [
     help: "How far each corner of the lip is cut back, measured on the outside edge.",
     writes: ["frame_style.corner_radius_mm"],
     testId: "frame_style_corner_radius_mm",
+    source: FRAME_SOURCE,
+  },
+  {
+    id: "frame_style_lip_depth_mm",
+    group: "frame",
+    kind: "slider",
+    label: "Lip depth",
+    help: "The sight edge: a step cut this deep into the inner top edge of the lip, 1.0 mm wide all round the opening, so the frame looks rebated where it meets the city. Zero leaves the lip flat.",
+    writes: ["frame_style.lip_depth_mm"],
+    testId: "frame_style_lip_depth_mm",
     source: FRAME_SOURCE,
   },
   {
@@ -1223,6 +1420,213 @@ export const CONTROLS: readonly ControlSpec[] = [
     source: PRINTER_SOURCE,
   },
 
+  // -- The viewport's right-click inspector (v3.1 Task 11) -----------------
+  //
+  // Not part of the panel: it opens on the object under the pointer and closes
+  // again, so it is in the `output` group the way the group headers are - "not
+  // a field in a settings group" - and writes `object-override` rather than
+  // naming leaves, which keeps `object_overrides` out of every section's own
+  // reset. A section reset that wiped every per-object decision would be a
+  // surprise no label on it could undo.
+  {
+    id: "inspector-*",
+    group: "output",
+    kind: "button",
+    label: "Object action",
+    help: "One decision about the object you right-clicked: mark it a hero, leave it out of the model, print this road engraved, and so on. Only the actions its kind can act on are offered.",
+    writes: "object-override",
+    testId: "inspector-*",
+    source: INSPECTOR_SOURCE,
+  },
+  {
+    id: "inspector-back",
+    group: "output",
+    kind: "button",
+    label: "Back to the object menu",
+    help: "Leaves a value view and returns to the list of actions. Escape does the same, and a second Escape closes the menu.",
+    writes: "viewer",
+    testId: "inspector-back",
+    source: INSPECTOR_SOURCE,
+  },
+  {
+    id: "override-height-scale",
+    group: "output",
+    kind: "slider",
+    label: "This building's height",
+    help: "Multiplies one building's OpenStreetMap height before every other height rule, so the block repair, the tall-building split and the exaggeration curve all see the number you asked for.",
+    writes: "object-override",
+    testId: "override-height-scale",
+    source: INSPECTOR_SOURCE,
+  },
+  {
+    id: "override-width-scale",
+    group: "output",
+    kind: "slider",
+    label: "This road's width",
+    help: "Multiplies one road's ground width alongside the road-width slider. A road scaled below the minimum wall still prints at one, because a ribbon thinner than the nozzle is a scratch.",
+    writes: "object-override",
+    testId: "override-width-scale",
+    source: INSPECTOR_SOURCE,
+  },
+  {
+    id: "override-raise-mm",
+    group: "output",
+    kind: "slider",
+    label: "This polygon's raise",
+    help: "Moves one water or green polygon's top face relative to the rest of its layer: negative sinks it further, positive raises it.",
+    writes: "object-override",
+    testId: "override-raise-mm",
+    source: INSPECTOR_SOURCE,
+  },
+  {
+    id: "override-slot",
+    group: "output",
+    kind: "select",
+    label: "This object's filament slot",
+    help: "Prints one object from a slot of its own. At most four objects may have a filament to themselves; objects given the same colour share one.",
+    writes: "object-override",
+    testId: "override-slot",
+    source: INSPECTOR_SOURCE,
+  },
+  {
+    id: "override-color",
+    group: "output",
+    kind: "colour",
+    label: "This object's filament colour",
+    help: "The colour the file gives one object's own part, independent of the colour its layer prints in.",
+    writes: "object-override",
+    testId: "override-color",
+    source: INSPECTOR_SOURCE,
+  },
+  {
+    id: "override-color-clear",
+    group: "output",
+    kind: "button",
+    label: "Use the layer's colour",
+    help: "Gives one object its layer's filament colour back, leaving any slot it was given alone.",
+    writes: "object-override",
+    testId: "override-color-clear",
+    source: INSPECTOR_SOURCE,
+  },
+  {
+    id: "override-tint",
+    group: "output",
+    kind: "colour",
+    label: "This building's shade",
+    help: "A shade of one building's own filament. Preview and OBJ only, like the tint switch: a printer lays down whatever is in the slot.",
+    writes: "object-override",
+    testId: "override-tint",
+    source: INSPECTOR_SOURCE,
+  },
+  {
+    id: "override-tint-clear",
+    group: "output",
+    kind: "button",
+    label: "No shade",
+    help: "Takes one building's own shade off, leaving the tint switch's own jitter to apply as it would.",
+    writes: "object-override",
+    testId: "override-tint-clear",
+    source: INSPECTOR_SOURCE,
+  },
+
+  // -- The surface labels' card (v3.1 Task 12) -----------------------------
+  //
+  // Docked in the viewport like the inspector, and for the same reason: a
+  // label is placed on an object in the 3D view (the inspector's "Label ..."
+  // row, catalogued above under `inspector-*`) and dragged there; this card
+  // names and sets the one that is selected. Same `object-override` target,
+  // so no section reset can wipe a placed label.
+  {
+    id: "label-row-*",
+    group: "output",
+    kind: "button",
+    label: "Select a label",
+    help: "Selects one placed label so its handle, its fields and the keyboard act on it; the same button again deselects it. Arrow keys nudge it, [ and ] turn it, + and - resize it, Delete removes it.",
+    writes: "viewer",
+    testId: "label-row-*",
+    source: LABELS_SOURCE,
+  },
+  {
+    id: "label_*_text",
+    group: "output",
+    kind: "text",
+    label: "Text",
+    help: "What the label says. Empty means the object's own OpenStreetMap name, which is what the placeholder shows.",
+    writes: "object-override",
+    testId: "label_*_text",
+    source: LABELS_SOURCE,
+  },
+  {
+    id: "label_*_size",
+    group: "output",
+    kind: "slider",
+    label: "Cap height",
+    help: "The letter height in millimetres. A label that does not fit its roof or street at this size is shrunk to the largest that does and says so; below the size the nozzle can cut it is refused with the size that would work.",
+    writes: "object-override",
+    testId: "label_*_size",
+    source: LABELS_SOURCE,
+  },
+  {
+    id: "label_*_mode",
+    group: "output",
+    kind: "segmented",
+    label: "Cut",
+    help: "Engrave cuts the letters into the face; emboss stands them proud of it.",
+    writes: "object-override",
+    testId: "label_*_mode",
+    source: LABELS_SOURCE,
+  },
+  {
+    id: "label_*_depth",
+    group: "output",
+    kind: "slider",
+    label: "Depth",
+    help: "How deep an engraved label goes, or how high an embossed one stands, in millimetres.",
+    writes: "object-override",
+    testId: "label_*_depth",
+    source: LABELS_SOURCE,
+  },
+  {
+    id: "label_*_font",
+    group: "output",
+    kind: "select",
+    label: "Face",
+    help: "The typeface the letters are cut from: the same three the frame lettering offers.",
+    writes: "object-override",
+    testId: "label_*_font",
+    source: LABELS_SOURCE,
+  },
+  {
+    id: "label_*_rotation",
+    group: "output",
+    kind: "slider",
+    label: "Turn",
+    help: "The reading direction, in degrees from the object's own long axis (or a street's direction). Zero reads along it.",
+    writes: "object-override",
+    testId: "label_*_rotation",
+    source: LABELS_SOURCE,
+  },
+  {
+    id: "label_*_follow",
+    group: "output",
+    kind: "toggle",
+    label: "Follow the street",
+    help: "Sets each letter along the street's centreline so the name bends with it. A bend too tight for the letters is refused and the name set straight, with the reason shown.",
+    writes: "object-override",
+    testId: "label_*_follow",
+    source: LABELS_SOURCE,
+  },
+  {
+    id: "label_*_remove",
+    group: "output",
+    kind: "button",
+    label: "Remove label",
+    help: "Takes this label off the model. Undo brings it back.",
+    writes: "object-override",
+    testId: "label_*_remove",
+    source: LABELS_SOURCE,
+  },
+
   // -- Panel and output ----------------------------------------------------
   {
     id: "group-*-toggle",
@@ -1233,6 +1637,76 @@ export const CONTROLS: readonly ControlSpec[] = [
     writes: "viewer",
     testId: "group-*-toggle",
     source: COLLAPSIBLE_SOURCE,
+  },
+  {
+    id: "group-*-reset",
+    group: "output",
+    kind: "button",
+    label: "Reset section",
+    help: "Puts this group's own fields back to the contract's default, in one step that Undo takes back as one. No other group is touched.",
+    writes: "section-parameters",
+    testId: "group-*-reset",
+    source: COLLAPSIBLE_SOURCE,
+  },
+  {
+    id: "settings-search",
+    group: "output",
+    kind: "text",
+    label: "Search settings",
+    help: "Finds a control by its name or by what it does, across every group, and opens the groups the matches are in. Press the slash key to jump here.",
+    writes: "viewer",
+    testId: "settings-search",
+    source: SEARCH_SOURCE,
+  },
+  {
+    id: "settings-search-clear",
+    group: "output",
+    kind: "button",
+    label: "Clear",
+    help: "Empties the search box and puts every group back the way it was before the search opened any of them.",
+    writes: "viewer",
+    testId: "settings-search-clear",
+    source: SEARCH_SOURCE,
+  },
+  {
+    id: "settings-search-empty-clear",
+    group: "output",
+    kind: "button",
+    label: "Clear the search",
+    help: "Offered where nothing matched, so a dead end is one keystroke away from the whole panel again.",
+    writes: "viewer",
+    testId: "settings-search-empty-clear",
+    source: SEARCH_SOURCE,
+  },
+  {
+    id: "search-hit-*",
+    group: "output",
+    kind: "button",
+    label: "Matching control",
+    help: "Scrolls to the control this row found and puts the keyboard on it, inside whichever group holds it.",
+    writes: "viewer",
+    testId: "search-hit-*",
+    source: SEARCH_SOURCE,
+  },
+  {
+    id: "changes-chip",
+    group: "output",
+    kind: "button",
+    label: "Changed from default",
+    help: "How many settings differ from the contract's defaults, and a list of them with what each one was and what it is now.",
+    writes: "viewer",
+    testId: "changes-chip",
+    source: CHANGES_SOURCE,
+  },
+  {
+    id: "changes-revert-*",
+    group: "output",
+    kind: "button",
+    label: "Revert",
+    help: "Puts this one setting back to its default and leaves every other change in place.",
+    writes: "section-parameters",
+    testId: "changes-revert-*",
+    source: CHANGES_SOURCE,
   },
   {
     id: "reset-button",

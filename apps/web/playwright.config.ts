@@ -120,25 +120,40 @@ export default defineConfig({
   //
   //   chromium        every test. `make gate`, `make gate-nightly` and
   //                   nightly.yml's `e2e-full` run this one.
-  //   chromium-smoke  the `@smoke` grep: three tests covering one
-  //                   representative path, which is what the required CI job
-  //                   and `make gate-fast` run.
+  //   chromium-smoke  the `@smoke` grep, which is what the required CI job and
+  //                   `make gate-fast` run.
   //
-  // As of v3-14 `@smoke` selects exactly three titles in smoke.spec.ts.
-  // Verified with `--project=chromium-smoke --list`, which is the only count
-  // worth writing down here: the full suite grows most weeks (50 tests when
-  // this split was designed, 67 a few hours later), so run `--list` rather
-  // than trusting any total quoted in a comment. Measured on this host at
-  // E2E_BUDGET_FACTOR=3 against 8.6 min for the whole suite:
+  // Run `--project=chromium-smoke --list` for the count; that is the only
+  // number worth trusting, because the tag grows with the waves (three titles
+  // at v3-14, six after the pipeline and action-bar work, seven once
+  // actionbar.spec.ts joined) and every total quoted in a comment goes stale.
   //
-  //   6.2 s  the small-scene validator round trip: preset -> preview ->
-  //          export -> download -> `uv run python -m app.cli validate` says
-  //          ALL CHECKS PASS. Preview, one export and one download, and the
-  //          only tagged test whose bytes are judged by the reference
-  //          validator rather than by the browser alone.
-  //   3.6 s  the Bambu Studio project export, a SECOND target through the
-  //          same UI, checked region by region for its own extruder.
-  //   1.7 s  the empty-Overpass path: warn, and disable Export.
+  // Measured on this host at E2E_BUDGET_FACTOR=3, from a full-suite run of the
+  // v3.1 Wave 3 tree against the production build (12.8 min for all 71 tests):
+  //
+  //   42.4 s  the small-scene validator round trip: preset -> preview ->
+  //           export -> download -> `uv run python -m app.cli validate` says
+  //           ALL CHECKS PASS. The only tagged test whose bytes are judged by
+  //           the reference validator rather than by the browser alone. It was
+  //           6.2 s when this split was designed; the pipeline rework is where
+  //           the rest went, and nothing has re-measured why.
+  //   28.7 s  a lettering change reaches the model inside the interaction
+  //           budget.
+  //   26.2 s  a settings change keeps the model on screen, dimmed, under a
+  //           stage overlay.
+  //   15.8 s  Stop during a plate resize leaves the previous model on screen.
+  //    2.1 s  the Bambu Studio project export, a SECOND target through the
+  //           same UI, checked region by region for its own extruder.
+  //    1.0 s  the empty-Overpass path: warn, and disable Export.
+  //
+  // That is 1 m 56 s for those six, against the 11.5 s this block used to
+  // describe, and it does not include the tagged test in `actionbar.spec.ts`,
+  // which landed after that run and has not been timed here.
+  // The required job has a ten-minute timeout and GitHub's runners
+  // are 2.2x to 3.7x slower than this host, which projects to 4 to 7 minutes
+  // of tests before checkout, npm ci, the browser install and the dev server.
+  // The tag needs pruning or the job needs a longer budget; whoever owns CI
+  // should decide which. See docs/handoff/v3-06-actionbar.md.
   //
   // NOT tagged, deliberately: "happy path: Chicago preset previews, sliders
   // stay local, export downloads a 3MF". It is the most representative test

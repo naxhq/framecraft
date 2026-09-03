@@ -37,17 +37,51 @@
  * page shows a "reload to update" affordance. A 404 on a `_next/static`
  * request (the mid-session deploy case: the old build's chunks are gone from
  * the origin) posts the same message, because that page really is running a
- * build the origin no longer serves.
+ * build the origin no longer serves. The stale-while-revalidate cache is named
+ * after the build id as well, so activating a new worker retires the previous
+ * build's copies of the stable-URL assets instead of leaving a visitor one
+ * deploy behind on them until a second visit.
+ *
+ * GETTING RID OF THIS THING. `?sw-off` on any page of the site unregisters
+ * every worker on the origin and deletes every `framecraft-` cache, and
+ * remembers the choice, so a bad worker can be retired without a deploy and
+ * without waiting for a cache lifetime. `?sw-on` puts it back. The switch
+ * lives in `lib/serviceWorker.ts` because it has to work when THIS file is
+ * the broken part; RUNBOOK.md section 8 is where it is written down for
+ * whoever is looking at a broken deploy.
  *
  * This file is served verbatim from `public/`; it is not bundled, not
- * TypeScript, and eslint ignores `public/**`.
+ * TypeScript, and eslint ignores `public/**`. Its behaviour is pinned by
+ * `lib/serviceWorkerScript.test.ts`, which runs THESE bytes in a sandbox, and
+ * by `e2e/siteperf.spec.ts`, which runs them in a browser.
  */
 
 /* global self, caches, clients, fetch, Response, URL */
 
 const SCHEMA = "v1";
+
+/** The build id `lib/serviceWorker.ts` put on the registration URL, or "" in a hand-registered worker. */
+const BUILD_ID = new URL(self.location.href).searchParams.get("v") ?? "";
+
 const CHUNK_CACHE = `framecraft-immutable-${SCHEMA}`;
-const STATIC_CACHE = `framecraft-static-${SCHEMA}`;
+/*
+ * The ONE cache keyed by the build id, and the only one that may be.
+ *
+ * `/_next/static/**` and `/presets/<sha1>.json.gz` are keyed by their own
+ * CONTENT -- a webpack content hash, an Overpass query sha1 -- so a deploy
+ * asks for different URLs and an old entry is unreachable rather than stale.
+ * Keying those caches by the build id would throw away a perfectly good copy
+ * on every deploy, which is the opposite of what this worker is for.
+ *
+ * `/manifold/**`, `/maplibre/**` and the icons have STABLE URLs whose bytes
+ * change when a dependency does, and they are stale-while-revalidate, so
+ * without a build id in the name a visitor runs one deploy behind on the
+ * MapLibre worker pair until a second visit. Putting the build id here retires
+ * them with the build that produced them; the `activate` sweep below is what
+ * deletes the previous build's copy, because it is a `framecraft-` cache that
+ * is no longer in `KNOWN_CACHES`.
+ */
+const STATIC_CACHE = `framecraft-static-${SCHEMA}-${BUILD_ID}`;
 const PRESET_CACHE = `framecraft-presets-${SCHEMA}`;
 const DOCUMENT_CACHE = `framecraft-documents-${SCHEMA}`;
 const KNOWN_CACHES = [CHUNK_CACHE, STATIC_CACHE, PRESET_CACHE, DOCUMENT_CACHE];
@@ -67,9 +101,6 @@ const MAX_DOCUMENT_ENTRIES = 4;
 const UPDATE_MESSAGE = "framecraft:update-ready";
 const SKIP_WAITING_MESSAGE = "framecraft:skip-waiting";
 const WARM_MESSAGE = "framecraft:warm";
-
-/** The build id `lib/serviceWorker.ts` put on the registration URL, or "" in a hand-registered worker. */
-const BUILD_ID = new URL(self.location.href).searchParams.get("v") ?? "";
 
 /** The path this worker is scoped to, always with a trailing slash ("/" or "/framecraft/"). */
 const SCOPE_PATH = new URL(self.registration.scope).pathname;
@@ -138,8 +169,18 @@ async function cacheFirst(request, cacheName, max) {
   return response;
 }
 
-/** Serve the cached copy at once and refresh it in the background; on a miss, wait for the network. */
-async function staleWhileRevalidate(request, cacheName, max) {
+/**
+ * Serve the cached copy at once and refresh it in the background; on a miss,
+ * wait for the network.
+ *
+ * The refresh is handed to `event.waitUntil` rather than left to run loose.
+ * A worker terminated between returning the cached copy and the `cache.put`
+ * would otherwise leave the entry stale, and because the next hit takes this
+ * same path and returns just as early, it could stay stale for as long as the
+ * page is never open long enough to finish one. `waitUntil` is what keeps the
+ * worker alive until the put lands.
+ */
+async function staleWhileRevalidate(event, request, cacheName, max) {
   const cached = await caches.match(request, { cacheName });
   const network = fetch(request)
     .then(async (response) => {
@@ -149,6 +190,7 @@ async function staleWhileRevalidate(request, cacheName, max) {
       return response;
     })
     .catch(() => null);
+  event.waitUntil(network);
   if (cached) return cached;
   const response = await network;
   if (response) return response;
@@ -286,6 +328,6 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   if (isRevalidatingStatic(path)) {
-    event.respondWith(staleWhileRevalidate(request, STATIC_CACHE, MAX_STATIC_ENTRIES));
+    event.respondWith(staleWhileRevalidate(event, request, STATIC_CACHE, MAX_STATIC_ENTRIES));
   }
 });

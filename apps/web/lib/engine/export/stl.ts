@@ -5,7 +5,7 @@
 
 import { hardenForFloat32, type HardenReport, type Mesh } from "../solid/mesh";
 import type { AuditFinding, EngineResult, ExportFile, RegionMesh } from "../types";
-import { ATTRIBUTION, orderedRegions, placeInBuildSpace, placeMerged, resolveOptions, type ExportOptions } from "./common";
+import { APPLICATION, ATTRIBUTION, orderedRegions, placeInBuildSpace, placeMerged, resolveOptions, type ExportOptions } from "./common";
 import { zipEntries, type ZipEntry } from "./zip";
 
 export const MIME_STL = "model/stl";
@@ -15,8 +15,11 @@ export const STL_TRIANGLE_BYTES = 50;
 
 export function stlHeaderText(title: string): string {
   // ASCII only (the copyright sign would be two bytes) and never starting
-  // with "solid", which some readers take as the ASCII flavour.
-  const text = `FrameCraft 3.0.0 | (c) OpenStreetMap contributors | ${title}`.replace(/[^\x20-\x7E]/g, "?");
+  // with "solid", which some readers take as the ASCII flavour. The version
+  // comes from `common.APPLICATION` rather than being typed again here: this
+  // header repeated the literal "FrameCraft 3.0.0" and was the second place a
+  // release bump had to remember to visit.
+  const text = `${APPLICATION} | (c) OpenStreetMap contributors | ${title}`.replace(/[^\x20-\x7E]/g, "?");
   return text.length > STL_HEADER_BYTES ? text.slice(0, STL_HEADER_BYTES) : text;
 }
 

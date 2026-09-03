@@ -18,6 +18,7 @@
 import { expect } from "vitest";
 
 import type { PrintParams } from "../../contracts";
+import * as T from "../../transform";
 import type { Bbox3, RegionMesh, RegionName } from "../types";
 import {
   bambuMetadata,
@@ -25,7 +26,6 @@ import {
   bambuPartsOf,
   bambuProject,
   colorChangeLayers,
-  extentAtZ,
   fileNames,
   findingOf,
   generic3mf,
@@ -113,12 +113,71 @@ function letteringSpan(snapshot: Snapshot, where: "preview" | "file", edge: "top
   const bands = recessBandsOf(snapshot.result, "frame", "lettering");
   if (bands.length === 0) throw new Error("this build cut no lettering into the frame");
   const low = Math.min(...bands.map((band) => band.zMm[0]));
-  const centreY = where === "file" ? buildOffset(snapshot)[1] : 0;
+  const centre: [number, number] = where === "file" ? buildOffset(snapshot) : [0, 0];
   const positions = where === "file" ? P(snapshot, "frame").positions : R(snapshot, "frame").positions;
-  const window: PlanWindow = edge === "top" ? { yMin: centreY } : { yMax: centreY };
-  const extent = extentAtZ(positions, low, 1e-6, window);
+  const window: PlanWindow = edge === "top" ? { yMin: centre[1] } : { yMax: centre[1] };
+  const extent = flatFaceExtentAtZ(positions, low, centre, flatFaceFromMm(snapshot.result.params), window);
   if (extent === null) throw new Error(`no ${edge}-edge lettering pocket floor in the ${where}`);
   return extent[1] - extent[0];
+}
+
+/**
+ * Where the lip's FLAT top face begins, measured from the plate centre along
+ * the axis that crosses the lip, mm: the opening, plus the sight-edge rebate,
+ * plus half the text margin, so the boundary sits between the two features
+ * that share a plane rather than on either.
+ *
+ * Why a plane read on the frame has to be banded at all: the contract's
+ * default engraving depth and default rebate depth are both 0.4 mm
+ * (`[V3.1-P2-2]`), so a lettering pocket's floor and the rebate's floor are
+ * the same z, and a read of every vertex on that plane picks up the rebate
+ * floor's corners at 84 and 85 mm on both axes and calls a pocket 170 mm wide.
+ * Ink is laid out on the flat face and never on the rebate
+ * (`transform.lip_face_width_mm`), so a pocket read restricted to the face is
+ * the same question asked of the feature that carries the pocket and no other.
+ * It is not a tolerance: the band is a hard boundary in plan, and a pocket that
+ * moved off the face would vanish from the read and fail the probe.
+ */
+function flatFaceFromMm(params: PrintParams): number {
+  return T.frame_geometry_mm(params).inner_half_mm + T.FRAME_SIGHT_EDGE_MM + T.LIP_TEXT_MARGIN_MM / 2;
+}
+
+/**
+ * Plan extent `[minX, maxX, minY, maxY]` of the vertices at height `z` that
+ * lie on the lip's flat face of any edge (`max(|x - cx|, |y - cy|)` at least
+ * `fromMm`), further limited by `window`; null when there are none.
+ */
+function flatFaceExtentAtZ(
+  positions: ArrayLike<number>,
+  z: number,
+  centre: [number, number],
+  fromMm: number,
+  window?: PlanWindow,
+  tol = 1e-6,
+): [number, number, number, number] | null {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  let seen = 0;
+  for (let i = 0; i < positions.length; i += 3) {
+    if (Math.abs(positions[i + 2] - z) > tol) continue;
+    const x = positions[i];
+    const y = positions[i + 1];
+    if (Math.max(Math.abs(x - centre[0]), Math.abs(y - centre[1])) < fromMm) continue;
+    if (window !== undefined) {
+      if (window.xMin !== undefined && x < window.xMin) continue;
+      if (window.xMax !== undefined && x > window.xMax) continue;
+      if (window.yMin !== undefined && y < window.yMin) continue;
+      if (window.yMax !== undefined && y > window.yMax) continue;
+    }
+    seen += 1;
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+  }
+  return seen === 0 ? null : [minX, maxX, minY, maxY];
 }
 
 /**
@@ -149,6 +208,37 @@ interface Ring {
  * nearer the middle, which is how the gap ring is separated from the surface
  * recesses that share its z.
  */
+/**
+ * `ringAt` restricted to the plate's four CORNER squares: vertices at least
+ * `minAbsMm` from the centre on BOTH axes.
+ *
+ * The sight-edge rebate's floor is a rectangular ring whose vertices are its
+ * eight corners, at the opening's half-width and one millimetre further out on
+ * both axes, so the corner squares hold the whole ring and nothing is lost.
+ * What they exclude is the mandatory inner-wall attribution: its glyphs are
+ * engraved into the four walls of the opening, centred along each wall and
+ * kept 1.5 mm from its ends, so their vertices sit at the opening's half-width
+ * on ONE axis and well inside it on the other. A read banded on x alone would
+ * still count the east and west walls' glyphs, whose x is the opening's, which
+ * is why both axes are banded. Nothing about the tolerance changes: the ring
+ * still has to be on the plane to `SLICE_TOL_MM`.
+ */
+function cornerRingAt(positions: ArrayLike<number>, z: number, centre: [number, number], minAbsMm: number, tol = SLICE_TOL_MM): Ring {
+  let inner = Infinity;
+  let outer = -Infinity;
+  let count = 0;
+  for (let i = 0; i < positions.length; i += 3) {
+    if (Math.abs(positions[i + 2] - z) > tol) continue;
+    const dx = Math.abs(positions[i] - centre[0]);
+    const dy = Math.abs(positions[i + 1] - centre[1]);
+    if (dx < minAbsMm || dy < minAbsMm) continue;
+    count += 1;
+    inner = Math.min(inner, dx);
+    outer = Math.max(outer, dx);
+  }
+  return { count, inner, outer };
+}
+
 function ringAt(positions: ArrayLike<number>, z: number, centreX: number, minAbsX = 0, tol = SLICE_TOL_MM): Ring {
   let inner = Infinity;
   let outer = -Infinity;
@@ -231,6 +321,14 @@ function pocketFloor(snapshot: Snapshot, region: RegionName, kind: "lettering" |
   const bands = recessBandsOf(snapshot.result, region, kind);
   if (bands.length === 0) throw new Error(`no ${kind} recess band on ${region}`);
   const low = Math.min(...bands.map((band) => band.zMm[0]));
+  // On the frame the read is banded to the lip's flat face, because the
+  // sight-edge rebate's floor shares the plane of a default-depth pocket
+  // (see `flatFaceFromMm`); every other region reads the whole plane.
+  if (region === "frame") {
+    const extent = flatFaceExtentAtZ(R(snapshot, region).positions, low, [0, 0], flatFaceFromMm(snapshot.result.params));
+    if (extent === null) throw new Error(`no vertices on the lip's flat face at the ${kind} pocket floor z=${low}`);
+    return extent;
+  }
   const at = verticesAtZ(R(snapshot, region), low);
   if (at.length === 0) throw new Error(`no vertices at the ${kind} pocket floor z=${low} of ${region}`);
   const xs = at.map((point) => point[0]);
@@ -243,7 +341,10 @@ function filePocketFloor(snapshot: Snapshot, region: RegionName, kind: "letterin
   const bands = recessBandsOf(snapshot.result, region, kind);
   if (bands.length === 0) throw new Error(`no ${kind} recess band on ${region}`);
   const low = Math.min(...bands.map((band) => band.zMm[0]));
-  const extent = partExtentAtZ(P(snapshot, region), low);
+  const extent =
+    region === "frame"
+      ? flatFaceExtentAtZ(P(snapshot, region).positions, low, buildOffset(snapshot), flatFaceFromMm(snapshot.result.params))
+      : partExtentAtZ(P(snapshot, region), low);
   if (extent === null) throw new Error(`the written ${region} part has no vertices at z=${low}`);
   return extent;
 }
@@ -319,13 +420,27 @@ const TILED: Partial<PrintParams> = { tiling: { enabled: true, cols: 2, rows: 2,
 /**
  * The sight-edge rebate `DECISIONS.md` `[V3.1-P2-2]` rules for
  * `frame_style.lip_depth_mm`: a step this wide, `lip_depth_mm` deep, on the
- * frame lip's inner top edge, with 0 meaning a flat lip. The constant lives here
- * until the geometry wave exports `FRAME_SIGHT_EDGE_MM` from `solid/frame.ts`.
+ * frame lip's inner top edge, with 0 meaning a flat lip. Read from the shared
+ * transform math, which the geometry and the layout both build from.
  */
-const FRAME_SIGHT_EDGE_MM = 1.0;
-const LIP_DEFAULT_DEPTH_MM = 0.4;
+const FRAME_SIGHT_EDGE_MM = T.FRAME_SIGHT_EDGE_MM;
+const LIP_DEFAULT_DEPTH_MM = T.LIP_DEPTH_DEFAULT_MM;
 /** Deep enough to be unmistakable, shallow enough to fit the 2.2 mm lip. */
 const LIP_REBATE_DEPTH_MM = 1.5;
+
+/**
+ * What the lip's text band can hold, mm, for the two size probes.
+ *
+ * The band is the 5 mm flat face less the 0.5 mm text margin each side, 4 mm
+ * (`transform.edge_band_mm`, `[V3.1-P2-2]`; it was 5 mm before the rebate).
+ * "Blockton" in sans fits that band at 5.41 mm (its ink height plus the one
+ * nozzle an engraved stroke is widened by, floored to the layout's 0.01 mm
+ * grid), and the north arrow's circumradius fits it at 3.43 mm
+ * (`transform.north_arrow_max_size_mm`, 4.29 on the 5 mm band). Both are the
+ * band-limited maximum, so a probe that asks for more must read exactly these.
+ */
+const BAND_LIMIT_BLOCKTON_SANS_MM = 5.41;
+const BAND_LIMIT_NORTH_ARROW_MM = 3.43;
 
 /**
  * The width `testScenes.ts` gives the rail scene's own way. The parameter's
@@ -657,8 +772,17 @@ export const PROBES: readonly Probe[] = [
     scene: "block",
     why: "bigger glyphs are cut, and the engine reports the cap height it could actually fit on the lip",
     assertPreview: (before, after) => {
+      // The 4 mm default fits as asked. 7 mm is more than the 4 mm band can
+      // hold for this string, so the engine reports the band's own limit:
+      // strictly more than the default (a regression that stopped honouring
+      // size_mm fails), strictly less than what was asked (one that stopped
+      // clamping fails), and exactly BAND_LIMIT_BLOCKTON_SANS_MM (one that
+      // clamped to some other band fails). It read over 6 on the 5 mm band.
+      const fitted = resolvedLine(after.result, "engraving-0")?.sizeMm ?? 0;
       expect(resolvedLine(before.result, "engraving-0")?.sizeMm).toBeCloseTo(4, 6);
-      expect(resolvedLine(after.result, "engraving-0")?.sizeMm ?? 0).toBeGreaterThan(6);
+      expect(fitted).toBeGreaterThan(4);
+      expect(fitted).toBeLessThan(7);
+      expect(fitted).toBeCloseTo(BAND_LIMIT_BLOCKTON_SANS_MM, 2);
       expect(R(after, "frame").volumeMm3).toBeLessThan(R(before, "frame").volumeMm3);
     },
     assertExport: (before, after) => {
@@ -742,8 +866,15 @@ export const PROBES: readonly Probe[] = [
     scene: "block",
     why: "a smaller arrow is cut, and the engine reports the length it used after the lip's own clamp",
     assertPreview: (before, after) => {
-      expect(resolvedLine(before.result, "north arrow")?.sizeMm ?? 0).toBeGreaterThan(4);
+      // The base asks for 6 mm, more than the 4 mm band holds, so the default
+      // reports the band's cap, BAND_LIMIT_NORTH_ARROW_MM (it read over 4 on
+      // the 5 mm band), which is also what the shared layout computes; 2 mm is
+      // under the cap and is reported as asked, strictly smaller.
+      const clamped = resolvedLine(before.result, "north arrow")?.sizeMm ?? 0;
+      expect(clamped).toBeCloseTo(BAND_LIMIT_NORTH_ARROW_MM, 2);
+      expect(clamped).toBeCloseTo(T.north_arrow_max_size_mm(before.result.params), 6);
       expect(resolvedLine(after.result, "north arrow")?.sizeMm).toBeCloseTo(2, 6);
+      expect(resolvedLine(after.result, "north arrow")?.sizeMm ?? 0).toBeLessThan(clamped);
       expect(pocketFloor(after, "frame", "ornament")[1]).toBeLessThan(pocketFloor(before, "frame", "ornament")[1]);
     },
     assertExport: (before, after) => {
@@ -1775,19 +1906,31 @@ export const PROBES: readonly Probe[] = [
       expect(R(before, "frame").volumeMm3 - R(after, "frame").volumeMm3).toBeGreaterThan(400);
       // The floor moves from top - 0.4 to top - 1.5, and stays exactly
       // FRAME_SIGHT_EDGE_MM wide: a rebate of another width or another depth
-      // fails here even though it would move the volume.
-      expect(ringAt(R(before, "frame").positions, top - LIP_DEFAULT_DEPTH_MM, 0).count).toBeGreaterThan(0);
-      expect(ringAt(R(before, "frame").positions, top - LIP_REBATE_DEPTH_MM, 0).count).toBe(0);
-      const floor = ringAt(R(after, "frame").positions, top - LIP_REBATE_DEPTH_MM, 0);
+      // fails here even though it would move the volume. The ring is read in
+      // the plate's corner squares (`cornerRingAt`), which hold all eight of
+      // its vertices and none of the inner-wall attribution's glyphs: those
+      // are engraved into the opening's walls between z 3.15 and 4.45 on the
+      // default lip, so a whole-plane count at top - 1.5 reads 328 of them
+      // (88 on the pre-rebate lip, whose mark ran to 4.85) and could never be
+      // zero while the mandatory mark exists. The band is on both axes because
+      // the east and west walls' glyphs share the rebate's x.
+      const corner = T.frame_geometry_mm(before.result.params).inner_half_mm - 1;
+      expect(cornerRingAt(R(before, "frame").positions, top - LIP_DEFAULT_DEPTH_MM, [0, 0], corner).count).toBeGreaterThan(0);
+      expect(cornerRingAt(R(before, "frame").positions, top - LIP_REBATE_DEPTH_MM, [0, 0], corner).count).toBe(0);
+      const floor = cornerRingAt(R(after, "frame").positions, top - LIP_REBATE_DEPTH_MM, [0, 0], corner);
       expect(floor.count).toBeGreaterThan(0);
       expect(floor.outer - floor.inner).toBeCloseTo(FRAME_SIGHT_EDGE_MM, 3);
+      // ... and the default's own floor is gone once the step is cut deeper.
+      expect(cornerRingAt(R(after, "frame").positions, top - LIP_DEFAULT_DEPTH_MM, [0, 0], corner).count).toBe(0);
     },
     assertExport: (before, after) => {
       const top = P(before, "frame").bbox.max[2];
-      const centre = buildOffset(before)[0];
+      const centre = buildOffset(before);
+      const corner = T.frame_geometry_mm(before.result.params).inner_half_mm - 1;
       expect(P(before, "frame").volumeMm3 - P(after, "frame").volumeMm3).toBeGreaterThan(400);
-      expect(ringAt(P(before, "frame").positions, top - LIP_REBATE_DEPTH_MM, centre).count).toBe(0);
-      const floor = ringAt(P(after, "frame").positions, top - LIP_REBATE_DEPTH_MM, centre);
+      expect(cornerRingAt(P(before, "frame").positions, top - LIP_DEFAULT_DEPTH_MM, centre, corner).count).toBeGreaterThan(0);
+      expect(cornerRingAt(P(before, "frame").positions, top - LIP_REBATE_DEPTH_MM, centre, corner).count).toBe(0);
+      const floor = cornerRingAt(P(after, "frame").positions, top - LIP_REBATE_DEPTH_MM, centre, corner);
       expect(floor.count).toBeGreaterThan(0);
       expect(floor.outer - floor.inner).toBeCloseTo(FRAME_SIGHT_EDGE_MM, 3);
     },
@@ -2249,17 +2392,17 @@ export const EXEMPT: ReadonlyMap<string, string> = new Map([
   ],
 ]);
 
-/** Probes that are expected to fail because the engine, not the test, is wrong. */
-export const KNOWN_DEFECTS: ReadonlyMap<string, string> = new Map([
-  [
-    "regions.rail.width_m",
-    "[V3.1-P2-1] ruled the parameter authoritative for every rail ribbon; solid/roads.ts railWidthGroundM still uses it only as a fallback for Rail.width_m, which osm/normalize.ts fills on every rail way from its railway type. The probe pins the ruling by asking for a NARROWER ribbon than the way carries, so a fallback, a max and a sum all fail it. Red until the Task 7 geometry wave lands it.",
-  ],
-  [
-    "frame_style.lip_depth_mm",
-    "[V3.1-P2-2] ruled it the sight-edge rebate on the frame lip's inner top edge, FRAME_SIGHT_EDGE_MM = 1.0 mm wide by lip_depth_mm deep; solid/frame.ts still resolves it into FrameStyle.lipDepthMm and nothing reads that field. The probe pins the ruled shape (the floor's depth AND its 1.0 mm width), so an implementation that moved the frame volume some other way still fails it. Red until the Task 7 geometry wave lands it.",
-  ],
-]);
+/**
+ * Probes that are expected to fail because the engine, not the test, is wrong.
+ *
+ * Empty since the Task 7 geometry wave: `regions.rail.width_m` is authoritative
+ * for every rail ribbon (`[V3.1-P2-1]`, `solid/roads.ts:railWidthGroundM`) and
+ * `frame_style.lip_depth_mm` is the sight-edge rebate (`[V3.1-P2-2]`,
+ * `solid/frame.ts:buildSightEdgeRebate`), and both probes pass on their own.
+ * `lib/controlCatalog.test.ts` reads this map to refuse a control for a field
+ * it names, so a row here is a slider held back.
+ */
+export const KNOWN_DEFECTS: ReadonlyMap<string, string> = new Map([]);
 
 /** Exported for the note and for the coverage test. */
 export function probeFor(path: string): Probe | undefined {

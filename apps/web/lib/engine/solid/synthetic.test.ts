@@ -213,11 +213,16 @@ describe("an empty scene", () => {
     // The 6 mm lip, 2 mm proud - plus the 0.2 mm it reaches DOWN into the
     // plate, because the lip is its own colour part and must interpenetrate
     // the base rather than rest on a coincident face
-    // (`context.PART_OVERLAP_MM`). (180^2 - 168^2) * 2.2, less the four copies
-    // of the mandatory attribution engraved into the lip's inner walls
-    // (v3 phase 7, `solid/attribution.ts`): 28.08 mm3, cut on every build.
+    // (`context.PART_OVERLAP_MM`). (180^2 - 168^2) * 2.2, less the default
+    // sight-edge rebate (`[V3.1-P2-2]`: a step 1.0 mm wide and 0.4 mm deep
+    // round the 168 mm opening, 4 * (85^2 - 84^2) * 0.4 = 270.40 mm3, on every
+    // default frame), less the four copies of the mandatory attribution
+    // engraved into the lip's inner walls below it (v3 phase 7,
+    // `solid/attribution.ts`): 16.16 mm3 on this date, cut on every build
+    // (28.08 mm3 before the rebate shortened the wall the mark is fitted to).
     const ring = 180 * 180 - 168 * 168;
-    expect(frame?.volumeMm3 ?? 0).toBeCloseTo(ring * 2.2 - 28.08, 0);
+    const rebate = 4 * (85 * 85 - 84 * 84) * T.LIP_DEPTH_DEFAULT_MM;
+    expect(frame?.volumeMm3 ?? 0).toBeCloseTo(ring * 2.2 - rebate - 16.16, 0);
     expect(frame?.bbox.min[2] ?? 0).toBeCloseTo(3 - 0.2, 3);
     expect(result.stats.buildings).toBe(0);
     expect(result.findings.filter((f) => f.severity === "error")).toEqual([]);

@@ -27,7 +27,8 @@
 
 import { create } from "zustand";
 
-import type { PrintParams } from "@/lib/contracts";
+import type { ObjectOverride, PrintParams } from "@/lib/contracts";
+import { describeOverride } from "@/lib/objectOverrides";
 import { presetLabel } from "@/lib/presets";
 import { type LocationState, useEditorStore } from "./editor";
 
@@ -181,6 +182,46 @@ function describeParamsLeaf(key: string, before: unknown, after: unknown): strin
   return `${name} ${formatScalar(before, key)} to ${formatScalar(after, key)}`;
 }
 
+/**
+ * A per-object override write (v3.1 Task 11), named by the OBJECT it was made
+ * on.
+ *
+ * The coalescing key has to carry the object, not just the array: two
+ * buildings hidden a third of a second apart are two decisions and must be two
+ * undo steps, while a drag on one building's height slider is one. Keying both
+ * on `params.object_overrides` would fold the first pair into a single entry
+ * and lose one of the two hides on the way back.
+ */
+function describeOverrideChange(
+  before: readonly ObjectOverride[],
+  after: readonly ObjectOverride[],
+): { path: string; label: string } {
+  const index = (rows: readonly ObjectOverride[]): Map<string, ObjectOverride> =>
+    new Map(rows.map((row) => [`${row.layer}|${row.osm_id}`, row]));
+  const a = index(before);
+  const b = index(after);
+  for (const key of new Set([...a.keys(), ...b.keys()])) {
+    const was = a.get(key);
+    const now = b.get(key);
+    if (JSON.stringify(was) === JSON.stringify(now)) continue;
+    const row = now ?? was;
+    if (row === undefined) continue;
+    const name = `${humanizeKey(row.layer)} ${row.osm_id}`;
+    return {
+      path: `params.object_overrides.${key}`,
+      label:
+        now === undefined
+          ? `${name} back to its layer's settings`
+          : `${name}: ${lowerFirst(describeOverride(now))}`,
+    };
+  }
+  return { path: "params.object_overrides", label: "Object changes changed" };
+}
+
+function lowerFirst(text: string): string {
+  return text.length === 0 ? text : text.charAt(0).toLowerCase() + text.slice(1);
+}
+
 function describeParamsChange(
   before: PrintParams,
   after: PrintParams,
@@ -189,6 +230,9 @@ function describeParamsChange(
   const b = after as unknown as Record<string, unknown>;
   for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
     if (JSON.stringify(a[key]) === JSON.stringify(b[key])) continue;
+    if (key === "object_overrides") {
+      return describeOverrideChange(before.object_overrides ?? [], after.object_overrides ?? []);
+    }
     return { path: `params.${key}`, label: describeParamsLeaf(key, a[key], b[key]) };
   }
   return null;

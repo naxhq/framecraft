@@ -2,7 +2,9 @@
  * The editor's keyboard map.
  *
  * G preview · B export · R reset · ? shortcuts · Escape closes what is open,
- * and cancels the run in flight when nothing is open.
+ * and cancels the run in flight when nothing is open. M and V give the map or
+ * the 3D preview the whole window and hand it back; [ and ] hide and restore
+ * the two side columns.
  *
  * `dismiss` is ONE action with two meanings, resolved by the dispatcher rather
  * than here: this module is pure and cannot know whether an overlay is up or a
@@ -25,7 +27,18 @@
  * while G/B/R still work with a slider focused.
  */
 
-export type Shortcut = "generate" | "export" | "reset" | "help" | "dismiss" | "undo" | "redo";
+export type Shortcut =
+  | "generate"
+  | "export"
+  | "reset"
+  | "help"
+  | "dismiss"
+  | "undo"
+  | "redo"
+  | "maximize-map"
+  | "maximize-viewport"
+  | "collapse-map"
+  | "collapse-settings";
 
 /**
  * Rendered by the shortcut sheet, and the single source of the key map.
@@ -54,12 +67,49 @@ export const SHORTCUTS: readonly ShortcutSpec[] = [
     keys: "Esc",
     description: "Close the drawer, sheet or dialog, or cancel a run in flight",
   },
+  {
+    action: "maximize-map",
+    keys: "M",
+    description: "Give the map the whole window, or hand it back",
+  },
+  {
+    action: "maximize-viewport",
+    keys: "V",
+    description: "Give the 3D preview the whole window, or hand it back",
+  },
+  { action: "collapse-map", keys: "[", description: "Hide the map column, or bring it back" },
+  {
+    action: "collapse-settings",
+    keys: "]",
+    description: "Hide the settings column, or bring it back",
+  },
+  // Handled by the settings panel itself (`components/editor/ParamPanel.tsx`),
+  // which owns the search box the key focuses; it is listed here because this
+  // is the only list a user reads. Bare "/" is deliberately not dispatched by
+  // this module: Shift+/ is the shortcut sheet, and the two must not collide.
+  { action: null, keys: "/", description: "Jump to the settings search" },
   { action: null, keys: "Tab", description: "Move between controls, including the preview" },
   { action: null, keys: "← →", description: "Nudge the focused slider" },
   {
     action: null,
     keys: "← → in the preview",
-    description: "Move the building cursor; Enter picks it as a hero",
+    description: "Move the object cursor; Enter picks a hero or opens the object menu",
+  },
+  {
+    action: null,
+    keys: "Page Up / Page Down in the preview",
+    description: "Walk buildings, roads, water or green space",
+  },
+  {
+    action: null,
+    keys: "Menu or Shift+F10 in the preview",
+    description: "Open the menu for the object under the cursor",
+  },
+  {
+    action: null,
+    keys: "← → on a column divider",
+    description:
+      "Resize that column; Shift or Page Up/Down moves further, Home and End go to its limits, Enter puts it back",
   },
 ] as const;
 
@@ -135,6 +185,12 @@ export function shortcutFor(event: KeyEventLike): Shortcut | null {
   if (event.key === "/" && event.shiftKey) return "help";
   if (event.shiftKey) return null;
 
+  // The two brackets are the layout pair, and they are not letters: on a
+  // keyboard where either one needs AltGr the chord rule above refuses it and
+  // the header's own buttons remain the way to hide a column.
+  if (event.key === "[") return "collapse-map";
+  if (event.key === "]") return "collapse-settings";
+
   switch (event.key.toLowerCase()) {
     case "g":
       return "generate";
@@ -142,6 +198,10 @@ export function shortcutFor(event: KeyEventLike): Shortcut | null {
       return "export";
     case "r":
       return "reset";
+    case "m":
+      return "maximize-map";
+    case "v":
+      return "maximize-viewport";
     default:
       return null;
   }

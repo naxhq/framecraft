@@ -7,7 +7,7 @@
 import type { PrintParams, SceneRequest } from "../../contracts";
 import { perfSpan } from "../../perf";
 import { heightRulesFrom } from "./heights";
-import { sceneFromOverpass as buildEngineScene, type OverpassResponse } from "./normalize";
+import { sceneFromOverpass as buildEngineScene, sceneFromProjected as applyHeights, type OverpassResponse, type ProjectedScene } from "./normalize";
 import { fetchOverpass, type FetchOverpassOptions, type OverpassFetchError } from "./overpass";
 import type { EngineSceneGraph } from "./types";
 
@@ -20,6 +20,19 @@ import type { EngineSceneGraph } from "./types";
  */
 export function sceneFromOverpass(raw: OverpassResponse, request: SceneRequest, params?: PrintParams): EngineSceneGraph {
   return buildEngineScene(raw, request, { heights: heightRulesFrom(params?.heights) });
+}
+
+/**
+ * The two halves of `sceneFromOverpass`, for a caller that keeps the
+ * projection and re-applies the heights: `projectOverpass` is everything the
+ * height rules never touch, `sceneFromProjected` is the rest. The pipeline's
+ * `normalise` stage projects once per fetched response and applies
+ * `PrintParams.heights` per run.
+ */
+export { projectOverpass, type ProjectedScene } from "./normalize";
+
+export function sceneFromProjected(projected: ProjectedScene, params?: PrintParams): EngineSceneGraph {
+  return applyHeights(projected, { heights: heightRulesFrom(params?.heights) });
 }
 
 export type BuildSceneResult =

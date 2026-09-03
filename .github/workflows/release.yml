@@ -86,9 +86,23 @@ jobs:
         working-directory: apps/web
         run: npm run build
 
-      - name: Zip the static site (source-map free)
+      # Brotli and gzip siblings for whoever self-hosts this zip.
+      #
+      # This is the ONLY consumer the script has, and it is why the zip is
+      # where it is wired rather than pages.yml: GitHub Pages compresses on
+      # the fly, serves gzip and only gzip, and ignores files a repo ships
+      # (measured, docs/handoff/v3-00-baseline.md 1.5), and the desktop shell
+      # reads its bundle off local disk with no wire to negotiate on. A server
+      # that does honour the siblings -- `scripts/serve-static.mjs` and most
+      # static hosts -- gets about 18 % of the JS and 23 % of the WASM back
+      # against the gzip it would otherwise produce.
+      #
+      # Ordered after the map delete so no `.map.br` is written for a file
+      # that is about to go.
+      - name: Zip the static site (source-map free, precompressed)
         run: |
           find apps/web/out -name '*.map' -delete
+          (cd apps/web && node scripts/precompress.mjs --dir out)
           (cd apps/web/out && zip -qr "../../../framecraft-web-${GITHUB_REF_NAME}.zip" .)
 
       - name: Attach to the release

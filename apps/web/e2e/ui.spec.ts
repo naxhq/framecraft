@@ -107,6 +107,21 @@ async function setSlider(page: Page, id: string, value: number): Promise<void> {
   await page.locator(`#${id}`).fill(String(value));
 }
 
+/**
+ * Open one settings group if it is not already open.
+ *
+ * Since Task 5 only Location and Scale start open (`lib/groups.ts`), and a
+ * collapsed group is UNMOUNTED, so a test that drives a control has to open its
+ * group first. Idempotent, because the collapse state is persisted per browser
+ * and a second click would close what the first opened.
+ */
+async function openGroup(page: Page, id: string): Promise<void> {
+  const toggle = page.getByTestId(`group-${id}-toggle`);
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") {
+    await toggle.click();
+  }
+}
+
 function log(message: string): void {
   console.log(`[ui] ${message}`);
 }
@@ -164,20 +179,45 @@ test("control groups collapse, persist across a reload, and hide their controls"
 }) => {
   await page.goto("/");
 
-  // Frame and text, and Colour, start collapsed; the rest start open.
-  await expect(page.getByTestId("group-frame")).toHaveAttribute(
-    "data-collapsed",
-    "true",
-  );
-  await expect(page.getByTestId("group-colour")).toHaveAttribute(
-    "data-collapsed",
-    "true",
-  );
+  // Only Location and Scale start open (Task 5). Every other group starts
+  // collapsed and says what it holds on its own header instead.
+  for (const collapsed of [
+    "buildings",
+    "heights",
+    "surface",
+    "regions",
+    "bridges",
+    "terrain",
+    "frame",
+    "colour",
+    "printer",
+  ]) {
+    await expect(page.getByTestId(`group-${collapsed}`)).toHaveAttribute(
+      "data-collapsed",
+      "true",
+    );
+  }
+  await expect(page.getByTestId("group-location")).toHaveAttribute("data-collapsed", "false");
   await expect(page.getByTestId("group-scale")).toHaveAttribute(
     "data-collapsed",
     "false",
   );
   await expect(page.locator("#plate_mm")).toBeVisible();
+
+  // A collapsed header still reports its own state, computed from the current
+  // parameters rather than written into the group table.
+  await expect(page.getByTestId("group-scale-state")).toHaveText(
+    "180 mm plate, 3 mm base, 0.4 mm nozzle",
+  );
+  await expect(page.getByTestId("group-bridges-state")).toHaveText(
+    "on, 1 mm clearance, abutments",
+  );
+  await setSlider(page, "plate_mm", 220);
+  await expect(page.getByTestId("group-scale-state")).toHaveText(
+    "220 mm plate, 3 mm base, 0.4 mm nozzle",
+  );
+  await page.getByTestId("reset-button").click();
+  await expect(page.getByTestId("group-scale-state")).toContainText("180 mm plate");
 
   // Collapsing really removes the controls rather than hiding them.
   await page.getByTestId("group-scale-toggle").click();
@@ -246,7 +286,9 @@ test("the v2 personalisation fields never trigger a fetch", async ({ page }) => 
 
   // ...and picking a hero building, which is a PrintParams write like any
   // other even though it happens in the 3D viewport and now changes the
-  // geometry on screen (the hero is drawn at its true height).
+  // geometry on screen (the hero is drawn at its true height). The list it
+  // lands in is in the Buildings group, which starts collapsed.
+  await openGroup(page, "buildings");
   const viewport = page.getByTestId("preview-canvas");
   await viewport.focus();
   await page.keyboard.press("ArrowRight");
@@ -531,6 +573,7 @@ test("a hero keeps its true height when the other buildings are scaled down", as
 
   // Halve both multipliers: every building, including the tallest, is drawn at
   // half its relative height.
+  await openGroup(page, "buildings");
   await setSlider(page, "small_scale", 50);
   await setSlider(page, "large_scale", 50);
   await expect(page.getByTestId("large_scale-value")).toHaveText("50 %");
@@ -765,6 +808,8 @@ test("clicking a building in the preview picks it as a hero, and clicking it aga
 }) => {
   const calls = watchOverpass(page);
   await generateChicago(page);
+  // The hero list is in the Buildings group, which starts collapsed.
+  await openGroup(page, "buildings");
   // The camera settles after the fit; a click mid-animation can miss.
   await page.waitForTimeout(1_500);
 
@@ -776,11 +821,11 @@ test("clicking a building in the preview picks it as a hero, and clicking it aga
   const before = calls.length;
 
   // The plate is dense but a single point can still land on the base, so try a
-  // small grid around the centre until one click lands on a building. This
-  // works whether the instanced approximation or the fresh RegionMeshes are
-  // what is visually on screen: picking always raycasts the (possibly
-  // invisible) instanced mesh, which three.js does regardless of visibility
-  // or material opacity (`components/scene/InstancedBuildings.tsx`).
+  // small grid around the centre until one click lands on a building. Since the
+  // v3-06 audit's finding C2 this raycasts the REAL buildings solid and maps
+  // the hit triangle through `RegionMesh.triangleOwner` to its building id, so
+  // a click picks the building that is visibly under the cursor rather than an
+  // invisible dilated box standing where one used to be.
   const offsets = [
     [0, 0],
     [-0.08, 0.02],
@@ -1027,6 +1072,9 @@ test("a control's help string is reachable as its description, not just as a too
   expect(nozzle).toBe(control("nozzle_mm").help);
 
   // A toggle: water, whose numbers come from the water region's placement.
+  // Surface and Heights start collapsed, and a collapsed group is unmounted.
+  await openGroup(page, "surface");
+  await openGroup(page, "heights");
   const water = await describedBy("#water");
   expect(water).toContain("0.5 mm below the base top");
   expect(water).toBe(control("water").help);
@@ -1072,4 +1120,131 @@ test("a control's help string is reachable as its description, not just as a too
   ] as const) {
     expect(control(id).help.toLowerCase()).not.toBe(control(id).label.toLowerCase());
   }
+});
+
+// ==========================================================================
+// The settings panel: search, per-section reset, and the changes list
+// (Task 5, docs/handoff/v3-05-panel.md)
+// ==========================================================================
+
+test("the settings search reaches a control inside a collapsed group", async ({ page }) => {
+  await page.goto("/");
+
+  // The slash key focuses the box from anywhere that is not a text field.
+  await page.getByTestId("editor").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press("/");
+  await expect(page.locator("#settings-search")).toBeFocused();
+
+  // "clearance" is the bridge deck's gap and nothing else in the panel.
+  await page.keyboard.type("clearance");
+  await expect(page.getByTestId("settings-search-count")).toContainText("match");
+  // Only the groups holding a match are rendered, and they are open.
+  await expect(page.getByTestId("group-bridges")).toHaveAttribute("data-collapsed", "false");
+  await expect(page.getByTestId("group-scale")).toHaveCount(0);
+  await expect(page.getByTestId("group-location")).toHaveCount(0);
+
+  // The matched run of the label is marked, not the whole row.
+  const hit = page.getByTestId("search-hit-bridges_clearance_mm");
+  await expect(hit).toBeVisible();
+  await expect(hit.locator("mark").first()).toHaveText("Clearance");
+
+  // ...and the row is a route to the real control, which is on screen under it.
+  await hit.click();
+  await expect(page.locator("#bridges_clearance_mm")).toBeFocused();
+
+  // Nothing matched is a said thing, with the way out on it.
+  await page.locator("#settings-search").fill("zzzznothing");
+  await expect(page.getByTestId("settings-search-empty")).toContainText("zzzznothing");
+  await page.getByTestId("settings-search-empty-clear").click();
+  await expect(page.getByTestId("settings-search-empty")).toHaveCount(0);
+
+  // Clearing puts the panel back exactly as it was: the search opened nothing
+  // permanently ([V3.1-O6], the expanded set is layout and was never written).
+  await expect(page.getByTestId("group-scale")).toHaveAttribute("data-collapsed", "false");
+  await expect(page.getByTestId("group-bridges")).toHaveAttribute("data-collapsed", "true");
+});
+
+test("a section reset puts back its own fields only, and undo takes it back in one step", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openGroup(page, "regions");
+
+  await setSlider(page, "regions_rail_width_m", 12);
+  await setSlider(page, "plate_mm", 220);
+  await expect(page.getByTestId("regions_rail_width_m-value")).toHaveText("12 m");
+  await expect(page.getByTestId("changes-chip")).toContainText("2 changed");
+  await expect(page.getByTestId("group-regions-changed")).toHaveText("1");
+
+  await page.getByTestId("group-regions-reset").click();
+  await expect(page.getByTestId("regions_rail_width_m-value")).toHaveText("6 m");
+  // The other section is untouched: a reset that reached it would be a reset
+  // of everything with extra steps.
+  await expect(page.getByTestId("plate_mm-value")).toHaveText("220 mm");
+  await expect(page.getByTestId("changes-chip")).toContainText("1 changed");
+
+  // One undo entry, not one per field.
+  await page.getByTestId("editor").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press("Control+z");
+  await expect(page.getByTestId("regions_rail_width_m-value")).toHaveText("12 m");
+  await expect(page.getByTestId("plate_mm-value")).toHaveText("220 mm");
+});
+
+test("the changes counter lists what moved and reverts one row at a time", async ({ page }) => {
+  await page.goto("/");
+  await openGroup(page, "bridges");
+
+  // A field that had no control at all before this wave, and defaults to on.
+  await page.locator("#bridges_enabled").click();
+  await expect(page.locator("#bridges_enabled")).toHaveAttribute("aria-checked", "false");
+  await expect(page.getByTestId("group-bridges-state")).toContainText(
+    "off, everything laid at ground level",
+  );
+  await setSlider(page, "plate_mm", 220);
+
+  await page.getByTestId("changes-chip").click();
+  const rows = page.getByTestId("changes-row");
+  await expect(rows).toHaveCount(2);
+  await expect(page.getByTestId("changes-list")).toContainText("Build bridges");
+  await expect(page.getByTestId("changes-list")).toContainText("on is now off");
+
+  // Revert one row: the other change stays.
+  await page.getByTestId("changes-revert-bridges.enabled").click();
+  await expect(page.locator("#bridges_enabled")).toHaveAttribute("aria-checked", "true");
+  await expect(rows).toHaveCount(1);
+  await expect(page.getByTestId("plate_mm-value")).toHaveText("220 mm");
+
+  // The layout is not a change: opening a group is not a setting ([V3.1-O6]).
+  await openGroup(page, "colour");
+  await expect(page.getByTestId("changes-chip")).toContainText("1 changed");
+});
+
+test("the surface-depth sliders reach the region placement the engine builds", async ({
+  page,
+}) => {
+  await generateChicago(page);
+  await openGroup(page, "regions");
+
+  // Every one of these ten fields was in the contract, read by the geometry
+  // stages, and reachable only through a share link before this wave.
+  for (const id of [
+    "regions_roads_depth_mm",
+    "regions_roads_proud_mm",
+    "regions_water_depth_mm",
+    "regions_water_proud_mm",
+    "regions_parks_depth_mm",
+    "regions_parks_proud_mm",
+    "regions_rail_depth_mm",
+    "regions_rail_proud_mm",
+    "regions_rail_width_m",
+    "regions_building_skirt_mm",
+  ]) {
+    await expect(page.locator(`#${id}`)).toBeVisible();
+  }
+
+  // A change here marks the model stale and rebuilds it, like any other
+  // parameter: the export is offered again only once the new build lands.
+  await setSlider(page, "regions_water_depth_mm", 2.5);
+  await expect(page.getByTestId("group-regions-state")).toContainText("water 2.5 mm");
+  await expect(page.getByTestId("stats-card")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
 });

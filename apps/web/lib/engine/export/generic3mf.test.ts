@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { REGION_NAMES } from "../types";
-import { ATTRIBUTION } from "./common";
+import { APPLICATION, ATTRIBUTION } from "./common";
 import { FIXED_DATE, boxRegion, makeResult, sampleRegions, sampleResult } from "./fixtures";
 import { CONTENT_TYPES_PART, CORE_NAMESPACE, MODEL_PART, RELS_PART, exportGeneric3mf } from "./generic3mf";
 import { findAll, findFirst, parseXml } from "./xmlParse";
@@ -92,7 +92,16 @@ describe("exportGeneric3mf (parts)", () => {
     const meta = new Map(findAll(model, "metadata").map((m) => [m.attributes.name, m.text]));
     expect(meta.get("Title")).toBe("FrameCraft");
     expect(meta.get("Designer")).toBe("FrameCraft");
-    expect(meta.get("Application")).toBe("FrameCraft 3.0.0");
+    /*
+      Asserted against `APPLICATION` rather than a typed literal, and against
+      its SHAPE beside it. The literal used to be "FrameCraft 3.0.0" here and
+      in three other files, which is how the exporters went on stamping 3.0.0
+      after the product became 3.1.0. The shape assertion is what keeps this
+      from degenerating into "the writer agrees with itself": it fails if the
+      version stops resolving at all, or stops being a version.
+    */
+    expect(meta.get("Application")).toBe(APPLICATION);
+    expect(meta.get("Application")).toMatch(/^FrameCraft \d+\.\d+\.\d+/);
     expect(meta.get("CreationDate")).toBe("2026-08-30");
     expect(meta.get("Copyright")).toBe(ATTRIBUTION);
     expect(meta.get("Description")).toContain(ATTRIBUTION);

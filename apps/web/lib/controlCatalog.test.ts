@@ -38,6 +38,7 @@ import {
   sectionProps,
 } from "./controlCatalog";
 import { claimedPaths, stagesReading } from "./engine/pipeline";
+import { sectionPaths } from "./settingsDiff";
 import { KNOWN_DEFECTS } from "./engine/pipeline/matrix.probes";
 import { GROUP_IDS } from "./groups";
 
@@ -68,43 +69,62 @@ const FORBIDDEN_FOR_CONTROLS: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
- * Leaves a stage claims that the settings panel does not yet offer a control
- * for, each with the reason. Two whole contract groups are in here: `regions`
- * and `bridges` are read heavily by the geometry stages and reachable through
- * a share link or a project file, but no group renders a control for them.
- * They are the settings-panel task's to add; this map is what keeps that fact
- * from going quiet again.
+ * Leaves a stage claims that the settings panel does not offer a control for,
+ * each with the reason.
+ *
+ * The two whole contract groups that used to be in here are gone: the Surface
+ * depths and Bridges sections landed with this wave, so all ten `regions.*`
+ * leaves and all three `bridges.*` leaves now have a control (Task 5, item 8).
+ * What is left is machine-written data, a table nobody has drawn yet, and one
+ * field whose geometry has not landed.
  */
 const CLAIMED_WITHOUT_A_CONTROL: ReadonlyMap<string, string> = new Map([
   ["schema_version", "payload metadata; the export stage echoes it into the sidecar"],
   ["place.country", "written by the reverse geocoder from the pin, not typed"],
   ["place.state", "written by the reverse geocoder from the pin, not typed"],
   ["place.neighbourhood", "written by the reverse geocoder from the pin, not typed"],
-  ["regions.roads.depth_mm", "no control yet: the settings-panel task adds a Regions section"],
-  ["regions.roads.proud_mm", "no control yet: the settings-panel task adds a Regions section"],
-  ["regions.water.depth_mm", "no control yet: the settings-panel task adds a Regions section"],
-  ["regions.water.proud_mm", "no control yet: the settings-panel task adds a Regions section"],
-  ["regions.parks.depth_mm", "no control yet: the settings-panel task adds a Regions section"],
-  ["regions.parks.proud_mm", "no control yet: the settings-panel task adds a Regions section"],
-  ["regions.rail.depth_mm", "no control yet: the settings-panel task adds a Regions section"],
-  ["regions.rail.proud_mm", "no control yet: the settings-panel task adds a Regions section"],
-  ["regions.rail.width_m", "no control yet: the settings-panel task adds a Regions section"],
-  ["regions.building_skirt_mm", "no control yet: the settings-panel task adds a Regions section"],
   ["colour.preview_theme", "the viewport HUD's own toggle writes it; not a settings-panel control"],
   ["custom_profile.nozzle_mm", "the Scale group's nozzle slider is the one nozzle a build uses"],
-  ["bridges.enabled", "no control yet: defaults to true, so every model builds bridge decks"],
-  ["bridges.clearance_mm", "no control yet: the settings-panel task adds a Bridges section"],
-  ["bridges.abutments", "no control yet: the settings-panel task adds a Bridges section"],
   ["heights.type_defaults.house", "no control yet: one row per building type is a table, not a slider"],
   ["heights.type_defaults.apartments", "no control yet: one row per building type is a table, not a slider"],
   ["heights.type_defaults.commercial", "no control yet: one row per building type is a table, not a slider"],
   ["heights.type_defaults.retail", "no control yet: one row per building type is a table, not a slider"],
   ["heights.type_defaults.industrial", "no control yet: one row per building type is a table, not a slider"],
   ["heights.type_defaults.garage", "no control yet: one row per building type is a table, not a slider"],
-  [
-    "frame_style.lip_depth_mm",
-    "claimed only through the frame_style.* wildcard: the matrix's KNOWN_DEFECTS says nothing reads it, so the slider was removed until [V3.1-P2-2] lands the sight-edge rebate",
-  ],
+  // v3.1 Task 11. Every one of these has a control, and it is not in the panel:
+  // the viewport's right-click inspector opens on the object it acts on, which
+  // is the whole point of it - there is no list of every building in a city to
+  // put in a group. The controls ARE catalogued (`inspector-*`,
+  // `override-*`), and they write `object-override` rather than naming these
+  // leaves, so no section's own reset can wipe a per-object decision.
+  ["object_overrides[].osm_id", "written by the viewport's right-click inspector, on the object it names"],
+  ["object_overrides[].layer", "written by the viewport's right-click inspector, on the object it names"],
+  ["object_overrides[].hidden", "written by the viewport's right-click inspector, on the object it names"],
+  ["object_overrides[].height_scale", "written by the viewport's right-click inspector, on the object it names"],
+  ["object_overrides[].hero", "written by the viewport's right-click inspector, on the object it names"],
+  ["object_overrides[].tint", "written by the viewport's right-click inspector, on the object it names"],
+  ["object_overrides[].slot", "written by the viewport's right-click inspector, on the object it names"],
+  ["object_overrides[].color", "written by the viewport's right-click inspector, on the object it names"],
+  ["object_overrides[].road_mode", "written by the viewport's right-click inspector, on the object it names"],
+  ["object_overrides[].width_scale", "written by the viewport's right-click inspector, on the object it names"],
+  ["object_overrides[].raise_mm", "written by the viewport's right-click inspector, on the object it names"],
+  // v3.1 Task 12. Same shape as Task 11: a label is placed on an object in the
+  // 3D view (the inspector's "Label ..." row), dragged there (`LabelGizmo`) and
+  // set in the viewport's labels card (`LabelsPanel`, catalogued as
+  // `label_*_...`), and all three write `object-override` rather than naming
+  // these leaves, so no section reset can wipe a placed label.
+  ["labels[].target_osm_id", "written when the inspector's Label row places one on the object it was opened on"],
+  ["labels[].layer", "written when the inspector's Label row places one on the object it was opened on"],
+  ["labels[].surface", "written when the inspector's Label row places one: a building's roof, everything else's ground"],
+  ["labels[].u", "written by dragging the label's handle in the viewport, or the arrow keys"],
+  ["labels[].v", "written by dragging the label's handle in the viewport, or the arrow keys"],
+  ["labels[].rotation_deg", "written by the viewport's rotation handle, [ and ], or the labels card's Turn slider"],
+  ["labels[].size_mm", "written by + and -, or the labels card's Cap height slider"],
+  ["labels[].mode", "written by the labels card's Cut segmented control"],
+  ["labels[].depth_mm", "written by the labels card's Depth slider"],
+  ["labels[].font", "written by the labels card's Face select"],
+  ["labels[].text", "written by the labels card's Text field"],
+  ["labels[].follow", "written by the labels card's Follow the street toggle, on a road label"],
 ]);
 
 // ---------------------------------------------------------------------------
@@ -179,9 +199,29 @@ const OUT_OF_SCOPE_FILES: ReadonlyMap<string, string> = new Map([
   ["components/editor/RecentDesigns.tsx", "restores a whole saved state; shell, not a setting"],
   ["components/editor/PresetRow.tsx", "the preset chips move the location, which is not a parameter ([V3.1-P1-10])"],
   ["components/editor/EditorShell.tsx", "shell chrome: the shortcut sheet and the small-screen sheet toggle"],
+  [
+    "components/editor/ResizableRegions.tsx",
+    "the window layout: two column dividers, which resize the shell and write no setting at all ([V3.1-O6])",
+  ],
+  [
+    "components/editor/PaneChrome.tsx",
+    "the window layout's controls: hide or maximize a region, which is presentation and outside PrintParams ([V3.1-O6])",
+  ],
   ["components/editor/ShortcutSheet.tsx", "shell chrome: one close button"],
   ["components/editor/ThemeToggle.tsx", "the app theme, a viewer setting outside PrintParams ([V3.1-O6])"],
   ["components/editor/WarningBanners.tsx", "shell chrome: one dismiss button"],
+  [
+    "components/editor/SiteFooter.tsx",
+    "the build stamp footer ([V3.1-T15]): one button that opens the About dialog, beside the copyright, the attribution and two links, and none of it writes a setting",
+  ],
+  [
+    "components/editor/AboutDialog.tsx",
+    "the About dialog ([V3.1-T15]): a close button over static build metadata (product, version, commit, date) and two links, the same shape as ShortcutSheet",
+  ],
+  [
+    "components/editor/DesktopProjectOpener.tsx",
+    "the desktop open-with listener ([V3.1-T13]), mounted from the root layout: it returns null and renders no DOM at all, and what it does apply is a whole saved state, like RecentDesigns above, rather than one setting",
+  ],
 ]);
 
 /** The files the catalog is answerable for: everything else. */
@@ -406,14 +446,45 @@ describe("the control catalog against the frozen contract", () => {
     }
   });
 
-  it("gives every non-param control one of the four declared targets", () => {
-    const targets = new Set(["location", "object-override", "viewer", "all-parameters"]);
+  it("gives every non-param control one of the five declared targets", () => {
+    const targets = new Set([
+      "location",
+      "object-override",
+      "viewer",
+      "all-parameters",
+      "section-parameters",
+    ]);
     for (const spec of CONTROLS) {
       if (typeof spec.writes !== "string") continue;
       expect(targets, spec.id).toContain(spec.writes);
     }
     expect(control("radius_m").writes).toBe("location");
     expect(control("rotation_deg").writes).toBe("location");
+  });
+
+  it("gives a section-parameters control real leaves to write, from this catalog", () => {
+    // `section-parameters` names no path on purpose: which leaves a section
+    // reset writes IS `sectionPaths(group)`, read off this catalog, so writing
+    // them into the row would be the same list stated twice. The claim is
+    // therefore checked from the other end: every group the panel renders has
+    // leaves for its reset to put back.
+    const sectionResets = CONTROLS.filter((spec) => spec.writes === "section-parameters");
+    expect(sectionResets.map((spec) => spec.id).sort()).toEqual([
+      "changes-revert-*",
+      "group-*-reset",
+    ]);
+    for (const group of GROUP_IDS) {
+      if (group === "output") continue;
+      expect(sectionPaths(group).length, `${group} has nothing to reset`).toBeGreaterThan(0);
+      for (const path of sectionPaths(group)) {
+        expect(
+          controlsInGroup(group).some(
+            (spec) => typeof spec.writes !== "string" && spec.writes.some((p) => p.startsWith(path)),
+          ),
+          `${group} would reset ${path}, which no control in it writes`,
+        ).toBe(true);
+      }
+    }
   });
 });
 
@@ -454,9 +525,22 @@ describe("the control catalog against the pipeline", () => {
         `${path} has no working effect yet: ${reason}`,
       ).toEqual([]);
     }
-    // Not vacuous: the list really does name the field whose slider this wave
-    // removed, so re-adding the slider before the geometry fails here.
-    expect([...KNOWN_DEFECTS.keys()]).toContain("frame_style.lip_depth_mm");
+    // The two entries this list carried into the wave are implemented now, so
+    // each one is checked from BOTH ends: it may not still be listed as a
+    // defect, and it must have the control its effect earns. `[V3.1-P2-1]`
+    // made `regions.rail.width_m` authoritative for every rail ribbon and
+    // `[V3.1-P2-2]` cut the sight-edge rebate `frame_style.lip_depth_mm`
+    // names, so a stale row here would quietly forbid a control that works.
+    for (const path of ["regions.rail.width_m", "frame_style.lip_depth_mm"] as const) {
+      expect(
+        [...KNOWN_DEFECTS.keys()],
+        `${path} is implemented; its KNOWN_DEFECTS row is stale`,
+      ).not.toContain(path);
+      expect(
+        controlsWriting(path).map((spec) => spec.id),
+        `${path} moves geometry now and must have a control`,
+      ).not.toEqual([]);
+    }
   });
 
   it("names every claimed field the panel still has no control for", () => {
@@ -548,8 +632,23 @@ describe("the control catalog against what the panel renders", () => {
     expect(sources).toContain("colour_slot_");
     // The preview theme is a viewport control, never a settings-panel one.
     expect(sources).not.toContain("preview_theme");
-    // The Lip depth slider, removed with its own finding: `[V3.1-P2-2]` lands
-    // the sight-edge rebate in the next wave and re-adds the control with it.
-    expect(sources).not.toContain("lip_depth_mm");
+    // The Lip depth slider is BACK, and only because its geometry landed:
+    // `[V3.1-P2-2]` cut the sight-edge rebate and `[V3.1-P2-6]` said the
+    // control returns with it. The `KNOWN_DEFECTS` test above is what keeps
+    // that order: it fails the moment a control writes a field the matrix
+    // says moves nothing, so this row cannot come back on its own again.
+    expect(sources).toContain("frame_style_lip_depth_mm");
+  });
+
+  it("describes the lip rebate the geometry actually cuts", () => {
+    // The help has to name the rebate's fixed WIDTH as well as the depth the
+    // slider sets, because the width is not a setting: it is
+    // `transform.FRAME_SIGHT_EDGE_MM`, and a user reading "depth" alone
+    // cannot tell what the step looks like. Zero is the flat lip.
+    const help = control("frame_style_lip_depth_mm").help;
+    expect(help).toContain("1.0 mm wide");
+    expect(help.toLowerCase()).toContain("zero leaves the lip flat");
+    expect(control("frame_style_lip_depth_mm").writes).toEqual(["frame_style.lip_depth_mm"]);
+    expect(control("frame_style_lip_depth_mm").group).toBe("frame");
   });
 });

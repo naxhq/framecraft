@@ -3,10 +3,15 @@
 # WebView cannot do itself (native save dialog, app data dir).
 [package]
 name = "framecraft-desktop"
-version = "3.0.0"
+version = "3.1.0"
 description = "FrameCraft: turn a map location into a 3D-printable framed miniature city"
-authors = ["Vahid Alizadeh"]
+authors = ["NAXHQ"]
+license = "MIT"
+repository = "https://github.com/naxhq/framecraft"
 edition = "2021"
+# The version above is STAMPED from apps/web/package.json by
+# `apps/web/scripts/stamp-version.mjs`; edit that package's version, then run
+# `npm run version:stamp` in apps/web. `lib/version.test.ts` fails on drift.
 
 [lib]
 name = "framecraft_desktop_lib"
@@ -22,3 +27,13 @@ tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+
+# Double-clicking a second .framecraft file must open it in the window that is
+# already running, not start another copy of the app. The plugin hands the new
+# process's argv to the running one and exits it.
+#
+# The target predicate spells out "not mobile" rather than saying `cfg(desktop)`:
+# `desktop` is a cfg TAURI sets from its build script, which Cargo's own target
+# tables cannot see, so a `cfg(desktop)` dependency is silently never resolved.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"

@@ -348,13 +348,25 @@ export function FrameTextGroup() {
             />
           ) : null}
           {/*
-            No Lip depth slider. `frame_style.lip_depth_mm` is in the matrix's
-            own KNOWN_DEFECTS: `solid/frame.ts` resolves it into
-            `FrameStyle.lipDepthMm` and nothing reads that field, so the
-            setting moves no geometry at any profile. `[V3.1-P2-2]` lands the
-            sight-edge rebate in the next wave and that wave re-adds the
-            control with it. A control must never ship ahead of its effect.
+            Back with its geometry, and not a moment before ([V3.1-P2-6]).
+            `frame_style.lip_depth_mm` was removed in the settings truth audit
+            because `solid/frame.ts` resolved it into `FrameStyle.lipDepthMm`
+            and nothing read that field. [V3.1-P2-2] landed the sight-edge
+            rebate it names, so the slider now cuts a real step: this deep by
+            `transform.FRAME_SIGHT_EDGE_MM` (1.0 mm) wide, round the opening.
           */}
+          <Slider
+            {...labelled("frame_style_lip_depth_mm")}
+            min={PARAM_RANGES.frame_style.lip_depth_mm.min}
+            max={PARAM_RANGES.frame_style.lip_depth_mm.max}
+            step={0.1}
+            value={frameStyle.lip_depth_mm ?? PARAM_RANGES.frame_style.lip_depth_mm.default}
+            display={`${(frameStyle.lip_depth_mm ?? PARAM_RANGES.frame_style.lip_depth_mm.default).toFixed(1)} mm`}
+            disabled={!params.frame}
+            onChange={(value) =>
+              setNested("frame_style", { lip_depth_mm: Number(value.toFixed(2)) })
+            }
+          />
         </div>
       </Field>
 

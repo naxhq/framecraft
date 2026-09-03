@@ -6,12 +6,16 @@
 import { afterAll, describe, expect, it } from "vitest";
 
 import { defaultPrintParams, type PrintParams } from "../../contracts";
+import { perfReport, setPerfEnabled } from "../../perf";
 import { outstandingWasmObjects } from "../solid/manifold";
 import type { TerrainGrid } from "../types";
 import { buildModel } from "../engine";
 import { StageCache, runPipeline, stageIds, stagesInvalidatedBy, type ParamPath, type PipelineEvent, type PipelineJob, type RunOutcome, type StageId, type StageState } from "./index";
+import { scenePartView } from "./runner";
+import { SCENE_GROUND_LAYERS, stageById } from "./stages";
 import { canonical, diffCanonical } from "./testCompare";
-import { blockScene, terrainScene } from "./testScenes";
+import { blockScene, bridgeScene, railScene, terrainScene } from "./testScenes";
+import type { EngineSceneGraph } from "../osm/types";
 
 const REQUEST = { lat: 41.8827, lon: -87.6233, radius_m: 900.0, rotation_deg: 0.0, preset_id: "chicago-loop" };
 
@@ -264,6 +268,10 @@ describe("incremental runs from an Overpass request", () => {
       );
       return { outcome, states, ran: [], cached: [] };
     };
+    // Perf mode on for the whole sequence: the `osm.project` row counts how
+    // many times the response was projected, which is the one observable of
+    // `normalise` keeping the projection beside the fetch output.
+    setPerfEnabled(true);
     const first = await runWith(defaultPrintParams());
     expect(first.outcome.status).toBe("done");
     expect(first.states.get("fetch")).toBe("done");
@@ -294,6 +302,32 @@ describe("incremental runs from an Overpass request", () => {
     const third = await runWith(storeys);
     expect(third.states.get("normalise")).toBe("done");
     expect(third.states.get("repair-buildings")).toBe("done");
+    for (const stage of ["heroes", "buildings", "region-buildings", "finish-buildings"] as const) {
+      expect(third.states.get(stage), stage).toBe("done");
+    }
+    // The ground never reads a height: the surface layers, the bridge decks
+    // and the grove are keyed on `normalise#ground` and the repair's
+    // footprint, both unchanged, so the plate, its seat and the roads region
+    // stay cached under a scene whose buildings all grew (v3-07's one miss).
+    for (const stage of [
+      "surface-water",
+      "surface-rail",
+      "surface-roads",
+      "surface-parks",
+      "bridges",
+      "trees",
+      "base",
+      "region-base",
+      "sit",
+      "region-roads",
+      "finish-roads",
+    ] as const) {
+      expect(third.states.get(stage), stage).toBe("cached");
+    }
+    const storeyHeight = (outcome: RunOutcome): number => outcome.scene?.scene.buildings.find((b) => b.id === "w2")?.height_m ?? 0;
+    // Three storeys at the contract's default 3 m, then at 6 m.
+    expect(storeyHeight(second.outcome)).toBe(3 * 3);
+    expect(storeyHeight(third.outcome)).toBe(3 * 6);
 
     // A heights field this scene does not use (a type default for a shed)
     // re-runs normalise to the same scene: its digest is unchanged, so the
@@ -304,8 +338,59 @@ describe("incremental runs from an Overpass request", () => {
     expect(fourth.states.get("context")).toBe("cached");
     expect(fourth.states.get("repair-buildings")).toBe("cached");
     expect(fourth.states.get("audit")).toBe("cached");
+
+    // Four normalise runs, one projection: the response was classified,
+    // projected, cleaned and cropped once, and only the heights were re-applied
+    // for the three changes. A fetch that re-ran would project again.
+    const rows = perfReport("heights").rows;
+    const count = (name: string): number => rows.find((row) => row.name === name)?.count ?? 0;
+    expect(count("osm.normalize")).toBe(4);
+    expect(count("osm.project")).toBe(1);
+    expect(count("osm.heights")).toBe(4);
+    setPerfEnabled(null);
     cache.dispose();
   }, 120_000);
+});
+
+describe("the scene view a ground stage is handed", () => {
+  // The rail scene carries every layer the part names.
+  const scene = railScene() as EngineSceneGraph;
+
+  it("exposes the part's layers as they are and throws, naming the stage and the part, for any other", () => {
+    const view = scenePartView(scene, "surface-roads", "ground");
+    expect(view.roads).toBe(scene.roads);
+    expect(view.water).toBe(scene.water);
+    expect(view.green).toBe(scene.green);
+    expect(view.rail).toBe(scene.rail);
+    expect(view.trees).toBe(scene.trees);
+    expect(view.bounds).toBe(scene.bounds);
+    expect(view.center).toBe(scene.center);
+    expect(() => view.buildings).toThrow("stage surface-roads reads scene.buildings, which normalise#ground does not cover");
+    expect(() => view.stats).toThrow("normalise#ground does not cover");
+    // Nothing a JSON walk or a spread could pick up either: the refused
+    // layers are not enumerable.
+    expect(Object.keys(view).sort()).toEqual([...SCENE_GROUND_LAYERS].sort());
+  });
+
+  it("refuses a part the registry does not define", () => {
+    expect(() => scenePartView(scene, "surface-roads", "roofs")).toThrow("names no scene part");
+  });
+
+  it("is what every stage keyed on normalise#ground reads: a stage that reaches past the part fails its run, not its cache", async () => {
+    // The registry's own ground stages, driven through the runner on a scene
+    // with every layer: if any of them read a building through the view, the
+    // run errors here rather than serving stale ground after a height change.
+    const cache = new StageCache();
+    try {
+      const outcome = await run(cache, jobFor(defaultPrintParams(), { source: { kind: "scene", scene: bridgeScene(), key: "bridge" }, mode: "preview" }));
+      expect(outcome.outcome.status, outcome.outcome.error?.message).toBe("done");
+      const keyed = stageIds().filter((id) => stageById(id).inputDigests?.normalise === "ground");
+      expect(keyed).toEqual(["surface-water", "surface-rail", "surface-roads", "surface-parks", "bridges", "trees"]);
+      for (const id of keyed) expect(outcome.states.get(id), id).toBe("done");
+    } finally {
+      cache.dispose();
+    }
+  }, 60_000);
 });
 
 describe("terrain on a warm cache", () => {

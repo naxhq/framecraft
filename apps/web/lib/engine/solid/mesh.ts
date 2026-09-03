@@ -27,6 +27,8 @@
  * because a mesh that is merely ugly beats one that is broken.
  */
 
+import { perfSpan } from "../../perf";
+
 /** 04 stage 4: a face under this area (mm^2) is degenerate. */
 export const DEGENERATE_AREA_MM2 = 1e-9;
 
@@ -245,27 +247,92 @@ function countDegenerate(mesh: Mesh, threshold: number, area: AreaOf): number {
 }
 
 /**
+ * A directed edge `a -> b` as one double. Exact while `a < 2^21`, which is
+ * the same bound `openEdges` has always keyed edges under; no mesh in this
+ * engine is within an order of magnitude of it.
+ */
+function edgeKey(a: number, b: number): number {
+  return a * 4294967296 + b;
+}
+
+/**
+ * How many times each directed edge occurs, in flat typed arrays.
+ *
+ * An open-addressing table rather than a `Map`: `openEdges` runs on every
+ * candidate the repair ladder produces, and on the 94 000-triangle merged
+ * Chicago solid a `Map` keyed the same way cost 84 ms a call against under
+ * 10 ms here. Same keys, same counts; only the container changed.
+ */
+class EdgeCounts {
+  private readonly keys: Float64Array;
+  private readonly counts: Int32Array;
+  private readonly mask: number;
+
+  constructor(expected: number) {
+    let capacity = 16;
+    while (capacity < expected * 2) capacity *= 2;
+    this.keys = new Float64Array(capacity).fill(-1);
+    this.counts = new Int32Array(capacity);
+    this.mask = capacity - 1;
+  }
+
+  private slot(a: number, b: number): number {
+    let h = Math.imul(a, 0x9e3779b1) ^ Math.imul(b ^ 0x5bd1e995, 0x85ebca77);
+    h ^= h >>> 15;
+    h = Math.imul(h, 0x2c1b3c6d);
+    h ^= h >>> 12;
+    const key = edgeKey(a, b);
+    let i = h & this.mask;
+    for (;;) {
+      const held = this.keys[i];
+      if (held === key || held === -1) return i;
+      i = (i + 1) & this.mask;
+    }
+  }
+
+  add(a: number, b: number): void {
+    const i = this.slot(a, b);
+    if (this.keys[i] === -1) this.keys[i] = edgeKey(a, b);
+    this.counts[i] += 1;
+  }
+
+  count(a: number, b: number): number {
+    const i = this.slot(a, b);
+    return this.keys[i] === -1 ? 0 : this.counts[i];
+  }
+
+  /** Every distinct edge held, as `(a, b, count)`. */
+  forEach(visit: (a: number, b: number, count: number) => void): void {
+    for (let i = 0; i < this.keys.length; i += 1) {
+      const key = this.keys[i];
+      if (key === -1) continue;
+      const a = Math.floor(key / 4294967296);
+      visit(a, key - a * 4294967296, this.counts[i]);
+    }
+  }
+}
+
+/**
  * Directed edges that do not have exactly one twin.
  *
  * Zero means the mesh is closed AND consistently wound, which is what the 3MF
  * and STL readers, the slicers and 04's `watertight` row all need.
  */
 export function openEdges(mesh: Mesh): number {
-  const seen = new Map<number, number>();
-  const key = (a: number, b: number): number => a * 4294967296 + b;
-  for (let i = 0; i + 2 < mesh.indices.length; i += 3) {
-    const t = [mesh.indices[i], mesh.indices[i + 1], mesh.indices[i + 2]];
-    for (let k = 0; k < 3; k += 1) {
-      const e = key(t[k], t[(k + 1) % 3]);
-      seen.set(e, (seen.get(e) ?? 0) + 1);
-    }
+  const indices = mesh.indices;
+  const seen = new EdgeCounts(indices.length);
+  for (let i = 0; i + 2 < indices.length; i += 3) {
+    const a = indices[i];
+    const b = indices[i + 1];
+    const c = indices[i + 2];
+    seen.add(a, b);
+    seen.add(b, c);
+    seen.add(c, a);
   }
   let bad = 0;
-  for (const [edge, count] of seen) {
-    const a = Math.floor(edge / 4294967296);
-    const b = edge - a * 4294967296;
-    if ((seen.get(key(b, a)) ?? 0) !== count || count !== 1) bad += 1;
-  }
+  seen.forEach((a, b, count) => {
+    if (seen.count(b, a) !== count || count !== 1) bad += 1;
+  });
   return bad;
 }
 
@@ -290,49 +357,119 @@ export function meshVolumeMm3(mesh: Mesh): number {
 // ---------------------------------------------------------------------------
 
 /**
+ * Every pair of vertices within `epsilon` of each other on every axis, as a
+ * CSR list: `partners[start[v] .. start[v + 1])` are the vertices BELOW `v`
+ * that `v` may be welded onto.
+ *
+ * Found by one sort along x and a sweep, which is exact - the per-axis test is
+ * the same `<= epsilon` the weld applies - and is a few milliseconds on a mesh
+ * where the old 27-cell string-keyed scan spent hundreds: nearly every vertex
+ * of a boolean result has no neighbour at all, and a sweep pays for those only
+ * when the next vertex along x is already too far away. Built once per
+ * `cleanMesh` at the ladder's coarsest rung, because a pair within a finer
+ * rung is within the coarse one too, and each rung filters it by its own
+ * epsilon.
+ */
+interface VertexPairs {
+  epsilon: number;
+  start: Int32Array;
+  partners: Int32Array;
+}
+
+function vertexPairs(p: Float64Array, count: number, epsilon: number): VertexPairs {
+  const px = new Float64Array(count);
+  for (let v = 0; v < count; v += 1) px[v] = p[v * 3];
+  const order = new Uint32Array(count);
+  for (let v = 0; v < count; v += 1) order[v] = v;
+  order.sort((a, b) => px[a] - px[b]);
+
+  const lows: number[] = [];
+  const highs: number[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const a = order[i];
+    const ax = px[a];
+    const ay = p[a * 3 + 1];
+    const az = p[a * 3 + 2];
+    for (let j = i + 1; j < count; j += 1) {
+      const b = order[j];
+      if (px[b] - ax > epsilon) break;
+      if (Math.abs(p[b * 3 + 1] - ay) > epsilon || Math.abs(p[b * 3 + 2] - az) > epsilon) continue;
+      if (a < b) {
+        lows.push(a);
+        highs.push(b);
+      } else {
+        lows.push(b);
+        highs.push(a);
+      }
+    }
+  }
+  const start = new Int32Array(count + 1);
+  for (const high of highs) start[high + 1] += 1;
+  for (let v = 0; v < count; v += 1) start[v + 1] += start[v];
+  const fill = Int32Array.from(start.subarray(0, count));
+  const partners = new Int32Array(lows.length);
+  for (let i = 0; i < lows.length; i += 1) {
+    partners[fill[highs[i]]] = lows[i];
+    fill[highs[i]] += 1;
+  }
+  return { epsilon, start, partners };
+}
+
+/**
  * Merge coincident vertices, drop the triangles that collapse.
  *
- * The key is the coordinate triple rounded onto the weld grid, looked up once.
- * There is no search of neighbouring cells because there is nothing to find:
- * the duplicates a coincident-face boolean leaves are bitwise identical (a
- * measured example on the Chicago parks region has an edge of length exactly
- * zero), and a pair that merely came within a nanometre of each other by two
- * different routes is not one this file may merge on its own authority.
+ * Vertices are visited in index order and each is either kept or merged onto a
+ * vertex already kept that lies within `epsilon` of it on every axis. When
+ * more than one kept vertex qualifies, the winner is the one the original
+ * 27-cell grid scan would have met first: the cells around the vertex's own
+ * (`floor(coordinate / epsilon)`) were walked in dx, dy, dz order and each
+ * cell's bucket in insertion order, so the choice is the smallest
+ * (cell rank, kept index) pair. That order is reproduced here from the pair
+ * list instead of being rediscovered with a hash lookup per cell, and the
+ * result is the same mesh to the last index.
+ *
+ * Only bitwise or near-bitwise duplicates are ever merged - the ones a
+ * coincident-face boolean leaves (a measured example on the Chicago parks
+ * region has an edge of length exactly zero); a pair that merely came within a
+ * nanometre of each other by two different routes is not one this file may
+ * merge on its own authority.
  */
-function weld(mesh: Mesh, epsilon: number): { mesh: Mesh; welded: number } {
+function weld(mesh: Mesh, epsilon: number, pairs: VertexPairs): { mesh: Mesh; welded: number } {
+  if (pairs.epsilon < epsilon) throw new Error("weld: the pair list was built at a finer epsilon than the weld asks for");
   const p = mesh.positions;
   const count = p.length / 3;
   const cellSize = Math.max(epsilon, Number.MIN_VALUE);
-  const buckets = new Map<string, number[]>();
   const remap = new Uint32Array(count);
-  const keep: number[] = [];
+  const kept = new Uint8Array(count);
+  const keep = new Uint32Array(count);
+  let keepCount = 0;
   for (let v = 0; v < count; v += 1) {
     const x = p[v * 3];
     const y = p[v * 3 + 1];
     const z = p[v * 3 + 2];
-    const cx = Math.floor(x / cellSize);
-    const cy = Math.floor(y / cellSize);
-    const cz = Math.floor(z / cellSize);
-    // The 27 cells around this one, because a pair 1e-7 mm apart can still
-    // straddle a 1e-6 mm cell boundary - which is exactly what a single-cell
-    // lookup misses, and the pair it misses is the one worth merging.
     let hit = -1;
-    for (let dx = -1; dx <= 1 && hit < 0; dx += 1) {
-      for (let dy = -1; dy <= 1 && hit < 0; dy += 1) {
-        for (let dz = -1; dz <= 1 && hit < 0; dz += 1) {
-          const bucket = buckets.get(`${cx + dx},${cy + dy},${cz + dz}`);
-          if (bucket === undefined) continue;
-          for (const candidate of bucket) {
-            const o = keep[candidate] * 3;
-            if (
-              Math.abs(p[o] - x) <= epsilon &&
-              Math.abs(p[o + 1] - y) <= epsilon &&
-              Math.abs(p[o + 2] - z) <= epsilon
-            ) {
-              hit = candidate;
-              break;
-            }
-          }
+    let hitRank = Infinity;
+    const end = pairs.start[v + 1];
+    if (pairs.start[v] < end) {
+      const cx = Math.floor(x / cellSize);
+      const cy = Math.floor(y / cellSize);
+      const cz = Math.floor(z / cellSize);
+      for (let i = pairs.start[v]; i < end; i += 1) {
+        const u = pairs.partners[i];
+        if (kept[u] === 0) continue;
+        const o = u * 3;
+        if (Math.abs(p[o] - x) > epsilon || Math.abs(p[o + 1] - y) > epsilon || Math.abs(p[o + 2] - z) > epsilon) continue;
+        // The cell a candidate sits in relative to this vertex's, in the scan
+        // order of the grid walk. With a zero epsilon every candidate is an
+        // exact duplicate, in the home cell.
+        const rank =
+          epsilon > 0
+            ? (Math.floor(p[o] / cellSize) - cx + 1) * 9 + (Math.floor(p[o + 1] / cellSize) - cy + 1) * 3 + (Math.floor(p[o + 2] / cellSize) - cz + 1)
+            : 13;
+        const index = remap[u];
+        if (rank < hitRank || (rank === hitRank && index < hit)) {
+          hit = index;
+          hitRank = rank;
         }
       }
     }
@@ -340,17 +477,15 @@ function weld(mesh: Mesh, epsilon: number): { mesh: Mesh; welded: number } {
       remap[v] = hit;
       continue;
     }
-    remap[v] = keep.length;
-    const home = `${cx},${cy},${cz}`;
-    const bucket = buckets.get(home);
-    if (bucket === undefined) buckets.set(home, [keep.length]);
-    else bucket.push(keep.length);
-    keep.push(v);
+    remap[v] = keepCount;
+    kept[v] = 1;
+    keep[keepCount] = v;
+    keepCount += 1;
   }
-  if (keep.length === count) return { mesh, welded: 0 };
+  if (keepCount === count) return { mesh, welded: 0 };
 
-  const positions = new Float64Array(keep.length * 3);
-  for (let i = 0; i < keep.length; i += 1) {
+  const positions = new Float64Array(keepCount * 3);
+  for (let i = 0; i < keepCount; i += 1) {
     positions[i * 3] = p[keep[i] * 3];
     positions[i * 3 + 1] = p[keep[i] * 3 + 1];
     positions[i * 3 + 2] = p[keep[i] * 3 + 2];
@@ -365,7 +500,7 @@ function weld(mesh: Mesh, epsilon: number): { mesh: Mesh; welded: number } {
   }
   return {
     mesh: { positions, indices: Uint32Array.from(tris) },
-    welded: count - keep.length,
+    welded: count - keepCount,
   };
 }
 
@@ -460,28 +595,23 @@ function collapseNeedles(
 function splitNeedles(mesh: Mesh, threshold: number, area: AreaOf): { mesh: Mesh; split: number } {
   const tri: number[] = Array.from(mesh.indices);
   const alive: boolean[] = new Array(tri.length / 3).fill(true);
-  const key = (a: number, b: number): string => `${a},${b}`;
-  const owner = new Map<string, number>();
-  const index = (t: number): void => {
-    for (let k = 0; k < 3; k += 1) {
-      owner.set(key(tri[t * 3 + k], tri[t * 3 + ((k + 1) % 3)]), t);
-    }
-  };
-  for (let t = 0; t < alive.length; t += 1) index(t);
-
-  let split = 0;
-  // `alive.length` grows inside the loop; a triangle appended here is left for
-  // the next PASS (the caller re-enters after checking the result), so a chain
-  // of T-junctions resolves one link at a time and every link is verified
-  // before the next is attempted.
   const limit = alive.length;
+
+  // The needles, and the one directed edge each will ask about: the twin of
+  // its longest edge. Only those edges are indexed. The owner of an edge is
+  // the LAST triangle that carries it, exactly as a full index of every edge
+  // would have answered, and a lookup is only ever made for a needle's twin,
+  // so indexing the rest of the mesh's 3T edges (with a string key each) was
+  // work that could never change an answer: 137 ms a pass on the merged
+  // Chicago solid, now a few.
+  const needles: number[] = [];
+  const twinOf = new Map<number, number>();
+  const wanted = new Set<number>();
   for (let t = 0; t < limit; t += 1) {
-    if (!alive[t]) continue;
     const a = tri[t * 3];
     const b = tri[t * 3 + 1];
     const c = tri[t * 3 + 2];
     if (area(a, b, c) >= threshold) continue;
-
     // The middle vertex is the one opposite the longest edge.
     const lengths = [
       edgeLength(mesh.positions, a, b),
@@ -491,9 +621,43 @@ function splitNeedles(mesh: Mesh, threshold: number, area: AreaOf): { mesh: Mesh
     const longest = lengths.indexOf(Math.max(...lengths));
     const v0 = [b, c, a][longest];
     const v2 = [a, b, c][longest];
-    const v1 = [c, a, b][longest];
     // The needle holds `v2 -> v0`; the neighbour holds its twin `v0 -> v2`.
-    const neighbour = owner.get(key(v0, v2));
+    const twin = edgeKey(v0, v2);
+    needles.push(t);
+    twinOf.set(t, twin);
+    wanted.add(twin);
+  }
+  if (needles.length === 0) return { mesh, split: 0 };
+
+  const owner = new Map<number, number>();
+  const index = (t: number): void => {
+    for (let k = 0; k < 3; k += 1) {
+      const key = edgeKey(tri[t * 3 + k], tri[t * 3 + ((k + 1) % 3)]);
+      if (wanted.has(key)) owner.set(key, t);
+    }
+  };
+  for (let t = 0; t < limit; t += 1) index(t);
+
+  let split = 0;
+  // `alive.length` grows inside the loop; a triangle appended here is left for
+  // the next PASS (the caller re-enters after checking the result), so a chain
+  // of T-junctions resolves one link at a time and every link is verified
+  // before the next is attempted.
+  for (const t of needles) {
+    if (!alive[t]) continue;
+    const a = tri[t * 3];
+    const b = tri[t * 3 + 1];
+    const c = tri[t * 3 + 2];
+    const lengths = [
+      edgeLength(mesh.positions, a, b),
+      edgeLength(mesh.positions, b, c),
+      edgeLength(mesh.positions, c, a),
+    ];
+    const longest = lengths.indexOf(Math.max(...lengths));
+    const v0 = [b, c, a][longest];
+    const v2 = [a, b, c][longest];
+    const v1 = [c, a, b][longest];
+    const neighbour = owner.get(twinOf.get(t) ?? edgeKey(v0, v2));
     if (neighbour === undefined || neighbour === t || !alive[neighbour]) continue;
     // A neighbour that is ITSELF degenerate is left alone: splitting one sliver
     // with another is how a repair invents a hole (measured: four open edges on
@@ -708,9 +872,10 @@ export function cleanMesh(
      * Run the whole-mesh weld at all. Default true; `hardenForFloat32` passes
      * false when its float32 scan found no colliding vertex.
      *
-     * The weld is the expensive rung of this repair - a 27-cell neighbourhood
-     * scan over every vertex, 1.0 s on a 46 962-vertex plate - and it is the
-     * only one that can be skipped on evidence. Its whole effect is to merge
+     * The weld was the expensive rung of this repair (a 27-cell neighbourhood
+     * scan over every vertex, 1.0 s on a 46 962-vertex plate, before the pair
+     * sweep in `vertexPairs` replaced the scan) and it is the only one that
+     * can be skipped on evidence. Its whole effect is to merge
      * vertices within `epsilonMm` of each other, and on a placed model a pair
      * that close shares a float32 grid point (a nanometre against a 7.6e-6 mm
      * step at 90 mm), so a scan that finds no collision has proved there is
@@ -726,7 +891,7 @@ export function cleanMesh(
   const before = meshVolumeMm3(input);
   const inputArea = measure(input);
   const beforeDegenerate = countDegenerate(input, threshold, inputArea);
-  const beforeOpen = openEdges(input);
+  const beforeOpen = perfSpan("mesh.clean.check", () => openEdges(input));
   // Only ever needed by the needle collapse below, and only when there is
   // something to repair, so it is computed behind the early return.
   let beforeBodiesCache: number | null = null;
@@ -771,6 +936,13 @@ export function cleanMesh(
   // one and the accepted mesh is always one weld away from what the kernel
   // produced.
   const ladder = options.epsilonMm === undefined ? WELD_LADDER_MM : [epsilon];
+  // The candidate pairs for every rung at once: a pair within a fine rung is
+  // within the coarsest one, and each rung filters the list by its own
+  // epsilon (`vertexPairs`).
+  const pairs =
+    options.weld === false
+      ? null
+      : perfSpan("mesh.clean.pairs", () => vertexPairs(input.positions, Math.floor(input.positions.length / 3), Math.max(...ladder)));
   for (const rung of ladder) {
     let candidate = input;
     let candidateArea = inputArea;
@@ -779,13 +951,13 @@ export function cleanMesh(
     let candidateWelded = 0;
     let candidateSplit = 0;
 
-    const first = options.weld === false ? { mesh: input, welded: 0 } : weld(input, rung);
+    const first = pairs === null ? { mesh: input, welded: 0 } : perfSpan("mesh.clean.weld", () => weld(input, rung, pairs));
     if (first.welded > 0) {
       // A weld rewrites the position array, so the measure has to be rebuilt on
       // it; the two repairs below keep the positions they were given and reuse
       // this one.
       const weldedArea = measure(first.mesh);
-      const open = openEdges(first.mesh);
+      const open = perfSpan("mesh.clean.check", () => openEdges(first.mesh));
       const degenerate = countDegenerate(first.mesh, threshold, weldedArea);
       if (acceptable(first.mesh, open, degenerate)) {
         candidate = first.mesh;
@@ -799,9 +971,9 @@ export function cleanMesh(
     // Every pass is a transaction: a pass that leaves the mesh no better, or
     // leaves a hole in it, is thrown away and the last good mesh is kept.
     for (let pass = 0; pass < REPAIR_ROUNDS && candidateDegenerate > 0; pass += 1) {
-      const attempt = splitNeedles(candidate, threshold, candidateArea);
+      const attempt = perfSpan("mesh.clean.split", () => splitNeedles(candidate, threshold, candidateArea));
       if (attempt.split === 0) break;
-      const open = openEdges(attempt.mesh);
+      const open = perfSpan("mesh.clean.check", () => openEdges(attempt.mesh));
       const degenerate = countDegenerate(attempt.mesh, threshold, candidateArea);
       if (degenerate >= candidateDegenerate || !acceptable(attempt.mesh, open, degenerate)) {
         break;

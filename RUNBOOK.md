@@ -54,6 +54,8 @@ serve the static export (`next build`, then
 | `make dev` | both services natively, foreground |
 | `make test` | `pytest -q` (services/bake) then `vitest run` (apps/web) |
 | `make gate` | the full quality gate, section 4 |
+| `make gate-fast` | the required CI path locally: the same five job bodies, the same `@smoke` Playwright subset (section 7) |
+| `make gate-nightly` | the nightly CI path locally: the full Playwright suite, the export and preset matrices; the cross-platform installers cannot be built on this host |
 | `make gate-v2` | the v2 geometry gates on the reference pipeline: G8 v1-golden, parts builds at plate 180 and 256, TEXT=all, parts+text, each validated as `.3mf` and `.stl` |
 | `make export-fixture` | build and export the Chicago preset through the **reference Python CLI** to `artifacts/chicago.3mf`; `COLOR=parts`, `TEXT=all`, `PLATE=100..256` compose into distinct stems. `make bake-fixture` is a deprecation alias that prints the new name and runs it |
 | `make validate FILE=x` (or `make validate x`) | the printability validator on a `.3mf`/`.stl`: the 04 rows, the parts/lettering rows, the container rows, plus the sidecar-driven `max_height_mm` and `attribution` rows; exit 1 on any FAIL |
@@ -80,11 +82,41 @@ Python-produced SceneGraph does not); `--params`; `--target` (any
 `export_target`: `bambu-3mf`, `generic-3mf`, `stl`, `stl-parts-zip`, `obj`,
 `step`, `color-change-3mf`); `--terrain <grid.json|demo|demo:<relief_m>>`
 (a synthetic ramp, so a draped build validates reproducibly offline);
-`--radius <m>` and `--rotation <deg>` for `--overpass`;
-`--tiling COLSxROWS[:joint[:tolerance_mm]]` (joint `dovetail` or `pin`;
+`--radius <m>`, `--rotation <deg>` and `--center <lat,lon>` for `--overpass`
+(a raw Overpass response carries no centre, so without `--center` every city
+crops around the default pin, which is what hid the preset failures in section
+9); `--tiling COLSxROWS[:joint[:tolerance_mm]]` (joint `dovetail` or `pin`;
 also writes every tile as its own file with its own sidecar, since the tiled
 export itself is a zip or multi-plate project the validator cannot open);
 `--out`; `--title`.
+
+### Screenshots for the README
+
+```sh
+cd apps/web && node scripts/capture-screenshots.mjs
+```
+
+Drives the real interface with Playwright and rewrites every image in
+`docs/assets/`. Overpass, Photon and Nominatim are routed to the committed
+fixtures, so the city and the search results are the same on every host; the
+OSM raster tiles behind the map region are fetched live, so this one needs
+network. It reuses a server already answering `http://localhost:3000` and
+starts (and stops) `npm run dev` when there is none. `--only <name,...>`
+captures a subset (`editor`, `settings`, `colour`, `search`, `objects`),
+`--url <origin>` drives another server, `--out <dir>` writes elsewhere, and
+`--headed` lets you watch.
+
+Each shot runs in its own browser on an empty `localStorage`, and one that
+needs a model re-checks after the shutter that the model is still on screen,
+retrying up to three times: a dev server reloads every page it is serving when
+anybody saves a file, and the picture that comes back from that is the empty
+state. On a tree being edited, or before a release, capture against the
+production build instead, which cannot reload underneath the run:
+
+```sh
+npm run build && node scripts/serve-static.mjs --dir out --port 3010 &
+node scripts/capture-screenshots.mjs --url http://localhost:3010
+```
 
 ## 4. The gate (`make gate`)
 
@@ -136,6 +168,12 @@ node scripts/serve-static.mjs --dir out --port 4510
 # on Windows; Git Bash mangles leading-slash values):
 NEXT_PUBLIC_BASE_PATH=/framecraft npm run build
 node scripts/serve-static.mjs --dir out --port 4511 --base /framecraft
+# the six preset Overpass responses beside the app, as pages.yml ships them
+node scripts/bundle-preset-assets.mjs --out out
+# brotli/gzip siblings, which serve-static.mjs sends when the client accepts
+# them; worth ~18 % of the JS to a self-host, nothing at all on GitHub Pages,
+# which ignores them. release.yml runs this before it zips the site.
+node scripts/precompress.mjs --dir out
 ```
 
 Desktop (Tauri 2, needs Rust):
@@ -317,9 +355,30 @@ source edit and a miss there is the normal outcome on a real pull request.
 - **Manual `next build` fails over a stale `.next`** with
   `PageNotFoundError`; `rm -rf apps/web/.next` first (the gate does this
   itself).
+- **A bad service worker on the deployed site: `?sw-off`.** The worker
+  (`apps/web/public/sw.js`) serves `/_next/static/**` cache-first and forever,
+  so a worker that ships with a caching bug is the thing serving the page and
+  cannot be fixed by deploying over it alone. Send the visitor to
+  `https://<host>/framecraft/?sw-off`. That unregisters every worker on the
+  origin, deletes every cache whose name starts with `framecraft-`, and
+  REMEMBERS the choice in `localStorage` (`framecraft.sw.off`), so following
+  navigations stay clean without the query string. `?sw-on` puts it back.
+  Nothing else on the origin is touched, and neither flag needs a deploy.
+  Registration is skipped entirely under `next dev`, on an insecure origin,
+  and inside the Tauri desktop shell (`lib/serviceWorker.ts:shouldRegister`).
 
-## 9. Known limitations (v3)
+## 9. Known limitations (v3.1)
 
+- The browser engine fails `make validate` on five of the six preset cities:
+  New York, Tokyo, London and San Francisco on `min_wall`, Paris on
+  `part_meshes` / degenerate faces. Chicago passes, and the Python reference
+  pipeline builds all six cleanly. The nightly preset matrix ships red on
+  arrival with the failing rows named in `nightly.yml`'s header, so it is not
+  read as a regression. Reproduction and per-city numbers:
+  `docs/handoff/v3-08-siteperf.md` section 7.5.
+- The STEP writer formats to six decimals and loses the same near-degenerate
+  faces the STL writer hardens against; STEP is a faceted B-rep and the
+  reference validator does not read it.
 - Plate 256 mm carries residual geometry defects on the Chicago preset: 6 to 7 degenerate faces (both frame states) and one thin lobe in frame-off parts mode; analysed in docs/handoff/FAILURES.md, warned by the in-app audit, default plate 180 unaffected.
 
 - Steep terrain can drape base walls under the printable minimum; the in-app

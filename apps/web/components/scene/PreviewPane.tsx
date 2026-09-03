@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 
+import LabelsPanel from "@/components/editor/LabelsPanel";
 import PerfHud from "@/components/editor/PerfHud";
 import { useEditorStore } from "@/store/editor";
 
@@ -47,6 +48,9 @@ export function PreviewPane() {
     <div className="relative h-full w-full" data-fc-viewport-theme={previewTheme}>
       <CityPreview />
       <PerfHud />
+      {/* The surface labels' list and fields (v3.1 Task 12), under the theme
+          toggle. Outside the canvas, so it may read the labels it edits. */}
+      <LabelsPanel />
       {/*
         Docked top-right so it never collides with the adjustments and issues
         badges at top-left.
