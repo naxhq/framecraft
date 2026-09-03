@@ -10,8 +10,20 @@
  * here by injecting the dependency rather than by manipulating the machine.
  */
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import {
+  MODEL_DATA_LICENCE as EXPORT_MODEL_DATA_LICENCE,
+  ATTRIBUTION as METADATA_CREDIT,
+} from "./engine/export/common";
+import {
+  MODEL_DATA_LICENCE as SOLID_MODEL_DATA_LICENCE,
+  OSM_CREDIT as ENGRAVED_CREDIT,
+  OSM_CREDIT_ASCII as ENGRAVED_CREDIT_ASCII,
+} from "./engine/solid/attribution";
 import {
   COMMIT_LENGTH,
   NO_COMMIT,
@@ -186,6 +198,50 @@ describe("the strings the footer and the About dialog render", () => {
     expect(LICENCE_URL.startsWith(REPOSITORY_URL)).toBe(true);
     expect(LICENCE_NAME).toBe("MIT");
     expect(OSM_CREDIT).toBe("© OpenStreetMap contributors");
+  });
+});
+
+/**
+ * The OSM credit reaches four surfaces, and it is a licence obligation on
+ * every one of them: the engraved marks, the exported file's metadata and
+ * sidecar, the About dialog, and the map overlay.
+ *
+ * Until the v3-13 dist audit each surface carried its own copy of the string
+ * and the test above pinned exactly one of them, so three could stop saying
+ * the same thing without a single assertion failing. Three of the four now
+ * import `OSM_CREDIT`; the fourth is a `const` inside a client component this
+ * module cannot import without pulling MapLibre into a node test, so its
+ * source is read instead. A comment asking the next person to keep them in
+ * sync would not have caught anything.
+ */
+describe("the OSM credit, on every surface that carries it", () => {
+  it("is one string in the engine: the marks, the metadata and the sidecar", () => {
+    expect(ENGRAVED_CREDIT).toBe(OSM_CREDIT);
+    expect(METADATA_CREDIT).toBe(OSM_CREDIT);
+    // The ASCII fallback for a face with no U+00A9 differs in the sign and in
+    // nothing else, so it cannot credit a different project.
+    expect(ENGRAVED_CREDIT_ASCII).toBe(OSM_CREDIT.replace("©", "(c)"));
+    expect(ENGRAVED_CREDIT_ASCII).not.toContain("©");
+  });
+
+  it("says the same thing in both ODbL licence lines", () => {
+    const expected = `Model data ${OSM_CREDIT}, ODbL 1.0`;
+    expect(SOLID_MODEL_DATA_LICENCE).toBe(expected);
+    expect(EXPORT_MODEL_DATA_LICENCE).toBe(expected);
+  });
+
+  it("is the same string in the map overlay, which cannot import it", () => {
+    const source = readFileSync(
+      resolve(__dirname, "..", "components", "map", "LocationPicker.tsx"),
+      "utf-8",
+    );
+    const declared = /const OSM_ATTRIBUTION = "([^"]*)"/.exec(source);
+    expect(
+      declared,
+      "components/map/LocationPicker.tsx no longer declares OSM_ATTRIBUTION; " +
+        "point this test at the credit's new home rather than deleting it",
+    ).not.toBeNull();
+    expect(declared?.[1]).toBe(OSM_CREDIT);
   });
 });
 

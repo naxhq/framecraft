@@ -7,9 +7,8 @@ import { sceneFromOverpass } from "../lib/engine/osm/scene";
 import { makeContext, PART_OVERLAP_MM, LAYER_SEPARATION_MM } from "../lib/engine/solid/context";
 import { Arena, loadManifold, doublePositions, batchedUnion, extrudeSection, offsetSection, intersectSection, cleanSection } from "../lib/engine/solid/manifold";
 import { repairBuildings, type BuildingSolid } from "../lib/engine/solid/repair";
-import { buildingSpanMm, skirtMm } from "../lib/engine/solid/buildings";
+import { buildingSpanMm } from "../lib/engine/solid/buildings";
 import { cleanMesh, degenerateFaces } from "../lib/engine/solid/mesh";
-import * as T from "../lib/transform";
 
 async function main(): Promise<void> {
   const [overpass, paramsPath, lat, lon, rotation] = process.argv.slice(2).filter((a) => a !== "--");
@@ -32,7 +31,9 @@ async function main(): Promise<void> {
     const pieces = [];
     let stacked = 0;
     for (const s of repaired.solids) {
-      let [z0, z1] = buildingSpanMm(ctx, s);
+      // `z0` moves with the overlap variant below; `z1` never does.
+      const [spanZ0, z1] = buildingSpanMm(ctx, s);
+      let z0 = spanZ0;
       let section = s.section;
       if (s.standsOn !== null) {
         stacked += 1;

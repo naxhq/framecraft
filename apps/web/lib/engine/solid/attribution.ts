@@ -42,6 +42,7 @@ import { loadedGlyphFace, type GlyphFace } from "../../fontGlyphs";
 import type { PreviewArea } from "../../preview";
 import { glyphAreas, placeArea } from "../../previewText";
 import * as T from "../../transform";
+import { OSM_CREDIT as IDENTITY_OSM_CREDIT } from "../../version";
 import type { AuditFinding, ResolvedLine } from "../types";
 import { CUTTER_OVERSHOOT_MM, addFinding, finding, type BuildContext } from "./context";
 import { contoursFromAreas, deepestRecessMm, holeCount } from "./lettering";
@@ -66,14 +67,29 @@ export const ATTRIBUTION_FACE = T.UNDERSIDE_MARK_FACE;
 /** The product name. Present on every mark, first. */
 export const PRODUCT_NAME = "FrameCraft";
 
-/** The OSM credit, with the real sign. */
-export const OSM_CREDIT = "© OpenStreetMap contributors";
+/**
+ * The OSM credit, with the real sign: the ENGRAVED half of the obligation.
+ *
+ * Re-exported from `lib/version.ts` rather than written out again. This string
+ * used to be one of four independent copies, one per surface, with a single
+ * test pinning a single copy, so three of the four could stop saying the same
+ * thing without anything going red (v3-13 dist audit, finding 2). One source
+ * now feeds the mark, the export metadata and the About dialog, and
+ * `version.test.ts` pins the map overlay's copy, which cannot import it, to
+ * the same value.
+ */
+export const OSM_CREDIT = IDENTITY_OSM_CREDIT;
 
-/** The same credit for a face whose metrics have no U+00A9. */
-export const OSM_CREDIT_ASCII = "(c) OpenStreetMap contributors";
+/**
+ * The same credit for a face whose metrics have no U+00A9.
+ *
+ * Derived, so it cannot name a different project from the credit it stands in
+ * for: only the sign is substituted.
+ */
+export const OSM_CREDIT_ASCII = OSM_CREDIT.replace("©", "(c)");
 
 /** The ODbL line every exporter writes into its file metadata. */
-export const MODEL_DATA_LICENCE = "Model data © OpenStreetMap contributors, ODbL 1.0";
+export const MODEL_DATA_LICENCE = `Model data ${OSM_CREDIT}, ODbL 1.0`;
 
 /**
  * The credit as this face can actually lay it out.

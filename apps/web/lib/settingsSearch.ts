@@ -46,8 +46,38 @@ const GROUP_TITLES: ReadonlyMap<GroupId, string> = new Map(
   GROUPS.map((group) => [group.id, group.title]),
 );
 
-/** Sections whose hits cannot be shown inside the scrolling panel body. */
-const UNSEARCHABLE_GROUPS: ReadonlySet<GroupId> = new Set<GroupId>(["output"]);
+/**
+ * Whether a catalogue row is a control this search can honestly return.
+ *
+ * Every GROUP is searched, including `output`, which used to be excluded whole
+ * (DECISIONS `[V3.1-P5-4]`). That exclusion made the box's own help string
+ * false: it promises to find a control "across every group", and typing
+ * "format" found nothing, because `export_target` is catalogued under `output`
+ * and is a real `PrintParams` control a user goes looking for by name.
+ *
+ * What is excluded now is not a group but the rows in the `output` bucket that
+ * are not settings at all. That bucket is the catalogue's home for everything
+ * outside the eleven parameter groups, and it holds three kinds of row:
+ *
+ *  * `export_target`, a control that writes a `PrintParams` leaf. Searchable,
+ *    and the reason this rule exists.
+ *  * the panel's own chrome (the search box, its clear button, a group header,
+ *    Reset all) and the viewport's transient surfaces (the right-click
+ *    inspector's rows, the labels card's fields). A hit on one of those has
+ *    nowhere to take you: the element is either this very box or is not in the
+ *    DOM until an object is picked, and a `*` row has no single element at
+ *    all. Returning them would be the search finding itself and offering dead
+ *    rows, which is not what the help promises.
+ *
+ * The rule is therefore "writes a parameter", not a hand-kept list, so a
+ * future control that lands in this bucket and moves the model becomes
+ * searchable on the day it is catalogued rather than the day somebody
+ * remembers this file.
+ */
+function isSearchableControl(spec: ControlSpec): boolean {
+  if (spec.group !== "output") return true;
+  return Array.isArray(spec.writes);
+}
 
 /** The query, lower-cased and split into the tokens that must all match. */
 export function queryTokens(query: string): string[] {
@@ -94,8 +124,8 @@ function indexSection(spec: SectionSpec): Indexed {
 }
 
 const INDEX: readonly Indexed[] = [
-  ...CONTROLS.filter((spec) => !UNSEARCHABLE_GROUPS.has(spec.group)).map(indexControl),
-  ...SECTIONS.filter((spec) => !UNSEARCHABLE_GROUPS.has(spec.group)).map(indexSection),
+  ...CONTROLS.filter(isSearchableControl).map(indexControl),
+  ...SECTIONS.map(indexSection),
 ];
 
 /** Everything the search can ever return, for the tests and the empty state. */

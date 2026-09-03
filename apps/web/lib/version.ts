@@ -36,7 +36,17 @@ export const LICENCE_NAME = "MIT";
 
 export const LICENCE_URL = `${REPOSITORY_URL}/blob/main/LICENSE`;
 
-/** The OSM credit, a licence obligation rather than a courtesy; the same string the exporters engrave and write into file metadata. */
+/**
+ * The OSM credit: a licence obligation rather than a courtesy.
+ *
+ * The single source for it. `lib/engine/export/common.ts:ATTRIBUTION` (file
+ * metadata and the sidecar) and `lib/engine/solid/attribution.ts:OSM_CREDIT`
+ * (the engraved marks, and the ASCII fallback derived from it) both import
+ * this constant; the map overlay in `components/map/LocationPicker.tsx` cannot
+ * import it, so `version.test.ts` reads that file and pins its literal to this
+ * value. Until the v3-13 dist audit these were four independent copies with
+ * one test pinning one of them.
+ */
 export const OSM_CREDIT = "© OpenStreetMap contributors";
 
 /**

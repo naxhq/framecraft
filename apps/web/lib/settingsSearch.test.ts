@@ -43,10 +43,10 @@ describe("the query", () => {
 describe("what it finds", () => {
   it("covers every group the panel renders", () => {
     // A group with no searchable control is a group nobody can find their way
-    // into. `output` is deliberately not indexed: Reset all is always on
-    // screen, and the export format select lives in the action bar.
+    // into. Since [V3.1-P5-4] that includes `output`: it is searched like any
+    // other group, and the export format select is the control that makes it
+    // reachable.
     for (const group of GROUPS) {
-      if (group.id === "output") continue;
       const hits = searchSettings(group.title.toLowerCase().split(" ")[0]);
       const reachable = CONTROLS.filter((spec) => spec.group === group.id).some((spec) =>
         searchSettings(spec.label).some((hit) => hit.id === spec.id),
@@ -56,11 +56,46 @@ describe("what it finds", () => {
     }
   });
 
-  it("never returns a control from the action bar or the panel shell", () => {
-    for (const query of ["reset", "export", "search", "group"]) {
+  /**
+   * Rewritten for DECISIONS `[V3.1-P5-4]`, which overturned this test's
+   * premise rather than weakening it.
+   *
+   * It used to assert that no hit came from the `output` group at all, and
+   * that made the box's own help false: "across every group" did not include
+   * the group holding `export_target`, so typing "format" found nothing.
+   * The thing actually worth forbidding is a hit that goes nowhere, and that
+   * is what is asserted now, over a wider net of queries than before: the
+   * search may never return its own box, a group header, Reset all, or a
+   * transient row from the right-click inspector or the labels card, because
+   * none of those is a control the panel can take you to. A control that
+   * writes a `PrintParams` leaf is fair game wherever it is rendered.
+   */
+  it("never returns the panel's own chrome or a row it cannot reach", () => {
+    const byId = new Map(CONTROLS.map((spec) => [spec.id, spec]));
+    for (const query of ["reset", "export", "search", "group", "label", "object", "this"]) {
       for (const hit of searchSettings(query)) {
-        expect(hit.group, `${query} found ${hit.id}`).not.toBe("output");
+        const spec = byId.get(hit.id);
+        if (spec === undefined) continue; // a section, which has no `writes`
+        // A `*` row inside a parameter group is reachable: it has no single
+        // element, but the hit opens the section it lives in, which is where
+        // its instances are. In `output` there is no section to open.
+        if (spec.group !== "output") continue;
+        expect(spec.id, `${query} found the wildcard row ${hit.id}`).not.toContain("*");
+        expect(
+          Array.isArray(spec.writes),
+          `${query} found ${hit.id}, which writes ${JSON.stringify(spec.writes)} and so has nowhere to take you`,
+        ).toBe(true);
       }
+    }
+  });
+
+  it("finds the export format, which lives in the action bar and writes a parameter", () => {
+    for (const query of ["format", "export format", "3mf"]) {
+      const hits = searchSettings(query);
+      expect(
+        hits.map((hit) => hit.id),
+        `"${query}" must find the export format select ([V3.1-P5-4])`,
+      ).toContain("export_target");
     }
   });
 
@@ -110,8 +145,14 @@ describe("what it finds", () => {
   });
 
   it("indexes the whole panel, not a sample of it", () => {
-    const panelControls = CONTROLS.filter((spec) => spec.group !== "output").length;
-    expect(searchableCount()).toBe(panelControls);
+    // Restated from the catalogue rather than read off the implementation:
+    // every control in a parameter group, plus the ones in `output` that write
+    // a `PrintParams` leaf, which since [V3.1-P5-4] is how the export format
+    // select is reachable.
+    const searchable = CONTROLS.filter(
+      (spec) => spec.group !== "output" || Array.isArray(spec.writes),
+    ).length;
+    expect(searchableCount()).toBe(searchable);
     expect(searchableCount()).toBeGreaterThan(90);
   });
 });

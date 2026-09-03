@@ -4,7 +4,7 @@
 
 import type { PrintParams, SceneGraph } from "../../contracts";
 import { resolveProfile } from "../../printers";
-import { appVersion } from "../../version";
+import { OSM_CREDIT, appVersion } from "../../version";
 import { REGION_NAMES, type Bbox3, type EngineResult, type RegionMesh, type RegionName } from "../types";
 
 /**
@@ -18,7 +18,18 @@ import { REGION_NAMES, type Bbox3, type EngineResult, type RegionMesh, type Regi
  */
 export const VERTEX_DECIMALS = 12;
 
-export const ATTRIBUTION = "© OpenStreetMap contributors";
+/**
+ * The OSM credit every export writes into its metadata.
+ *
+ * Not a literal: it is `lib/version.ts:OSM_CREDIT`, which is also what the
+ * About dialog shows and, through `solid/attribution.ts`, what the mandatory
+ * marks engrave. It used to be its own copy of the string, and four
+ * independent copies of a licence obligation are four places it can quietly
+ * stop being true (v3-13 dist audit, finding 2). `version.test.ts` pins every
+ * surface to this one source, including the map overlay's, which cannot import
+ * it.
+ */
+export const ATTRIBUTION = OSM_CREDIT;
 export const LICENSE_LINE = "OpenStreetMap data is licensed under the ODbL 1.0.";
 export const GENERATOR_NAME = "FrameCraft";
 
@@ -50,7 +61,7 @@ export const APPLICATION = `${GENERATOR_NAME} ${GENERATOR_VERSION}`;
  * it is four claims. `LICENSE_LINE` above is the longer prose form the 3MF's
  * reserved `LicenseTerms` field already carried and keeps carrying.
  */
-export const MODEL_DATA_LICENCE = "Model data © OpenStreetMap contributors, ODbL 1.0";
+export const MODEL_DATA_LICENCE = `Model data ${OSM_CREDIT}, ODbL 1.0`;
 
 /** `place.author`, trimmed; "" when the user never set one. */
 export function authorOf(result: EngineResult): string {

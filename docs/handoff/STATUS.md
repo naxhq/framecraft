@@ -69,7 +69,9 @@ are what caught the run's worst defects.
 | T14 CI diet | w2-ci | audit + fixes | PASS (0ae5d87) |
 | T1 integration, T2 settings, matrix, geometry | w3-* | audits + fixes | PASS (af02c98) |
 | T6 action bar, T4 shell, T5 panel, T7 perf, T8 site perf, T10 identity | w4-*, w5-identity2 | audits + fixes | landed, gating |
-| T11 overrides, T12 labels, T13 project, T15 branding | w5-overrides, w6-labels, w6-dist | in flight | in flight |
+| T11 overrides, T12 labels, T13 project, T15 branding | w5-overrides3, w6-labels3, w6-dist | audits + fixes | landed (7d02e0e), T11 gating |
+| T7 close-out, T16 README and screenshots | w7-perf3, w7-readme | audit in flight | landed (7d02e0e) |
+| Preset cities and the STEP grid | w7-presets2 (Fable) | `make validate`, six cities | OPEN, in flight |
 
 Two lessons recorded in `DECISIONS.md` `[V3.1-O8]` and worth repeating: green
 tests never imply a working feature (three features were absent while every
@@ -78,3 +80,14 @@ self-report can describe half a feature as the whole. The run's worst defect,
 the browser engine failing the reference validator on five of the six preset
 cities, was invisible because a command-line default cropped every city around
 the Chicago Loop, so only one city had ever been built.
+
+A third lesson was added late in the run and is recorded as `[V3.1-P7-15]`: a
+latency figure produced by a stage serving stale output is not a latency
+figure. Changing `height_exaggeration.multiplier` appeared to preview in 95 to
+107 ms only because `repair-buildings` read the multiplier without declaring
+it, and so answered with geometry built for the previous value. Declaring the
+input costs 225 to 536 ms and re-runs the repair. The flattering number was
+struck from the record rather than kept beside the honest one. Its sibling
+`[V3.1-P7-14]` withholds today's `road_mode` and `plate_mm` readings entirely,
+because they doubled on a host carrying sixteen node processes without anything
+touching them, and a number that moves when nothing moved is measuring the host.

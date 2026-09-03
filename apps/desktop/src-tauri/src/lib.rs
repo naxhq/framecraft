@@ -73,16 +73,38 @@ pub fn is_project_filename(name: &str) -> bool {
 /// The project file in a process argument list, if there is one.
 ///
 /// Deliberately narrow. The first argument is the executable and is always
-/// skipped; anything that looks like a flag is skipped, because both Tauri's
-/// dev runner and the WebView runtime pass their own switches through; and a
-/// path is only accepted when its name ends in one of this app's extensions,
-/// so a stray argument can never make the app try to open something arbitrary.
+/// skipped, and a path is only accepted when its name ends in one of this
+/// app's extensions, so a stray argument can never make the app try to open
+/// something arbitrary.
+///
+/// **The extension is the discriminator, not a leading dash.** This used to
+/// skip every argument starting with `-`, which kept Tauri's dev runner and
+/// the WebView runtime's own switches out but also made `-notes.framecraft`
+/// impossible to open by double-click, and a leading hyphen is a name a real
+/// user can give a real file (v3-13 dist audit, finding 3). No switch either
+/// runtime passes ends in `.framecraft` or `.framecraft.json`, so the suffix
+/// test alone does the job. Two narrower rules keep it honest:
+///
+/// * `--` ends the switches, exactly as it does everywhere else: after it,
+///   every argument is a path, hyphen or not.
+/// * before `--`, a `--name=value` switch is skipped whole, so a value that
+///   happens to name a project (`--open=/tmp/loop.framecraft`) can never be
+///   mistaken for the path itself.
 pub fn project_path_from_args(args: &[String]) -> Option<PathBuf> {
-    args.iter()
-        .skip(1)
-        .filter(|arg| !arg.starts_with('-'))
-        .find(|arg| is_project_filename(arg))
-        .map(PathBuf::from)
+    let mut positional_only = false;
+    for arg in args.iter().skip(1) {
+        if !positional_only && arg == "--" {
+            positional_only = true;
+            continue;
+        }
+        if !positional_only && arg.starts_with("--") && arg.contains('=') {
+            continue;
+        }
+        if is_project_filename(arg) {
+            return Some(PathBuf::from(arg));
+        }
+    }
+    None
 }
 
 /// Read a project file, refusing anything implausibly large before allocating it.
@@ -303,6 +325,64 @@ mod tests {
             None
         );
         assert_eq!(project_path_from_args(&args(&[])), None);
+    }
+
+    /// A leading hyphen is a name a real user can give a real file, and the
+    /// old filter skipped it silently (v3-13 dist audit, finding 3).
+    #[test]
+    fn opens_a_project_whose_name_begins_with_a_hyphen() {
+        assert_eq!(
+            project_path_from_args(&args(&["framecraft.exe", "-notes.framecraft"])),
+            Some(PathBuf::from("-notes.framecraft"))
+        );
+        assert_eq!(
+            project_path_from_args(&args(&["framecraft.exe", "--", "-notes.framecraft"])),
+            Some(PathBuf::from("-notes.framecraft"))
+        );
+        // `--` ends the switches: after it a name that looks like one is still a path.
+        assert_eq!(
+            project_path_from_args(&args(&["framecraft.exe", "--", "--odd=name.framecraft"])),
+            Some(PathBuf::from("--odd=name.framecraft"))
+        );
+    }
+
+    /// A switch's VALUE is not the path, however much it looks like one.
+    #[test]
+    fn never_reads_a_project_out_of_a_name_equals_value_switch() {
+        assert_eq!(
+            project_path_from_args(&args(&["framecraft.exe", "--open=/tmp/loop.framecraft"])),
+            None
+        );
+        // ... and the real path later in the list is still found.
+        assert_eq!(
+            project_path_from_args(&args(&[
+                "framecraft.exe",
+                "--open=/tmp/decoy.framecraft",
+                "/tmp/real.framecraft",
+            ])),
+            Some(PathBuf::from("/tmp/real.framecraft"))
+        );
+    }
+
+    /// Paths the operating system really hands over: spaces, and non-ASCII.
+    #[test]
+    fn accepts_paths_with_spaces_and_non_ascii() {
+        assert_eq!(
+            project_path_from_args(&args(&[
+                "framecraft.exe",
+                "C:/My Designs/São Paulo.framecraft",
+            ])),
+            Some(PathBuf::from("C:/My Designs/São Paulo.framecraft"))
+        );
+        assert_eq!(
+            project_path_from_args(&args(&["framecraft.exe", "/home/v/設計 2026.framecraft"])),
+            Some(PathBuf::from("/home/v/設計 2026.framecraft"))
+        );
+        // Case is the OS's business here too, including on a legacy name.
+        assert_eq!(
+            project_path_from_args(&args(&["framecraft.exe", "/home/v/設計.FrameCraft.JSON"])),
+            Some(PathBuf::from("/home/v/設計.FrameCraft.JSON"))
+        );
     }
 
     #[test]

@@ -938,3 +938,75 @@ Append-only. Format: `- [phase] decision, one line`.
   is the test's own designed mechanism and follows the existing `ShortcutSheet` and
   `AdjustmentsChip` precedent. Nothing was weakened: the exhaustiveness assertion, the
   reason-length floor and the "no row for a control nothing renders" check all still run.
+
+- `[V3.1-P7-15]` **A latency figure produced by a stage serving stale output is not a
+  latency figure.** `repair-buildings` reads `height_exaggeration` through
+  `T.building_top_mm_for` for the tower-stacking decision but never declared it, so changing
+  `height_exaggeration.multiplier` used to preview in 95-107 ms across 35 stages while
+  `repair-buildings` quietly served a result computed for the previous multiplier. With the
+  input declared it costs 225-536 ms across 37 stages, the upper figure taken under a
+  concurrent vitest run, and the ground still stays cached through
+  `repair-buildings#footprint`. The change is a slowdown on paper and a correctness fix in
+  fact, it sits far inside the 2000 ms invalidating budget, and the old number is struck from
+  the record rather than kept as a better-looking one. This is a different bug from the
+  heights miss, which was over-invalidation rather than a key that failed to cover a read,
+  but both are the same invariant: the cache key must cover everything the stage touches.
+  `heights.floor_height_m` is unaffected at 267-279 ms under the same load.
+
+- `[V3.1-P13-2]` **The OSM credit becomes one source, or a test that fails when the copies
+  diverge.** The T13/T15 audit found `© OpenStreetMap contributors` written as four
+  independent literals (`lib/version.ts`, `lib/engine/solid/attribution.ts` which is what gets
+  engraved, `lib/engine/export/common.ts` which is what goes into file metadata, and
+  `components/map/LocationPicker.tsx`), with only one pinned by a test, and `version.ts`
+  documenting its copy as the one the exporters use when they never import it. Attribution
+  surviving in the metadata and the engraved marks is a stated correctness invariant of this
+  project, so four unpinned copies mean it can stop being true in three places silently. One
+  source, or an assertion that all four are identical. A comment asking future readers to keep
+  them in sync is not a mechanism.
+- `[V3.1-P13-3]` **Four Rust unit tests that have never executed are not coverage.** `cargo`
+  appears in no Makefile target, script or workflow, and `tauri build` does not compile
+  `#[cfg(test)]` code, so the desktop open-with contract has no execution evidence anywhere
+  and the audit's account of it is a code read. `cargo test --lib` is wired into a workflow
+  this run. On this host Smart App Control blocks fresh executables inside the repo tree
+  (os error 4551), so `CARGO_TARGET_DIR` points into the scratchpad to run them locally first;
+  a step is not wired in until it has been seen to pass.
+- `[V3.1-P13-4]` **A leading hyphen in a filename is a file, not a flag.** A project named
+  `-notes.framecraft` was silently skipped by the desktop launch argument filter and could not
+  be double-click opened. Filtering by position or an explicit terminator costs nothing, so
+  this is fixed rather than documented as a trade.
+
+- `[V3.1-P11-2]` **Task 11 reaches the user; the gap was the evidence rung, not the feature.**
+  The reach audit ran the eleven `object_overrides` leaves through the matrix harness and read
+  the written 3MF rather than the sidecar: `hidden` takes the model from 19509 to 9079 mm3,
+  `height_scale` 0.5 gives 14345, `hero` 9079, `slot`/`color` produce an `override_1` part,
+  `width_scale` 762 to 1475, `road_mode` moves the road out of `roads`, `tint` adds one entry
+  to `buildingTints`. Every one of those is a measured effect, so no leaf may take a matrix
+  exemption, and those figures are the expected values the probes are written against. Two
+  probes need fixture work first: `fixture.ts:area()` omits the id on every water and green
+  polygon, so no test scene has one for `raise_mm` to act on, and `osm_id`/`layer` need a base
+  row that bears an effect.
+- `[V3.1-P5-4]` **The settings search must cover every group, because that is what it claims.**
+  `settingsSearch.ts:50` excludes the `output` group, so pressing `/` and typing "format"
+  finds nothing, while the control's own help says it searches "across every group" and the
+  README says it "finds any control by name". The rule this run has applied throughout is that
+  a control does what it says; the fix is to include the group, not to soften two pieces of
+  copy to match a narrower search.
+- `[V3.1-P15-5]` **A version stamp nothing reads on a real page is unproven.** The build stamp
+  and the About dialog are exercised only through `renderToStaticMarkup`, where `buildInfo()`
+  always returns `0.0.0-unbuilt`, so nothing checks that a built page shows a real version and
+  no spec opens the dialog. The footer's OSM, Photon and Nominatim attribution is read live in
+  `search.spec.ts` and is the model to follow.
+
+- `[V3.1-O15]` **The checkpoint commit `7d02e0e` shipped a red gate step, and that is recorded
+  rather than quietly fixed.** I ran `tsc --noEmit` before committing and did not run eslint, so
+  `apps/web/scripts/_degen-variants.ts` went in with one `prefer-const` error and two unused
+  variables, which fails `eslint . --max-warnings 0` and therefore `make gate` step 3. The
+  agent that found it asked before touching it, correctly: a silent fix would have hidden that
+  a checkpoint claiming a clean typecheck was never linted. The rule for the rest of the run is
+  that a commit runs both, and this run has held other people's work to exactly that standard.
+- `[V3.1-P5-5]` **The settings search is fixed per row, not per group.** The instruction was to
+  include the `output` group; the implementation instead replaced the group-level exclusion with
+  a rule that indexes a row when it writes a `PrintParams` leaf. That is the better fix: the next
+  control landing in that bucket becomes searchable without anyone noticing a second time, and
+  the help copy stays true by construction rather than by maintenance. The two tests encoding the
+  old premise were re-pointed to the new rule rather than relaxed.
