@@ -112,7 +112,56 @@ export default defineConfig({
       args: ["--enable-unsafe-swiftshader", "--disable-dev-shm-usage"],
     },
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  // Two projects over the SAME browser and the same specs. They differ only in
+  // which titles they select, and neither is a default: `npm run test:e2e`
+  // names `chromium` and `npm run test:e2e:smoke` names `chromium-smoke`, so a
+  // bare `playwright test` is the only way to get both and nothing in the repo
+  // does that.
+  //
+  //   chromium        every test. `make gate`, `make gate-nightly` and
+  //                   nightly.yml's `e2e-full` run this one.
+  //   chromium-smoke  the `@smoke` grep: three tests covering one
+  //                   representative path, which is what the required CI job
+  //                   and `make gate-fast` run.
+  //
+  // As of v3-14 `@smoke` selects exactly three titles in smoke.spec.ts.
+  // Verified with `--project=chromium-smoke --list`, which is the only count
+  // worth writing down here: the full suite grows most weeks (50 tests when
+  // this split was designed, 67 a few hours later), so run `--list` rather
+  // than trusting any total quoted in a comment. Measured on this host at
+  // E2E_BUDGET_FACTOR=3 against 8.6 min for the whole suite:
+  //
+  //   6.2 s  the small-scene validator round trip: preset -> preview ->
+  //          export -> download -> `uv run python -m app.cli validate` says
+  //          ALL CHECKS PASS. Preview, one export and one download, and the
+  //          only tagged test whose bytes are judged by the reference
+  //          validator rather than by the browser alone.
+  //   3.6 s  the Bambu Studio project export, a SECOND target through the
+  //          same UI, checked region by region for its own extruder.
+  //   1.7 s  the empty-Overpass path: warn, and disable Export.
+  //
+  // NOT tagged, deliberately: "happy path: Chicago preset previews, sliders
+  // stay local, export downloads a 3MF". It is the most representative test
+  // in the file and it is also 2.2 MINUTES here, because it builds all 992
+  // Chicago buildings, measures a slider-driven frame rate and nudges the
+  // rotation twice. GitHub's runners have no GPU and fall back to SwiftShader,
+  // where the whole suite runs 2.2x to 3.7x slower than on this host, so that
+  // one test alone projects to 5 to 8 minutes and would spend the entire
+  // required-path budget. Full-Chicago geometry is not lost from the fast
+  // path: the `build-and-validate` job exports the same 992-building fixture
+  // twice through `export:cli` and the Python validator judges both files.
+  // The UI-side happy path runs nightly. See docs/handoff/v3-14-ci.md.
+  //
+  // A tag is a SELECTOR, never a licence to run less: every test outside the
+  // grep still runs, nightly and in the local full gate, and the zero-skip and
+  // zero-expected-failure guards apply to both projects. `--grep` filters at
+  // collection, so an unselected test is absent from results.json rather than
+  // reported as skipped -- which is why the smoke job additionally asserts
+  // that the grep selected something, a check the full project does not need.
+  projects: [
+    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    { name: "chromium-smoke", use: { ...devices["Desktop Chrome"] }, grep: /@smoke/ },
+  ],
   webServer: [
     {
       command: "uv run uvicorn app.main:app --host 127.0.0.1 --port 8000",

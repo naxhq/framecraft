@@ -30,8 +30,10 @@ develop most features with `cd apps/web && npm run dev` alone.
 ## Test
 
 ```sh
-make test    # pytest + vitest
-make gate    # the full quality gate
+make test           # pytest + vitest
+make gate-fast      # what the required CI path runs, locally (partial by design)
+make gate           # the full quality gate
+make gate-nightly   # the whole nightly set, minus the cross-platform installers
 ```
 
 The gate is the bar for merging. It runs the static no-skip guard, pytest,
@@ -82,8 +84,34 @@ green. Run `make contracts` to regenerate `apps/web/lib/contracts.ts` and
 
 ## Pull requests
 
-- `make gate` green, locally or in CI, before review.
+CI runs two paths. Know which one your green tick came from.
+
+**The required path** (`ci.yml`, every push and every pull request) is five
+parallel jobs: lint and typecheck, vitest, pytest, `next build` plus the two
+Chicago `export:cli` runs judged by the Python validator, and the `@smoke`
+Playwright subset. It is built to finish in under ten minutes, and it does that
+by running 3 tagged acceptance tests rather than by checking anything less
+carefully. Every zero-skip guard still runs on it.
+
+**A green required run does not prove the change is releasable.** It does not
+run any other Playwright test, `make gate-v2`, five of the seven export
+targets, tiling, the five non-Chicago presets, or any desktop installer build.
+The happy path is among the tests it does not run, so the r3f preview at
+Chicago scale and 01/A3's no-page-reload assertion are not covered per commit.
+Those run in `nightly.yml` at 03:30 UTC, on demand, and on every `v*` tag.
+
+So:
+
+- `make gate-fast` green before you push. It is the required CI path, locally.
+- `make gate` green, locally or in CI, before review. That is still the full
+  gate, every acceptance test included, and it is what review expects.
+- Touching geometry, an exporter, the engine, ingest or a preset? Run
+  `make gate-nightly` too, or dispatch `nightly.yml` on your branch. The fast
+  path will not catch a regression in any of them.
 - New behaviour comes with tests that would fail without it.
+- Tagging a test `@smoke` puts it on the required path. It never takes a test
+  off the nightly one: a tag selects, it does not exclude. Keep the subset
+  small enough that `e2e-smoke` stays under about seven minutes.
 - Report honestly: if something is degraded, partial, or skipped, say so in
   the PR description rather than letting the diff imply otherwise.
 - Schema or geometry-affecting changes get a `DECISIONS.md` line.

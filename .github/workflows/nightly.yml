@@ -1,0 +1,450 @@
+# Nightly heavy path. Everything ci.yml stopped running per commit.
+#
+# Triggers:
+#   schedule           03:30 UTC daily.
+#   workflow_dispatch  on demand, before a release or after a risky merge.
+#   push  tags v*      so the full suite, the geometry gates and every export
+#                      format run ON the tag being released.
+#
+# ADVISORY, NOT A GATE. nightly.yml and release.yml both fire on the same push
+# to `refs/tags/v*`. They are separate workflows with no dependency between
+# them, so they start within seconds of each other and release.yml creates the
+# release and attaches installers whether this workflow is green, red or still
+# running (its `create-release` job has a five-minute timeout and finishes
+# first). Reading the nightly result before publishing is a human step. Making
+# it mechanical means lifting these heavy jobs into a reusable workflow that
+# release.yml's `create-release` depends on, which is a larger change than the
+# CI diet (v3-14 audit M1).
+#
+# `desktop` is skipped on the tag trigger only: release.yml already builds the
+# same three platforms from the same reusable workflow on a tag, and paying for
+# six desktop builds per tag proves nothing twice.
+#
+# Nothing here is a duplicate of the fast path. ci.yml keeps the two zero-skip
+# guards, the unit suites, the build and the Chicago export/validate pair; this
+# workflow adds the coverage that used to sit on the required path and the
+# coverage that never fitted there at all.
+name: nightly
+
+on:
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+# Same reason as ci.yml's block: GitHub's default Linux shell is `bash -e {0}`
+# with NO pipefail, so any `cmd | tee log` exits with tee's status, always 0.
+# `shell: bash` is what supplies `--noprofile --norc -eo pipefail`. Nothing in
+# THIS workflow pipes through tee today, but `make gate-v2` and both matrix
+# scripts aggregate their own `rc` and are run as plain commands, so the setting
+# is free here and stops the next piped step being silently unfailable
+# (v3-14 audit B2).
+defaults:
+  run:
+    shell: bash
+
+env:
+  UV_VERSION: "0.12.1"
+  NODE_VERSION: "22"
+
+jobs:
+  # ---------------------------------------------------------------------
+  # The whole Playwright suite, the way ci.yml used to run it.
+  # Baseline on main: 19 to 32 minutes for the suite itself, plus up to
+  # 3m 46s of browser download on a cold cache.
+  # ---------------------------------------------------------------------
+  e2e-full:
+    name: e2e (full suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+          version: ${{ env.UV_VERSION }}
+
+      - name: Restore uv cache
+        id: uv-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('services/bake/uv.lock') }}
+
+      - uses: ./.github/actions/cache-report
+        with:
+          label: uv (~/.cache/uv)
+          key: uv-${{ runner.os }}-${{ hashFiles('services/bake/uv.lock') }}
+          hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          github-token: ${{ github.token }}
+
+      - name: uv sync (reference service)
+        working-directory: services/bake
+        run: uv sync
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore npm cache
+        id: npm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+
+      - uses: ./.github/actions/cache-report
+        with:
+          label: npm (~/.npm)
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+          hit: ${{ steps.npm-cache.outputs.cache-hit }}
+          github-token: ${{ github.token }}
+
+      - name: npm ci (web)
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Resolve the pinned Playwright version
+        id: pw
+        run: |
+          # `|| true`: under `-e` a failing `node -p` would abort the step at
+          # the assignment and the diagnostic below would never print.
+          v=$(node -p "require('./apps/web/package-lock.json').packages['node_modules/@playwright/test'].version" 2>/dev/null || true)
+          if [ -z "$v" ] || [ "$v" = "undefined" ]; then
+            echo "::error::could not read @playwright/test's version out of apps/web/package-lock.json"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "@playwright/test $v"
+
+      - name: Restore Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
+      - uses: ./.github/actions/cache-report
+        with:
+          label: Playwright browsers (~/.cache/ms-playwright)
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+          hit: ${{ steps.pw-cache.outputs.cache-hit }}
+          github-token: ${{ github.token }}
+
+      - name: Install Playwright chromium
+        working-directory: apps/web
+        run: |
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
+            npx playwright install-deps chromium
+          else
+            npx playwright install --with-deps chromium
+          fi
+
+      - name: Playwright full suite
+        working-directory: apps/web
+        env:
+          E2E_BUDGET_FACTOR: "3"
+          FRAMECRAFT_OFFLINE: ""
+        run: npm run test:e2e
+
+      # The same guard ci.yml's smoke job runs, over the whole suite. Neither
+      # is redundant: this one is the only place the other 48 tests are
+      # checked for a skip or a test.fail().
+      - name: zero skipped / zero expected-failure (results.json)
+        if: always()
+        run: |
+          node -e "
+            const fs = require('fs');
+            const file = 'artifacts/e2e/results.json';
+            if (!fs.existsSync(file)) {
+              console.error('no ' + file + ' - the suite did not run to completion');
+              process.exit(1);
+            }
+            const r = JSON.parse(fs.readFileSync(file, 'utf-8'));
+            const s = r.stats || {};
+            const n = s.skipped || 0;
+            const bad = [];
+            const walk = (u) => {
+              for (const sp of (u.specs || [])) {
+                for (const t of (sp.tests || [])) {
+                  const e = t.expectedStatus || 'passed';
+                  if (e !== 'passed') bad.push(sp.title + ' [expectedStatus=' + e + ']');
+                }
+              }
+              for (const c of (u.suites || [])) walk(c);
+            };
+            for (const u of (r.suites || [])) walk(u);
+            if (n) {
+              console.error(n + ' Playwright test(s) SKIPPED - the gate does not accept a skipped acceptance test');
+              process.exit(1);
+            }
+            if (bad.length) {
+              console.error(bad.length + ' Playwright test(s) annotated test.fail() - an expected-failure asserts nothing:');
+              for (const b of bad) console.error('  ' + b);
+              process.exit(1);
+            }
+            console.log('playwright: ' + (s.expected||0) + ' passed, ' + (s.unexpected||0) + ' failed, ' + (s.flaky||0) + ' flaky, 0 skipped, 0 expected-failure');
+          "
+
+      # `make gate` step 8. This matters MORE here than on the fast path: the
+      # three tagged tests are checked there, and the 57 that are not tagged
+      # are the far likelier place for a forgotten `**/api/interpreter` route
+      # mock. Leaving it off made the nightly full suite weaker than both the
+      # local full gate and the fast path (v3-14 audit M4).
+      - name: fixtures/ is clean (no spec reached Overpass)
+        if: always()
+        run: |
+          stray=$(git status --porcelain -- fixtures/ | cut -c4- | tr -d '"' \
+            | grep -E '(^|/)[0-9a-f]{40}\.json$' || true)
+          if [ -n "$stray" ]; then
+            echo "::error::a non-preset Overpass fixture survived the e2e; a spec reached the network unmocked"
+            echo "$stray"
+            exit 1
+          fi
+          echo "no stray sha1 fixture in fixtures/"
+
+      - name: Upload e2e artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-full-artifacts
+          path: |
+            artifacts/e2e/**
+            artifacts/logs/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # `make gate-v2`: G8 (the v1 golden byte for byte), G5 at plate 180 and 256,
+  # G6 TEXT=all, and COLOR=parts TEXT=all, each judged on its .3mf AND its
+  # .stl. Several minutes of manifold3d, which is why it was never on the
+  # required path in the first place.
+  #
+  # Timeout from measurement: 151 s on this host at V2-P7 (STATUS.md), and the
+  # gate-v2 log timestamps of the last local run span 2m 08s. 25 minutes is
+  # roughly ten times the measured local run, which covers a slower runner and
+  # a cold uv cache without being the 60-minute default.
+  # ---------------------------------------------------------------------
+  geometry-gates:
+    name: geometry gates (make gate-v2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+          version: ${{ env.UV_VERSION }}
+
+      - name: Restore uv cache
+        id: uv-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('services/bake/uv.lock') }}
+
+      - uses: ./.github/actions/cache-report
+        with:
+          label: uv (~/.cache/uv)
+          key: uv-${{ runner.os }}-${{ hashFiles('services/bake/uv.lock') }}
+          hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          github-token: ${{ github.token }}
+
+      - name: uv sync
+        working-directory: services/bake
+        run: uv sync
+
+      - name: make gate-v2
+        run: make gate-v2
+
+      - name: Upload gate-v2 logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-v2-logs
+          path: artifacts/logs/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # Every export target the contract lists, plus the tiled variant.
+  #
+  # Two kinds of row, and the script prints which each target got: `make
+  # validate` for generic-3mf, stl and each of the four tiles; a container
+  # structure assertion for bambu-3mf, color-change-3mf, stl-parts-zip, obj
+  # and step. The header of scripts/ci-export-matrix.sh carries the measured
+  # reason the two Bambu projects are not validated (14 minutes of wall clock
+  # without finishing, against 11 seconds for a generic 3MF).
+  #
+  # Timeout from measurement: 114 s for the whole script on this host.
+  # ---------------------------------------------------------------------
+  export-matrix:
+    name: export matrix (7 targets + tiling)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore npm cache
+        id: npm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+
+      - uses: ./.github/actions/cache-report
+        with:
+          label: npm (~/.npm)
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+          hit: ${{ steps.npm-cache.outputs.cache-hit }}
+          github-token: ${{ github.token }}
+
+      - name: npm ci (web)
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+          version: ${{ env.UV_VERSION }}
+
+      - name: Restore uv cache
+        id: uv-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('services/bake/uv.lock') }}
+
+      - uses: ./.github/actions/cache-report
+        with:
+          label: uv (~/.cache/uv)
+          key: uv-${{ runner.os }}-${{ hashFiles('services/bake/uv.lock') }}
+          hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          github-token: ${{ github.token }}
+
+      - name: uv sync (validator)
+        working-directory: services/bake
+        run: uv sync
+
+      - name: every export target, from the parts fixture
+        run: sh scripts/ci-export-matrix.sh
+
+      - name: Upload export matrix logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: export-matrix-logs
+          path: artifacts/logs/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # All six presets, offline, through the committed Overpass fixtures.
+  #
+  # A preset id sets `allow_network=False` in the reference CLI, so every bake
+  # reads its committed `fixtures/<sha1>.json` and nothing touches the network.
+  # This exercises ingest and normalisation on six real cities (16k to 19k
+  # elements each); ci.yml only ever sees Chicago, and only as an
+  # already-normalised SceneGraph.
+  #
+  # Timeout from measurement: 221 s for the whole script on this host. 30
+  # minutes is roughly eight times that, which covers a slower runner without
+  # being the 60-minute default.
+  # ---------------------------------------------------------------------
+  preset-matrix:
+    name: preset matrix (6 presets, offline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore npm cache
+        id: npm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+
+      - uses: ./.github/actions/cache-report
+        with:
+          label: npm (~/.npm)
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+          hit: ${{ steps.npm-cache.outputs.cache-hit }}
+          github-token: ${{ github.token }}
+
+      - name: npm ci (web)
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+          version: ${{ env.UV_VERSION }}
+
+      - name: Restore uv cache
+        id: uv-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('services/bake/uv.lock') }}
+
+      - uses: ./.github/actions/cache-report
+        with:
+          label: uv (~/.cache/uv)
+          key: uv-${{ runner.os }}-${{ hashFiles('services/bake/uv.lock') }}
+          hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          github-token: ${{ github.token }}
+
+      - name: uv sync (validator)
+        working-directory: services/bake
+        run: uv sync
+
+      - name: every preset, from its committed Overpass fixture
+        env:
+          FRAMECRAFT_OFFLINE: "1"
+        run: sh scripts/ci-preset-matrix.sh
+
+      - name: Upload preset matrix logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preset-matrix-logs
+          path: artifacts/logs/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # The three desktop installers, same reusable workflow release.yml uses.
+  # Skipped on the tag trigger: release.yml builds these on a tag already.
+  # ---------------------------------------------------------------------
+  desktop:
+    name: desktop installers
+    if: github.event_name != 'push'
+    uses: ./.github/workflows/desktop-build.yml
+    secrets: inherit

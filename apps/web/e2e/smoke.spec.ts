@@ -436,7 +436,7 @@ test("happy path: Chicago preset previews, sliders stay local, export downloads 
 // A2: the low-coverage path
 // ==========================================================================
 
-test("low coverage: an empty Overpass response warns and disables Export", async ({
+test("low coverage: an empty Overpass response warns and disables Export @smoke", async ({
   page,
 }) => {
   // A synthetic near-empty response stands in for "a pin in open water":
@@ -465,7 +465,7 @@ test("low coverage: an empty Overpass response warns and disables Export", async
 // A5: the download -> validator pipeline, proven end to end
 // ==========================================================================
 
-test("the downloaded file passes the Python printability validator (small scene)", async ({
+test("the downloaded file passes the Python printability validator (small scene) @smoke", async ({
   page,
 }) => {
   // A small (30-building) synthetic scene that -- unlike the full Chicago
@@ -609,7 +609,7 @@ test("the downloaded file passes the Python printability validator (full Chicago
 // The Bambu Studio project export
 // ==========================================================================
 
-test("exporting a Bambu Studio project writes every region on its own extruder", async ({
+test("exporting a Bambu Studio project writes every region on its own extruder @smoke", async ({
   page,
 }) => {
   await mockTinyLoopOverpass(page);

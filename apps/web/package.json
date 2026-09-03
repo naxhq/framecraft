@@ -11,7 +11,8 @@
     "lint": "eslint . --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test",
+    "test:e2e": "playwright test --project=chromium",
+    "test:e2e:smoke": "playwright test --project=chromium-smoke",
     "export:cli": "vite-node scripts/export-cli.ts --",
     "bake:cli": "npm run export:cli --"
   },

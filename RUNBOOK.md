@@ -151,12 +151,129 @@ path into `apps/web/out`, which `frontendDist` points at.
 
 ## 7. CI and release workflows
 
-- `.github/workflows/ci.yml` (push to main, every PR): three jobs mirroring
-  the gate. `reference-service` (pytest, zero-skip check), `web` (no-skip guard,
-  lint, typecheck, vitest, `next build`, both `export:cli` runs judged by the
-  Python validator), `e2e` (Playwright with `E2E_BUDGET_FACTOR=3`, every spec
-  Overpass-mocked from committed fixtures, results.json checked, artifacts
-  uploaded on failure).
+CI runs on two paths since v3-14. The required one is fast and partial; the
+nightly one is slow and complete. Neither runs less than the union of what CI
+ran before: every check that existed still runs, on one path or the other.
+
+### The required path, `.github/workflows/ci.yml`
+
+Push to main and every pull request. Five jobs, all in parallel, one runner
+combination (ubuntu-latest, Node 22), and inside each job the cheap check runs
+before the expensive one.
+
+| Job | What it runs |
+|---|---|
+| `lint-typecheck` | static no-skip guard, eslint `--max-warnings 0`, `tsc --noEmit` |
+| `unit` | vitest, with the zero skipped/todo check |
+| `pytest` | `services/bake` pytest, with the zero skipped/xfailed check |
+| `build-and-validate` | `next build`, then both `export:cli` runs on the Chicago fixture judged by the Python validator |
+| `e2e-smoke` | the `@smoke` Playwright subset, `E2E_BUDGET_FACTOR=3`, results.json checked, `fixtures/` checked for strays |
+
+**Exactly three Playwright tests run on the required path**, all in
+`smoke.spec.ts`, selected by the `@smoke` tag:
+
+1. an empty Overpass response warns and disables Export
+2. the downloaded file passes the Python printability validator, small scene
+3. exporting a Bambu Studio project writes every region on its own extruder
+
+**The happy path is NOT one of them.** "Chicago preset previews, sliders stay
+local, export downloads a 3MF" is the most representative test in the suite and
+it is the one test deliberately excluded, because it costs 2m 12s locally and 5
+to 8 minutes on a runner with no GPU. It runs nightly. The measurement and the
+reasoning are in the comment on `projects` in `apps/web/playwright.config.ts`.
+
+**What a green required run does NOT prove.** It is a partial signal and should
+be read as one:
+
+- Every acceptance test outside those three did not run: accessibility,
+  colour, lettering, perf, print, sharing, terrain, place search, the whole UI
+  file and the workflow file. Run `npx playwright test --project=chromium
+  --list` for the current total; it grows most weeks.
+- **The r3f preview was never rendered at Chicago scale, and 01/A3's "a
+  PrintParams change causes no page reload" was never asserted.** Both live
+  only in the happy path. `build-and-validate` proves the engine builds and
+  exports 992 Chicago buildings the validator accepts; it says nothing about
+  whether the preview draws them or whether a slider reloads the page. A
+  regression that leaves the export green and the canvas blank reaches main and
+  waits for 03:30 UTC. This is the largest single risk the fast path accepts.
+- `make gate-v2` did not run. No v1 golden check, no parts/plate/ornament
+  geometry gate.
+- Two of the seven export targets were exercised: generic-3mf through
+  `export:cli` in both colour modes, and bambu-3mf through the UI in the
+  `@smoke` Bambu test. The other five, and tiling, did not run.
+- One of the six presets was exercised, and only as an already-normalised
+  SceneGraph, never as a raw Overpass response.
+- No desktop installer was built on any platform.
+
+Everything in that list runs nightly. `make gate` is still the full local gate
+and is what a release should be judged on.
+
+The suite sizes above were measured with `npx playwright test --list`. Re-run
+it rather than trusting the numbers: specs land often.
+
+### The nightly path, `.github/workflows/nightly.yml`
+
+03:30 UTC daily, on `workflow_dispatch`, and on a `v*` tag so the heavy set
+runs before release.yml builds installers on that same tag.
+
+| Job | What it runs |
+|---|---|
+| `e2e-full` | the whole Playwright suite, `E2E_BUDGET_FACTOR=3`, same results.json guard, same stray-fixture check |
+| `geometry-gates` | `make gate-v2` |
+| `export-matrix` | `scripts/ci-export-matrix.sh`: all seven `export_target` values plus a 2x2 tiled build, each tile validated |
+| `preset-matrix` | `scripts/ci-preset-matrix.sh`: all six presets offline through their committed Overpass fixtures, each `.3mf` and `.stl` validated |
+| `desktop` | the three installers, via the shared `desktop-build.yml`; skipped on the tag trigger because release.yml builds them there |
+
+The export matrix judges what the validator can actually judge, and prints
+which kind of row each target got:
+
+- **Full printability verdict** (`make validate`, ALL CHECKS PASS asserted):
+  generic-3mf, stl, and each of the four 2x2 tiles.
+- **Structure only** (the file is non-empty and carries the parts that make it
+  that format): bambu-3mf, color-change-3mf, stl-parts-zip, obj, step.
+
+Two reasons for that split, both measured. `services/bake`'s CLI accepts
+`.3mf` and `.stl` only, which rules the validator out for the zip, the OBJ and
+the STEP. And a Bambu project, though it is a `.3mf`, puts its mesh in
+`3D/Objects/object_1.model` rather than `3D/3dmodel.model`, where the
+structural checks do not resolve: run on the full Chicago build the validator
+did not finish in 14 minutes of wall clock, against 11 seconds for a generic
+3MF. A structure row is weaker than a validated one, and it is still more than
+the old CI did with those five formats, which was nothing.
+
+### Running either path locally
+
+```sh
+make gate-fast      # the required path, same checks, same @smoke subset
+make gate-nightly   # the nightly set, minus the cross-platform installers
+make gate           # unchanged: the full local gate, every e2e test
+```
+
+`make gate-nightly` cannot build the macOS and Linux installers on this host;
+the nightly `desktop` job is the only place all three are covered.
+
+### Caching
+
+Every cache is keyed explicitly rather than by `setup-node`'s or `setup-uv`'s
+internal key, so the key is a value the workflow can name and assert on.
+
+| Cache | Path | Key |
+|---|---|---|
+| npm | `~/.npm` | `apps/web/package-lock.json` hash |
+| uv | `~/.cache/uv` | `services/bake/uv.lock` hash |
+| Playwright browsers | `~/.cache/ms-playwright` | the `@playwright/test` version read out of the lock file |
+| next build | `apps/web/.next/cache` | lock hash plus a hash of `app/`, `components/`, `lib/`, `store/`, `public/` and the configs |
+
+`.github/actions/cache-report` writes one row per cache into the job summary
+and fails the job on a WARM MISS: a key that already existed, on a ref this run
+could read, created before this run started. A cold miss (a new lock file, or
+the first run after a cache was added) is reported and does not fail. The
+`next build` cache reports but never fails, because its key changes on every
+source edit and a miss there is the normal outcome on a real pull request.
+
+- `.github/workflows/desktop-build.yml`: the Tauri matrix as a reusable
+  workflow, called by release.yml with a tag to attach to, and by nightly.yml
+  with none, so the two cannot drift.
 - `.github/workflows/pages.yml` (push to main, or manual dispatch): builds
   with `NEXT_PUBLIC_BASE_PATH=/framecraft`, adds `.nojekyll`, deploys
   `apps/web/out` to GitHub Pages. One-time repo setup: Settings > Pages >

@@ -1,6 +1,6 @@
 SHELL := sh
 .DEFAULT_GOAL := help
-.PHONY: help install contracts up dev down test gate gate-v2 export-fixture bake-fixture validate refresh-fixtures clean
+.PHONY: help install contracts up dev down test gate gate-fast gate-nightly gate-v2 export-fixture bake-fixture validate refresh-fixtures clean
 
 help:
 	@echo "FrameCraft make targets:"
@@ -15,6 +15,11 @@ help:
 	@echo "  gate              G4/G7: no-skip guard + pytest + lint + tsc + vitest + next build +"
 	@echo "                    browser-engine export:cli -> validate + playwright (stack up/down);"
 	@echo "                    fails on ANY skipped or xfailed test"
+	@echo "  gate-fast         what the REQUIRED CI path runs, locally: the same checks as gate but"
+	@echo "                    with the @smoke Playwright subset instead of the whole suite. Green here"
+	@echo "                    does NOT mean gate is green; see RUNBOOK.md section 7"
+	@echo "  gate-nightly      what the NIGHTLY CI path runs, locally: gate + gate-v2 + every export"
+	@echo "                    target + all six presets offline (the desktop builds cannot run here)"
 	@echo "  gate-v2           the v2 geometry-side gates end to end: G8, G5 at plate 180 and 256,"
 	@echo "                    G6, COLOR=parts TEXT=all, and make validate on every .3mf and .stl"
 	@echo "  export-fixture    build and export the Chicago preset to artifacts/chicago.3mf"
@@ -289,6 +294,135 @@ gate:
 		fi; \
 	fi; \
 	if [ $$rc -eq 0 ]; then echo "GATE PASS"; else echo "GATE FAIL" >&2; fi; \
+	exit $$rc
+
+# The REQUIRED CI path (.github/workflows/ci.yml), runnable locally, so a
+# contributor can see the same green tick before pushing. Same checks as
+# `make gate` steps 1-4, then the `@smoke` Playwright subset instead of the
+# whole suite: the small-scene validator round trip (preview -> export ->
+# download -> ALL CHECKS PASS), the Bambu project export, and the
+# empty-Overpass warning. Measured on this host at E2E_BUDGET_FACTOR=3: 6.2 s,
+# 3.6 s and 1.7 s against 8.6 min for all of them.
+# apps/web/playwright.config.ts says why the 2.2-minute happy path is
+# deliberately NOT in that set.
+#
+# WHAT A GREEN gate-fast DOES NOT PROVE: every acceptance test outside the
+# tagged three, including the happy path and
+# so the r3f preview at Chicago scale and 01/A3's no-navigation assertion;
+# `make gate-v2`; five of the seven export targets and tiling; the five
+# non-Chicago presets; and the three desktop installers. `make gate` is still
+# the full local gate and `make gate-nightly` is the whole nightly set. Nothing
+# has been deleted or relaxed - the checks moved, and RUNBOOK.md section 7 says
+# where each one went.
+#
+# One further divergence from CI, by design: CI's five jobs are independent and
+# all report on a red run, whereas this recipe skips the e2e block after any
+# earlier failure, so a red gate-fast tells you less than a red CI run does.
+#
+# ZERO SKIPPED TESTS is enforced here exactly as `make gate` enforces it: the
+# static marker guard, the pytest summary, the vitest summary and the
+# results.json walk. One check is ADDED that the full gate does not need - the
+# `@smoke` grep must have selected at least 3 tests, since a mistyped tag would
+# otherwise run nothing and print PASS.
+#
+# The stack: this uses playwright.config.ts's Safe Order 3 (build, then
+# `rm -rf .next`, then `npm run test:e2e:smoke`), so Playwright's own
+# `webServer` starts and stops uvicorn and next dev. No `make up` / `make down`
+# pair, and so no teardown assertion to make - there is nothing left running to
+# assert about.
+gate-fast:
+	@rc=0; \
+	mkdir -p artifacts/logs; \
+	echo "== gate-fast [1/6] no-skip guard (static, every vitest + playwright source) =="; \
+	specs=$$(find apps/web -type d \( -name node_modules -o -name .next \) -prune -o \
+		-type f \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.spec.ts' -o -name '*.spec.tsx' \) -print); \
+	if [ -z "$$specs" ]; then \
+		echo "gate-fast: found no vitest/playwright source files at all - the glob is wrong" >&2; rc=1; \
+	else \
+		echo "$$(echo "$$specs" | wc -l | tr -d ' ') test files scanned"; \
+		markers=$$(echo "$$specs" | xargs grep -nE \
+			'(^|[^A-Za-z0-9_$$])(test|it|describe|suite|bench)\.(skip|only|fixme|todo|skipIf|failing|fail)\b|(^|[^A-Za-z0-9_$$])(xit|xtest|xdescribe)[[:space:]]*\(' \
+			2>/dev/null || true); \
+		if [ -n "$$markers" ]; then \
+			echo "gate-fast: a skip/only/todo/fail marker is committed in a test source:" >&2; \
+			echo "$$markers" >&2; rc=1; \
+		else \
+			echo "no test.skip / .only / .todo / .fixme / .fail / xit marker anywhere"; \
+		fi; \
+	fi; \
+	echo "== gate-fast [2/6] pytest (services/bake), and it must skip nothing =="; \
+	( cd services/bake && uv run pytest -q -rs ) > artifacts/logs/fast-pytest.log 2>&1; \
+	pyrc=$$?; \
+	cat artifacts/logs/fast-pytest.log; \
+	[ $$pyrc -eq 0 ] || { echo "gate-fast: pytest FAILED" >&2; rc=1; }; \
+	if grep -qE '[0-9]+ (skipped|xfailed|xpassed)' artifacts/logs/fast-pytest.log; then \
+		echo "gate-fast: pytest reported skipped/xfailed test(s) - not accepted" >&2; rc=1; \
+	fi; \
+	echo "== gate-fast [3/6] lint + typecheck + vitest (apps/web) =="; \
+	( cd apps/web && npm run lint ) || { echo "gate-fast: eslint FAILED" >&2; rc=1; }; \
+	( cd apps/web && npm run typecheck ) || { echo "gate-fast: tsc --noEmit FAILED" >&2; rc=1; }; \
+	( cd apps/web && npm test ) > artifacts/logs/fast-vitest.log 2>&1; \
+	vrc=$$?; \
+	cat artifacts/logs/fast-vitest.log; \
+	[ $$vrc -eq 0 ] || { echo "gate-fast: vitest FAILED" >&2; rc=1; }; \
+	if grep -qE '[0-9]+ (skipped|todo)' artifacts/logs/fast-vitest.log; then \
+		echo "gate-fast: vitest reported skipped/todo test(s) - not accepted" >&2; rc=1; \
+	fi; \
+	echo "== gate-fast [4/6] next build =="; \
+	rm -rf apps/web/.next; \
+	( cd apps/web && npm run build ) || { echo "gate-fast: next build FAILED" >&2; rc=1; }; \
+	prerc=$$rc; \
+	echo "== gate-fast [5/6] browser engine: export:cli (Chicago fixture) -> make validate =="; \
+	sh scripts/gate-web-engine.sh "$(MAKE)" || rc=1; \
+	if [ $$prerc -ne 0 ]; then \
+		echo "gate-fast: skipping the @smoke suite after an earlier failure" >&2; \
+	else \
+		echo "== gate-fast [6/6] playwright, the @smoke subset =="; \
+		rm -rf apps/web/.next; \
+		rm -f artifacts/e2e/results.json; \
+		( cd apps/web && FRAMECRAFT_OFFLINE= E2E_BUDGET_FACTOR=3 npm run test:e2e:smoke ) \
+			|| { echo "gate-fast: the @smoke Playwright subset FAILED" >&2; rc=1; }; \
+		node -e "const r=require('./artifacts/e2e/results.json');const s=(r.stats||{});const n=s.skipped||0;const bad=[];const walk=(u)=>{for(const sp of (u.specs||[])){for(const t of (sp.tests||[])){const e=t.expectedStatus||'passed';if(e!=='passed')bad.push(sp.title+' [expectedStatus='+e+']')}}for(const c of (u.suites||[]))walk(c)};for(const u of (r.suites||[]))walk(u);const ran=(s.expected||0)+(s.unexpected||0)+(s.flaky||0);if(ran<3){console.error('gate-fast: the @smoke grep selected '+ran+' test(s); it must select at least 3, or a mistyped tag leaves this green having run nothing');process.exit(1)}if(n){console.error('gate-fast: '+n+' Playwright test(s) SKIPPED');process.exit(1)}if(bad.length){console.error('gate-fast: '+bad.length+' Playwright test(s) annotated test.fail()');for(const b of bad)console.error('        '+b);process.exit(1)}console.log('playwright @smoke: '+(s.expected||0)+' passed, '+(s.unexpected||0)+' failed, '+(s.flaky||0)+' flaky, 0 skipped, 0 expected-failure')" \
+			|| { echo "gate-fast: the @smoke results.json check FAILED" >&2; rc=1; }; \
+		if command -v git >/dev/null 2>&1; then \
+			stray=$$(git status --porcelain -- fixtures/ 2>/dev/null | cut -c4- | tr -d '"' \
+				| grep -E '(^|/)[0-9a-f]{40}\.json$$' || true); \
+			if [ -n "$$stray" ]; then \
+				echo "gate-fast: a non-preset Overpass fixture survived the e2e:" >&2; \
+				echo "$$stray" >&2; rc=1; \
+			else \
+				echo "no stray sha1 fixture in fixtures/"; \
+			fi; \
+		else \
+			echo "gate-fast: git is not on PATH, cannot check fixtures/ for strays" >&2; rc=1; \
+		fi; \
+	fi; \
+	if [ $$rc -eq 0 ]; then echo "GATE-FAST PASS"; else echo "GATE-FAST FAIL" >&2; fi; \
+	exit $$rc
+
+# The NIGHTLY CI path (.github/workflows/nightly.yml), runnable locally.
+# Everything ci.yml stopped running per commit, in the order nightly.yml runs
+# it, except the three desktop installer builds - those need Windows, macOS and
+# Linux runners and cannot be reproduced on one host. Run the Windows half with
+# `cd apps/desktop && npm run build`.
+#
+# Every step is attempted even after an earlier one fails, so one command tells
+# you everything that is red rather than only the first thing.
+gate-nightly:
+	@rc=0; \
+	mkdir -p artifacts/logs; \
+	echo "== gate-nightly [1/4] make gate (the full local gate, every e2e test) =="; \
+	$(MAKE) gate || { echo "gate-nightly: make gate FAILED" >&2; rc=1; }; \
+	echo; echo "== gate-nightly [2/4] make gate-v2 (the reference geometry gates) =="; \
+	$(MAKE) gate-v2 || { echo "gate-nightly: make gate-v2 FAILED" >&2; rc=1; }; \
+	echo; echo "== gate-nightly [3/4] every export target, plus tiling =="; \
+	sh scripts/ci-export-matrix.sh "$(MAKE)" || { echo "gate-nightly: the export matrix FAILED" >&2; rc=1; }; \
+	echo; echo "== gate-nightly [4/4] all six presets, offline =="; \
+	sh scripts/ci-preset-matrix.sh "$(MAKE)" || { echo "gate-nightly: the preset matrix FAILED" >&2; rc=1; }; \
+	echo; \
+	echo "note: the three desktop installer builds are not reproducible on one host;"; \
+	echo "      the nightly.yml desktop job covers them on windows, macos and ubuntu."; \
+	if [ $$rc -eq 0 ]; then echo "GATE-NIGHTLY PASS"; else echo "GATE-NIGHTLY FAIL" >&2; fi; \
 	exit $$rc
 
 # The v2 geometry-side gates, end to end, in one command. `make gate` is unchanged

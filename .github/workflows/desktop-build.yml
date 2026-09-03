@@ -1,0 +1,153 @@
+# The Tauri desktop matrix, as ONE definition with two callers.
+#
+#   release.yml  on a v* tag, with `tag_name` set: builds and ATTACHES the
+#                installers to the release that job already created.
+#   nightly.yml  on the schedule, with `tag_name` empty: builds the same three
+#                platforms and attaches nothing, so a toolchain break (a Rust
+#                release, a webkit2gtk bump, an Xcode change on the macOS
+#                image) is found the night it happens instead of at tag time.
+#
+# tauri-action only creates or uploads to a release when `tagName` is set, so
+# the empty default is what makes the nightly caller a pure build.
+#
+# Desktop builds do NOT belong on a per-commit path: three runners, three
+# operating systems, 6 to 8 minutes each, for a toolchain that changes far
+# more slowly than the code does.
+name: desktop build
+
+on:
+  workflow_call:
+    inputs:
+      tag_name:
+        description: Release tag to attach the installers to. Empty means build only.
+        required: false
+        default: ""
+        type: string
+      timeout_minutes:
+        description: Per-platform timeout.
+        required: false
+        default: 60
+        type: number
+
+# NO `permissions:` block, deliberately. A called workflow can only maintain or
+# reduce the caller's token permissions, never raise them, and the check runs
+# when the RUN IS CREATED, before any `if:` guard is evaluated. Declaring
+# `contents: write` here made the whole of nightly.yml fail validation with
+# "The nested job 'desktop' is requesting 'contents: write', but is only allowed
+# 'contents: read'" and start zero jobs (v3-14 audit B1).
+#
+# With no block, this workflow inherits whatever the caller grants:
+#   release.yml  grants `contents: write` on its own `desktop` job, because
+#                tauri-action uploads the installers to the release.
+#   nightly.yml  grants nothing beyond `contents: read`, which is all a
+#                build-and-discard run needs.
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: "--bundles msi,nsis"
+          - platform: macos-latest
+            args: "--target universal-apple-darwin --bundles dmg"
+          - platform: ubuntu-22.04
+            args: "--bundles appimage,deb"
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add macOS universal targets
+        if: matrix.platform == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Install Linux system dependencies (Tauri 2 / webkit2gtk 4.1)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf xdg-utils
+
+      - name: npm ci (web)
+        working-directory: apps/web
+        run: npm ci
+
+      - name: npm ci (desktop)
+        working-directory: apps/desktop
+        run: npm ci
+
+      # tauri.conf.json's beforeBuildCommand builds apps/web with an empty
+      # base path into apps/web/out, which frontendDist points at.
+      # An env var set to an empty string still counts as "present" to the
+      # bundler, which then tries to codesign with a certificate that does not
+      # exist. Export the signing variables only when the secret is non-empty,
+      # so builds without signing secrets stay unsigned instead of failing.
+      # Secrets arrive through the environment, not through `${{ }}`
+      # interpolation into the script body. Interpolating meant a secret
+      # containing a single quote broke out of the quoting, and `echo "K=V"`
+      # into $GITHUB_ENV writes an invalid entry for any secret containing a
+      # newline, which a base64 certificate legitimately can. The heredoc
+      # delimiter form is the documented way to write a multi-line value
+      # (v3-14 audit minors 9 and 10).
+      #
+      # `notarize` gates the APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID trio,
+      # which is what triggers a real notarization round trip with Apple. A
+      # nightly build-and-discard run has `tag_name` empty and must not do that
+      # every night; the release caller passes a tag and does.
+      - name: Export signing secrets when present
+        shell: bash
+        env:
+          NOTARIZE: ${{ inputs.tag_name != '' }}
+          TAURI_SIGNING_PRIVATE_KEY_IN: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD_IN: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE_IN: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD_IN: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY_IN: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID_IN: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD_IN: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID_IN: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          add() {
+            name="$1"
+            eval "value=\${${name}_IN:-}"
+            if [ -z "$value" ]; then return 0; fi
+            delim="EOF_$(date +%s%N)_$name"
+            {
+              printf '%s<<%s\n' "$name" "$delim"
+              printf '%s\n' "$value"
+              printf '%s\n' "$delim"
+            } >> "$GITHUB_ENV"
+            echo "exported $name"
+          }
+          add TAURI_SIGNING_PRIVATE_KEY
+          add TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          add APPLE_CERTIFICATE
+          add APPLE_CERTIFICATE_PASSWORD
+          add APPLE_SIGNING_IDENTITY
+          if [ "$NOTARIZE" = "true" ]; then
+            add APPLE_ID
+            add APPLE_PASSWORD
+            add APPLE_TEAM_ID
+          else
+            echo "build-only run (no tag_name): skipping the APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID notarization trio"
+          fi
+
+      - name: Build and attach installers
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ inputs.tag_name }}
+          args: ${{ matrix.args }}

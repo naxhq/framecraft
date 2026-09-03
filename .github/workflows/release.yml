@@ -46,79 +46,21 @@ jobs:
               --title "FrameCraft ${GITHUB_REF_NAME}" \
               --generate-notes
 
+  # The matrix itself lives in desktop-build.yml so nightly.yml can run the
+  # same three builds on the schedule without duplicating it. Passing
+  # `tag_name` is what turns a build into an attach.
   desktop:
     needs: create-release
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: windows-latest
-            args: "--bundles msi,nsis"
-          - platform: macos-latest
-            args: "--target universal-apple-darwin --bundles dmg"
-          - platform: ubuntu-22.04
-            args: "--bundles appimage,deb"
-    runs-on: ${{ matrix.platform }}
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Add macOS universal targets
-        if: matrix.platform == 'macos-latest'
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
-
-      - name: Install Linux system dependencies (Tauri 2 / webkit2gtk 4.1)
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev patchelf xdg-utils
-
-      - name: npm ci (web)
-        working-directory: apps/web
-        run: npm ci
-
-      - name: npm ci (desktop)
-        working-directory: apps/desktop
-        run: npm ci
-
-      # tauri.conf.json's beforeBuildCommand builds apps/web with an empty
-      # base path into apps/web/out, which frontendDist points at.
-      # An env var set to an empty string still counts as "present" to the
-      # bundler, which then tries to codesign with a certificate that does not
-      # exist. Export the signing variables only when the secret is non-empty,
-      # so builds without signing secrets stay unsigned instead of failing.
-      - name: Export signing secrets when present
-        shell: bash
-        run: |
-          add() { if [ -n "$2" ]; then echo "$1=$2" >> "$GITHUB_ENV"; fi; }
-          add TAURI_SIGNING_PRIVATE_KEY '${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}'
-          add TAURI_SIGNING_PRIVATE_KEY_PASSWORD '${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}'
-          add APPLE_CERTIFICATE '${{ secrets.APPLE_CERTIFICATE }}'
-          add APPLE_CERTIFICATE_PASSWORD '${{ secrets.APPLE_CERTIFICATE_PASSWORD }}'
-          add APPLE_SIGNING_IDENTITY '${{ secrets.APPLE_SIGNING_IDENTITY }}'
-          add APPLE_ID '${{ secrets.APPLE_ID }}'
-          add APPLE_PASSWORD '${{ secrets.APPLE_PASSWORD }}'
-          add APPLE_TEAM_ID '${{ secrets.APPLE_TEAM_ID }}'
-
-      - name: Build and attach installers
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: apps/desktop
-          tagName: ${{ github.ref_name }}
-          args: ${{ matrix.args }}
+    # desktop-build.yml declares no permissions of its own, so it runs with
+    # what this job grants. tauri-action uploads the installers to the release,
+    # which needs write; nightly.yml's caller grants only read and gets a pure
+    # build. See the header of desktop-build.yml (v3-14 audit B1).
+    permissions:
+      contents: write
+    uses: ./.github/workflows/desktop-build.yml
+    with:
+      tag_name: ${{ github.ref_name }}
+    secrets: inherit
 
   # The static web app as a plain zip (no source maps are emitted by this
   # build config), for anyone who wants to self-host the exported site.

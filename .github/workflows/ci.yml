@@ -1,3 +1,39 @@
+# CI, the REQUIRED fast path. Every push to main and every pull request.
+#
+# Budget: under ten minutes wall-clock. The five jobs below run in parallel and
+# nothing depends on anything, so the slowest one sets the total. Inside each
+# job the cheap check runs before the expensive one, so a lint error is red in
+# under a minute instead of after a build.
+#
+# What this path deliberately does NOT prove, and what covers it instead:
+#
+#   * every Playwright test but the `@smoke` three  -> nightly.yml `e2e-full`
+#   * `make gate-v2`, the reference geometry        -> nightly.yml `geometry-gates`
+#   * five of the seven export targets, tiling      -> nightly.yml `export-matrix`
+#   * the five non-Chicago presets                  -> nightly.yml `preset-matrix`
+#   * the three desktop installer builds            -> nightly.yml `desktop`
+#                                                      and release.yml on a v* tag
+#
+# Deliberately NOT on this path: smoke.spec.ts's "happy path" test, the single
+# most representative test in the repository. It costs 2m 12s locally and 5 to 8
+# minutes on a GPU-less runner, which is the whole budget. See the comment on
+# `projects` in apps/web/playwright.config.ts for the measurement.
+#
+# A green run here means: nothing is skipped anywhere, the tree lints and
+# typechecks, both unit suites are green, the app builds, the browser engine
+# exports a Chicago 3MF in both colour modes that the reference Python
+# validator accepts, and the three `@smoke` browser tests pass. It does NOT mean
+# the whole acceptance suite is green, and it does not exercise the r3f preview
+# at Chicago scale or the "a slider change causes no navigation" assertion
+# (01/A3), both of which live in the untagged happy path. Read RUNBOOK.md
+# section 7 before treating a green tick as a release signal.
+#
+# Caching: every cache is keyed explicitly (not by `setup-node`'s or
+# `setup-uv`'s internal key) so the key is a value this workflow can name,
+# report and assert on. `.github/actions/cache-report` writes one row per cache
+# into the job summary and FAILS the job when a key that already existed before
+# the run started came back a miss. See docs/handoff/v3-14-ci.md for what that
+# assertion does and does not cover.
 name: CI
 
 on:
@@ -9,56 +45,56 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# `actions: read` is what lets the cache report ask which cache entries already
+# exist. Without it every row reads "warmth NOT asserted" and nothing fails.
 permissions:
   contents: read
+  actions: read
+
+# REQUIRED, not cosmetic. GitHub's DEFAULT shell on Linux is `bash -e {0}`,
+# which has no `pipefail`; only an explicit `shell: bash` gets
+# `bash --noprofile --norc -eo pipefail {0}`. Two steps in this workflow pipe a
+# test runner through `tee`:
+#
+#   `npm test 2>&1 | tee vitest.log`        (job `unit`)
+#   `uv run pytest -q -rs 2>&1 | tee pytest.log`  (job `pytest`)
+#
+# Without pipefail the pipeline exits with `tee`'s status, which is always 0, so
+# a plain test FAILURE left the job green. The zero-skip greps that follow do
+# not compensate: a failing test prints "N failed", which matches neither
+# `[0-9]+ (skipped|todo)` nor `[0-9]+ (skipped|xfailed|xpassed)`. Verified on a
+# bash 5 host:
+#
+#   bash -e -c 'false 2>&1 | tee /dev/null; echo $?'                  -> 0
+#   bash --noprofile --norc -eo pipefail -c 'false 2>&1 | tee /dev/null'; echo $?  -> 1
+#
+# This was inherited from the pre-v3-14 ci.yml, not introduced by the split, and
+# it meant two of the five required jobs could not go red for the reason they
+# exist (v3-14 audit B2). Every other `run:` step here is a plain command or an
+# already-`rc`-aggregating script, so `-eo pipefail` changes nothing for them.
+defaults:
+  run:
+    shell: bash
 
 env:
   UV_VERSION: "0.12.1"
+  NODE_VERSION: "22"
 
 jobs:
-  # Mirrors `make gate` step 2: pytest (services/bake), zero skipped/xfailed.
-  reference-service:
-    name: reference-service (pytest)
+  # ---------------------------------------------------------------------
+  # 1. lint-typecheck  -- the cheapest signal, first.
+  #    Projected 1m 10s (baseline run 33611314264: guard 0s, node 5s,
+  #    npm ci 12s, eslint 7s, tsc 9s, plus checkout and cache steps).
+  # ---------------------------------------------------------------------
+  lint-typecheck:
+    name: lint + typecheck
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "services/bake/uv.lock"
-          version: ${{ env.UV_VERSION }}
-
-      - name: uv sync
-        working-directory: services/bake
-        run: uv sync
-
-      - name: pytest -q -rs
-        working-directory: services/bake
-        run: uv run pytest -q -rs 2>&1 | tee pytest.log
-
-      - name: fail on any skipped/xfailed/xpassed test
-        working-directory: services/bake
-        run: |
-          if grep -qE '[0-9]+ (skipped|xfailed|xpassed)' pytest.log; then
-            echo "::error::pytest reported skipped/xfailed test(s); make gate does not accept one"
-            grep -E '^SKIPPED|^XFAIL|[0-9]+ (skipped|xfailed|xpassed)' pytest.log || true
-            exit 1
-          fi
-          echo "0 skipped, 0 xfailed, 0 xpassed"
-
-  # Mirrors `make gate` step 3 (minus the Playwright half, which is the e2e
-  # job) plus step 1's static no-skip guard, which only needs apps/web on
-  # disk, so it runs first, before npm ci.
-  web:
-    name: web (lint, typecheck, vitest, build)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-
+      # Needs nothing but the source on disk, so it runs before any install
+      # and a committed `.skip` is red in seconds.
       - name: static no-skip guard (every vitest + playwright source file)
         run: |
           specs=$(find apps/web -type d \( -name node_modules -o -name .next \) -prune -o \
@@ -81,9 +117,21 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore npm cache
+        id: npm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+
+      - uses: ./.github/actions/cache-report
+        with:
+          label: npm (~/.npm)
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+          hit: ${{ steps.npm-cache.outputs.cache-hit }}
+          github-token: ${{ github.token }}
 
       - name: npm ci
         working-directory: apps/web
@@ -96,6 +144,40 @@ jobs:
       - name: tsc --noEmit
         working-directory: apps/web
         run: npm run typecheck
+
+  # ---------------------------------------------------------------------
+  # 2. unit  -- vitest, with the zero-skip check that `make gate` step 3 does.
+  #    Projected 3m 10s (npm ci 12s + vitest 2m 31s + overhead).
+  # ---------------------------------------------------------------------
+  unit:
+    name: unit (vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore npm cache
+        id: npm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+
+      - uses: ./.github/actions/cache-report
+        with:
+          label: npm (~/.npm)
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+          hit: ${{ steps.npm-cache.outputs.cache-hit }}
+          github-token: ${{ github.token }}
+
+      - name: npm ci
+        working-directory: apps/web
+        run: npm ci
 
       - name: vitest
         working-directory: apps/web
@@ -111,32 +193,161 @@ jobs:
           fi
           echo "0 skipped, 0 todo"
 
+  # ---------------------------------------------------------------------
+  # 3. pytest  -- the reference service, with its own zero-skip check.
+  #    Projected 3m 20s (uv sync 13s + pytest 2m 50s; baseline max 4m 23s).
+  # ---------------------------------------------------------------------
+  pytest:
+    name: pytest (reference service)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+          version: ${{ env.UV_VERSION }}
+
+      - name: Restore uv cache
+        id: uv-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('services/bake/uv.lock') }}
+
+      - uses: ./.github/actions/cache-report
+        with:
+          label: uv (~/.cache/uv)
+          key: uv-${{ runner.os }}-${{ hashFiles('services/bake/uv.lock') }}
+          hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          github-token: ${{ github.token }}
+
+      - name: uv sync
+        working-directory: services/bake
+        run: uv sync
+
+      - name: pytest -q -rs
+        working-directory: services/bake
+        run: uv run pytest -q -rs 2>&1 | tee pytest.log
+
+      - name: fail on any skipped/xfailed/xpassed test
+        working-directory: services/bake
+        run: |
+          if grep -qE '[0-9]+ (skipped|xfailed|xpassed)' pytest.log; then
+            echo "::error::pytest reported skipped/xfailed test(s); make gate does not accept one"
+            grep -E '^SKIPPED|^XFAIL|[0-9]+ (skipped|xfailed|xpassed)' pytest.log || true
+            exit 1
+          fi
+          echo "0 skipped, 0 xfailed, 0 xpassed"
+
+  # ---------------------------------------------------------------------
+  # 4. build-and-validate  -- one `next build`, then `make gate` step 4: the
+  #    browser engine exports the committed Chicago fixture in both colour
+  #    modes and the reference Python validator judges both files.
+  #    Projected 2m 00s (npm ci 12s + build 37s + uv sync 13s + 2 exports 21s
+  #    + validate 11s + overhead).
+  # ---------------------------------------------------------------------
+  build-and-validate:
+    name: build + export + validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore npm cache
+        id: npm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+
+      - uses: ./.github/actions/cache-report
+        with:
+          label: npm (~/.npm)
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+          hit: ${{ steps.npm-cache.outputs.cache-hit }}
+          github-token: ${{ github.token }}
+
+      # Keyed on the lock file plus the BRANCH, not on a hash of the source.
+      #
+      # The source hash was a cache-budget bug (v3-14 audit M3): every commit
+      # produced a new key, `actions/cache` saved a fresh multi-hundred-megabyte
+      # `.next/cache` entry in the post step, and GitHub evicts least-recently-
+      # used entries once the repository passes 10 GB. The entries first in line
+      # for eviction were exactly the ones NOT rewritten per commit: npm, uv,
+      # and the Playwright browser bundle the baseline measures at 3m 46s to
+      # re-download. A caching scheme that evicts the cache the budget depends
+      # on is worse than no caching.
+      #
+      # Per branch, the entry is rewritten only when it did not already exist,
+      # `restore-keys` still supplies warmth across branches on the same lock
+      # file, and Next invalidates its own entries internally, so an exact
+      # source hash bought nothing `restore-keys` does not already give.
+      #
+      # Restored BEFORE `npm ci` so nothing here can see node_modules.
+      - name: Restore next build cache
+        id: next-cache
+        uses: actions/cache@v4
+        with:
+          path: apps/web/.next/cache
+          key: next-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}-${{ github.ref_name }}
+          restore-keys: |
+            next-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}-
+
+      # `enforce: false`: a first build on a new branch is a legitimate miss,
+      # so failing on it would make the fast path red for doing its job. The row
+      # still says hit or miss.
+      - uses: ./.github/actions/cache-report
+        with:
+          label: next build (apps/web/.next/cache)
+          key: next-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}-${{ github.ref_name }}
+          hit: ${{ steps.next-cache.outputs.cache-hit }}
+          enforce: "false"
+          github-token: ${{ github.token }}
+
+      - name: npm ci
+        working-directory: apps/web
+        run: npm ci
+
       - name: next build
         working-directory: apps/web
         run: npm run build
 
-      # Mirrors `make gate` step 4: the browser engine building the committed
-      # Chicago fixture, judged by the reference Python validator (the CLI
-      # validator services/bake stays as, per CLAUDE.md). Needs `uv` only for
-      # that judging step, not to run the app itself.
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
-          enable-cache: true
-          cache-dependency-glob: "services/bake/uv.lock"
+          enable-cache: false
           version: ${{ env.UV_VERSION }}
+
+      - name: Restore uv cache
+        id: uv-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('services/bake/uv.lock') }}
+
+      - uses: ./.github/actions/cache-report
+        with:
+          label: uv (~/.cache/uv)
+          key: uv-${{ runner.os }}-${{ hashFiles('services/bake/uv.lock') }}
+          hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          github-token: ${{ github.token }}
 
       - name: uv sync (reference service, validator only)
         working-directory: services/bake
         run: uv sync
 
-      # Both files: fixtures/print-params-default.json (color_mode=single, the
-      # literal default) and fixtures/print-params-parts.json (color_mode=
-      # parts). Single mode's own single-object 3MF is written from
-      # EngineResult.merged, a real manifold3d union, so it is expected to
-      # pass the validator's `bodies` check exactly like parts mode's
-      # assembled union does -- see DECISIONS.md [V3-P2-E4] for the history
-      # and the numbers if either file is still red.
+      # fixtures/print-params-default.json is color_mode=single (the literal
+      # default) and fixtures/print-params-parts.json is color_mode=parts.
+      # Both are expected to read ALL CHECKS PASS; DECISIONS.md [V3-P2-E4]
+      # carries the history and the numbers if either row is red.
       - name: browser engine export:cli (Chicago fixture, single mode)
         working-directory: apps/web
         run: |
@@ -151,15 +362,8 @@ jobs:
             --params ../../fixtures/print-params-parts.json \
             --target generic-3mf --out ../../artifacts/chicago-web-parts.3mf
 
-      # A real, non-suppressed failure ("no test may be weakened to make a
-      # gate pass") for either row: if this workflow shows one red, see
-      # DECISIONS.md [V3-P2-E4] for the measured numbers before assuming it
-      # is a regression here -- it may still be a known, documented gap in
-      # lib/engine/solid/** (E2). Scoped to THIS job only: the `e2e` job
-      # below has no `needs:` on `web` and keeps running (and reporting its
-      # own status) independently.
-      # Both run regardless of the first's outcome (plain `&&` would stop at
-      # the first failure and hide whether the second file is clean too).
+      # Both run regardless of the first's outcome: a plain `&&` would stop at
+      # the first failure and hide whether the second file is clean too.
       - name: validate the browser engine's files (single + parts mode)
         working-directory: services/bake
         run: |
@@ -168,28 +372,50 @@ jobs:
           uv run python -m app.cli validate ../../artifacts/chicago-web-parts.3mf || rc=1
           exit $rc
 
-  # Mirrors `make gate` steps 4-5 (Playwright against the real stack). The
-  # reference API and the web app are started by playwright.config.ts's own
-  # `webServer` array (uv run uvicorn on :8000, next dev on :3000, each
-  # health-waited), which is this config's documented Safe Order 1: run
-  # `playwright test` alone on a tree no build has touched since. That
-  # sidesteps the `next build` vs `next dev` `.next` race the config's own
-  # top comment warns about, without needing a separate `make up`/curl wait
-  # loop here (the `web` job above already proves `next build` succeeds, on
-  # an unrelated checkout).
-  e2e:
-    name: e2e (playwright smoke)
+  # ---------------------------------------------------------------------
+  # 5. e2e-smoke  -- ONE representative browser path, the `@smoke` grep.
+  #
+  #    Three tagged tests in smoke.spec.ts: the small-scene validator round
+  #    trip (preview -> export -> download -> the Python validator says ALL
+  #    CHECKS PASS, which is why this job installs uv, since that spec shells
+  #    out to `uv run python -m app.cli validate`), the Bambu Studio project
+  #    export as a second target through the same UI, and the empty-Overpass
+  #    warn-and-disable path.
+  #
+  #    The 2.2-minute happy path is deliberately NOT tagged; the comment on
+  #    playwright.config.ts's `projects` has the measurement and the reason.
+  #    `build-and-validate` covers full-Chicago GEOMETRY on this path, but not
+  #    the preview rendering it or the no-navigation assertion, so that gap is
+  #    real and is named in RUNBOOK.md section 7. Every other test in the suite
+  #    runs nightly. Exactly three tests are tagged; the suite grows, so the
+  #    complement is whatever `--list` reports minus those three.
+  # ---------------------------------------------------------------------
+  e2e-smoke:
+    name: e2e smoke (one path)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
-          enable-cache: true
-          cache-dependency-glob: "services/bake/uv.lock"
+          enable-cache: false
           version: ${{ env.UV_VERSION }}
+
+      - name: Restore uv cache
+        id: uv-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('services/bake/uv.lock') }}
+
+      - uses: ./.github/actions/cache-report
+        with:
+          label: uv (~/.cache/uv)
+          key: uv-${{ runner.os }}-${{ hashFiles('services/bake/uv.lock') }}
+          hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          github-token: ${{ github.token }}
 
       - name: uv sync (reference service)
         working-directory: services/bake
@@ -198,34 +424,84 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore npm cache
+        id: npm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+
+      - uses: ./.github/actions/cache-report
+        with:
+          label: npm (~/.npm)
+          key: npm-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+          hit: ${{ steps.npm-cache.outputs.cache-hit }}
+          github-token: ${{ github.token }}
 
       - name: npm ci (web)
         working-directory: apps/web
         run: npm ci
 
-      - name: Install Playwright chromium (+ OS deps)
-        working-directory: apps/web
-        run: npx playwright install --with-deps chromium
+      # The browser bundle is keyed by the @playwright/test version the lock
+      # file pins, not by the whole lock: a dependency bump elsewhere must not
+      # throw away a 3m 46s download (baseline run 33611314264).
+      - name: Resolve the pinned Playwright version
+        id: pw
+        run: |
+          # `|| true`: under `-e` a failing `node -p` would abort the step at
+          # the assignment and the diagnostic below would never print.
+          v=$(node -p "require('./apps/web/package-lock.json').packages['node_modules/@playwright/test'].version" 2>/dev/null || true)
+          if [ -z "$v" ] || [ "$v" = "undefined" ]; then
+            echo "::error::could not read @playwright/test's version out of apps/web/package-lock.json"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "@playwright/test $v"
 
-      - name: Playwright smoke suite
+      - name: Restore Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
+      - uses: ./.github/actions/cache-report
+        with:
+          label: Playwright browsers (~/.cache/ms-playwright)
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+          hit: ${{ steps.pw-cache.outputs.cache-hit }}
+          github-token: ${{ github.token }}
+
+      # The browser binary is cached; the OS libraries it links against are
+      # NOT (they are apt packages outside ~/.cache). So on a hit, install the
+      # deps only; on a miss, download the browser too.
+      - name: Install Playwright chromium
+        working-directory: apps/web
+        run: |
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
+            npx playwright install-deps chromium
+          else
+            npx playwright install --with-deps chromium
+          fi
+
+      - name: Playwright @smoke path
         working-directory: apps/web
         env:
           E2E_BUDGET_FACTOR: "3"
-          # Left empty (overpass.is_offline() only treats 1/true/yes/on as
-          # set) so this job runs the same way a native `make gate` does. It
-          # is not a network dependency: every current spec routes
-          # **/api/interpreter to a committed fixture - A2 (the pin in Lake
-          # Michigan) through mockEmptyOverpass, the rotation-nudge and
-          # advisor-radius touches through the Chicago mock - so no spec
-          # reaches Overpass (v3-02 audit finding 13; see
-          # docs/handoff/v3-00-ci.md and RUNBOOK.md section 5).
+          # Left empty (overpass.is_offline() only treats 1/true/yes/on as set)
+          # so this job runs the same way a native `make gate` does. It is not
+          # a network dependency: every spec routes **/api/interpreter to a
+          # committed fixture, so no spec reaches Overpass.
           FRAMECRAFT_OFFLINE: ""
-        run: npm run test:e2e
+        run: npm run test:e2e:smoke
 
-      - name: zero skipped / zero expected-failure (results.json)
+      # Same zero-skip / zero-expected-failure walk the full suite gets in
+      # nightly.yml, plus one assertion the full suite does not need: the
+      # `@smoke` grep must have SELECTED something. A tag typo would otherwise
+      # run zero tests and report a green tick.
+      - name: zero skipped / zero expected-failure / non-empty selection
         if: always()
         run: |
           node -e "
@@ -249,6 +525,12 @@ jobs:
               for (const c of (u.suites || [])) walk(c);
             };
             for (const u of (r.suites || [])) walk(u);
+            const ran = (s.expected || 0) + (s.unexpected || 0) + (s.flaky || 0);
+            if (ran < 3) {
+              console.error('the @smoke grep selected ' + ran + ' test(s); it must select at least 3.');
+              console.error('A renamed or mistyped @smoke tag would otherwise leave this job green having run nothing.');
+              process.exit(1);
+            }
             if (n) {
               console.error(n + ' Playwright test(s) SKIPPED - the gate does not accept a skipped acceptance test');
               process.exit(1);
@@ -258,19 +540,30 @@ jobs:
               for (const b of bad) console.error('  ' + b);
               process.exit(1);
             }
-            console.log('playwright: ' + (s.expected||0) + ' passed, ' + (s.unexpected||0) + ' failed, ' + (s.flaky||0) + ' flaky, 0 skipped, 0 expected-failure');
+            console.log('playwright @smoke: ' + (s.expected||0) + ' passed, ' + (s.unexpected||0) + ' failed, ' + (s.flaky||0) + ' flaky, 0 skipped, 0 expected-failure');
           "
 
-      # playwright.config.ts's own `reporter` is [list, json] with no `html`
-      # entry, so there is no `playwright-report/` directory to upload here;
-      # `artifacts/e2e/` (results.json plus the outputDir with
-      # trace:"retain-on-failure" / screenshot:"only-on-failure" per test)
-      # and the service logs are the equivalent, more useful evidence.
+      # `make gate` step 8, kept on the fast path because it is free: every
+      # spec routes **/api/interpreter to a committed fixture, so a new spec
+      # that forgets the mock would quietly hit the network and leave a
+      # 100 MB sha1 file behind.
+      - name: fixtures/ is clean (no spec reached Overpass)
+        if: always()
+        run: |
+          stray=$(git status --porcelain -- fixtures/ | cut -c4- | tr -d '"' \
+            | grep -E '(^|/)[0-9a-f]{40}\.json$' || true)
+          if [ -n "$stray" ]; then
+            echo "::error::a non-preset Overpass fixture survived the e2e; a spec reached the network unmocked"
+            echo "$stray"
+            exit 1
+          fi
+          echo "no stray sha1 fixture in fixtures/"
+
       - name: Upload e2e artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-artifacts
+          name: playwright-smoke-artifacts
           path: |
             artifacts/e2e/**
             artifacts/logs/**

@@ -1,0 +1,125 @@
+# Reports one cache restore into $GITHUB_STEP_SUMMARY, and asserts warmth.
+#
+# "The cache should have been warm and was not" is the only failure worth
+# having. A miss on a key that has never existed is a COLD miss: the first run
+# after a lock file changes, or the first run after this workflow was added.
+# Failing on that would make every legitimate dependency bump red.
+#
+# So the action asks the repository which cache entries already exist for this
+# exact key, keeps only the ones this run was allowed to read (its own ref, or
+# the default branch, which a pull request may read from) and only the ones
+# created BEFORE this run started (a sibling job in the same run that saved the
+# key a moment ago is not evidence that this job should have hit it), and fails
+# only when that set is non-empty while the restore reported a miss.
+#
+# If the cache API is unreachable (no `actions: read` permission, a fork PR
+# token, an outage) the row says the warmth was NOT asserted rather than
+# passing silently or failing spuriously.
+name: cache report
+description: Write a cache hit/miss row into the job summary and fail on a miss that should have been a hit.
+
+inputs:
+  label:
+    description: Human name for the cache, e.g. "npm (~/.npm)".
+    required: true
+  key:
+    description: The exact cache key the restore step used.
+    required: true
+  hit:
+    description: "'true' when the restore reported an exact key hit."
+    required: true
+  enforce:
+    description: "'false' to report the row without failing on a warm miss."
+    required: false
+    default: "true"
+  github-token:
+    description: "Token carrying the `actions: read` scope on this repository."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Report ${{ inputs.label }}
+      shell: bash
+      env:
+        CACHE_LABEL: ${{ inputs.label }}
+        CACHE_KEY: ${{ inputs.key }}
+        CACHE_HIT: ${{ inputs.hit }}
+        CACHE_ENFORCE: ${{ inputs.enforce }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        RUN_STARTED_AT: ${{ github.run_started_at }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: |
+        set -u
+
+        header_marker="${RUNNER_TEMP}/.cache-report-header"
+        if [ ! -f "$header_marker" ]; then
+          {
+            echo "### Cache report"
+            echo
+            echo "| Cache | Result | Key |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          : > "$header_marker"
+        fi
+
+        # How many readable entries for this exact key already existed when the
+        # run started. "unknown" means the API could not answer.
+        prior="unknown"
+        cur_ref="${GITHUB_REF}"
+        def_ref="refs/heads/${DEFAULT_BRANCH:-main}"
+        if json=$(gh api -X GET "repos/${GITHUB_REPOSITORY}/actions/caches" \
+              -f "key=${CACHE_KEY}" -f "per_page=100" 2>/dev/null); then
+          prior=$(printf '%s' "$json" | jq -r \
+            --arg k "$CACHE_KEY" --arg cur "$cur_ref" --arg def "$def_ref" --arg t "$RUN_STARTED_AT" '
+              [ .actions_caches[]?
+                | select(.key == $k)
+                | select(.ref == $cur or .ref == $def)
+                | select(.created_at < $t) ] | length' 2>/dev/null) || prior="unknown"
+          case "$prior" in ''|*[!0-9]*) prior="unknown" ;; esac
+        fi
+
+        # A warm miss is not proof of a defect. `cache-hit != true` is also what
+        # `actions/cache` reports when the cache SERVICE failed (it swallows
+        # restore errors and logs "Failed to restore"), when an entry is evicted
+        # between the restore step and this one, and when the internal version
+        # derived from the path list stops matching another workflow's entry for
+        # the same key. Any of those would turn an unrelated pull request red on
+        # somebody else's incident (v3-14 audit M2).
+        #
+        # So the assertion has teeth only on the default branch, where a red run
+        # is a signal to a maintainer rather than a blocked contributor. On a
+        # pull request the same row is printed and raised as a warning
+        # annotation, so nothing is hidden. This is the check being made
+        # accurate, not lenient: it still fails, on the branch that matters,
+        # for the condition it was written to catch.
+        on_default_branch="false"
+        if [ "${GITHUB_EVENT_NAME:-}" = "push" ] && [ "${GITHUB_REF:-}" = "refs/heads/${DEFAULT_BRANCH:-main}" ]; then
+          on_default_branch="true"
+        fi
+
+        fail=0
+        if [ "$CACHE_HIT" = "true" ]; then
+          result="hit"
+        elif [ "$prior" = "unknown" ]; then
+          result="miss, warmth NOT asserted (cache API unavailable)"
+        elif [ "$prior" = "0" ]; then
+          result="cold miss (key is new, expected)"
+        elif [ "$CACHE_ENFORCE" != "true" ]; then
+          result="**WARM MISS** ($prior prior entr(y/ies)), not enforced for this cache"
+        elif [ "$on_default_branch" = "true" ]; then
+          result="**WARM MISS** ($prior prior entr(y/ies) for this key)"
+          fail=1
+        else
+          result="**WARM MISS** ($prior prior entr(y/ies)), warning only off the default branch"
+          echo "::warning::${CACHE_LABEL} missed a cache key that already existed (${CACHE_KEY}). Not failing: only a push to ${DEFAULT_BRANCH:-main} enforces this."
+        fi
+
+        printf '| %s | %s | `%s` |\n' "$CACHE_LABEL" "$result" "$CACHE_KEY" >> "$GITHUB_STEP_SUMMARY"
+        echo "$CACHE_LABEL: $result"
+
+        if [ "$fail" -eq 1 ]; then
+          echo "::error::${CACHE_LABEL} missed a cache key that already existed before this run started."
+          echo "::error::Key: ${CACHE_KEY}. Either the restore path is wrong or the cache was evicted mid-flight."
+          exit 1
+        fi
