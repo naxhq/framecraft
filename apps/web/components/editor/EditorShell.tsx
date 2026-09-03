@@ -10,6 +10,7 @@ import { SHARE_PARAM } from "@/lib/share";
 import { exportBlockReason } from "@/lib/warnings";
 import { useEditorStore } from "@/store/editor";
 import { initHistory, redoHistory, undoHistory, useHistoryStore } from "@/store/history";
+import ActionBar from "./ActionBar";
 import HistoryChip from "./HistoryChip";
 import ParamPanel from "./ParamPanel";
 import PresetRow from "./PresetRow";
@@ -74,11 +75,24 @@ export function EditorShell() {
     const { sheet, drawer, issues, history } = overlayRef.current;
 
     // Escape always gets through, and closes what is open, outermost last.
+    //
+    // With NOTHING open it is the cancel key: a run in flight stops at its next
+    // stage boundary and the model on screen stays exactly where it is. The
+    // overlay rule is kept rather than bypassed -- Escape with a drawer up is a
+    // request to close the drawer, not to abandon a build the user cannot even
+    // see behind it -- so the cancel is the ELSE branch, never both at once.
     if (action === "dismiss") {
-      if (drawer) state.setAdjustmentsOpen(false);
-      if (issues) state.setIssuesOpen(false);
-      if (history) setHistoryOpen(false);
-      if (sheet) setShortcutsOpen(false);
+      if (drawer || issues || history || sheet) {
+        if (drawer) state.setAdjustmentsOpen(false);
+        if (issues) state.setIssuesOpen(false);
+        if (history) setHistoryOpen(false);
+        if (sheet) setShortcutsOpen(false);
+        return;
+      }
+      if (state.pipeline.status === "running") {
+        event.preventDefault();
+        state.cancelPipeline();
+      }
       return;
     }
     // Undo/redo are exempt from the "nothing else acts while an overlay is
@@ -307,8 +321,18 @@ export function EditorShell() {
                 {sheetOpen ? "Hide" : "Show"}
               </span>
             </button>
-            <div id="param-sheet-body" className="min-h-0 flex-1">
-              <ParamPanel />
+            {/*
+              The action bar is a sibling of the panel, not a row inside it.
+              Preview and Export are the two things the whole editor exists to
+              do, and inside `ParamPanel` they sat under a results block that
+              grew and shrank with every run. Here they have the top of the
+              column to themselves and nothing below them can move them.
+            */}
+            <div id="param-sheet-body" className="flex min-h-0 flex-1 flex-col">
+              <ActionBar />
+              <div className="min-h-0 flex-1">
+                <ParamPanel />
+              </div>
             </div>
           </aside>
         </div>

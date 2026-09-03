@@ -58,8 +58,11 @@ test("a copied link restores the whole editor in a fresh browser", async ({
 
   await page.getByTestId("group-colour-toggle").click();
   await page.locator("#color_mode").getByRole("radio", { name: "one per part" }).click();
-  await page.locator("#part_color_water").fill("#123456");
-  await expect(page.getByTestId("part_color_water-hex")).toHaveText("#123456");
+  // The per-region wells, which is what actually reaches the exported file
+  // (`colour.region_colors`); the v1 `part_colors` wells were removed in the
+  // settings truth audit and their values are migrated on the way in.
+  await page.getByTestId("colour-color-water").fill("#123456");
+  await expect(page.getByTestId("colour-color-water")).toHaveValue("#123456");
 
   // A hero, picked from the keyboard so the test does not depend on a raycast
   // landing on a building.
@@ -132,7 +135,7 @@ test("a copied link restores the whole editor in a fresh browser", async ({
     await expect(other.locator("#hanger")).toHaveValue("magnets");
 
     await other.getByTestId("group-colour-toggle").click();
-    await expect(other.getByTestId("part_color_water-hex")).toHaveText("#123456");
+    await expect(other.getByTestId("colour-color-water")).toHaveValue("#123456");
 
     // ---- 4. it stops there: stale, ready to Preview, no fetch ------------
     await expect(other.getByTestId("preview-empty")).toBeVisible();

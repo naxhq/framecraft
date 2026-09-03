@@ -2,37 +2,40 @@
  * The editor store.
  *
  * One zustand store holds everything the editor UI needs: where the pin is,
- * every PrintParams value, the fetched SceneGraph, the live engine result,
- * and the export/download state. Since FrameCraft v3 E4 this store no longer
- * calls `services/bake` at all: ingest (`buildScene`, Overpass) and the model
- * build (`buildModel()`, manifold3d) both run through `lib/engine/client.ts`'s
- * `EngineClient`, off the main thread when a Worker is available.
+ * every PrintParams value, the fetched SceneGraph, the live pipeline state,
+ * and the export/download state. Since v3.1 there is ONE job kind and one
+ * worker: a pipeline run (`lib/engine/pipeline`) driven through
+ * `lib/engine/client.ts`'s `PipelineClient`. Fetch and normalise are stages 0
+ * and 1 of that pipeline, so "ingest" is no longer a separate call and a
+ * `heights.*` write re-normalises from the cached Overpass response with no
+ * network at all (design ruling 5, `[V3.1-P1-1]`).
  *
- * The rule that shapes this file (01 step 4, 02 "Performance budgets"):
+ * The rule that shapes this file (01 step 4, 02 "Performance budgets",
+ * `[V3.1-P1-3]`):
  *
  *   **Only `lat`, `lon`, `radius_m` and `rotation_deg` may cause a network
- *   call.** Every PrintParams control writes to the store and nothing else;
- *   the preview recomputes from the SceneGraph already in memory. There is a
- *   test (`store/editor.test.ts`) that fails if any `setParam` ever touches
- *   `fetch`. What used to trigger `POST /scene` now triggers the ingest job;
- *   a PrintParams change never re-fetches, but it DOES schedule a debounced
- *   (~400 ms) engine job -- a WASM build, never a network call -- so the live
- *   preview and the COLOUR panel stay in step with the parameters on screen.
+ *   call.** They form the `fetch` stage's key, they are not parameters, and
+ *   moving one marks the scene stale and waits for the Preview action. Every
+ *   PrintParams write instead schedules a live incremental run after
+ *   `PIPELINE_DEBOUNCE_MS` (80 ms) against the request the last Preview
+ *   already fetched, so the stage cache serves `fetch` and nothing crosses
+ *   the network. There is a test (`store/editor.test.ts`) that fails if any
+ *   `setParam` ever touches `fetch`.
  *
  * `rotation_deg` counts as a location change because the crop happens during
  * ingest (DECISIONS [P0]), so moving it marks the scene stale and the UI
- * re-generates when the slider is released.
+ * re-previews when the slider is released.
  *
  * ONE deliberate exception to "only those four cause a network call" (phase
  * 3, `[V3-P3-U]`): with `params.terrain.enabled`, a pin/radius/rotation move
  * or a `terrain`/`terrain_exaggeration` write also schedules a debounced DEM
  * tile fetch (`lib/engine/terrain/tiles.ts`, cached by
- * `lib/terrainCache.ts`). This is a SEPARATE job from the Overpass ingest --
- * it never calls `generate()`/`engineClient.ingest()` and cannot mark the
- * scene stale -- so "terrain must not trigger an Overpass refetch" still
- * holds; `store/editor.test.ts`'s "never makes a server call" sweep still
- * passes because the fetch is timer-debounced and the test never advances
- * real timers, exactly like the engine job's own debounce.
+ * `lib/terrainCache.ts`). This is a SEPARATE job from the pipeline run -- it
+ * never calls `generate()` and cannot mark the scene stale -- so "terrain must
+ * not trigger an Overpass refetch" still holds; `store/editor.test.ts`'s
+ * "never makes a server call" sweep still passes because the fetch is
+ * timer-debounced and the test never advances real timers, exactly like the
+ * pipeline run's own debounce.
  */
 
 import { create } from "zustand";
@@ -43,20 +46,20 @@ import {
   exportFailedLocally,
   initialExportState,
   markExportStale,
-  runExport,
+  stemForResult,
   type ExportState,
 } from "@/lib/exportFlow";
 import { DEFAULT_PRINT_PARAMS, PARAM_RANGES, defaultPrintParams } from "@/lib/contracts";
 import type { PrintParams, SceneGraph, SceneRequest } from "@/lib/contracts";
-import { createEngineClient, EngineClientError } from "@/lib/engine/client";
-import type { AuditFinding, EngineResult, TerrainGrid } from "@/lib/engine/types";
-import type { EngineBuilding } from "@/lib/engine/osm/types";
+import { createPipelineClient, EngineClientError, PipelineStageError } from "@/lib/engine/client";
+import type { RunHandle } from "@/lib/engine/client";
+import type { Phase } from "@/lib/engine/pipeline";
+import type { AuditFinding, EngineResult, RegionMesh, TerrainGrid } from "@/lib/engine/types";
 import type { OverpassFetchError } from "@/lib/engine/osm/overpass";
-import type { ExportTarget } from "@/lib/engine/export";
 import { fetchTerrainGrid } from "@/lib/engine/terrain/tiles";
 import type { GeocodeResult } from "@/lib/geocode";
 import { RADIUS_MAX_M, RADIUS_MIN_M, snapRadius } from "@/lib/geo";
-import { autoHeroIds, heroCandidates, toggleHeroId } from "@/lib/heroes";
+import { toggleHeroId } from "@/lib/heroes";
 import { applyFix, applySafeFixes, type FixApplication } from "@/lib/issues";
 import { perfFlush } from "@/lib/perf";
 import { presetCityName } from "@/lib/presets";
@@ -120,39 +123,103 @@ export interface SceneState {
   graph: SceneGraph | null;
   /** Error text when `status === "error"`. */
   message: string | null;
-  /** The SceneRequest that produced `graph`; an Export of a stale scene still reuses it for the export's source metadata. */
+  /** The SceneRequest that produced `graph`; every live run re-uses it, so the `fetch` stage is served from its cache and nothing is re-fetched. */
   request: SceneRequest | null;
+  /**
+   * The worker's own `normalise` key for `graph`, passed back as
+   * `knownSceneHash` so a run that did not re-normalise never re-sends 1.2 MB
+   * of SceneGraph across the wire.
+   */
+  hash: string | null;
   /** True when the location moved after the last successful Preview. */
   stale: boolean;
 }
 
 /**
- * The live browser-engine result: the debounced `buildModel()` job's own state,
- * independent of whether the user has clicked Export. The preview (`components/
- * scene/RegionMeshes.tsx`), the COLOUR panel and the Resolved output panel
- * all read `result` while it is fresh (`status === "ready" && !stale`) and
- * fall back to the instanced v1 preview / the token-resolution prediction
- * while it is not -- see `docs/handoff/v3-02-integration.md`.
+ * The live pipeline state (design section 5).
+ *
+ * `regions` is what the viewport draws: one `RegionMesh` per colourable
+ * region, streamed by the worker as each `finish-<region>` stage completes and
+ * replaced only when that region's hash moved, so React re-uploads exactly the
+ * geometry that changed. `result` is the finished `EngineResult` with the
+ * streamed positions re-attached; it feeds the filament mapper, the stats, the
+ * Issues badge and every export.
  */
-export type EngineJobStatus = "idle" | "computing" | "ready" | "error";
+export type PipelineStatus = "idle" | "running" | "ready" | "error";
 
-export interface EngineJobState {
-  status: EngineJobStatus;
-  result: EngineResult | null;
-  error: string | null;
-  /** True once params/scene changed after `result` was computed. `result` is kept (avoids a preview flicker back to empty) but must not be trusted as "what is on screen now". */
-  stale: boolean;
+export interface PipelineProgress {
+  /** The stage that is running (or last reported); "" before the first one. */
+  stage: string;
+  /** Its position in this run's plan, 0-based, and the plan's length. */
+  index: number;
+  total: number;
+  /**
+   * Time this run has spent in stages that have reported, ms. A sum of the
+   * worker's own per-stage numbers rather than a wall clock, so it is exactly
+   * comparable with `etaMs` and does not move between events.
+   */
+  elapsedMs: number;
+  /**
+   * The previous run's durations for the stages still ahead, summed. Null
+   * until three stages have reported in THIS run (before that the plan is
+   * barely under way and a number would be noise), and null while no previous
+   * run has timed any of the remaining stages.
+   */
+  etaMs: number | null;
+  phase: Phase;
 }
 
-export const initialEngineState: EngineJobState = {
-  status: "idle",
-  result: null,
-  error: null,
-  stale: false,
+export const IDLE_PIPELINE_PROGRESS: PipelineProgress = {
+  stage: "",
+  index: 0,
+  total: 0,
+  elapsedMs: 0,
+  etaMs: null,
+  phase: "scene",
 };
 
-/** Invalidate a fresh engine result because the inputs moved under it. Mirrors `lib/exportFlow.ts:markExportStale`. */
-export function markEngineStale(previous: EngineJobState): EngineJobState {
+/** How many stages must report before `etaMs` stops being null. */
+export const ETA_MIN_STAGES = 3;
+
+/** A stage failure, never flattened into a bare string: the Issues badge names the stage and the drawer can show the worker's own detail. */
+export interface PipelineFailure {
+  stage: string;
+  message: string;
+  /** The worker's own detail (and stack, where one crossed the wire), or null. */
+  detail: string | null;
+}
+
+export interface PipelineJobState {
+  status: PipelineStatus;
+  /** True once params/scene changed after `result` was computed. The last good `regions` and `result` are kept (the viewport dims them rather than emptying) but must not be trusted as "what the controls say now". */
+  stale: boolean;
+  progress: PipelineProgress;
+  /** region -> its finished mesh. Referentially stable per region: only a region the worker re-sent gets a new object. */
+  regions: ReadonlyMap<string, RegionMesh>;
+  /** region -> the worker's `finish-<region>` key for the mesh we hold, for the regions whose key we know. Sent back as `known` so an unchanged region is never re-sent. */
+  regionHashes: Readonly<Record<string, string>>;
+  result: EngineResult | null;
+  error: PipelineFailure | null;
+  /** stage id -> how long it took the last time it actually ran, ms. What `etaMs` is computed from. */
+  lastRunStageMs: Readonly<Record<string, number>>;
+}
+
+/** Identity-stable empty map: a fresh `new Map()` per read would report "changed" to every zustand selector. */
+export const NO_REGIONS: ReadonlyMap<string, RegionMesh> = new Map();
+
+export const initialPipelineState: PipelineJobState = {
+  status: "idle",
+  stale: false,
+  progress: IDLE_PIPELINE_PROGRESS,
+  regions: NO_REGIONS,
+  regionHashes: {},
+  result: null,
+  error: null,
+  lastRunStageMs: {},
+};
+
+/** Invalidate a fresh pipeline result because the inputs moved under it. Mirrors `lib/exportFlow.ts:markExportStale`. */
+export function markPipelineStale(previous: PipelineJobState): PipelineJobState {
   if (previous.stale || previous.status !== "ready") return previous;
   return { ...previous, stale: true };
 }
@@ -206,8 +273,8 @@ export interface EditorState {
   location: LocationState;
   params: PrintParams;
   scene: SceneState;
-  engine: EngineJobState;
-  /** The TERRAIN group's DEM fetch state, independent of `engine` (phase 3). */
+  pipeline: PipelineJobState;
+  /** The TERRAIN group's DEM fetch state, independent of `pipeline` (phase 3). */
   terrain: TerrainState;
   exportState: ExportState;
   /** Where the Place name field's prefill comes from ([V3-P1]). */
@@ -339,12 +406,33 @@ export interface EditorState {
   toggleTheme: () => void;
   initTheme: () => void;
 
-  // --- engine flows (worker/in-page, never a server) ---
+  // --- pipeline flows (worker/in-page, never a server past `fetch`) ---
+  /**
+   * The Preview action: fetch the current location and build the model from
+   * it. The only entry point that may reach Overpass.
+   *
+   * Still named `generate` on purpose: the vocabulary pass retired the word
+   * from the UI but deferred the code rename (`DECISIONS.md` `[V3.1-O3]`), so
+   * the six Playwright helpers and `lib/keyboard.ts`'s action id keep working.
+   */
   generate: () => Promise<void>;
-  /** Reuses a fresh engine result, or runs one now, then exports it and offers the download. */
+  /**
+   * Awaits the run already under way (or starts one), then asks the worker for
+   * the files. Never a second build.
+   *
+   * The `export` stage runs the printability gate first and REFUSES a model
+   * that failed a Stage 4 check; the refusal lands as the export error, naming
+   * every check, and the previously downloadable files stay exactly where they
+   * were. `ExportRequest.force` is for debugging the engine and no control in
+   * this app reaches it.
+   */
   requestExport: () => Promise<void>;
-  /** Drop any pending debounced engine job, and any pending terrain fetch (component unmount, test cleanup). */
-  cancelEngineJob: () => void;
+  /**
+   * Stop the run in flight at its next stage boundary and drop any pending
+   * debounced run and terrain fetch. The last good `regions` and `result` stay
+   * on screen: a cancelled run is not an error.
+   */
+  cancelPipeline: () => void;
 }
 
 /** The initial pin: the Chicago Loop preset (DECISIONS [P1] preset ids). */
@@ -361,6 +449,7 @@ const IDLE_SCENE: SceneState = {
   graph: null,
   message: null,
   request: null,
+  hash: null,
   stale: false,
 };
 
@@ -401,19 +490,27 @@ function describeIngestError(error: OverpassFetchError): string {
 }
 
 /**
- * The one `EngineClient` for this page's lifetime. Constructed eagerly (module
- * scope), but nothing inside it touches a `Worker`/WASM until `ingest()`/
- * `buildModel()` is actually called -- safe to construct during Next's server-side
- * prerender pass of this "use client" module, where `typeof Worker ===
- * "undefined"` picks the in-page fallback transport anyway.
+ * The one `PipelineClient` for this page's lifetime. Constructed eagerly
+ * (module scope), but nothing inside it touches a `Worker`/WASM until `run()`
+ * is actually called -- safe to construct during Next's server-side prerender
+ * pass of this "use client" module, where `typeof Worker === "undefined"`
+ * picks the in-page fallback transport anyway.
  */
-const engineClient = createEngineClient();
+const pipelineClient = createPipelineClient();
 
-/** How long a PrintParams change waits before the next engine job runs. */
-const ENGINE_DEBOUNCE_MS = 400;
-let engineDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * How long a PrintParams write waits before the next incremental run starts
+ * (`[V3.1-P1-3]`, down from the 400 ms of the v3 build job).
+ *
+ * 80 ms is short enough that a released slider feels immediate and long enough
+ * that a drag coalesces into one run; a run already in flight is superseded at
+ * its next stage boundary and hands every stage it finished to its successor,
+ * so a burst costs at most one stage of wasted work.
+ */
+export const PIPELINE_DEBOUNCE_MS = 80;
+let pipelineDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Same debounce window as the engine job, so a burst of terrain-affecting edits costs one fetch. */
+/** Same debounce window as the pipeline run, so a burst of terrain-affecting edits costs one fetch. */
 const TERRAIN_DEBOUNCE_MS = 400;
 let terrainDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -422,10 +519,26 @@ type Set = (
   partial: Partial<EditorState> | ((state: EditorState) => Partial<EditorState>),
 ) => void;
 
-function clearEngineDebounce(): void {
-  if (engineDebounceTimer !== null) {
-    clearTimeout(engineDebounceTimer);
-    engineDebounceTimer = null;
+/**
+ * The run in flight, if any, and the promise that settles with its result.
+ *
+ * `handle` is the identity every subscription checks before writing: a
+ * superseded run's events and its `cancelled` rejection both arrive AFTER the
+ * successor has taken over, and must not touch the state the successor now
+ * owns.
+ */
+interface ActiveRun {
+  handle: RunHandle;
+  /** Resolves with the finished result, or `null` when the run was superseded, cancelled or failed. */
+  done: Promise<EngineResult | null>;
+}
+
+let activeRun: ActiveRun | null = null;
+
+function clearPipelineDebounce(): void {
+  if (pipelineDebounceTimer !== null) {
+    clearTimeout(pipelineDebounceTimer);
+    pipelineDebounceTimer = null;
   }
 }
 
@@ -436,62 +549,363 @@ function clearTerrainDebounce(): void {
   }
 }
 
-/** Debounce a fresh engine job. A no-op call (no scene yet) costs nothing once the timer fires. */
-function scheduleEngineJob(get: Get, set: Set): void {
-  clearEngineDebounce();
-  engineDebounceTimer = setTimeout(() => {
-    engineDebounceTimer = null;
-    void runEngineJob(get, set);
-  }, ENGINE_DEBOUNCE_MS);
+/**
+ * Debounce a fresh incremental run against the request the last Preview
+ * fetched. A no-op call (nothing previewed yet) costs nothing once the timer
+ * fires.
+ */
+function schedulePipelineRun(get: Get, set: Set): void {
+  clearPipelineDebounce();
+  pipelineDebounceTimer = setTimeout(() => {
+    pipelineDebounceTimer = null;
+    const request = get().scene.request;
+    if (request === null) return;
+    void startPipelineRun(get, set, request);
+  }, PIPELINE_DEBOUNCE_MS);
+}
+
+/** Two SceneRequests describe the same fetch. */
+function sameRequest(a: SceneRequest, b: SceneRequest): boolean {
+  return (
+    a.lat === b.lat &&
+    a.lon === b.lon &&
+    a.radius_m === b.radius_m &&
+    a.rotation_deg === b.rotation_deg &&
+    (a.preset_id ?? null) === (b.preset_id ?? null)
+  );
 }
 
 /**
- * The manual hero picks plus, when `hero_auto.enabled`, the top-scoring
- * auto-promoted buildings on top of them (`lib/heroes.ts`). Read by both the
- * engine job (what actually builds at hero height/colour) and by callers that
- * want to know the CURRENT effective set without waiting for a build, such as
- * the HEROES panel.
+ * The Stage 4 findings that refused an export, or null.
+ *
+ * The `export` stage runs `export/gate.ts` before the writer and throws
+ * `ExportBlockedError` when the printability gate failed at `error` severity
+ * (not manifold, a floating island, over the plate, over the height ceiling, a
+ * wall under the minimum). 04 stage 4's rule is "on failure, do not silently
+ * ship": the refusal has to name the checks, because the user is looking at a
+ * model that LOOKS finished.
  */
-function currentHeroIds(scene: SceneState, params: PrintParams): string[] {
-  const manual = params.hero_building_ids ?? [];
-  if (!params.hero_auto?.enabled || !scene.graph) return [...manual];
-  const buildings = scene.graph.buildings as EngineBuilding[];
-  return autoHeroIds(heroCandidates(buildings), manual, params.hero_auto.count ?? 0);
+function blockedExportFindings(error: unknown): AuditFinding[] | null {
+  if (!(error instanceof PipelineStageError)) return null;
+  const detail = error.detail as { blocking?: AuditFinding[] } | undefined;
+  const blocking = detail?.blocking;
+  return blocking !== undefined && blocking.length > 0 ? blocking : null;
+}
+
+/** "Export refused: the model is not one solid; a wall is thinner than the nozzle can print." */
+function describeBlockedExport(blocking: readonly AuditFinding[]): string {
+  return `Export refused, because the printability gate failed: ${blocking
+    .map((finding) => finding.title)
+    .join("; ")}. Fix the issues in the Issues list, then export again.`;
+}
+
+/** The Overpass failure behind a stage error, or null: an ingest problem is a SCENE error, not a pipeline one. */
+function overpassErrorOf(error: unknown): OverpassFetchError | null {
+  if (!(error instanceof PipelineStageError)) return null;
+  const detail = error.detail as { overpass?: OverpassFetchError } | undefined;
+  return detail?.overpass ?? null;
 }
 
 /**
- * Run one engine job now (bypassing the debounce) and adopt its result.
- * Returns `null` when there is no scene to build, the job was superseded by a
- * newer one (a normal outcome, not an error), or the build failed.
+ * Everything the worker said about a failure beyond its one-line message: the
+ * structured detail it attached, plus the stack. Never swallowed -- a stage
+ * that throws has to be diagnosable from the Issues drawer.
  */
-async function runEngineJob(get: Get, set: Set): Promise<EngineResult | null> {
-  clearEngineDebounce();
-  const { scene, params, location, terrain } = get();
-  if (!scene.graph) return null;
-  set((state) => ({ engine: { ...state.engine, status: "computing", error: null } }));
-  const today = new Date().toISOString().slice(0, 10);
-  const terrainGrid = params.terrain?.enabled ? terrain.grid : null;
-  try {
-    const result = await engineClient.buildModel({
-      scene: scene.graph,
-      params,
-      rotationDeg: location.rotation_deg,
-      date: today,
-      heroIds: currentHeroIds(scene, params),
-      terrain: terrainGrid,
-    });
-    set({ engine: { status: "ready", result, error: null, stale: false } });
-    // Perf mode only: console table plus a HUD update, once per finished job
-    // (`lib/perf.ts`). Returns null and does nothing at all when it is off.
-    perfFlush("engine job");
-    return result;
-  } catch (error) {
-    if (error instanceof EngineClientError && error.code === "cancelled") return null;
-    set((state) => ({
-      engine: { ...state.engine, status: "error", error: errorMessage(error) },
-    }));
-    return null;
+function failureDetail(error: unknown): string | null {
+  const parts: string[] = [];
+  if (error instanceof PipelineStageError && error.detail !== undefined) {
+    parts.push(typeof error.detail === "string" ? error.detail : JSON.stringify(error.detail));
   }
+  if (error instanceof Error && error.stack) parts.push(error.stack);
+  else if (!(error instanceof Error)) parts.push(String(error));
+  return parts.length === 0 ? null : parts.join("\n");
+}
+
+/**
+ * The previous run's cost for every stage still ahead of `index` in this run's
+ * plan, or null when none of them has ever been timed (a first run, or a plan
+ * this session has not reached the end of).
+ */
+function etaFromPlan(
+  plan: readonly string[],
+  index: number,
+  previous: Readonly<Record<string, number>>,
+): number | null {
+  let total = 0;
+  let known = false;
+  for (let i = index + 1; i < plan.length; i += 1) {
+    const ms = previous[plan[i]];
+    if (ms === undefined) continue;
+    known = true;
+    total += ms;
+  }
+  return known ? total : null;
+}
+
+/**
+ * Put the streamed positions back on the `done` result's REGIONS.
+ *
+ * The worker sends each region's mesh once, transferred, as its finish stage
+ * completes, and strips the positions off the regions it posts at the end
+ * (`[V3.1-P1-1]`, `client.test.ts` pins the wire). `merged` and `tiles` are
+ * NOT this function's business: the worker sends them whole, or strips them as
+ * unchanged and `PipelineClient` re-attaches the ones it kept from the last
+ * `done` (`knownMergedHash`/`knownTilesHash`, which the client fills in
+ * itself). Touching them here would undo that.
+ */
+function reattachRegions(result: EngineResult, held: ReadonlyMap<string, RegionMesh>): EngineResult {
+  const regions = result.regions.map((region) => {
+    const streamed = held.get(region.region);
+    if (streamed === undefined) return region;
+    return { ...region, positions: streamed.positions, indices: streamed.indices };
+  });
+  return { ...result, regions };
+}
+
+/**
+ * Start one pipeline run now, bypassing the debounce, and adopt everything it
+ * streams: the scene, each region mesh as it finishes, the stage progress and
+ * finally the result.
+ *
+ * `request` is the fetch key. For a live run it is the request the last
+ * Preview already fetched, so the `fetch` stage is served from its cache and
+ * nothing touches the network; a `heights.*` write still re-runs `normalise`
+ * over that cached response, which is the whole point of fetch and normalise
+ * being stages (design ruling 5).
+ *
+ * Returns `null` when the run was superseded or cancelled (a normal outcome,
+ * not a failure) or when a stage failed.
+ */
+function startPipelineRun(get: Get, set: Set, request: SceneRequest): Promise<EngineResult | null> {
+  clearPipelineDebounce();
+  const state = get();
+  const params = state.params;
+  const previousStageMs = state.pipeline.lastRunStageMs;
+  const grid = state.terrain.grid;
+
+  set((current) => ({
+    pipeline: {
+      ...current.pipeline,
+      status: "running",
+      error: null,
+      progress: IDLE_PIPELINE_PROGRESS,
+    },
+  }));
+
+  const handle = pipelineClient.run({
+    source: { kind: "request", request },
+    params,
+    // `gate: "param"` leaves the `terrain` stage to decide from
+    // `terrain.enabled` whether to drape the grid ([V3.1-P1-9]), so toggling
+    // terrain off and on again re-runs one stage instead of re-fetching.
+    terrain: grid === null ? null : { grid, gate: "param" },
+    // Null, not the store's own list: the `heroes` stage resolves `hero_auto`
+    // in the worker, so `hero_auto.*` is a claimed parameter rather than a
+    // value the page computes and the worker cannot check (pipeline 3.5).
+    heroIds: null,
+    date: new Date().toISOString().slice(0, 10),
+    rotationDeg: request.rotation_deg,
+    mode: "full",
+    known: { ...state.pipeline.regionHashes },
+    knownSceneHash: state.scene.hash,
+  });
+
+  const stageMs: Record<string, number> = {};
+  let plan: readonly string[] = [];
+  let reported = 0;
+  let elapsedMs = 0;
+  const owns = (): boolean => activeRun !== null && activeRun.handle === handle;
+
+  handle.progress.subscribe((event) => {
+    if (!owns()) return;
+    if (event.kind === "plan") {
+      plan = event.stages;
+      set((current) => ({
+        pipeline: { ...current.pipeline, progress: { ...current.pipeline.progress, total: event.total } },
+      }));
+      return;
+    }
+    if (event.kind !== "stage") return;
+    if (event.state === "start") {
+      // Name the stage that is running NOW: this is what the viewport overlay
+      // reads, and "Building: roads" has to appear before roads are built.
+      set((current) => ({
+        pipeline: {
+          ...current.pipeline,
+          progress: {
+            ...current.pipeline.progress,
+            stage: event.stage,
+            index: event.index,
+            total: event.total,
+            phase: event.phase,
+          },
+        },
+      }));
+      return;
+    }
+    reported += 1;
+    elapsedMs += event.elapsedMs;
+    // Only a stage that actually RAN times itself: a cached stage reports 0,
+    // and folding that into the table would estimate a real re-run at nothing.
+    if (event.state === "done") stageMs[event.stage] = event.elapsedMs;
+    const etaMs = reported < ETA_MIN_STAGES ? null : etaFromPlan(plan, event.index, previousStageMs);
+    set((current) => ({
+      pipeline: {
+        ...current.pipeline,
+        progress: {
+          stage: event.stage,
+          index: event.index,
+          total: event.total,
+          elapsedMs,
+          etaMs,
+          phase: event.phase,
+        },
+      },
+    }));
+  });
+
+  handle.scene.subscribe((event) => {
+    if (!owns()) return;
+    set((current) => ({
+      scene: {
+        status: "ready",
+        graph: event.scene,
+        message: null,
+        request,
+        hash: event.hash,
+        // The pin may have moved on while this ran: the scene is stale unless
+        // it still describes where the user is standing.
+        stale: !sameRequest(locationToRequest(current.location), request),
+      },
+    }));
+  });
+
+  handle.regions.subscribe((event) => {
+    if (!owns()) return;
+    set((current) => {
+      const regions = new Map(current.pipeline.regions);
+      const hashes = { ...current.pipeline.regionHashes };
+      for (const region of event.regions) {
+        regions.set(region.region, region);
+        // The mesh arrives WITH its finish key, so the map stays hash-complete
+        // between events. That is what makes a run cancelled halfway through
+        // the region phase safe: `known` still describes every mesh on screen,
+        // including the ones the abandoned run replaced.
+        const hash = event.hashes[region.region];
+        // A mesh whose key did not arrive is one we may not claim to know:
+        // forgetting it costs one re-send, keeping a stale key costs a mesh
+        // nobody asked for on the plate.
+        if (hash === undefined) delete hashes[region.region];
+        else hashes[region.region] = hash;
+      }
+      // A superset on purpose: every region the model does not have right now,
+      // not only the ones the worker was told we hold. Deleting a name we do
+      // not hold costs nothing; keeping one the model lost would draw it.
+      for (const region of event.removed) {
+        regions.delete(region);
+        delete hashes[region];
+      }
+      return { pipeline: { ...current.pipeline, regions, regionHashes: hashes } };
+    });
+  });
+
+  const done = handle.done.then(
+    (outcome): EngineResult | null => {
+      if (!owns()) return null;
+      activeRun = null;
+      const result =
+        outcome.result === null ? null : reattachRegions(outcome.result, get().pipeline.regions);
+      set((current) => ({
+        pipeline: {
+          ...current.pipeline,
+          status: "ready",
+          stale: false,
+          error: null,
+          result,
+          regionHashes: outcome.regionHashes,
+          lastRunStageMs: { ...current.pipeline.lastRunStageMs, ...stageMs },
+          progress: {
+            ...current.pipeline.progress,
+            index: Math.max(current.pipeline.progress.total - 1, 0),
+            elapsedMs,
+            etaMs: 0,
+          },
+        },
+      }));
+      // Perf mode only: console table plus a HUD update, once per finished run
+      // (`lib/perf.ts`). Returns null and does nothing at all when it is off.
+      perfFlush("pipeline run");
+      return result;
+    },
+    (error: unknown): EngineResult | null => {
+      if (!owns()) return null;
+      activeRun = null;
+      if (error instanceof EngineClientError && error.code === "cancelled") {
+        // Not a failure: the last good regions and result stay on screen.
+        set((current) => ({
+          pipeline: {
+            ...current.pipeline,
+            status: current.pipeline.result === null ? "idle" : "ready",
+            stale: true,
+            progress: IDLE_PIPELINE_PROGRESS,
+          },
+        }));
+        return null;
+      }
+      const overpass = overpassErrorOf(error);
+      if (overpass !== null) {
+        // An ingest problem is reported where the user asked for it: on the
+        // scene, with the mirrors that were tried. The last good model stays.
+        set((current) => ({
+          scene: { ...current.scene, status: "error", message: describeIngestError(overpass), stale: true },
+          pipeline: {
+            ...current.pipeline,
+            status: current.pipeline.result === null ? "idle" : "ready",
+            progress: IDLE_PIPELINE_PROGRESS,
+          },
+        }));
+        return null;
+      }
+      set((current) => ({
+        pipeline: {
+          ...current.pipeline,
+          status: "error",
+          error: {
+            stage: error instanceof PipelineStageError ? error.stage : "run",
+            message: errorMessage(error),
+            detail: failureDetail(error),
+          },
+          progress: IDLE_PIPELINE_PROGRESS,
+        },
+      }));
+      return null;
+    },
+  );
+
+  activeRun = { handle, done };
+  return done;
+}
+
+/**
+ * The result to export: the run already under way, a fresh one, or the one
+ * already in the store. Never a second build of the same parameters.
+ */
+async function resultForExport(get: Get, set: Set): Promise<EngineResult | null> {
+  // A debounced run is pending, so what is in flight (if anything) was started
+  // for older parameters: start the newer one now, which supersedes it.
+  if (pipelineDebounceTimer !== null) {
+    const request = get().scene.request;
+    if (request === null) return null;
+    return startPipelineRun(get, set, request);
+  }
+  if (activeRun !== null) return activeRun.done;
+  const pipeline = get().pipeline;
+  if (pipeline.status === "ready" && !pipeline.stale && pipeline.result !== null) {
+    return pipeline.result;
+  }
+  const request = get().scene.request;
+  if (request === null) return null;
+  return startPipelineRun(get, set, request);
 }
 
 /**
@@ -532,7 +946,7 @@ async function runTerrainJob(get: Get, set: Set): Promise<void> {
   const cached = terrainCache.get(key);
   if (cached !== undefined) {
     set({ terrain: { status: "ready", grid: cached, error: null, key } });
-    scheduleEngineJob(get, set);
+    schedulePipelineRun(get, set);
     return;
   }
   set((state) => ({ terrain: { ...state.terrain, status: "loading", error: null } }));
@@ -562,7 +976,7 @@ async function runTerrainJob(get: Get, set: Set): Promise<void> {
     }
     terrainCache.set(key, grid);
     set({ terrain: { status: "ready", grid, error: null, key } });
-    scheduleEngineJob(get, set);
+    schedulePipelineRun(get, set);
   } catch (error) {
     if (terrainCacheKey(get().location, get().params) !== key) return;
     set({ terrain: { status: "error", grid: null, error: errorMessage(error), key } });
@@ -576,7 +990,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   // state, where the first write would throw.
   params: defaultPrintParams(),
   scene: { ...IDLE_SCENE },
-  engine: { ...initialEngineState },
+  pipeline: { ...initialPipelineState },
   terrain: { ...initialTerrainState },
   exportState: { ...initialExportState },
   placeDetect: { ...IDLE_PLACE_DETECT },
@@ -597,7 +1011,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       return {
         location: { ...state.location, lat, lon, preset_id: null },
         scene: { ...state.scene, stale: true },
-        engine: markEngineStale(state.engine),
+        pipeline: markPipelineStale(state.pipeline),
         exportState: markExportStale(state.exportState),
         presetChosen: false,
         placeDetect: {
@@ -616,7 +1030,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     set((state) => ({
       location: { ...state.location, radius_m: snapRadius(radiusM) },
       scene: { ...state.scene, stale: true },
-      engine: markEngineStale(state.engine),
+      pipeline: markPipelineStale(state.pipeline),
       exportState: markExportStale(state.exportState),
     }));
     scheduleTerrainJob(get, set);
@@ -627,7 +1041,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     set((state) => ({
       location: { ...state.location, rotation_deg: normalised },
       scene: { ...state.scene, stale: true },
-      engine: markEngineStale(state.engine),
+      pipeline: markPipelineStale(state.pipeline),
       exportState: markExportStale(state.exportState),
     }));
     scheduleTerrainJob(get, set);
@@ -649,7 +1063,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
           preset_id: preset.preset_id ?? null,
         },
         scene: { ...state.scene, stale: true },
-        engine: markEngineStale(state.engine),
+        pipeline: markPipelineStale(state.pipeline),
         exportState: markExportStale(state.exportState),
         presetChosen: true,
         placeDetect: {
@@ -672,10 +1086,10 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   setParam: (key, value) => {
     set((state) => ({
       params: { ...state.params, [key]: value },
-      engine: markEngineStale(state.engine),
+      pipeline: markPipelineStale(state.pipeline),
       exportState: markExportStale(state.exportState),
     }));
-    scheduleEngineJob(get, set);
+    schedulePipelineRun(get, set);
     // `terrain` (the on/off toggle and smoothing) and `terrain_exaggeration`
     // are the only two PrintParams fields the TERRAIN fetch cache key reads
     // (`lib/terrainCache.ts`); every other control still touches nothing but
@@ -700,11 +1114,11 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       // way it clears every other field back to the contract default without
       // re-running whatever produced the value that was there before.
       params: defaultPrintParams(),
-      engine: markEngineStale(state.engine),
+      pipeline: markPipelineStale(state.pipeline),
       exportState: markExportStale(state.exportState),
       heroCapHit: false,
     }));
-    scheduleEngineJob(get, set);
+    schedulePipelineRun(get, set);
     scheduleTerrainJob(get, set);
   },
 
@@ -715,10 +1129,10 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     });
     set((state) => ({
       params: { ...state.params, ...patch },
-      engine: markEngineStale(state.engine),
+      pipeline: markPipelineStale(state.pipeline),
       exportState: markExportStale(state.exportState),
     }));
-    scheduleEngineJob(get, set);
+    schedulePipelineRun(get, set);
   },
 
   applyFinding: (finding) => {
@@ -726,23 +1140,23 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     if (outcome.changes.length === 0) return outcome;
     set((state) => ({
       params: outcome.params,
-      engine: markEngineStale(state.engine),
+      pipeline: markPipelineStale(state.pipeline),
       exportState: markExportStale(state.exportState),
     }));
-    scheduleEngineJob(get, set);
+    schedulePipelineRun(get, set);
     return outcome;
   },
 
   applySafeFindingFixes: () => {
-    const findings = get().engine.result?.findings ?? [];
+    const findings = get().pipeline.result?.findings ?? [];
     const outcome = applySafeFixes(get().params, findings);
     if (outcome.changes.length === 0) return outcome;
     set((state) => ({
       params: outcome.params,
-      engine: markEngineStale(state.engine),
+      pipeline: markPipelineStale(state.pipeline),
       exportState: markExportStale(state.exportState),
     }));
-    scheduleEngineJob(get, set);
+    schedulePipelineRun(get, set);
     return outcome;
   },
 
@@ -772,31 +1186,31 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
           // Never overwrites a user's own typed Place name.
           city_label: state.placeDetect.overridden ? state.params.city_label : (city ?? ""),
         },
-        engine: markEngineStale(state.engine),
+        pipeline: markPipelineStale(state.pipeline),
         exportState: markExportStale(state.exportState),
       };
     });
-    scheduleEngineJob(get, set);
+    schedulePipelineRun(get, set);
   },
 
   setPlaceName: (value) => {
     set((state) => ({
       placeDetect: { ...state.placeDetect, overridden: true },
       params: { ...state.params, city_label: value },
-      engine: markEngineStale(state.engine),
+      pipeline: markPipelineStale(state.pipeline),
       exportState: markExportStale(state.exportState),
     }));
-    scheduleEngineJob(get, set);
+    schedulePipelineRun(get, set);
   },
 
   resetPlaceNameToDetected: () => {
     set((state) => ({
       placeDetect: { ...state.placeDetect, overridden: false },
       params: { ...state.params, city_label: state.placeDetect.detectedCity ?? "" },
-      engine: markEngineStale(state.engine),
+      pipeline: markPipelineStale(state.pipeline),
       exportState: markExportStale(state.exportState),
     }));
-    scheduleEngineJob(get, set);
+    schedulePipelineRun(get, set);
   },
 
   setAuthor: (value) => {
@@ -858,12 +1272,12 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       location: snapshot.location,
       params: snapshot.params,
       scene: locationChanged ? { ...state.scene, stale: true } : state.scene,
-      engine: locationChanged || paramsChanged ? markEngineStale(state.engine) : state.engine,
+      pipeline: locationChanged || paramsChanged ? markPipelineStale(state.pipeline) : state.pipeline,
       exportState: locationChanged || paramsChanged ? markExportStale(state.exportState) : state.exportState,
     }));
     // The (WASM, in-page) engine job, never Overpass: harmless to schedule
     // whether or not anything actually moved, unlike `generate()`.
-    scheduleEngineJob(get, set);
+    schedulePipelineRun(get, set);
     if (locationChanged) scheduleTerrainJob(get, set);
   },
 
@@ -872,7 +1286,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       location,
       params,
       scene: { ...state.scene, stale: true },
-      engine: markEngineStale(state.engine),
+      pipeline: markPipelineStale(state.pipeline),
       exportState: markExportStale(state.exportState),
       terrain: { ...initialTerrainState },
       presetChosen: false,
@@ -914,7 +1328,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       },
       params,
       scene: { ...state.scene, stale: true },
-      engine: markEngineStale(state.engine),
+      pipeline: markPipelineStale(state.pipeline),
       exportState: markExportStale(state.exportState),
       // A cached grid is for the OLD pin/params; a link can name a different
       // place and different terrain settings entirely.
@@ -982,47 +1396,25 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     set({ theme });
   },
 
+  /**
+   * The Preview action: one pipeline run whose `fetch` stage really may go to
+   * Overpass, because the location is what changed.
+   *
+   * Everything the run streams -- the scene, each region mesh, the stage
+   * progress, the result -- is adopted by `startPipelineRun`'s own
+   * subscriptions, so this only has to say where to fetch and put the scene in
+   * its loading state while the first stages run.
+   */
   generate: async () => {
     const request = locationToRequest(get().location);
     set((state) => ({
       scene: { ...state.scene, status: "loading", message: null },
+      // A new SceneGraph invalidates a fresh result and a finished export for
+      // the same reason a slider does: the geometry is no longer this geometry.
+      pipeline: markPipelineStale(state.pipeline),
+      exportState: markExportStale(state.exportState),
     }));
-    try {
-      const outcome = await engineClient.ingest(request, get().params);
-      if (outcome.ok) {
-        set((state) => ({
-          scene: { status: "ready", graph: outcome.scene, message: null, request, stale: false },
-          // A new SceneGraph invalidates a fresh engine result and a finished
-          // export for the same reason a slider does: the geometry is no longer
-          // this geometry.
-          engine: markEngineStale(state.engine),
-          exportState: markExportStale(state.exportState),
-        }));
-        scheduleEngineJob(get, set);
-        perfFlush("ingest");
-      } else {
-        set((state) => ({
-          scene: {
-            ...state.scene,
-            status: "error",
-            message: describeIngestError(outcome.error),
-            stale: true,
-          },
-        }));
-      }
-    } catch (error) {
-      // A newer `generate()` call superseded this one: it already owns the
-      // scene state, so this stale call has nothing left to report.
-      if (error instanceof EngineClientError && error.code === "cancelled") return;
-      set((state) => ({
-        scene: {
-          ...state.scene,
-          status: "error",
-          message: errorMessage(error),
-          stale: true,
-        },
-      }));
-    }
+    await startPipelineRun(get, set, request);
   },
 
   requestExport: async () => {
@@ -1036,14 +1428,16 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     }
     set((state) => ({ exportState: exportStarted(state.exportState) }));
 
-    let result = get().engine.result;
-    const fresh = get().engine;
-    if (fresh.status !== "ready" || fresh.stale || result === null) {
-      result = await runEngineJob(get, set);
-    }
+    // The run that is already under way, a fresh one, or the one in the store:
+    // an export is "the remaining uncached stages plus the writer", never a
+    // second build of parameters the worker has already built.
+    const result = await resultForExport(get, set);
     if (result === null) {
       set((state) => ({
-        exportState: exportFailedLocally(state.exportState, get().engine.error ?? "The engine could not build a model."),
+        exportState: exportFailedLocally(
+          state.exportState,
+          state.pipeline.error?.message ?? "The engine could not build a model.",
+        ),
       }));
       return;
     }
@@ -1054,9 +1448,12 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       return;
     }
     try {
-      const target: ExportTarget = params.export_target ?? "bambu-3mf";
       const location = get().location;
-      const outcome = runExport(result, target, graph, {
+      const outcome = await pipelineClient.exportFiles({
+        // No `target`: the `export` stage reads `export_target` off the params
+        // it built with, so the file and the preview can never disagree about
+        // which format was asked for. `outcome.target` says which it wrote.
+        stem: stemForResult(result),
         source: {
           lat: graph.center.lat,
           lon: graph.center.lon,
@@ -1064,16 +1461,35 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
           rotation_deg: location.rotation_deg,
           preset_id: location.preset_id,
         },
+        createdIso: new Date().toISOString(),
       });
-      set((state) => ({ exportState: exportDone(state.exportState, target, outcome, result.findings) }));
+      set((state) => ({ exportState: exportDone(state.exportState, outcome, result.findings) }));
       perfFlush("export");
     } catch (error) {
+      if (error instanceof EngineClientError && error.code === "cancelled") {
+        set((state) => ({
+          exportState: exportFailedLocally(state.exportState, "A newer request took over before the file was written."),
+        }));
+        return;
+      }
+      // The printability gate refused it. Never silent, and never `force`:
+      // `ExportRequest.force` exists for debugging the engine and no control
+      // in this app may reach it, or "the preview and the printed result
+      // agree" stops being true the one time it matters.
+      const blocking = blockedExportFindings(error);
+      if (blocking !== null) {
+        set((state) => ({
+          exportState: exportFailedLocally(state.exportState, describeBlockedExport(blocking)),
+        }));
+        return;
+      }
       set((state) => ({ exportState: exportFailedLocally(state.exportState, errorMessage(error)) }));
     }
   },
 
-  cancelEngineJob: () => {
-    clearEngineDebounce();
+  cancelPipeline: () => {
+    clearPipelineDebounce();
     clearTerrainDebounce();
+    activeRun?.handle.cancel();
   },
 }));

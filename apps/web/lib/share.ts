@@ -53,7 +53,13 @@ import {
   PARAM_RANGES,
   defaultPrintParams,
 } from "./contracts";
-import type { PrintParams, SceneRequest } from "./contracts";
+import type {
+  Colour,
+  PartColors,
+  PrintParams,
+  RegionColors,
+  SceneRequest,
+} from "./contracts";
 import { RADIUS_MAX_M, RADIUS_MIN_M } from "./geo";
 
 /** The query parameter the payload rides in. */
@@ -783,6 +789,62 @@ export type ParamsParseResult =
   | { ok: false; reason: string };
 
 /**
+ * The v1 colour block, mapped onto the regions the engine actually paints.
+ *
+ * `green` and `trees` both land on `parks`: the tree cones are unioned INTO
+ * the parks region (`lib/engine/solid/trees.ts`), so the printed object has
+ * one colour for both and `green` -- the area, not the planting on it -- is
+ * the one that wins when a payload names two different values.
+ */
+const PART_COLOR_TO_REGION: ReadonlyArray<[keyof PartColors, keyof RegionColors]> = [
+  ["trees", "parks"],
+  ["green", "parks"],
+  ["base", "base"],
+  ["frame", "frame"],
+  ["buildings", "buildings"],
+  ["roads", "roads"],
+  ["water", "water"],
+];
+
+/**
+ * Carry a v1/v2 payload's `part_colors` into `colour.region_colors`
+ * (DECISIONS `[V3.1-P1-2]`).
+ *
+ * `part_colors` is the v1 colour block. No pipeline stage claims a single one
+ * of its seven leaves, so as of the settings truth audit it has no UI and no
+ * effect on any exported file -- which would silently drop the colours out of
+ * every link and project file written before v3.1 unless they were moved.
+ * They are moved here, at parse time, and ONLY when the payload does not
+ * already carry `colour.region_colors`: a v3 payload naming both is a payload
+ * whose author chose the region colours, and those win.
+ *
+ * The field itself stays on the frozen contract for v3 payload compatibility;
+ * it is simply never the source of a colour again.
+ */
+function migratePartColors(
+  named: Readonly<Record<string, unknown>>,
+  params: PrintParams,
+): void {
+  const parts = named.part_colors as PartColors | undefined;
+  if (parts === undefined) return;
+  const incomingColour = named.colour as Colour | undefined;
+  if (incomingColour?.region_colors !== undefined) return;
+
+  const region_colors: Record<string, string> = {
+    ...(params.colour?.region_colors as unknown as Record<string, string>),
+  };
+  const source = parts as unknown as Record<string, string | undefined>;
+  for (const [part, region] of PART_COLOR_TO_REGION) {
+    const value = source[part];
+    if (typeof value === "string") region_colors[region] = value;
+  }
+  params.colour = {
+    ...params.colour,
+    region_colors: region_colors as unknown as RegionColors,
+  };
+}
+
+/**
  * Validate an untrusted object against `PRINT_PARAM_SPEC` and merge it over
  * `defaultPrintParams()`. Works equally for a share link's DIFF (only the
  * fields that differ) and a project file's WHOLE `PrintParams` object (every
@@ -816,6 +878,10 @@ export function parsePrintParams(rawParams: unknown): ParamsParseResult {
           ? { ...(store[key] as Record<string, unknown>), ...(checked as object) }
           : checked;
     }
+    // After the whole object is merged, never during: the decision depends on
+    // whether the payload named `colour.region_colors` at all, and on the
+    // `colour` block as it finally stands.
+    migratePartColors(rawParams as Record<string, unknown>, params);
     return { ok: true, params };
   } catch (error) {
     const detail = error instanceof ShareError ? error.message : String(error);

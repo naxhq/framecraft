@@ -18,6 +18,7 @@
  */
 
 import type { PrintParams, SceneGraph } from "./contracts";
+import type { PipelineProgress } from "@/store/editor";
 import { format_scale, type TokenContext } from "./tokens";
 import * as T from "./transform";
 import { heightCeilingMm, predictedTopMm } from "./warnings";
@@ -27,7 +28,7 @@ export interface SpecReadout {
   label: string;
   value: string;
   testId: string;
-  /** `danger` past `warnings.heightCeilingMm`: the build will refuse this model. */
+  /** `danger` past `warnings.heightCeilingMm`: the model is taller than the printer allows. */
   tone: "normal" | "danger";
 }
 
@@ -88,4 +89,74 @@ export function specStrip(
   });
 
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// The pipeline stage overlay (v3.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Stage ids that do not read as an English noun on their own.
+ *
+ * Everything else is derived: `surface-roads`, `region-roads` and
+ * `finish-roads` are all "roads" to a person watching the model appear, and a
+ * plain id like `buildings` or `lettering` already says what it is. Keeping the
+ * table to the exceptions is what stops it drifting out of step with the
+ * registry: a stage added without an entry still names itself.
+ */
+const STAGE_WORDS: Record<string, string> = {
+  fetch: "fetching from OpenStreetMap",
+  normalise: "reading the map data",
+  context: "measuring the plate",
+  "repair-buildings": "repairing footprints",
+  "frame-cutters": "frame details",
+  sit: "seating the model",
+  assembly: "welding the model",
+  merged: "cleaning the mesh",
+  measure: "measuring the walls",
+  validate: "checking printability",
+  islands: "checking for loose parts",
+  audit: "collecting findings",
+  export: "writing the file",
+};
+
+/** The prefixes that name a phase of one region rather than a thing of their own. */
+const STAGE_PREFIXES = ["surface-", "region-", "finish-"];
+
+/** A stage id as a person would say it: `finish-roads` is "roads", `repair-buildings` is "repairing footprints". */
+export function stageLabel(stage: string): string {
+  if (stage === "") return "";
+  const known = STAGE_WORDS[stage];
+  if (known !== undefined) return known;
+  for (const prefix of STAGE_PREFIXES) {
+    if (stage.startsWith(prefix)) return stage.slice(prefix.length).replace(/[-_]/g, " ");
+  }
+  return stage.replace(/[-_]/g, " ");
+}
+
+/**
+ * The viewport overlay's line: `Building: roads (14 of 71)`.
+ *
+ * The counter is the plan's own index, so it reaches its total exactly once
+ * per run and never invents progress the worker did not report. Null before
+ * the first stage of a run has been named, where the honest thing to say is
+ * nothing rather than "Building:  (0 of 0)".
+ */
+export function stageOverlayText(progress: PipelineProgress): string | null {
+  const label = stageLabel(progress.stage);
+  if (label === "" || progress.total === 0) return null;
+  return `Building: ${label} (${progress.index + 1} of ${progress.total})`;
+}
+
+/**
+ * `about 3 s left`, or null when there is nothing honest to say yet.
+ *
+ * `etaMs` is null for the first three stages of a run and for a run whose
+ * remaining stages have never been timed, and this rounds to whole seconds
+ * because the number is an estimate from the previous run's durations, not a
+ * measurement of this one.
+ */
+export function stageEtaText(progress: PipelineProgress): string | null {
+  if (progress.etaMs === null || progress.etaMs < 500) return null;
+  return `about ${Math.round(progress.etaMs / 1000)} s left`;
 }

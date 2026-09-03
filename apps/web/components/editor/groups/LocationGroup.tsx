@@ -3,10 +3,11 @@
 import { useShallow } from "zustand/react/shallow";
 
 import { PARAM_LIMITS } from "@/lib/contracts";
+import { labelled } from "@/lib/controlCatalog";
 import { RADIUS_MAX_M, RADIUS_MIN_M, RADIUS_STEP_M } from "@/lib/geo";
 import { format_coords } from "@/lib/tokens";
 import { useEditorStore } from "@/store/editor";
-import { Note, Slider, TextField } from "../Controls";
+import { Note, Slider, SrHint, TextField } from "../Controls";
 
 /**
  * Location: where the model is cut from, which way round, and what the place
@@ -40,12 +41,19 @@ export function LocationGroup() {
 
   const canResetToDetected =
     placeDetect.detectedCity !== null && placeDetect.detectedCity !== cityLabel;
-  const placeStatusHint =
+  /**
+   * The lookup's own state, rendered as a note UNDER the field rather than as
+   * its hint: the hint is the standing description of what the field does to
+   * the printed object (it comes from `lib/controlCatalog.ts`, the one place
+   * every label and help string lives), and swapping it for a transient status
+   * message left the control undescribed exactly while something was going on.
+   */
+  const placeStatusNote =
     placeDetect.status === "resolving"
       ? "Looking up the place name..."
       : placeDetect.status === "error"
         ? "Could not look up a place name for this pin. Type one yourself, or use the coordinates."
-        : "This is the {city} token. Type your own text and it wins from here on — a preset or a dragged pin no longer overwrites it.";
+        : null;
 
   return (
     <>
@@ -56,8 +64,7 @@ export function LocationGroup() {
 
       <div className="space-y-1.5">
         <TextField
-          id="city_label"
-          label="Place name"
+          {...labelled("city_label")}
           value={cityLabel}
           maxLength={PARAM_LIMITS.city_label.max_length}
           placeholder={
@@ -67,34 +74,45 @@ export function LocationGroup() {
           }
           meta={`${cityLabel.length}/${PARAM_LIMITS.city_label.max_length}`}
           onChange={(value) => setPlaceName(value)}
-          hint={placeStatusHint}
         />
-        {canResetToDetected ? (
-          <button
-            type="button"
-            data-testid="reset-place-name"
-            onClick={resetPlaceNameToDetected}
-            className="rounded-milled px-1.5 py-0.5 text-2xs text-ink-muted transition-colors hover:bg-plate-raised hover:text-ink"
+        {placeStatusNote !== null ? (
+          <Note
+            tone={placeDetect.status === "error" ? "warn" : "info"}
+            testId="place-detect-status"
           >
-            Reset to detected ({placeDetect.detectedCity})
-          </button>
+            {placeStatusNote}
+          </Note>
+        ) : null}
+        {canResetToDetected ? (
+          <>
+            <button
+              type="button"
+              data-testid="reset-place-name"
+              onClick={resetPlaceNameToDetected}
+              title={labelled("reset-place-name").hint}
+              aria-describedby="reset-place-name-hint"
+              className="rounded-milled px-1.5 py-0.5 text-2xs text-ink-muted transition-colors hover:bg-plate-raised hover:text-ink"
+            >
+              Reset to detected ({placeDetect.detectedCity})
+            </button>
+            {/* Outside the button: inside it, the sentence would join the
+                button's own accessible NAME instead of describing it. */}
+            <SrHint id="reset-place-name-hint">{labelled("reset-place-name").hint}</SrHint>
+          </>
         ) : null}
       </div>
 
       <TextField
-        id="author"
-        label="Author"
+        {...labelled("author")}
         value={author}
         maxLength={PARAM_LIMITS.place.author.max_length}
         placeholder="Your name"
         meta={`${author.length}/${PARAM_LIMITS.place.author.max_length}`}
         onChange={(value) => setAuthor(value)}
-        hint="This is the {author} token, for a credit line in an engraving or the underside mark."
       />
 
       <Slider
-        id="radius_m"
-        label="Radius"
+        {...labelled("radius_m")}
         min={RADIUS_MIN_M}
         max={RADIUS_MAX_M}
         step={RADIUS_STEP_M}
@@ -102,12 +120,10 @@ export function LocationGroup() {
         display={`${radius_m} m`}
         onChange={setRadius}
         onCommit={() => void generate()}
-        hint="Half the ground span. Changing it refetches the scene."
       />
 
       <Slider
-        id="rotation_deg"
-        label="Rotation"
+        {...labelled("rotation_deg")}
         min={0}
         max={360}
         step={1}
@@ -115,7 +131,6 @@ export function LocationGroup() {
         display={`${rotation_deg}°`}
         onChange={setRotation}
         onCommit={() => void generate()}
-        hint="Turns the crop before it is squared. The dashed square on the map is what prints. Releasing the slider refetches from OpenStreetMap and previews again."
       />
     </>
   );

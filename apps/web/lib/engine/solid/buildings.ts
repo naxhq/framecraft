@@ -71,6 +71,14 @@ export interface BuiltBuildings {
   socket: Manifold[];
   /** Solids emitted (blocks plus preserved towers). */
   count: number;
+  /**
+   * manifold3d original id of every building solid built here (each is its
+   * own extrusion, so its own original) to the building it is: the SceneGraph
+   * id the user can pick, `block-<n>` for a merged block with no single owner.
+   * The finish stages read the ids back off the region's triangle runs
+   * (`solid/owners.ts`).
+   */
+  ownerIds: Record<number, string>;
 }
 
 /** How far buildings reach into the base, mm, clamped to something printable. */
@@ -131,6 +139,7 @@ export function buildBuildings(
   const { wasm, arena } = ctx;
   const plain: Array<{ solid: Manifold; topMm: number; source: BuildingSolid }> = [];
   const heroes: Manifold[] = [];
+  const ownerIds: Record<number, string> = {};
   // A stacked tower has to rise from the roof of the block it stands on, and
   // that block was lifted by ITS OWN lowest ground, which is at or below the
   // tower's. Looking the lift up by the block rather than re-measuring it under
@@ -155,6 +164,11 @@ export function buildBuildings(
         arena.drop(piece);
       }
     }
+    // The kernel's identity for this building: the extrusion's own original
+    // id (a translated piece is a product whose one run names it).
+    const own = placed.originalID();
+    const originals = own >= 0 ? [own] : Array.from(placed.getMesh().runOriginalID);
+    for (const originalId of originals) ownerIds[originalId] = solid.heroId ?? solid.id;
     if (solid.heroId !== null) heroes.push(placed);
     else plain.push({ solid: placed, topMm: z1, source: solid });
   }
@@ -172,6 +186,7 @@ export function buildBuildings(
     hero,
     socket: [],
     count: plain.length + heroes.length,
+    ownerIds,
   };
 }
 

@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 
 import { PARAM_RANGES } from "@/lib/contracts";
+import { labelled } from "@/lib/controlCatalog";
 import * as T from "@/lib/transform";
 import { useEditorStore } from "@/store/editor";
 import { Note, Slider } from "../Controls";
@@ -48,51 +49,43 @@ export function HeightsGroup() {
   return (
     <>
       <Slider
-        id="heights_floor_height_m"
-        label="Floor height"
+        {...labelled("heights_floor_height_m")}
         min={PARAM_RANGES.heights.floor_height_m.min}
         max={PARAM_RANGES.heights.floor_height_m.max}
         step={0.1}
         value={floorHeight}
         display={`${floorHeight.toFixed(1)} m`}
         onChange={(value) => setNested("heights", { floor_height_m: value })}
-        hint="How tall one storey counts as, when a building only carries building:levels."
       />
 
       <Slider
-        id="heights_unknown_default_m"
-        label="Unknown building default"
+        {...labelled("heights_unknown_default_m")}
         min={PARAM_RANGES.heights.unknown_default_m.min}
         max={PARAM_RANGES.heights.unknown_default_m.max}
         step={0.5}
         value={unknownDefault}
         display={`${unknownDefault.toFixed(1)} m`}
         onChange={(value) => setNested("heights", { unknown_default_m: value })}
-        hint="The guess used when OSM carries no height or level count at all, and the building type has no better default of its own."
       />
 
       <Slider
-        id="height_exaggeration_multiplier"
-        label="Height exaggeration"
+        {...labelled("height_exaggeration_multiplier")}
         min={PARAM_RANGES.height_exaggeration.multiplier.min * 100}
         max={PARAM_RANGES.height_exaggeration.multiplier.max * 100}
         step={5}
         value={Math.round(multiplier * 100)}
         display={`${Math.round(multiplier * 100)} %`}
         onChange={(value) => setNested("height_exaggeration", { multiplier: value / 100 })}
-        hint="A flat multiplier on every printed building height, on top of the small/large building scales."
       />
 
       <Slider
-        id="height_exaggeration_curve"
-        label="Exaggeration curve"
+        {...labelled("height_exaggeration_curve")}
         min={PARAM_RANGES.height_exaggeration.curve.min * 100}
         max={PARAM_RANGES.height_exaggeration.curve.max * 100}
         step={5}
         value={Math.round(curve * 100)}
         display={`${Math.round(curve * 100)} %`}
         onChange={(value) => setNested("height_exaggeration", { curve: value / 100 })}
-        hint="0 keeps the multiplier flat; higher settings pull a tower down and a shed up relative to a straight multiply, so one skyscraper does not dwarf the block."
       />
 
       <Note testId="height-exaggeration-readout">

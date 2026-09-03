@@ -133,12 +133,29 @@ test("a finding with a fix (a region on a slot the profile does not have) clears
   const fixButton = page.getByTestId("issue-fix-slot-beyond-profile");
   await expect(fixButton).toBeVisible();
   await fixButton.click();
-  // Immediate, optimistic: the row marks itself fixed the moment the store
-  // reports a real change, before the next debounced build even lands.
-  await expect(fixButton).toBeDisabled();
-  await expect(fixButton).toHaveText("Fixed");
+  // Immediate and optimistic: the row answers from the store's own report of
+  // what changed, not from a finished build.
+  //
+  // The v3 form of this asserted the transient directly ("disabled, reading
+  // Fixed"). It cannot be read that way any anymore: `PIPELINE_DEBOUNCE_MS`
+  // is 80 ms (`[V3.1-P1-3]`, down from 400), and the incremental run that the
+  // click schedules can finish and retire the whole row before an assertion
+  // gets to look at the button. What is pinned instead is the invariant that
+  // holds either way, and it is the one that matters: the button is NEVER
+  // left offering the same fix a second time.
+  await expect
+    .poll(
+      async () => {
+        if ((await fixButton.count()) === 0) return "retired with its row";
+        return (await fixButton.isDisabled()) ? "marked fixed" : "still offered";
+      },
+      { timeout: WARMUP_BUDGET_MS },
+    )
+    .not.toBe("still offered");
 
-  // The region's slot really moved (back onto the profile's own slot count).
+  // The region's slot really moved (back onto the profile's own slot count),
+  // and it moved from the click, not from the build: this is the same state
+  // the button read.
   await expect(page.locator("#colour_slot_buildings")).not.toHaveValue("9");
 
   // Once the next build lands, the engine no longer reports the finding at

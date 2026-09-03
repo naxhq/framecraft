@@ -7,29 +7,34 @@
  * `setParam` with `fetch` spied on, so adding a control that secretly refetches
  * fails here.
  *
- * Since FrameCraft v3 E4 `fetch` is ONLY ever touched by the ingest job
- * (`generate()` -> `EngineClient.ingest()` -> Overpass) -- never by a
- * PrintParams write, and never by Export, which runs the browser engine and
- * exports a Blob. Everywhere else in this file the scene/engine/export state is
- * injected directly with `setState`, exactly as it was before, so the vast
- * majority of these tests still cost nothing to run: no WASM, no worker, no
- * network.
+ * Since v3.1 `fetch` is ONLY ever touched by the pipeline's `fetch` stage,
+ * reached by the Preview action (`generate()`) -- never by a PrintParams
+ * write, which runs against the request the last Preview already fetched and
+ * is therefore served from the stage cache, and never by Export, which runs
+ * the remaining uncached stages in the worker and writes a Blob. Everywhere
+ * else in this file the scene/pipeline/export state is injected directly with
+ * `setState`, exactly as it was before, so the vast majority of these tests
+ * still cost nothing to run: no WASM, no worker, no network. The handful that
+ * DO run the real pipeline (the Preview and Export paths) say so, and take a
+ * second each on the 24-building fixture.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { exportDone, exportDownloadLinks, initialExportState, runExport } from "@/lib/exportFlow";
+import { exportDone, exportDownloadLinks, initialExportState } from "@/lib/exportFlow";
+import type { ExportOut } from "@/lib/engine/pipeline";
 import { DEFAULT_PRINT_PARAMS, defaultPrintParams } from "@/lib/contracts";
 import type { PrintParams, SceneGraph, SceneRequest } from "@/lib/contracts";
 import type { EngineResult, RegionMesh } from "@/lib/engine/types";
 import { resetOverpassCacheForTest } from "@/lib/engine/protocol";
+import { resetBundledPresetManifest } from "@/lib/engine/osm/overpass";
 import { HERO_CAP } from "@/lib/heroes";
 import { encodeShare } from "@/lib/share";
 import {
   activePresetId,
   IDLE_PLACE_DETECT,
   INITIAL_LOCATION,
-  initialEngineState,
+  initialPipelineState,
   locationToRequest,
   useEditorStore,
 } from "./editor";
@@ -92,6 +97,11 @@ function fakeRegion(name: RegionMesh["region"]): RegionMesh {
     slot: 1,
     colorHex: "#D8D3C6",
   };
+}
+
+/** The `regions` map the store holds while those meshes are on screen. */
+function regionMap(result: EngineResult): Map<string, RegionMesh> {
+  return new Map(result.regions.map((region) => [region.region, region]));
 }
 
 function fakeEngineResult(params: PrintParams = defaultPrintParams()): EngineResult {
@@ -180,6 +190,39 @@ const PARAM_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintParams]]> = 
   ["hanger_magnet", { diameter_mm: 8, thickness_mm: 3, count: 4 }],
 ];
 
+/**
+ * A `fetch` stand-in that answers each request on its own.
+ *
+ * `mockResolvedValue(new Response(...))` hands back the SAME response object
+ * every time, and a body can only be read once. That was harmless while a
+ * fetch reached exactly one URL; since the bundled preset assets landed
+ * (`osm/overpass.ts`), every Overpass fetch first probes
+ * `<base>/presets/index.json` once per realm, and that probe would drink the
+ * mirror's body and leave the retry ladder parsing an empty stream.
+ *
+ * The manifest is answered 404, which is what a build without the assets
+ * serves (`npm run build` does not write them; the Pages workflow does), so
+ * these tests exercise the mirror path exactly as they did before.
+ */
+function overpassMirrorFetch(body: unknown): (input: unknown, init?: RequestInit) => Promise<Response> {
+  return (input: unknown) => {
+    if (String(input).includes("/presets/")) {
+      return Promise.resolve(new Response("", { status: 404 }));
+    }
+    return Promise.resolve(
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  };
+}
+
+/** The Overpass mirror calls a spy actually made, i.e. not the preset-asset probes. */
+function mirrorCalls(spy: ReturnType<typeof vi.fn>): unknown[][] {
+  return spy.mock.calls.filter((call) => !String(call[0]).includes("/presets/"));
+}
+
 let fetchSpy: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
@@ -189,22 +232,25 @@ beforeEach(() => {
     // spread would put frozen nested objects into live state and the first
     // `setNested` would throw.
     params: defaultPrintParams(),
-    scene: { status: "idle", graph: null, message: null, request: null, stale: false },
-    engine: { ...initialEngineState },
+    scene: { status: "idle", graph: null, message: null, request: null, hash: null, stale: false },
+    pipeline: { ...initialPipelineState },
     exportState: { ...initialExportState },
     placeDetect: { ...IDLE_PLACE_DETECT },
     presetChosen: false,
   });
   fetchSpy = vi.fn();
   vi.stubGlobal("fetch", fetchSpy);
+  // The manifest probe is memoised per realm, hit or miss; forgetting it keeps
+  // each test's fetch count its own.
+  resetBundledPresetManifest();
 });
 
 afterEach(() => {
-  // Drops any 400 ms debounced engine job `setParam`/`setNested` scheduled:
-  // without this, a real build (WASM, off whatever `scene.graph`/`params` a
-  // LATER test happens to have set) can fire after this test already
-  // returned, since these are real timers.
-  useEditorStore.getState().cancelEngineJob();
+  // Drops any debounced run `setParam`/`setNested` scheduled, and stops one
+  // already in flight: without this, a real build (WASM, off whatever
+  // `scene.request`/`params` a LATER test happens to have set) can fire after
+  // this test already returned, since these are real timers.
+  useEditorStore.getState().cancelPipeline();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -238,6 +284,7 @@ describe("print params", () => {
         graph: fixtureScene(),
         message: null,
         request: locationToRequest(INITIAL_LOCATION),
+        hash: null,
         stale: false,
       },
     });
@@ -562,22 +609,32 @@ describe("place resolution", () => {
 });
 
 // ==========================================================================
-// Ingest ([V3 E4]: EngineClient.ingest(), never POST /scene)
+// The Preview action (v3.1: one pipeline run whose `fetch` stage may go out)
 // ==========================================================================
 
+/** Resolve once `predicate` holds, polling the real clock. */
+async function waitFor(predicate: () => boolean, label: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 describe("generate", () => {
-  it("fetches an Overpass mirror and stores the resulting graph", async () => {
-    fetchSpy.mockResolvedValue(
-      new Response(JSON.stringify(fixtureOverpassResponse(24)), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
+  it("fetches an Overpass mirror and adopts the scene the run normalised", async () => {
+    fetchSpy.mockImplementation(overpassMirrorFetch(fixtureOverpassResponse(24)));
 
-    await useEditorStore.getState().generate();
+    // The scene arrives at stage 1 of the run; the rest of the model follows.
+    // Cancelling once it lands keeps this test about the ingest half.
+    const run = useEditorStore.getState().generate();
+    await waitFor(() => useEditorStore.getState().scene.status === "ready", "the scene");
+    useEditorStore.getState().cancelPipeline();
+    await run;
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    // One MIRROR call: the preset-asset probe above it is not a scene fetch.
+    expect(mirrorCalls(fetchSpy)).toHaveLength(1);
+    const [url, init] = mirrorCalls(fetchSpy)[0] as [string, RequestInit];
     // An Overpass mirror, not this app's own (long-gone) /scene route.
     expect(url).toMatch(/^https:\/\/overpass/);
     expect(init.method).toBe("POST");
@@ -588,7 +645,10 @@ describe("generate", () => {
     expect(scene.stale).toBe(false);
     expect(scene.graph?.buildings.length).toBeGreaterThan(0);
     expect(scene.request).toEqual(locationToRequest(INITIAL_LOCATION));
-  });
+    // The worker's own `normalise` key, which every later run sends back as
+    // `knownSceneHash` so 1.2 MB of SceneGraph is never re-sent.
+    expect(scene.hash).toBeTruthy();
+  }, 30_000);
 
   it("surfaces a real error state instead of silently falling back", async () => {
     // A location no earlier test in this file has queried: the Overpass
@@ -605,38 +665,58 @@ describe("generate", () => {
     expect(scene.graph).toBeNull();
   }, 15_000);
 
-  it("schedules a debounced engine job once the scene is ready", async () => {
-    fetchSpy.mockResolvedValue(
-      new Response(JSON.stringify(fixtureOverpassResponse(24)), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
+  it("streams the regions and finishes with a result, in ONE run", async () => {
+    // v3.1: Preview is not "ingest, then schedule a build" any more. Fetch and
+    // normalise are stages 0 and 1 of the same run, so there is one job, one
+    // cache and one `done` -- and the regions are on screen before it.
+    fetchSpy.mockImplementation(overpassMirrorFetch(fixtureOverpassResponse(24)));
     await useEditorStore.getState().generate();
-    // Not yet: the job is debounced, not synchronous with `generate()`.
-    expect(useEditorStore.getState().engine.status).not.toBe("ready");
-  });
+    const pipeline = useEditorStore.getState().pipeline;
+    expect(pipeline.status).toBe("ready");
+    expect(pipeline.stale).toBe(false);
+    expect(pipeline.result).not.toBeNull();
+    expect(pipeline.regions.size).toBeGreaterThan(0);
+    // The positions were streamed and the `done` result was posted stripped;
+    // the store puts the two halves back together.
+    for (const region of pipeline.result?.regions ?? []) {
+      expect(region.positions.length, region.region).toBeGreaterThan(0);
+    }
+    // Every region on screen has a hash to send back as `known`.
+    expect(Object.keys(pipeline.regionHashes).sort()).toEqual([...pipeline.regions.keys()].sort());
+  }, 60_000);
 });
 
 // ==========================================================================
 // Export staleness and the Export action ([V3 E4]: the browser engine + export)
 // ==========================================================================
 
-/** Put the store in "Chicago is previewed, the engine is fresh and an export of it just finished". */
+/** What the worker's `export` stage posts back, without running one. */
+function fakeExportOut(): ExportOut {
+  return {
+    target: "stl",
+    files: [{ name: "framecraft.stl", mime: "model/stl", bytes: new Uint8Array([1, 2, 3]) }],
+    sidecar: { export_target: "stl" },
+    sidecarName: "framecraft.json",
+    notes: [],
+    plan: null,
+  };
+}
+
+/** Put the store in "Chicago is previewed, the model is current and an export of it just finished". */
 function withFinishedExport(): void {
   const graph = fixtureScene();
   const result = fakeEngineResult();
-  const outcome = runExport(result, "stl", graph);
   useEditorStore.setState({
     scene: {
       status: "ready",
       graph,
       message: null,
       request: locationToRequest(INITIAL_LOCATION),
+      hash: null,
       stale: false,
     },
-    engine: { status: "ready", result, error: null, stale: false },
-    exportState: exportDone(initialExportState, "stl", outcome, result.findings),
+    pipeline: { ...initialPipelineState, status: "ready", result, regions: regionMap(result) },
+    exportState: exportDone(initialExportState, fakeExportOut(), result.findings),
   });
 }
 
@@ -655,13 +735,13 @@ describe("export staleness", () => {
       useEditorStore.getState().setParam(key, value as never);
       const state = useEditorStore.getState();
       expect(state.exportState.stale, `${key} left the export looking current`).toBe(true);
-      expect(state.engine.stale, `${key} left the engine result looking current`).toBe(true);
+      expect(state.pipeline.stale, `${key} left the engine result looking current`).toBe(true);
       // The result is KEPT (the stats card still shows the last real build) but
       // it may no longer be offered as a download.
-      expect(state.engine.result).not.toBeNull();
+      expect(state.pipeline.result).not.toBeNull();
       expect(state.exportState.phase).toBe("done");
       expect(exportDownloadLinks(state.exportState)).toHaveLength(0);
-      useEditorStore.getState().cancelEngineJob();
+      useEditorStore.getState().cancelPipeline();
     }
   });
 
@@ -689,10 +769,10 @@ describe("export staleness", () => {
       expect(useEditorStore.getState().exportState.stale, `${name} did not invalidate the export`).toBe(
         true,
       );
-      expect(useEditorStore.getState().engine.stale, `${name} did not invalidate the engine result`).toBe(
+      expect(useEditorStore.getState().pipeline.stale, `${name} did not invalidate the engine result`).toBe(
         true,
       );
-      useEditorStore.getState().cancelEngineJob();
+      useEditorStore.getState().cancelPipeline();
     }
   });
 
@@ -702,20 +782,26 @@ describe("export staleness", () => {
     const exportState = useEditorStore.getState().exportState;
     expect(exportState.phase).toBe("exporting");
     expect(exportState.stale).toBe(false);
-    useEditorStore.getState().cancelEngineJob();
+    useEditorStore.getState().cancelPipeline();
   });
 
   it("is cleared by the next export", async () => {
-    withFinishedExport();
-    // A fresh, un-stale engine result already sits in the store (as it would
-    // once the debounced job actually landed), so `requestExport()` reuses it
-    // rather than running a real WASM build here.
+    fetchSpy.mockImplementation(overpassMirrorFetch(fixtureOverpassResponse(24)));
+    await useEditorStore.getState().generate();
+    await useEditorStore.getState().requestExport();
+    expect(useEditorStore.getState().exportState.stale).toBe(false);
+
+    // A parameter write retires it, and the next export brings it back.
+    useEditorStore.getState().setParam("base_thickness_mm", 4);
+    expect(useEditorStore.getState().exportState.stale).toBe(true);
     await useEditorStore.getState().requestExport();
     const state = useEditorStore.getState();
     expect(state.exportState.stale).toBe(false);
     expect(state.exportState.phase).toBe("done");
     expect(state.exportState.target).toBe("bambu-3mf"); // the contract default export_target
-  });
+    // The rebuilt model really carries the new base.
+    expect(state.pipeline.result?.params.base_thickness_mm).toBe(4);
+  }, 60_000);
 });
 
 describe("the active preset chip", () => {
@@ -745,6 +831,7 @@ describe("the active preset chip", () => {
         graph: fixtureScene(),
         message: null,
         request: locationToRequest(INITIAL_LOCATION),
+        hash: null,
         stale: false,
       },
     });
@@ -787,6 +874,7 @@ describe("export gating", () => {
         graph: sparse,
         message: null,
         request: locationToRequest(INITIAL_LOCATION),
+        hash: null,
         stale: false,
       },
     });
@@ -799,22 +887,57 @@ describe("export gating", () => {
     expect(exportState.error).toContain("enlarge the radius");
   });
 
-  it("exports through the fresh engine result for a good scene, never a network call", async () => {
-    const graph = fixtureScene();
-    const result = fakeEngineResult();
-    useEditorStore.setState({
-      scene: { status: "ready", graph, message: null, request: locationToRequest(INITIAL_LOCATION), stale: false },
-      engine: { status: "ready", result, error: null, stale: false },
-    });
+  it("exports the model the worker just built, with a sidecar describing THESE parameters, and no second network call", async () => {
+    // The whole export path, for real: a Preview run through the inline
+    // transport, then `PipelineClient.exportFiles`, which runs the remaining
+    // uncached stages and the writer in the worker. This is where the claim
+    // that the sidecar carries this model's own parameters lives now, because
+    // this is where the wiring is.
+    fetchSpy.mockImplementation(overpassMirrorFetch(fixtureOverpassResponse(24)));
+    useEditorStore.getState().setParam("plate_mm", 220);
+    useEditorStore.getState().setParam("export_target", "stl");
+    await useEditorStore.getState().generate();
+    expect(useEditorStore.getState().pipeline.status).toBe("ready");
+
+    const fetchCalls = fetchSpy.mock.calls.length;
+    await useEditorStore.getState().requestExport();
+
+    // The export ran no query of its own: the scene it wrote is the scene the
+    // run already held.
+    expect(fetchSpy.mock.calls.length).toBe(fetchCalls);
+    const state = useEditorStore.getState();
+    expect(state.exportState.phase).toBe("done");
+    expect(state.exportState.error).toBeNull();
+    // The target came from the params the model was BUILT with.
+    expect(state.exportState.target).toBe("stl");
+    const names = state.exportState.files.map((file) => file.filename);
+    expect(names.some((name) => name.endsWith(".stl"))).toBe(true);
+    const sidecarLink = state.exportState.files.find((file) => file.filename.endsWith(".json"));
+    expect(sidecarLink).toBeDefined();
+    // Reading a `blob:` URL needs the REAL fetch; the spy above stands in for
+    // Overpass and its one response has already been consumed.
+    vi.unstubAllGlobals();
+    const sidecar = JSON.parse(await (await fetch(sidecarLink!.href)).text()) as {
+      export_target: string;
+      print_params: { plate_mm: number };
+    };
+    expect(sidecar.export_target).toBe("stl");
+    expect(sidecar.print_params.plate_mm).toBe(220);
+  }, 60_000);
+
+  it("reuses the run that already finished instead of building a second time", async () => {
+    fetchSpy.mockImplementation(overpassMirrorFetch(fixtureOverpassResponse(24)));
+    await useEditorStore.getState().generate();
+    const built = useEditorStore.getState().pipeline.result;
+    expect(built).not.toBeNull();
 
     await useEditorStore.getState().requestExport();
 
-    expect(fetchSpy).not.toHaveBeenCalled();
-    const state = useEditorStore.getState();
-    expect(state.exportState.phase).toBe("done");
-    expect(state.exportState.target).toBe("bambu-3mf");
-    expect(state.exportState.files.length).toBeGreaterThan(0);
-  });
+    // Same result object: `requestExport` never started a run of its own, so
+    // nothing rebuilt and nothing replaced what is on screen.
+    expect(useEditorStore.getState().pipeline.result).toBe(built);
+    expect(useEditorStore.getState().exportState.phase).toBe("done");
+  }, 60_000);
 });
 
 // ==========================================================================
@@ -823,7 +946,7 @@ describe("export gating", () => {
 
 describe("hero buildings", () => {
   afterEach(() => {
-    useEditorStore.getState().cancelEngineJob();
+    useEditorStore.getState().cancelPipeline();
   });
 
   it("toggles an id on and off, through setParam and never the network", async () => {
@@ -882,7 +1005,7 @@ describe("setNested", () => {
     expect(arrow?.enabled).toBe(true);
     expect(arrow?.corner).toBe(DEFAULT_PRINT_PARAMS.north_arrow?.corner);
     expect(arrow?.size_mm).toBe(DEFAULT_PRINT_PARAMS.north_arrow?.size_mm);
-    useEditorStore.getState().cancelEngineJob();
+    useEditorStore.getState().cancelPipeline();
   });
 
   it("writes a NEW object every time, so a memo can see the change", () => {
@@ -892,7 +1015,7 @@ describe("setNested", () => {
     expect(after).not.toBe(before);
     // ...and the contract default was not mutated in place.
     expect(DEFAULT_PRINT_PARAMS.scale_bar?.enabled).toBe(false);
-    useEditorStore.getState().cancelEngineJob();
+    useEditorStore.getState().cancelPipeline();
   });
 
   it("never makes a server call", async () => {
@@ -906,7 +1029,7 @@ describe("setNested", () => {
     expect(useEditorStore.getState().params.part_colors?.base).toBe(
       DEFAULT_PRINT_PARAMS.part_colors?.base,
     );
-    useEditorStore.getState().cancelEngineJob();
+    useEditorStore.getState().cancelPipeline();
   });
 });
 
@@ -921,14 +1044,14 @@ describe("setPrinterProfile", () => {
     expect(params.printer_profile).toBe("bambu-p1s");
     expect(params.plate_mm).toBe(256);
     expect(params.nozzle_mm).toBe(0.4);
-    useEditorStore.getState().cancelEngineJob();
+    useEditorStore.getState().cancelPipeline();
   });
 
   it("clamps a bed bigger than plate_mm's own range down to its max", () => {
     // H2S: 340 x 320, both over plate_mm's 256 mm contract ceiling.
     useEditorStore.getState().setPrinterProfile("bambu-h2s");
     expect(useEditorStore.getState().params.plate_mm).toBe(256);
-    useEditorStore.getState().cancelEngineJob();
+    useEditorStore.getState().cancelPipeline();
   });
 
   it("writes only the id for custom, restoring nothing the user already changed", () => {
@@ -939,23 +1062,23 @@ describe("setPrinterProfile", () => {
     expect(params.printer_profile).toBe("custom");
     expect(params.plate_mm).toBe(150);
     expect(params.nozzle_mm).toBe(0.6);
-    useEditorStore.getState().cancelEngineJob();
+    useEditorStore.getState().cancelPipeline();
   });
 
   it("stales the engine and the export, exactly like an ordinary setParam", () => {
     useEditorStore.setState({
-      engine: { status: "ready", result: fakeEngineResult(), error: null, stale: false },
+      pipeline: { ...initialPipelineState, status: "ready", result: fakeEngineResult() },
     });
     useEditorStore.getState().setPrinterProfile("bambu-a1");
-    expect(useEditorStore.getState().engine.stale).toBe(true);
-    useEditorStore.getState().cancelEngineJob();
+    expect(useEditorStore.getState().pipeline.stale).toBe(true);
+    useEditorStore.getState().cancelPipeline();
   });
 
   it("switching printers afterwards still lets the user move plate_mm/nozzle_mm freely", () => {
     useEditorStore.getState().setPrinterProfile("bambu-p1s");
     useEditorStore.getState().setParam("plate_mm", 200);
     expect(useEditorStore.getState().params.plate_mm).toBe(200);
-    useEditorStore.getState().cancelEngineJob();
+    useEditorStore.getState().cancelPipeline();
   });
 });
 
@@ -966,7 +1089,7 @@ describe("setPrinterProfile", () => {
 describe("applyFinding / applySafeFindingFixes", () => {
   it("applies one finding's patch as one settings change and stales the engine/export", () => {
     useEditorStore.setState({
-      engine: { status: "ready", result: fakeEngineResult(), error: null, stale: false },
+      pipeline: { ...initialPipelineState, status: "ready", result: fakeEngineResult() },
       exportState: { ...initialExportState, phase: "done" },
     });
     const outcome = useEditorStore.getState().applyFinding({
@@ -978,9 +1101,9 @@ describe("applyFinding / applySafeFindingFixes", () => {
     });
     expect(outcome.applied).toEqual(["exceeds-height"]);
     expect(useEditorStore.getState().params.large_scale).toBe(0.5);
-    expect(useEditorStore.getState().engine.stale).toBe(true);
+    expect(useEditorStore.getState().pipeline.stale).toBe(true);
     expect(useEditorStore.getState().exportState.stale).toBe(true);
-    useEditorStore.getState().cancelEngineJob();
+    useEditorStore.getState().cancelPipeline();
   });
 
   it("changes nothing for a finding with no fix, or one that only asks for the value already there", () => {
@@ -1003,15 +1126,14 @@ describe("applyFinding / applySafeFindingFixes", () => {
     });
     expect(noOp.applied).toEqual([]);
     expect(useEditorStore.getState().params).toBe(before);
-    useEditorStore.getState().cancelEngineJob();
+    useEditorStore.getState().cancelPipeline();
   });
 
   it("folds every SAFE finding from the current engine result into one write, skipping unsafe ones", () => {
     useEditorStore.setState({
-      engine: {
+      pipeline: {
+        ...initialPipelineState,
         status: "ready",
-        stale: false,
-        error: null,
         result: {
           ...fakeEngineResult(),
           findings: [
@@ -1038,7 +1160,7 @@ describe("applyFinding / applySafeFindingFixes", () => {
     expect(useEditorStore.getState().params.terrain_exaggeration).toBe(0.5);
     // The unsafe fix never ran.
     expect(useEditorStore.getState().params.large_scale).toBe(DEFAULT_PRINT_PARAMS.large_scale);
-    useEditorStore.getState().cancelEngineJob();
+    useEditorStore.getState().cancelPipeline();
   });
 
   it("does nothing, and changes no state, when there are no findings at all", () => {
@@ -1046,8 +1168,8 @@ describe("applyFinding / applySafeFindingFixes", () => {
     const outcome = useEditorStore.getState().applySafeFindingFixes();
     expect(outcome.applied).toEqual([]);
     expect(useEditorStore.getState().params).toBe(before.params);
-    expect(useEditorStore.getState().engine).toBe(before.engine);
-    useEditorStore.getState().cancelEngineJob();
+    expect(useEditorStore.getState().pipeline).toBe(before.pipeline);
+    useEditorStore.getState().cancelPipeline();
   });
 });
 
@@ -1119,7 +1241,7 @@ describe("the params object the store hands out", () => {
         before[key],
       );
     }
-    useEditorStore.getState().cancelEngineJob();
+    useEditorStore.getState().cancelPipeline();
   });
 
   it("survives a nested write after a reset, i.e. nothing frozen leaked in", () => {
@@ -1132,7 +1254,7 @@ describe("the params object the store hands out", () => {
     expect(useEditorStore.getState().params.part_colors?.water).toBe("#010203");
     // The constant itself is untouched.
     expect(DEFAULT_PRINT_PARAMS.part_colors?.water).toBe("#2F7FC1");
-    useEditorStore.getState().cancelEngineJob();
+    useEditorStore.getState().cancelPipeline();
   });
 
   it("keeps the frozen constant frozen, so a stray write cannot corrupt it", () => {
@@ -1164,7 +1286,7 @@ describe("a shared link", () => {
   });
 
   afterEach(() => {
-    useEditorStore.getState().cancelEngineJob();
+    useEditorStore.getState().cancelPipeline();
   });
 
   it("restores the location and every parameter it names", () => {
@@ -1255,7 +1377,18 @@ describe("a shared link", () => {
     const store = useEditorStore.getState();
     store.setParam("city_label", "Bergen");
     store.setParam("color_mode", "parts");
-    store.setNested("part_colors", { water: "#123456" });
+    // The v3 colour block, not the v1 `part_colors` this line used to write:
+    // `part_colors` is a matrix exemption now ([V3.1-P1-2]) with no control
+    // left, and a payload naming it without `region_colors` is deliberately
+    // MIGRATED into `region_colors` at parse time rather than round-tripped.
+    // `lib/share.test.ts` owns that migration; this owns the round trip, so it
+    // exercises the field the editor actually writes.
+    store.setNested("colour", {
+      region_colors: {
+        ...defaultPrintParams().colour!.region_colors!,
+        water: "#123456",
+      },
+    });
     store.setParam("engravings", [{ edge: "top", text: "{city}", size_mm: 6 }]);
     store.toggleHero("w7");
     store.setRadius(1500);
@@ -1274,26 +1407,26 @@ describe("a shared link", () => {
 });
 
 // ==========================================================================
-// The engine job debounce (E4): scheduled, cancellable, coalesced
+// The pipeline debounce (v3.1): scheduled, cancellable, coalesced
 // ==========================================================================
 
-describe("the engine job debounce", () => {
+describe("the pipeline debounce", () => {
   afterEach(() => {
-    useEditorStore.getState().cancelEngineJob();
+    useEditorStore.getState().cancelPipeline();
   });
 
-  it("cancelEngineJob drops a pending job without throwing", () => {
+  it("cancelPipeline drops a pending run without throwing", () => {
     withFinishedExport();
     useEditorStore.getState().setParam("plate_mm", 220);
-    expect(() => useEditorStore.getState().cancelEngineJob()).not.toThrow();
+    expect(() => useEditorStore.getState().cancelPipeline()).not.toThrow();
     // Calling it again (nothing pending) is still a no-op, not an error.
-    expect(() => useEditorStore.getState().cancelEngineJob()).not.toThrow();
+    expect(() => useEditorStore.getState().cancelPipeline()).not.toThrow();
   });
 
   it("a PrintParams write with no scene yet schedules nothing observable and never throws", async () => {
     useEditorStore.getState().setParam("plate_mm", 220);
     await Promise.resolve();
-    expect(useEditorStore.getState().engine.status).toBe("idle");
-    useEditorStore.getState().cancelEngineJob();
+    expect(useEditorStore.getState().pipeline.status).toBe("idle");
+    useEditorStore.getState().cancelPipeline();
   });
 });

@@ -1,11 +1,13 @@
 /**
- * Export, v3: the pure export/state-transition functions in `lib/exportFlow.ts`.
+ * Export, v3.1: the page half of an export.
  *
- * There is no server round trip left to test: `buildModel()` (the browser engine)
- * is `lib/engine/solid`'s job and `lib/engine/export`'s writers are tested in
- * `lib/engine/export/*.test.ts`. This file owns the glue -- turning a fake
- * (but shape-correct) `EngineResult` into `DownloadFile[]`, and the small
- * state machine (`idle -> exporting -> done|failed`, staleness) around it.
+ * The writer and the sidecar are the pipeline's `export` stage now, in the
+ * worker, so what is left here is the part that can only happen on the page --
+ * turning transferred bytes into Blob object URLs, and the small state machine
+ * (`idle -> exporting -> done|failed`, staleness) around it. The end-to-end
+ * claim that the sidecar really carries this model's parameters is asserted
+ * where the wiring lives, in `store/editor.test.ts`'s real export through the
+ * inline transport.
  */
 
 import { describe, expect, it } from "vitest";
@@ -21,11 +23,12 @@ import {
   isTerminal,
   markExportStale,
   revokeExportUrls,
-  runExport,
   stemForResult,
   type ExportState,
 } from "./exportFlow";
 import { defaultPrintParams } from "./contracts";
+import type { ExportOut } from "./engine/pipeline";
+import { perfDrainTimings, perfReset, perfResetDetectionForTest, setPerfEnabled } from "./perf";
 import type { EngineResult, RegionMesh } from "./engine/types";
 
 function region(name: RegionMesh["region"], slot = 1, colorHex = "#D8D3C6"): RegionMesh {
@@ -45,9 +48,6 @@ function fakeResult(overrides: Partial<EngineResult> = {}): EngineResult {
   const params = { ...defaultPrintParams(), ...(overrides.params ?? {}) };
   return {
     regions: [region("base", 1), region("buildings", 2, "#3A3A3A")],
-    // A real welded solid in the reference implementation would be one body;
-    // this fixture reuses the same triangle since none of these tests judge
-    // its geometry, only that it round-trips through the export/state layer.
     merged: region("base", 1),
     stats: {
       scaleDenominator: 1000,
@@ -70,16 +70,20 @@ function fakeResult(overrides: Partial<EngineResult> = {}): EngineResult {
   };
 }
 
-const scene = {
-  bounds: { min_x: -900, min_y: -900, max_x: 900, max_y: 900 },
-  center: { lat: 41.8827, lon: -87.6233 },
-  buildings: [],
-  roads: [],
-  water: [],
-  green: [],
-  trees: [],
-  stats: { building_count: 40, coverage: "good" as const, height_tag_ratio: 0.5 },
-};
+/** What the worker's `export` stage posts back, files already transferred. */
+function fakeOutput(overrides: Partial<ExportOut> = {}): ExportOut {
+  return {
+    target: "stl",
+    files: [
+      { name: "chicago.stl", mime: "model/stl", bytes: new Uint8Array([1, 2, 3, 4]) },
+    ],
+    sidecar: { export_target: "stl", print_params: { plate_mm: 220 } },
+    sidecarName: "chicago.json",
+    notes: ["An STL carries no colour."],
+    plan: null,
+    ...overrides,
+  };
+}
 
 describe("state transitions", () => {
   it("starts idle", () => {
@@ -104,39 +108,55 @@ describe("state transitions", () => {
   });
 });
 
-describe("runExport / exportDone", () => {
-  it("exports an stl and its sidecar as download files", () => {
-    const result = fakeResult();
-    const outcome = runExport(result, "stl", scene);
-    expect(outcome.output.files).toHaveLength(1);
-    expect(outcome.output.files[0].name.endsWith(".stl")).toBe(true);
-    expect(outcome.sidecarName.endsWith(".json")).toBe(true);
-    expect(outcome.sidecarBytes.length).toBeGreaterThan(0);
-
-    const state = exportDone(initialExportState, "stl", outcome, result.findings);
+describe("exportDone", () => {
+  it("offers the worker's files and its sidecar as Blob downloads", () => {
+    const output = fakeOutput();
+    const state = exportDone(initialExportState, output, []);
     expect(state.phase).toBe("done");
     expect(state.stale).toBe(false);
+    // The target comes from the worker's answer, not from a second read of the
+    // params: the file that was WRITTEN is the one the panel names.
     expect(state.target).toBe("stl");
+    expect(state.notes).toEqual(output.notes);
     // The mesh file plus the sidecar.
     expect(state.files).toHaveLength(2);
-    expect(state.files.map((f) => f.filename)).toContain(outcome.sidecarName);
+    expect(state.files.map((file) => file.filename)).toEqual(["chicago.stl", "chicago.json"]);
     for (const file of state.files) {
       expect(file.href.startsWith("blob:")).toBe(true);
     }
     revokeExportUrls(state); // must not throw
   });
 
-  it("the sidecar carries the real PrintParams, stats and export target", () => {
-    const result = fakeResult({ params: { ...defaultPrintParams(), plate_mm: 220 } });
-    const outcome = runExport(result, "generic-3mf", scene);
-    const sidecar = JSON.parse(new TextDecoder().decode(outcome.sidecarBytes)) as {
-      print_params: { plate_mm: number };
-      export_target: string;
-      bake_result: { stats: { triangles: number } };
-    };
-    expect(sidecar.print_params.plate_mm).toBe(220);
-    expect(sidecar.export_target).toBe("generic-3mf");
-    expect(sidecar.bake_result.stats.triangles).toBe(2);
+  it("encodes the sidecar object the reference validator reads, pretty-printed and newline-terminated", async () => {
+    const output = fakeOutput();
+    const state = exportDone(initialExportState, output, []);
+    const sidecar = state.files[1];
+    expect(sidecar.mime).toBe("application/json");
+    const text = await (await fetch(sidecar.href)).text();
+    expect(text.endsWith("\n")).toBe(true);
+    expect(JSON.parse(text)).toEqual(output.sidecar);
+    // Pretty-printed, so a person opening the file next to the model can read
+    // it; the Python validator parses either way.
+    expect(text).toContain("\n  ");
+    revokeExportUrls(state);
+  });
+
+  it("records the payload size, which is where a 40 MB STEP file makes itself obvious", () => {
+    perfResetDetectionForTest();
+    perfReset();
+    setPerfEnabled(true);
+    try {
+      const output = fakeOutput();
+      const state = exportDone(initialExportState, output, []);
+      const bytes = perfDrainTimings().find((row) => row.name === "export.bytes")?.bytes ?? 0;
+      const sidecarBytes = new TextEncoder().encode(`${JSON.stringify(output.sidecar, null, 2)}\n`).byteLength;
+      expect(bytes).toBe(4 + sidecarBytes);
+      revokeExportUrls(state);
+    } finally {
+      setPerfEnabled(false);
+      perfResetDetectionForTest();
+      perfReset();
+    }
   });
 
   it("defaults the stem to the city label, sanitised, or 'framecraft' when there is none", () => {
@@ -144,22 +164,26 @@ describe("runExport / exportDone", () => {
       "chicago-loop",
     );
     expect(stemForResult(fakeResult({ params: { ...defaultPrintParams(), city_label: "" } }))).toBe("framecraft");
+    // The `export` stage's own fallback does NOT sanitise, which is why the
+    // store passes this: a label with a path separator must not reach a name.
+    expect(stemForResult(fakeResult({ params: { ...defaultPrintParams(), city_label: "New York/Queens" } }))).not.toContain(
+      "/",
+    );
   });
 
-  it("revoking a previous export's URLs happens automatically on the next exportDone", () => {
-    const result = fakeResult();
-    const first = exportDone(initialExportState, "stl", runExport(result, "stl", scene), []);
-    const firstHrefs = first.files.map((f) => f.href);
-    const second = exportDone(first, "stl", runExport(result, "stl", scene), []);
+  it("revokes a previous export's URLs on the next exportDone", () => {
+    const first = exportDone(initialExportState, fakeOutput(), []);
+    const firstHrefs = first.files.map((file) => file.href);
+    const second = exportDone(first, fakeOutput(), []);
     // Different object URLs (a second createObjectURL call never reuses the first's).
-    expect(second.files.map((f) => f.href)).not.toEqual(firstHrefs);
+    expect(second.files.map((file) => file.href)).not.toEqual(firstHrefs);
+    revokeExportUrls(second);
   });
 });
 
 describe("staleness", () => {
   function withFinishedExport(): ExportState {
-    const result = fakeResult();
-    return exportDone(initialExportState, "stl", runExport(result, "stl", scene), result.findings);
+    return exportDone(initialExportState, fakeOutput(), []);
   }
 
   it("keeps the files but withdraws the download links once stale", () => {

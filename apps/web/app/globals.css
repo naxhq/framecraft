@@ -110,9 +110,10 @@
   /* Where the keyboard building cursor is. Distinct from the hero colour, so
      "selected" and "about to be selected" are never confused. */
   --fc-preview-cursor: #1f5e93;
-  /* Frame lettering and ornaments, drawn as flat fills on the lip's top face
-     (the browser never runs a boolean, so nothing is actually cut): engraved
-     reads as a groove, embossed as material standing proud of the lip. */
+  /* Frame lettering and ornaments. Since v3.1 the engine cuts the real
+     pockets and the viewport shows those, shaded by the recess multiplier
+     below; these two tones remain the app's own vocabulary for "engraved"
+     and "embossed" wherever the panels have to name them. */
   --fc-preview-text-engraved: #3f3a32;
   --fc-preview-text-embossed: #a8a08a;
   /* The underside: the mark and the hanger pockets, seen when orbiting below. */
@@ -125,6 +126,13 @@
      above: it is an overlay describing where the print SPLITS, never a
      filament. */
   --fc-preview-tile-line: #c2661a;
+  /* How far the model fades while a newer run is under way, and how far a
+     recessed triangle (an engraved line, an ornament, an underside pocket)
+     is darkened so the cut reads at viewing distance. Both are multipliers,
+     not colours: the model keeps its own filament colours either way
+     (`components/scene/palette.ts`, `RegionMeshes.tsx`). */
+  --fc-preview-dim-opacity: 0.45;
+  --fc-preview-recess-shade: 0.62;
 
   /*
    * Map overlays (`components/map/palette.ts`). Defined once, outside the
@@ -205,6 +213,11 @@
   --fc-preview-sky: #dfe6ee;
   --fc-preview-bounce: #232a33;
   --fc-preview-tile-line: #e08a3e;
+  /* Dark viewport: the same two multipliers, tuned for a dark ground. A
+     recess has to darken further to read against a lighter filament, and the
+     dim can be deeper because the background is not competing with it. */
+  --fc-preview-dim-opacity: 0.38;
+  --fc-preview-recess-shade: 0.55;
 
   --fc-shadow-flush: inset 0 1px 0 rgb(255 255 255 / 0.04);
   --fc-shadow-raised: 0 1px 1px rgb(0 0 0 / 0.5), 0 2px 6px -2px rgb(0 0 0 / 0.6);

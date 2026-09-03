@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
+import { labelled } from "@/lib/controlCatalog";
 import type { EngineBuilding } from "@/lib/engine/osm/types";
 import {
   GROUPS,
@@ -15,6 +16,7 @@ import { HERO_CAP, effectiveHeroIds } from "@/lib/heroes";
 import { PRINTER_PROFILES, isPrinterProfileId } from "@/lib/printers";
 import { useEditorStore } from "@/store/editor";
 import CollapsibleGroup from "./CollapsibleGroup";
+import { SrHint } from "./Controls";
 import OutputPanel from "./OutputPanel";
 import BuildingsGroup from "./groups/BuildingsGroup";
 import ColourGroup from "./groups/ColourGroup";
@@ -97,7 +99,9 @@ export function ParamPanel() {
       engravingCount > 0
         ? `${engravingCount} ${engravingCount === 1 ? "line" : "lines"}`
         : null,
-    colour: colorMode === "parts" ? "7 parts" : null,
+    // "7 parts" named the seven v1 part-colour wells, which are gone (Task 2).
+    // What `color_mode` decides now is one merged object or one per region.
+    colour: colorMode === "parts" ? "one per part" : null,
     terrain: terrainOn ? "on" : null,
     printer: tilingOn
       ? "tiled"
@@ -118,10 +122,13 @@ export function ParamPanel() {
           type="button"
           data-testid="reset-button"
           onClick={resetParams}
+          aria-describedby="reset-button-hint"
+          title={labelled("reset-button").hint}
           className="rounded-milled px-1.5 py-0.5 text-2xs text-ink-muted transition-colors hover:bg-plate-raised hover:text-ink"
         >
-          Reset all
+          {labelled("reset-button").label}
         </button>
+        <SrHint id="reset-button-hint">{labelled("reset-button").hint}</SrHint>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto" data-testid="param-groups">
@@ -161,6 +168,8 @@ export function ParamPanel() {
             aria-label={`${outputGroup.title}, ${
               collapsed.output ? "show results" : "hide results"
             }`}
+            aria-describedby="group-output-toggle-hint"
+            title={labelled("group-output-toggle").hint}
             onClick={() => toggle("output")}
             className="mb-2 flex w-full items-center justify-between gap-2 rounded-milled py-1 text-left transition-colors hover:text-ink"
           >
@@ -172,6 +181,7 @@ export function ParamPanel() {
             </span>
           </button>
         </h3>
+        <SrHint id="group-output-toggle-hint">{labelled("group-output-toggle").hint}</SrHint>
         <OutputPanel
           showResults={!collapsed.output}
           resultsId="group-output-body"

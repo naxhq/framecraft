@@ -134,6 +134,8 @@ export interface ExportRequest {
   /** ISO timestamp the files are stamped with; `new Date()` at the caller when absent. */
   createdIso: string;
   layerHeightMm?: number;
+  /** Ship the files even when the printability gate failed a Stage 4 check (`export/gate.ts`). */
+  force?: boolean;
 }
 
 /**
@@ -157,6 +159,13 @@ export interface ExtraValues {
   /** The SceneRequest's rotation, degrees counter-clockwise: the north arrow turns back by it. */
   rotation: number;
   "export-request": ExportRequest | null;
+  /**
+   * The whole params object, hashed as one: what the exporters persist as the
+   * file's parameter echo (`print_params`, the 3MF Description). Claimed by
+   * `export` only, so a leaf no stage reads (the `part_colors.*` block) still
+   * moves the file it is written into.
+   */
+  "params-echo": PrintParams;
 }
 
 export type ExtraKey = keyof ExtraValues;
@@ -283,6 +292,13 @@ export interface ExportOut {
   sidecar: Record<string, unknown>;
   sidecarName: string;
   notes: string[];
+  /**
+   * Findings the WRITER raised: what the chosen format could not carry.
+   *
+   * Optional so an older cached export payload, and a test fixture that predates
+   * it, still satisfy the type; the stage always sets it.
+   */
+  findings?: AuditFinding[];
   plan: ColorChangePlan | null;
 }
 

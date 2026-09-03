@@ -11,7 +11,7 @@ import { initialExportState } from "@/lib/exportFlow";
 import {
   IDLE_PLACE_DETECT,
   INITIAL_LOCATION,
-  initialEngineState,
+  initialPipelineState,
   useEditorStore,
 } from "./editor";
 import {
@@ -33,8 +33,8 @@ function resetEditorStore(): void {
   useEditorStore.setState({
     location: { ...INITIAL_LOCATION },
     params: defaultPrintParams(),
-    scene: { status: "idle", graph: null, message: null, request: null, stale: false },
-    engine: { ...initialEngineState },
+    scene: { status: "idle", graph: null, message: null, request: null, hash: null, stale: false },
+    pipeline: { ...initialPipelineState },
     exportState: { ...initialExportState },
     placeDetect: { ...IDLE_PLACE_DETECT },
     presetChosen: false,
@@ -50,7 +50,7 @@ beforeEach(() => {
 
 afterEach(() => {
   stopHistoryForTests();
-  useEditorStore.getState().cancelEngineJob();
+  useEditorStore.getState().cancelPipeline();
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -286,11 +286,11 @@ describe("initHistory: wired to the real editor store", () => {
     expect(useHistoryStore.getState().entries).toHaveLength(before + 1);
   });
 
-  it("transient state (scene status, engine status, export) is never recorded", () => {
+  it("transient state (scene status, pipeline status, export) is never recorded", () => {
     initHistory();
     const before = useHistoryStore.getState().entries.length;
     useEditorStore.setState((state) => ({ scene: { ...state.scene, status: "loading" } }));
-    useEditorStore.setState((state) => ({ engine: { ...state.engine, status: "computing" } }));
+    useEditorStore.setState((state) => ({ pipeline: { ...state.pipeline, status: "running" } }));
     expect(useHistoryStore.getState().entries).toHaveLength(before);
   });
 

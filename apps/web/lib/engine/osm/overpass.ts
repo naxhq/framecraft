@@ -9,6 +9,7 @@
  * 500 ms/1 s/2 s backoff are new for the browser engine, DECISIONS.md
  * [V3-P2-E1]).
  */
+import { withBasePath } from "../../basePath";
 import { LocalFrame } from "./project";
 import { sha1Hex } from "./sha1";
 
@@ -191,6 +192,105 @@ export function hasIndexedDb(): boolean {
   return typeof indexedDB !== "undefined";
 }
 
+// ---------------------------------------------------------------------------
+// bundled preset responses
+// ---------------------------------------------------------------------------
+
+/**
+ * The six preset cities are the six most-clicked queries the app will ever
+ * make, and their answers do not change between users. Live Overpass is the
+ * dominant cost of a first preview on the deployed site: 8.5 to 32.4 s on the
+ * runs that finished, 504 from `overpass-api.de` on three of eight attempts,
+ * and two of five flows that never produced a preview at all
+ * (`docs/handoff/v3-00-baseline.md` 1.6, 1.7). A static host has exactly one
+ * shared cache available to it -- the build -- so a build MAY ship the preset
+ * responses beside the app, gzipped, and this is where they are read.
+ *
+ * The key is the sha1 of the QUERY TEXT, which is already this module's cache
+ * key and already the name of the committed fixture
+ * (`fixtures/<sha1>.json`), so an asset can only ever answer the exact query
+ * it was fetched for. A different radius, a nudged pin or a rotation produces
+ * a different sha1 and goes straight to the mirrors.
+ *
+ * Absent by default. `npm run build` does NOT write these assets; a build that
+ * wants them runs `scripts/bundle-preset-assets.mjs` over the exported tree
+ * (`.github/workflows/pages.yml` does). When they are absent the manifest 404s
+ * once per session and every request goes to the mirrors exactly as before.
+ */
+const PRESET_ASSET_DIR = "/presets";
+
+/** One entry per bundled query, keyed by the query sha1. Written by `scripts/bundle-preset-assets.mjs`. */
+export interface BundledPresetManifest {
+  queries: Record<string, { preset_id: string; bytes: number; gzip_bytes: number }>;
+}
+
+function isManifest(value: unknown): value is BundledPresetManifest {
+  if (typeof value !== "object" || value === null) return false;
+  const queries = (value as { queries?: unknown }).queries;
+  return typeof queries === "object" && queries !== null;
+}
+
+/**
+ * One manifest fetch per JS realm, hit or miss.
+ *
+ * A miss is memoised as hard as a hit: on a build without the assets this is
+ * the only request the bundled path ever makes, and repeating it on every
+ * preview would add a 404 to every preview.
+ */
+let manifestPromise: Promise<BundledPresetManifest | null> | null = null;
+
+/** Test seam: forget the memoised manifest so a suite can drive both outcomes. */
+export function resetBundledPresetManifest(): void {
+  manifestPromise = null;
+}
+
+async function loadManifest(fetchImpl: typeof fetch, assetBase: string): Promise<BundledPresetManifest | null> {
+  if (manifestPromise === null) {
+    manifestPromise = (async () => {
+      try {
+        const response = await fetchImpl(`${assetBase}/index.json`);
+        if (response.status !== 200) return null;
+        const data: unknown = await response.json();
+        return isManifest(data) ? data : null;
+      } catch {
+        return null;
+      }
+    })();
+  }
+  return manifestPromise;
+}
+
+/**
+ * Read `<assetBase>/<sha1>.json.gz` and inflate it, or null for every failure.
+ *
+ * The bytes are gzip on the wire whatever the host does with
+ * `Content-Encoding`, because the file IS gzip and this decodes it here. That
+ * is what makes the saving host-independent: GitHub Pages compresses on the
+ * fly and `serve-static.mjs` does not, and neither of them has to.
+ */
+async function fetchBundledPreset(
+  cacheKey: string,
+  fetchImpl: typeof fetch,
+  assetBase: string,
+  signal?: AbortSignal,
+): Promise<{ elements: unknown[]; remark?: string } | null> {
+  // Safari before 16.4 has no DecompressionStream. Nothing else to do about
+  // it: the mirrors still answer, just slowly.
+  if (typeof DecompressionStream === "undefined") return null;
+  const manifest = await loadManifest(fetchImpl, assetBase);
+  if (manifest === null || manifest.queries[cacheKey] === undefined) return null;
+  try {
+    const response = await fetchImpl(`${assetBase}/${cacheKey}.json.gz`, { signal });
+    if (response.status !== 200 || response.body === null) return null;
+    const text = await new Response(response.body.pipeThrough(new DecompressionStream("gzip"))).text();
+    const data: unknown = JSON.parse(text);
+    if (!data || typeof data !== "object" || !Array.isArray((data as { elements?: unknown }).elements)) return null;
+    return data as { elements: unknown[]; remark?: string };
+  } catch {
+    return null;
+  }
+}
+
 export type OverpassErrorKind = "network" | "rate-limited" | "timeout" | "bad-response";
 
 export interface OverpassFetchError {
@@ -200,7 +300,7 @@ export interface OverpassFetchError {
 }
 
 export type OverpassFetchResult =
-  | { ok: true; data: { elements: unknown[]; remark?: string }; fromCache: boolean }
+  | { ok: true; data: { elements: unknown[]; remark?: string }; fromCache: boolean; fromBundle?: boolean }
   | { ok: false; error: OverpassFetchError };
 
 export interface FetchOverpassOptions {
@@ -220,6 +320,25 @@ export interface FetchOverpassOptions {
    * either way, so no new `OverpassErrorKind` is needed for it.
    */
   signal?: AbortSignal;
+  /**
+   * Try the build's own preset assets before the mirrors. On by default; a
+   * test that wants to exercise the mirror path sets it false.
+   */
+  bundled?: boolean;
+  /** Where those assets live. Defaults to `<base path>/presets`. */
+  assetBase?: string;
+  /**
+   * Injectable transport for the bundled assets; defaults to the global
+   * `fetch`.
+   *
+   * Deliberately NOT `fetchImpl`. That one stands in for the network, and
+   * every test in `overpass.test.ts` passes a mock counting mirror calls; a
+   * same-origin GET for a build asset is a different transport with different
+   * semantics and must not land in those counts. In Node with no override the
+   * global `fetch` rejects the root-relative asset URL outright, which is the
+   * correct answer there: a build asset only exists in a served build.
+   */
+  assetFetchImpl?: typeof fetch;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -267,6 +386,23 @@ export async function fetchOverpass(
 
   if (!fetchImpl) {
     return { ok: false, error: { kind: "network", mirrorsTried: [], message: "no fetch implementation available" } };
+  }
+
+  // The build's own copy, before any mirror. A hit is the same bytes the
+  // mirror would have sent for this exact query, so it is cached under the
+  // same key and every stage downstream sees no difference at all.
+  const assetFetch = options.assetFetchImpl ?? (typeof fetch !== "undefined" ? fetch : undefined);
+  if (options.bundled !== false && assetFetch !== undefined && !options.signal?.aborted) {
+    const bundled = await fetchBundledPreset(
+      cacheKey,
+      assetFetch,
+      options.assetBase ?? withBasePath(PRESET_ASSET_DIR),
+      options.signal,
+    );
+    if (bundled !== null) {
+      await cache.set(cacheKey, bundled);
+      return { ok: true, data: bundled, fromCache: false, fromBundle: true };
+    }
   }
 
   const mirrorsTried: string[] = [];

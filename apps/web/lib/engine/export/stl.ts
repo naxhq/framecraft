@@ -3,7 +3,8 @@
 // endian, facet normals computed from the winding (zero for a degenerate
 // triangle), attribute byte count 0.
 
-import type { EngineResult, ExportFile, RegionMesh } from "../types";
+import { hardenForFloat32, type HardenReport, type Mesh } from "../solid/mesh";
+import type { AuditFinding, EngineResult, ExportFile, RegionMesh } from "../types";
 import { ATTRIBUTION, orderedRegions, placeInBuildSpace, placeMerged, resolveOptions, type ExportOptions } from "./common";
 import { zipEntries, type ZipEntry } from "./zip";
 
@@ -82,17 +83,108 @@ export function stlBinary(positions: ArrayLike<number>, indices: ArrayLike<numbe
   return bytes;
 }
 
+/**
+ * The mesh this format can carry, in the frame it is written in.
+ *
+ * A binary STL is float32 and has no vertex index, so its topology is whatever
+ * its coordinates say once a reader welds the identical ones (which is exactly
+ * what `services/bake/app/cli.py` does before judging the file). Two things
+ * survive the double-precision mesh and not the file: a triangle whose vertices
+ * are collinear to within a float32 step, which measures zero area and fails
+ * `degenerate_faces`, and two distinct vertices on one grid point, whose weld
+ * hands an edge to four faces and fails `manifold`, `watertight` and
+ * `self_intersection`. `mesh.hardenForFloat32` removes the first and separates
+ * the second.
+ *
+ * It runs HERE, on the placed mesh, and not in the engine, because the grid is
+ * a property of the coordinate and `placeInBuildSpace` moves every coordinate:
+ * the Chicago needle sits at x = -0.033 mm in the engine frame, where the grid
+ * step is 4e-9 mm and nothing collapses, and at x = 89.967 mm in build space,
+ * where it is 7.6e-6 mm and the triangle vanishes. The 3MF of the same mesh is
+ * untouched and stays byte for byte what it was: it writes decimal text at
+ * twelve places, where that triangle measures 6.184e-7 mm^2 and passes.
+ */
+function forStl(mesh: Mesh): { mesh: Mesh; report: HardenReport } {
+  return hardenForFloat32(mesh);
+}
+
+/** An STL, plus what the format could not carry. `findings` is empty for a clean write. */
+export interface StlExportFile extends ExportFile {
+  findings: AuditFinding[];
+}
+
+export const FLOAT32_FINDING_ID = "float32-degenerate";
+
+/**
+ * What the file lost, said out loud.
+ *
+ * 04 stage 4 says "on failure, do not silently ship", and the repair above is
+ * BEST EFFORT: `cleanMesh` hands back the input untouched whenever no rung
+ * strictly improves the count, which is exactly what the largest legal plate
+ * does (`plate_mm` 256, `contracts.PARAM_RANGES`: 12 faces the float32 file
+ * cannot carry and 6 the double mesh already fails on, a known limitation
+ * recorded in `DECISIONS.md [V3-P7-A11]` and `[V3-P7-fix-6]`). Before this the
+ * writer threw the report away and the file went out with no word anywhere.
+ *
+ * A WARNING and not an error, and deliberately not a gate row: the reference
+ * validator already fails these files on `degenerate_faces`, so the engine's
+ * job here is to say so before the user finds out from `make validate`, not to
+ * judge them twice. `export/gate.ts`'s `STAGE_4_FINDING_IDS` is untouched.
+ */
+export function float32Findings(report: HardenReport, target: string): AuditFinding[] {
+  const left = report.degenerate;
+  const lost = report.collisions;
+  const stuck = report.pinches.unresolved + report.pinches.rejected;
+  if (left === 0 && lost === 0 && stuck === 0) return [];
+  const parts: string[] = [];
+  if (left > 0) {
+    const cleared = report.degenerateBefore - left;
+    parts.push(
+      `${left} face(s) measure under 1e-9 mm2 once the coordinates are on the float32 grid a ` +
+        `binary STL writes` +
+        (cleared > 0
+          ? ` (${report.degenerateBefore} before the repair, which cleared ${cleared})`
+          : ", and the repair could not clear any of them"),
+    );
+  }
+  if (lost > 0) {
+    parts.push(
+      `${lost} vertex/vertices share a grid point with another, so a reader that welds the ` +
+        "coordinates back into an index will hand an edge to more than two faces",
+    );
+  }
+  if (stuck > 0) {
+    parts.push(
+      `${report.pinches.rejected} separation(s) were rolled back by the acceptance test and ` +
+        `${report.pinches.unresolved} found no free grid point`,
+    );
+  }
+  return [
+    {
+      id: FLOAT32_FINDING_ID,
+      severity: "warning",
+      title: `The ${target} file cannot carry every face of this model`,
+      detail:
+        `${parts.join("; ")}. The reference validator will fail this file on its ` +
+        "degenerate_faces row. The 3MF and OBJ writers keep decimal text and are not affected; " +
+        "a smaller plate is what removes the faces at source.",
+    },
+  ];
+}
+
 /** One binary STL of every region, placed in build space. */
-export function exportStl(result: EngineResult, options: ExportOptions = {}): ExportFile {
+export function exportStl(result: EngineResult, options: ExportOptions = {}): StlExportFile {
   const resolved = resolveOptions(result, options);
   const placed = placeInBuildSpace(orderedRegions(result.regions));
   // The boolean union, not a concatenation: an STL has no notion of parts, so
   // a concatenated partition would read as one shell per region.
   const merged = placeMerged(result, placed);
+  const written = forStl({ positions: merged.positions, indices: merged.indices });
   return {
     name: `${resolved.stem}.stl`,
     mime: MIME_STL,
-    bytes: stlBinary(merged.positions, merged.indices, stlHeaderText(resolved.title)),
+    bytes: stlBinary(written.mesh.positions, written.mesh.indices, stlHeaderText(resolved.title)),
+    findings: float32Findings(written.report, "STL"),
   };
 }
 
@@ -111,18 +203,28 @@ export function regionStlName(stem: string, region: RegionMesh, index: number): 
 }
 
 /** A zip with one binary STL per region (same placement as the single body) plus CREDITS.txt. */
-export function exportStlPartsZip(result: EngineResult, options: ExportOptions = {}): ExportFile {
+export function exportStlPartsZip(result: EngineResult, options: ExportOptions = {}): StlExportFile {
   const resolved = resolveOptions(result, options);
   const placed = placeInBuildSpace(orderedRegions(result.regions));
-  const entries: ZipEntry[] = placed.regions.map((region, index) => ({
-    name: regionStlName(resolved.stem, region, index),
-    data: stlBinary(region.positions, region.indices, stlHeaderText(`${resolved.title} ${region.region}`)),
-    method: "deflate" as const,
-  }));
+  const findings: AuditFinding[] = [];
+  const entries: ZipEntry[] = placed.regions.map((region, index) => {
+    // Every member is a binary STL in its own right and is read back the same
+    // way, so each one is hardened exactly as the single body above is.
+    const written = forStl({ positions: region.positions, indices: region.indices });
+    // One finding for the zip, naming the first member that lost something:
+    // six copies of the same sentence is noise, not information.
+    if (findings.length === 0) findings.push(...float32Findings(written.report, `STL part ${region.region}`));
+    return {
+      name: regionStlName(resolved.stem, region, index),
+      data: stlBinary(written.mesh.positions, written.mesh.indices, stlHeaderText(`${resolved.title} ${region.region}`)),
+      method: "deflate" as const,
+    };
+  });
   entries.push({ name: "CREDITS.txt", data: CREDITS_TEXT, method: "deflate" });
   return {
     name: `${resolved.stem}-parts.zip`,
     mime: MIME_ZIP,
     bytes: zipEntries(entries, { mtime: resolved.created }),
+    findings,
   };
 }

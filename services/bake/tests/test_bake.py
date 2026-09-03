@@ -45,6 +45,7 @@ from app.contracts import (
 )
 from app import export
 from app.export import mf3
+from app.export import stl as stl_export
 from app.geom import assemble, extrude, lettering, thicken
 from app.geom import transform as T
 from app.ingest import normalize, overpass, presets
@@ -1191,6 +1192,131 @@ def test_the_final_solid_survives_the_float32_round_trip_of_a_binary_stl(chicago
     assert assemble.degenerate_face_count(vertices, faces) == 0
     assert assemble.float32_defect_count(vertices, faces) == 0
     assert len(faces) == output.result.stats.triangles
+
+
+def test_a_pinch_no_weld_can_close_is_separated_before_the_stl_is_written():
+    """Two distinct vertices at one point are how a manifold mesh represents a
+    surface touching itself - two building corners meeting exactly, which the
+    Paris, Tokyo and London plates each carry one or two of.  A 3MF is indexed
+    and carries it; a binary STL is a triangle soup, ``cli._index_stl_triangle_soup``
+    recovers the index by welding identical float32 rows, and that weld hands
+    the shared edge to four faces: ``manifold``, ``watertight`` and
+    ``self_intersection`` all fail on a file whose 3MF passes every row.
+
+    ``assemble.finalize`` does not reach it, and this test pins WHY so nobody
+    tries again there: ``float32_defect_count`` scores
+    ``len(unique(vertices)) - len(unique(quantised))``, and a pair that is
+    already one row of ``unique(vertices)`` contributes nothing to that
+    difference by construction.  Welding it would not help either - it is the
+    same non-manifold edge, made explicit, and manifold3d refuses the
+    re-import.  So the FILE is separated instead, by one float32 step at the
+    model's own scale (docs/handoff/v3-07-geometry.md).
+    """
+
+    def box(origin, size):
+        x0, y0, z0 = origin
+        x1, y1, z1 = (x0 + size, y0 + size, z0 + size)
+        vertices = np.array(
+            [
+                [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],
+                [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1],
+            ],
+            dtype=float,
+        )
+        faces = np.array(
+            [
+                [0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7],
+                [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
+                [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7],
+            ]
+        )
+        return vertices, faces
+
+    west_v, west_f = box((90.0, 145.0, 0.0), 10.0)
+    east_v, east_f = box((100.0, 155.0, 0.0), 10.0)
+    vertices = np.vstack([west_v, east_v])
+    faces = np.vstack([west_f, east_f + 8])
+
+    # Two of the sixteen vertices share a float32 grid point, and no weld can
+    # help: the two blocks meet along one vertical edge.
+    lost = len(vertices) - len(np.unique(vertices.astype(np.float32), axis=0))
+    assert lost == 2
+    # ... and the pipeline's own counter scores it ZERO, which is why finalize
+    # returns a mesh with the pinch still in it. Both vertices are one row of
+    # `unique(vertices)` already, so the subtraction has nothing to find.
+    assert assemble.float32_defect_count(vertices, faces) == 0
+
+    moved, report = stl_export.separate_float32_pinches(vertices, faces)
+    assert report["moved"] == 2
+    assert report["groups"] == 2
+    assert report["rejected"] == 0
+    assert report["unresolved"] == 0
+    assert len(np.unique(moved.astype(np.float32), axis=0)) == len(moved)
+    # One step at the largest coordinate the mesh holds (y = 165 mm), four
+    # orders of magnitude under the print grid.
+    scale = np.float32(165.0)
+    step = float(np.nextafter(scale, np.float32(np.inf)) - scale)
+    assert float(np.abs(moved - vertices).max()) == pytest.approx(step, rel=0, abs=0)
+    assert report["max_shift_mm"] == pytest.approx(step, rel=0, abs=0)
+    assert int((np.abs(moved - vertices) > 0).sum()) == 2
+    # Idempotent, and a mesh with nothing to separate is handed straight back.
+    again, none = stl_export.separate_float32_pinches(moved, faces)
+    assert none["moved"] == 0
+    assert again is moved
+    assert stl_export.separate_float32_pinches(west_v, west_f)[1]["moved"] == 0
+
+
+def test_a_pinch_moves_to_the_same_place_in_both_engines():
+    """``fixtures/pinch-parity.json``: the one fixture both writers run.
+
+    ``DECISIONS.md [V3.1-P7-3]`` and both docstrings call these two
+    implementations mirrors, and until now that was true only by reading - each
+    suite built its own two-cube case and asserted magnitudes (how many moved,
+    how far), which a change of direction rule or of survivor rule would sail
+    straight through (v3-07 audit, finding 6).  This pins the SIGNED result:
+    which vertex ends up where, to 1e-9 mm, against the same numbers
+    ``lib/engine/solid/mesh.test.ts`` asserts.
+
+    Three 10 mm cubes around one vertical column, which is also the group of
+    THREE neither suite reached before: the third member of a group finds the
+    second's new grid point taken and has to step again.
+    """
+    fixture = json.loads(
+        (Path(__file__).resolve().parents[3] / "fixtures" / "pinch-parity.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    vertices = np.asarray(fixture["positions"], dtype=np.float64).reshape(-1, 3)
+    faces = np.asarray(fixture["indices"], dtype=np.int64).reshape(-1, 3)
+    expected = np.asarray(fixture["expected"], dtype=np.float64).reshape(-1, 3)
+
+    lost = len(vertices) - len(np.unique(vertices.astype(np.float32), axis=0))
+    assert lost == fixture["invariants"]["collisions_before"]
+
+    moved, report = stl_export.separate_float32_pinches(vertices, faces)
+    assert float(np.abs(moved - expected).max()) < 1e-9
+    assert report["groups"] == fixture["report"]["groups"] == 6
+    assert report["moved"] == fixture["report"]["moved"] == 8
+    assert report["rejected"] == 0
+    assert report["max_shift_mm"] == pytest.approx(fixture["report"]["maxShiftMm"], rel=0, abs=0)
+    assert report["volume_delta_mm3"] == pytest.approx(
+        fixture["report"]["volumeDeltaMm3"], rel=1e-12
+    )
+    after = len(moved) - len(np.unique(moved.astype(np.float32), axis=0))
+    assert after == fixture["invariants"]["collisions_after"] == 0
+
+    # The topology is untouched, which is what the acceptance test relies on
+    # instead of recomputing it: the faces keep their indices, so every edge is
+    # shared by the same two faces and the body count cannot move.
+    kept = trimesh.Trimesh(vertices=moved, faces=faces, process=False, validate=False)
+    was = trimesh.Trimesh(vertices=vertices, faces=faces, process=False, validate=False)
+    assert kept.is_watertight == was.is_watertight
+    assert kept.body_count == was.body_count == fixture["invariants"]["bodies"]
+
+    # And the move is accepted although it is 1356 times `cleanMesh`'s relative
+    # volume bound: every cubic millimetre of it is one float32 step across
+    # faces of 100 mm^2, which is what the incident-area budget measures.
+    assert abs(report["volume_delta_mm3"]) > 1000 * max(1e-6, 3000.0 * 1e-9)
 
 
 def test_cli_validate_accepts_the_stl_the_bake_itself_wrote(chicago_bake, capsys):

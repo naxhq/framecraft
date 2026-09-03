@@ -359,22 +359,26 @@ jobs:
           retention-days: 14
 
   # ---------------------------------------------------------------------
-  # All six presets, offline, through the committed Overpass fixtures.
+  # All six presets, offline, through the committed Overpass fixtures, and
+  # through BOTH engines.
   #
   # A preset id sets `allow_network=False` in the reference CLI, so every bake
   # reads its committed `fixtures/<sha1>.json` and nothing touches the network.
   # This exercises ingest and normalisation on six real cities (16k to 19k
   # elements each); ci.yml only ever sees Chicago, and only as an
-  # already-normalised SceneGraph.
+  # already-normalised SceneGraph. Since [V3.1-P7-4] the browser engine runs
+  # the same six through `export:cli --overpass --center`, so the two pipelines
+  # are judged on every preset rather than the browser one on Chicago alone.
   #
-  # Timeout from measurement: 221 s for the whole script on this host. 30
-  # minutes is roughly eight times that, which covers a slower runner without
-  # being the 60-minute default.
+  # Timeout from measurement: 221 s for the reference half of the script on
+  # this host, and 6 min 04 s for the browser half added beside it, so 9 min
+  # 45 s for the whole script. 45 minutes is roughly 4.6 times that, which
+  # covers a runner without a GPU and a cold npm cache.
   # ---------------------------------------------------------------------
   preset-matrix:
-    name: preset matrix (6 presets, offline)
+    name: preset matrix (6 presets, both engines, offline)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 

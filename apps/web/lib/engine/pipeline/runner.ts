@@ -22,13 +22,14 @@ import type { EngineSceneGraph } from "../osm/types";
 import type { BuildContext } from "../solid/context";
 import { Arena, loadManifold, type Deletable, type ManifoldToplevel } from "../solid/manifold";
 import type { BuiltRegion } from "../solid/validate";
-import type { EngineResult, RegionMesh, RegionName, TerrainSampler } from "../types";
+import type { EngineResult, RegionMesh, TerrainSampler } from "../types";
+import { REGION_NAMES } from "../types";
 import { StageCache, type StageChannels } from "./cache";
 import { UndeclaredParamReadError, isParamView, strictParams } from "./claims";
 import { claimsOf } from "./graph";
 import { hashBytes, hashParts, hashString, stableJson } from "./hash";
 import { expandClaims, readParamPath, type ParamPath, type ParamValue } from "./paths";
-import { assembleResult, findingsBeforeAudit, finishedRegions, regionHashes } from "./result";
+import { assembleResult, findingsBeforeAudit, finishedRegions, regionHashes, strippedMesh, strippedTiles } from "./result";
 import {
   PHASES,
   isKeyedClaim,
@@ -48,6 +49,7 @@ import {
   type TerrainGridInput,
   type TerrainOut,
 } from "./stage";
+import { ExportBlockedError } from "../export/gate";
 import { OverpassStageError, STAGES } from "./stages";
 
 // ---------------------------------------------------------------------------
@@ -94,6 +96,10 @@ export interface PipelineJob {
   known: Record<string, string>;
   /** The scene hash the consumer already holds; `scene-ready` is not re-sent for it. */
   knownSceneHash: string | null;
+  /** The merged mesh hash the consumer already holds; `done` carries the mesh stripped when it is unchanged. */
+  knownMergedHash?: string | null;
+  /** The tiling hash the consumer already holds; `done` carries the tile meshes stripped when unchanged. */
+  knownTilesHash?: string | null;
 }
 
 export type StageState = "start" | "done" | "cached" | "skipped";
@@ -113,9 +119,22 @@ export type PipelineEvent =
   | { kind: "plan"; total: number; stages: StageId[] }
   | StageEvent
   | { kind: "scene-ready"; scene: EngineSceneGraph; hash: string; fromCache: boolean }
-  | { kind: "region-ready"; regions: RegionMesh[]; removed: string[] }
+  /** `hashes`: the finish key of every region in `regions`, so a consumer's map is hash-complete before `done`. Optional on the type so an older message shape still types; the runner always sends it. */
+  | { kind: "region-ready"; regions: RegionMesh[]; removed: string[]; hashes?: Record<string, string> }
   | { kind: "phase"; phase: Phase; elapsedMs: number }
-  | { kind: "done"; result: EngineResult | null; regionHashes: Record<string, string>; elapsedMs: number }
+  /**
+   * `mergedHash` and `tilesHash` name what `result.merged` and `result.tiles`
+   * carry; when they equal the hashes the job said it knew, the meshes are
+   * stripped and the consumer keeps its own copy.
+   */
+  | {
+      kind: "done";
+      result: EngineResult | null;
+      regionHashes: Record<string, string>;
+      elapsedMs: number;
+      mergedHash?: string | null;
+      tilesHash?: string | null;
+    }
   | { kind: "files"; output: ExportOut }
   | { kind: "error"; stage: StageId; message: string; detail?: unknown }
   | { kind: "cancelled"; atStage: StageId };
@@ -230,6 +249,9 @@ function extraHash(job: PipelineJob, key: ExtraKey, memo: Map<ExtraKey, string>)
     case "export-request":
       value = job.exportRequest === null ? "none" : stableJson(job.exportRequest);
       break;
+    case "params-echo":
+      value = hashString(stableJson(job.params));
+      break;
     default: {
       const never: never = key;
       throw new Error(`pipeline: unknown extra ${String(never)}`);
@@ -247,8 +269,14 @@ function extraValue<K extends ExtraKey>(job: PipelineJob, key: K): ExtraValues[K
     date: job.date,
     rotation: job.rotationDeg,
     "export-request": job.exportRequest,
+    "params-echo": job.params,
   };
   return values[key];
+}
+
+/** The `normalise` key of a job that carries a finished scene under `key` (a `scene` source). */
+export function seedSceneHash(key: string): string {
+  return hashParts(["normalise", "seed", key]);
 }
 
 function keyFor(stage: StageDef, job: PipelineJob, cache: StageCache, memo: Map<ExtraKey, string>): string {
@@ -308,10 +336,16 @@ function isPlainData(value: unknown, depth = 0): boolean {
   return Object.values(value as Record<string, unknown>).every((item) => isPlainData(item, depth + 1));
 }
 
-/** The digest downstream keys hash for an output: its content when it is plain data, else the key. */
-function digestOf(key: string, output: unknown, owned: readonly Deletable[]): string {
+/**
+ * The digest downstream keys hash for a stage: its output AND its channels
+ * (findings, resolved text, mark bands) when the output is plain data, else
+ * the key. The channels are part of what a stage said: a lettering line the
+ * plate refused leaves no cutter and the same output, but a different refusal
+ * text and a different finding, and `audit` and `export` must re-run for it.
+ */
+function digestOf(key: string, output: unknown, channels: StageChannels, owned: readonly Deletable[]): string {
   if (owned.length > 0 || !isPlainData(output)) return key;
-  const text = stableJson(output);
+  const text = stableJson({ output, channels });
   if (text === undefined || text.length > DIGEST_LIMIT_CHARS) return key;
   return hashString(text);
 }
@@ -526,11 +560,17 @@ function makeStageContext(parts: ContextParts): StageContext {
 // ---------------------------------------------------------------------------
 
 function copyMesh(mesh: RegionMesh): RegionMesh {
-  return { ...mesh, positions: mesh.positions.slice(), indices: mesh.indices.slice() };
+  return {
+    ...mesh,
+    positions: mesh.positions.slice(),
+    indices: mesh.indices.slice(),
+    ...(mesh.triangleOwner === undefined ? {} : { triangleOwner: mesh.triangleOwner.slice() }),
+  };
 }
 
 function errorDetail(error: unknown): unknown {
   if (error instanceof OverpassStageError) return { overpass: error.overpass satisfies OverpassFetchError };
+  if (error instanceof ExportBlockedError) return { blocking: error.blocking };
   if (error instanceof UndeclaredParamReadError) return { undeclared: { stage: error.stage, path: error.path } };
   return undefined;
 }
@@ -565,6 +605,16 @@ export async function runPipeline(
     elapsedMs: now() - startedMs,
   });
 
+  // The events that end a run are posted after the `engine.build` span has
+  // closed, so the run's own row is on the message that ends it: `worker.ts`
+  // drains the perf buffer onto exactly that message, and a span still open
+  // there would land one message late and never for a session's last run
+  // (v3-01 integration note, `e2e/perf.spec.ts`).
+  const trailing: Array<{ event: PipelineEvent; transfer: Transferable[] }> = [];
+  const emitLast = (event: PipelineEvent, transfer: Transferable[] = []): void => {
+    trailing.push({ event, transfer });
+  };
+
   emit({ kind: "plan", total: plan.length, stages: plan.map((stage) => stage.id) });
 
   // The kernel is loaded before the first stage past the scene phase, not
@@ -575,30 +625,46 @@ export async function runPipeline(
 
   // Progressive regions: finished meshes are copied out of the cache and posted
   // in batches at most every `batchMs`, and again at the end of the phase.
+  // An export job posts files, never regions: the page already holds them.
+  const streaming = job.mode !== "export";
   let pending: RegionMesh[] = [];
+  let pendingHashes: Record<string, string> = {};
   let lastFlushMs = startedMs;
   const flushRegions = (removed: string[] = []): void => {
     if (pending.length === 0 && removed.length === 0) return;
     const regions = pending;
+    const hashes = pendingHashes;
     pending = [];
+    pendingHashes = {};
     lastFlushMs = now();
     const transfer: Transferable[] = [];
-    for (const region of regions) transfer.push(region.positions.buffer, region.indices.buffer);
-    emit({ kind: "region-ready", regions, removed }, transfer);
+    for (const region of regions) {
+      transfer.push(region.positions.buffer, region.indices.buffer);
+      if (region.triangleOwner !== undefined) transfer.push(region.triangleOwner.buffer);
+    }
+    emit({ kind: "region-ready", regions, removed, hashes }, transfer);
   };
   const noteFinished = (stage: StageDef, key: string): void => {
-    if (!stage.id.startsWith("finish-")) return;
+    if (!streaming || !stage.id.startsWith("finish-")) return;
     const region = regionOfStage(stage.id);
     if (region === null) return;
     const entry = cache.get<FinishOut>(stage.id);
     if (entry === undefined || entry.output === null) return;
     if (job.known[region] === key) return;
     pending.push(copyMesh(entry.output.mesh));
+    pendingHashes[region] = key;
     if (now() - lastFlushMs >= batchMs) flushRegions();
   };
+  /**
+   * Every region the model does not have right now. A superset of what the
+   * consumer holds on purpose: a region streamed by a superseded run that
+   * never reached `done` is unknown to the consumer's hash map, so the only
+   * complete answer is every name whose finish output is null or absent.
+   * Deleting a name the consumer does not hold costs nothing.
+   */
   const removedRegions = (): string[] =>
-    Object.keys(job.known).filter((region) => {
-      const entry = cache.get<FinishOut>(`finish-${region as RegionName}`);
+    REGION_NAMES.filter((region) => {
+      const entry = cache.get<FinishOut>(`finish-${region}`);
       return entry === undefined || entry.output === null;
     });
 
@@ -610,7 +676,8 @@ export async function runPipeline(
       const elapsed = now() - phaseStartedMs;
       perfRecord(`phase.${phase}`, phaseStartedMs, elapsed);
       if (phase === "region") {
-        flushRegions(removedRegions());
+        // An export streams nothing, not even the names it lacks.
+        if (streaming) flushRegions(removedRegions());
         options.onSolids?.(finishedRegions(cache));
       }
       emit({ kind: "phase", phase, elapsedMs: elapsed });
@@ -620,7 +687,9 @@ export async function runPipeline(
       const stage = plan[index];
       if (index > 0) await yieldToEventLoop();
       if (aborted(options.signal)) {
-        emit({ kind: "cancelled", atStage: stage.id });
+        // What finished inside the current batch window still reaches the page.
+        flushRegions();
+        emitLast({ kind: "cancelled", atStage: stage.id });
         return finish({ status: "cancelled", atStage: stage.id });
       }
       if (stage.phase !== phase) {
@@ -645,7 +714,7 @@ export async function runPipeline(
         const entry = cache.get<NormaliseOut>("normalise");
         if (entry === undefined || entry.key !== job.source.key) {
           const message = "the scene is no longer cached in the worker; send it again";
-          emit({ kind: "error", stage: "normalise", message, detail: { sceneNotCached: true } });
+          emitLast({ kind: "error", stage: "normalise", message, detail: { sceneNotCached: true } });
           return finish({ status: "error", error: { stage: "normalise", message, detail: { sceneNotCached: true } } });
         }
         report("cached", 0);
@@ -654,7 +723,7 @@ export async function runPipeline(
         continue;
       }
       if (job.source.kind === "scene" && stage.id === "normalise") {
-        const key = hashParts(["normalise", "seed", job.source.key]);
+        const key = seedSceneHash(job.source.key);
         const seeded = job.source.scene as EngineSceneGraph;
         if (cache.isValid("normalise", key)) {
           report("cached", 0);
@@ -672,7 +741,7 @@ export async function runPipeline(
         key = keyFor(stage, job, cache, memo);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        emit({ kind: "error", stage: stage.id, message });
+        emitLast({ kind: "error", stage: stage.id, message });
         return finish({ status: "error", error: { stage: stage.id, message } });
       }
       if (cache.isValid(stage.id, key)) {
@@ -705,15 +774,15 @@ export async function runPipeline(
         if (aborted(options.signal)) {
           // The abort landed inside the stage (a fetch cut short): that is a
           // cancellation, not a failure.
-          emit({ kind: "cancelled", atStage: stage.id });
+          flushRegions();
+          emitLast({ kind: "cancelled", atStage: stage.id });
           return finish({ status: "cancelled", atStage: stage.id });
         }
         const message = error instanceof Error ? error.message : String(error);
         const detail = errorDetail(error);
-        emit({ kind: "error", stage: stage.id, message, ...(detail === undefined ? {} : { detail }) });
+        emitLast({ kind: "error", stage: stage.id, message, ...(detail === undefined ? {} : { detail }) });
         return finish({ status: "error", error: { stage: stage.id, message, ...(detail === undefined ? {} : { detail }) } });
       }
-      const elapsedMs = now() - stageStartedMs;
       const owned: Deletable[] = [];
       // The generations to pin: only the inputs whose handles this output
       // references can dangle when that input is replaced.
@@ -727,12 +796,14 @@ export async function runPipeline(
         if (owner !== undefined) inputGens.set(owner.id, owner.gen);
       }
       arena.dispose();
-      const digest = digestOf(key, output, owned);
+      const digest = digestOf(key, output, channels, owned);
       const partDigests = new Map<string, string>();
       for (const [name, fn] of Object.entries(stage.digests ?? {})) {
         const part = (fn as (value: unknown) => string | null)(output);
         partDigests.set(name, part === null ? digest : hashParts([stage.id, name, part]));
       }
+      // Measured after the digests: they are part of what the stage costs.
+      const elapsedMs = now() - stageStartedMs;
       cache.set(stage.id, key, inputGens, output, channels, owned, elapsedMs, digest, partDigests);
       report("done", elapsedMs);
 
@@ -747,28 +818,43 @@ export async function runPipeline(
     }
     endPhase();
 
-    const wantsResult = job.mode === "full" || job.mode === "export";
-    const result = wantsResult ? assembleResult(cache, job.params, { stripRegionMeshes: options.stripRegionMeshes }) : null;
-    // Every mode ends with `done`; a `scene` or `preview` run carries no result.
+    // Every mode ends with `done`; a `scene` or `preview` run carries no
+    // result, and an export job carries none on the wire either: the page
+    // already holds the model, the files are what it asked for.
+    const result = job.mode === "full" || job.mode === "export" ? assembleResult(cache, job.params, { stripRegionMeshes: options.stripRegionMeshes }) : null;
+    const mergedHash = cache.get("merged")?.key ?? null;
+    const tilesHash = cache.get("tiling")?.key ?? null;
     const transfer: Transferable[] = [];
+    let posted: EngineResult | null = result;
     if (result !== null && options.stripRegionMeshes === true) {
-      // The merged mesh is posted whole; copied first so the cache keeps its own.
-      result.merged = copyMesh(result.merged);
-      transfer.push(result.merged.positions.buffer, result.merged.indices.buffer);
+      if (job.mode === "export") {
+        posted = null;
+      } else {
+        // The merged mesh and the tile meshes cross only when their hash is
+        // new to the consumer; copied first so the cache keeps its own.
+        const merged = job.knownMergedHash === mergedHash ? strippedMesh(result.merged) : copyMesh(result.merged);
+        if (job.knownMergedHash !== mergedHash) transfer.push(merged.positions.buffer, merged.indices.buffer);
+        const tiles = result.tiles === undefined ? undefined : job.knownTilesHash === tilesHash ? strippedTiles(result.tiles) : result.tiles;
+        posted = { ...result, merged, ...(tiles === undefined ? {} : { tiles }) };
+      }
     }
-    emit({ kind: "done", result, regionHashes: regionHashes(cache), elapsedMs: now() - startedMs }, transfer);
+    emitLast({ kind: "done", result: posted, regionHashes: regionHashes(cache), elapsedMs: now() - startedMs, mergedHash, tilesHash }, transfer);
     let files: ExportOut | null = null;
     if (job.mode === "export") {
       const entry = cache.get<ExportOut>("export");
       if (entry !== undefined) {
         files = entry.output;
-        emit({ kind: "files", output: files });
+        // The bytes are transferred, from copies, so the cache keeps its own.
+        const copies = files.files.map((file) => ({ ...file, bytes: file.bytes.slice() }));
+        emitLast({ kind: "files", output: { ...files, files: copies } }, copies.map((file) => file.bytes.buffer));
       }
     }
     return finish({ status: "done", result, files });
   };
 
-  return perfSpan("engine.build", run);
+  const outcome = await perfSpan("engine.build", run);
+  for (const { event, transfer } of trailing) emit(event, transfer);
+  return outcome;
 }
 
 function emptyChannels(): StageChannels {

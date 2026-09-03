@@ -185,6 +185,11 @@ export function parseProject(text: string): ProjectLoadResult {
     return { ok: false, reason: "this project file's preset id is not valid, so it was not loaded" };
   }
 
+  // `parsePrintParams` also carries a pre-v3.1 file's `part_colors` block into
+  // `colour.region_colors` (DECISIONS [V3.1-P1-2]). It is done there rather
+  // than here on purpose: a project file and a share link must never migrate a
+  // payload two different ways, exactly as they must never validate one two
+  // different ways.
   const parsedParams = parsePrintParams(record.params ?? {});
   if (!parsedParams.ok) {
     return {

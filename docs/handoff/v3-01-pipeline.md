@@ -692,7 +692,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       ],
       "inputs": [
         "region-buildings",
-        "sit"
+        "sit",
+        "buildings"
       ],
       "extra": [],
       "digests": []
@@ -721,7 +722,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       ],
       "inputs": [
         "region-hero_building",
-        "sit"
+        "sit",
+        "buildings"
       ],
       "extra": [],
       "digests": []
@@ -945,7 +947,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       ],
       "inputs": [
         "region-buildings_band_2",
-        "sit"
+        "sit",
+        "buildings"
       ],
       "extra": [],
       "digests": []
@@ -971,7 +974,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       ],
       "inputs": [
         "region-buildings_band_3",
-        "sit"
+        "sit",
+        "buildings"
       ],
       "extra": [],
       "digests": []
@@ -997,7 +1001,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       ],
       "inputs": [
         "region-buildings_band_4",
-        "sit"
+        "sit",
+        "buildings"
       ],
       "extra": [],
       "digests": []
@@ -1023,7 +1028,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       ],
       "inputs": [
         "region-buildings_band_5",
-        "sit"
+        "sit",
+        "buildings"
       ],
       "extra": [],
       "digests": []
@@ -1049,7 +1055,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       ],
       "inputs": [
         "region-buildings_band_6",
-        "sit"
+        "sit",
+        "buildings"
       ],
       "extra": [],
       "digests": []
@@ -1075,7 +1082,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       ],
       "inputs": [
         "region-buildings_band_7",
-        "sit"
+        "sit",
+        "buildings"
       ],
       "extra": [],
       "digests": []
@@ -1101,7 +1109,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       ],
       "inputs": [
         "region-buildings_band_8",
-        "sit"
+        "sit",
+        "buildings"
       ],
       "extra": [],
       "digests": []
@@ -1415,6 +1424,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "lettering",
         "ornaments",
         "normalise",
+        "validate",
         "finish-base",
         "finish-frame",
         "finish-matting",
@@ -1437,7 +1447,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "finish-buildings_band_8"
       ],
       "extra": [
-        "export-request"
+        "export-request",
+        "params-echo"
       ],
       "digests": []
     }
@@ -1519,7 +1530,7 @@ The same as a table:
 | 68 | `islands` | audit | frame, hanger, frame_style.profile, frame_style.corner, frame_style.corner_radius_mm, frame_style.lip_depth_mm, frame_style.shadow_gap.enabled, frame_style.shadow_gap.width_mm, frame_style.shadow_gap.depth_mm, frame_style.matting.enabled, frame_style.matting.width_mm, frame_style.matting.proud_mm, frame_style.separate.enabled, frame_style.separate.mount, frame_style.separate.tolerance_mm, frame_style.texture.pattern, frame_style.texture.scale_mm, frame_style.texture.depth_mm | context, merged, finish-base, finish-frame, finish-matting, finish-buildings, finish-hero_building, finish-roads, finish-water, finish-parks, finish-rail, finish-lettering, finish-attribution, finish-easel, finish-cleat, finish-buildings_band_2, finish-buildings_band_3, finish-buildings_band_4, finish-buildings_band_5, finish-buildings_band_6, finish-buildings_band_7, finish-buildings_band_8 | (none) | (none) |
 | 69 | `tiling` | audit | base_thickness_mm, nozzle_mm, frame, regions.roads.depth_mm, regions.roads.proud_mm, regions.water.depth_mm, regions.water.proud_mm, regions.parks.depth_mm, regions.parks.proud_mm, regions.rail.depth_mm, regions.rail.proud_mm, tiling.enabled, tiling.cols, tiling.rows, tiling.joint, tiling.tolerance_mm, tiling.index_mark | context, merged, attribution, finish-base, finish-frame, finish-matting, finish-buildings, finish-hero_building, finish-roads, finish-water, finish-parks, finish-rail, finish-lettering, finish-attribution, finish-easel, finish-cleat, finish-buildings_band_2, finish-buildings_band_3, finish-buildings_band_4, finish-buildings_band_5, finish-buildings_band_6, finish-buildings_band_7, finish-buildings_band_8 | (none) | (none) |
 | 70 | `audit` | audit | plate_mm, nozzle_mm, trees, frame, colour.region_slots.base, colour.region_slots.frame, colour.region_slots.matting, colour.region_slots.buildings, colour.region_slots.hero_building, colour.region_slots.roads, colour.region_slots.water, colour.region_slots.parks, colour.region_slots.rail, colour.region_slots.lettering, colour.region_slots.attribution, printer_profile, custom_profile.plate_x_mm, custom_profile.plate_y_mm, custom_profile.max_height_mm, custom_profile.nozzle_mm, custom_profile.slots, custom_profile.change_gcode, bridges.enabled, tiling.enabled, tiling.cols, tiling.rows, tiling.joint, tiling.tolerance_mm, tiling.index_mark, frame_style.profile | normalise, context, terrain, repair-buildings, buildings, bridges, trees, merged, measure, validate, islands, tiling, finish-base, finish-frame, finish-matting, finish-buildings, finish-hero_building, finish-roads, finish-water, finish-parks, finish-rail, finish-lettering, finish-attribution, finish-easel, finish-cleat, finish-buildings_band_2, finish-buildings_band_3, finish-buildings_band_4, finish-buildings_band_5, finish-buildings_band_6, finish-buildings_band_7, finish-buildings_band_8 | (none) | (none) |
-| 71 | `export` | export | schema_version, city_label, color_mode, place.author, colour.palette, colour.preview_theme, printer_profile, custom_profile.plate_x_mm, custom_profile.plate_y_mm, custom_profile.max_height_mm, custom_profile.nozzle_mm, custom_profile.slots, custom_profile.change_gcode, export_target | audit, merged, tiling, attribution, buildings, lettering, ornaments, normalise, finish-base, finish-frame, finish-matting, finish-buildings, finish-hero_building, finish-roads, finish-water, finish-parks, finish-rail, finish-lettering, finish-attribution, finish-easel, finish-cleat, finish-buildings_band_2, finish-buildings_band_3, finish-buildings_band_4, finish-buildings_band_5, finish-buildings_band_6, finish-buildings_band_7, finish-buildings_band_8 | export-request | (none) |
+| 71 | `export` | export | schema_version, city_label, color_mode, place.author, colour.palette, colour.preview_theme, printer_profile, custom_profile.plate_x_mm, custom_profile.plate_y_mm, custom_profile.max_height_mm, custom_profile.nozzle_mm, custom_profile.slots, custom_profile.change_gcode, export_target | audit, merged, tiling, attribution, buildings, lettering, ornaments, normalise, validate, finish-base, finish-frame, finish-matting, finish-buildings, finish-hero_building, finish-roads, finish-water, finish-parks, finish-rail, finish-lettering, finish-attribution, finish-easel, finish-cleat, finish-buildings_band_2, finish-buildings_band_3, finish-buildings_band_4, finish-buildings_band_5, finish-buildings_band_6, finish-buildings_band_7, finish-buildings_band_8 | export-request, params-echo | (none) |
 
 ## 3. Where the table differs from the design's, and why the code says so
 
@@ -1871,20 +1882,47 @@ New: `pipeline/graph.test.ts`, `pipeline/incremental.test.ts`,
 - `PipelineClient.run({source, params, terrain, heroIds, date, rotationDeg,
   mode, known, knownSceneHash})` returns a handle with `progress` (`plan`
   first, then `stage` events with `index`, `total`, `state` and `elapsedMs`,
-  and `phase` events), `regions` (`{regions, removed}`, positions
-  transferred, copied out of the cache first), `scene` and `done`
-  (`{result, regionHashes, scene, elapsedMs}`; `result.regions` carry no
-  positions). Pass the map you hold as `known` and the worker will not resend
+  and `phase` events), `regions` (`{regions, removed, hashes}`, positions
+  transferred, copied out of the cache first; `removed` names every region
+  the model no longer has, whether or not you named it in `known`), `scene`
+  and `done` (`{result, regionHashes, scene, elapsedMs, mergedHash,
+  tilesHash}`; `result.regions` carry no positions). Pass the map you hold as
+  `known` (the hashes from `regions.hashes`) and the worker will not resend
   an unchanged region; pass `knownSceneHash` and it will not resend the
-  scene.
+  scene. The client fills `knownMergedHash`/`knownTilesHash` from its own
+  last copies and re-attaches the merged mesh and the tile meshes when the
+  worker strips them, so `done.result` always carries whole meshes.
 - `PipelineClient.exportFiles({target?, stem?, title?, source?, createdIso,
-  layerHeightMm?})` runs the remaining stages and returns
-  `{files, sidecar, sidecarName, notes, plan}` with the bytes transferred.
+  layerHeightMm?, force?})` waits for a run in flight (it never supersedes
+  one), runs the remaining stages on the settled cache and returns
+  `{files, sidecar, sidecarName, notes, plan}` with the bytes transferred. It
+  rejects with a `PipelineStageError` at stage `export` whose
+  `detail.blocking` lists the Stage 4 findings when the printability gate
+  failed; `force: true` writes the files anyway.
+- The audit's fixes, with the file and line of each and the test that pins
+  it, are the "Fixes" section of `v3-01-pipeline-audit.md`.
 - `PIPELINE_DEBOUNCE_MS = 80` and the store's `state.pipeline` shape are the
   design's section 5; `elapsedMs` per stage from the previous run is what the
   ETA is computed from (`CacheEntry.elapsedMs` holds it worker-side).
 - `EngineResult.recessBands` is on every result, empty for a plate with no
   cuts.
+- Per-triangle building identity: the `buildings`, `buildings_band_N` and
+  `hero_building` region meshes carry `triangleOwner` (a `Uint32Array`, one
+  entry per triangle, transferred with the positions and emptied wherever
+  they are) indexing `owners` (the building ids, sorted; a SceneGraph id, or
+  `block-<n>` for a merged block). `NO_OWNER` (`types.ts`) marks a triangle
+  nothing could be attributed to; Chicago has none. The `buildings` stage
+  records each extrusion's manifold original id (`BuiltBuildings.ownerIds`)
+  and the finish stages read the ids back off the union's triangle runs by
+  geometry (`solid/owners.ts`, about 10 ms on Chicago's 19 000-triangle
+  region, the `finish.owners` perf row). The identity is a pure function of
+  the finish's inputs, so the region hash covers it: a hero promotion or a
+  band change moves the hash, a colour change re-finishes to the same owners.
+- Perf mode: the events that end a run (`done`, `files`, `cancelled`,
+  `error`) are posted after the `engine.build` span closes, so a run's own
+  row is on the message `worker.ts` drains the buffer onto, for the first run
+  and the last (`protocol.perfStampedPost`; the v3-01 integration note's
+  repro and `e2e/perf.spec.ts`).
 
 ## 11. Lines for DECISIONS.md (the orchestrator appends; this agent does not edit it)
 
@@ -1928,4 +1966,33 @@ New: `pipeline/graph.test.ts`, `pipeline/incremental.test.ts`,
   `scene` exists for the compat `EngineClient.ingest` and never loads the
   WASM kernel. The `rotation` extra carries the SceneRequest's rotation to the
   lettering, because a `buildModel()` call has no SceneRequest.
+- [V3.1-P1-13] A failing export ships nothing. The export stage reads
+  `validate`'s findings and refuses, by finding id, when any Stage 4 row
+  (`not-manifold`, `floating-island`, `exceeds-plate`, `exceeds-height`,
+  `wall-too-thin`) is at `error`; the refusal is a `PipelineStageError` at
+  stage `export` whose `detail.blocking` lists the findings, and no `files`
+  event is posted. `ExportRequest.force` (CLI `--force`) writes the files
+  anyway for debugging, with the findings still in the sidecar. Warnings never
+  block.
+- [V3.1-P1-14] A stage's content digest covers its channels (findings,
+  resolved text, mark bands) as well as its output, and `region-ready` names
+  every region the model lacks in `removed` and carries each region's hash in
+  `hashes`. Reason: the audit's two blockers; a data-only stage whose only
+  change was what it reported served stale findings, and a band streamed by a
+  superseded run outlived the model.
+- [V3.1-P1-15] An export queued behind a run waits for it instead of
+  aborting it, streams no regions and posts `done` with `result: null`; a
+  run's `done` carries `mergedHash` and `tilesHash` and strips the merged
+  mesh and the tile meshes the caller already holds. Reason: the export path
+  used to fight the run it needed, and every settle moved 2.2 MB (8.1 MB with
+  tiling) across the worker boundary.
+- [V3.1-P1-16] Building identity rides on the region mesh: the `buildings`
+  stage gives every building solid its own manifold original id and keeps the
+  id-to-building map in its output; the building finish stages attribute
+  every shipped triangle to a building by geometry against the union's
+  triangle runs and ship `RegionMesh.triangleOwner` / `owners`. Reason: the
+  preview's per-building tints and the picking of Tasks 10 and 11 read the
+  real solids instead of proxies, and the mesh repairs (`cleanMesh`,
+  `canonicalMesh`) may reorder, weld or split triangles, so index bookkeeping
+  through them would be fragile where a centroid lookup is exact.
 

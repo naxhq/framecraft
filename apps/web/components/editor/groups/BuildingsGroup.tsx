@@ -4,6 +4,7 @@ import { useMemo } from "react";
 
 import { PARAM_RANGES } from "@/lib/contracts";
 import type { PrintParams } from "@/lib/contracts";
+import { labelled, sectionProps } from "@/lib/controlCatalog";
 import type { EngineBuilding } from "@/lib/engine/osm/types";
 import {
   HERO_CAP,
@@ -13,7 +14,7 @@ import {
   heroDisplayName,
 } from "@/lib/heroes";
 import { useEditorStore } from "@/store/editor";
-import { Field, Note, Slider, Toggle } from "../Controls";
+import { Field, Note, Slider, SrHint, Toggle } from "../Controls";
 
 /** Percent sliders move in 5-point steps; 0.05 of the underlying float. */
 const PERCENT_STEP = 5;
@@ -101,33 +102,26 @@ export function BuildingsGroup() {
   return (
     <>
       <Slider
-        id="small_scale"
-        label="Small building scale"
+        {...labelled("small_scale")}
         min={PARAM_RANGES.small_scale.min * 100}
         max={PARAM_RANGES.small_scale.max * 100}
         step={PERCENT_STEP}
         value={percent("small_scale")}
         display={`${percent("small_scale")} %`}
         onChange={(value) => setParam("small_scale", value / 100)}
-        hint="Height multiplier for buildings under 40 m."
       />
 
       <Slider
-        id="large_scale"
-        label="Large building scale"
+        {...labelled("large_scale")}
         min={PARAM_RANGES.large_scale.min * 100}
         max={PARAM_RANGES.large_scale.max * 100}
         step={PERCENT_STEP}
         value={percent("large_scale")}
         display={`${percent("large_scale")} %`}
         onChange={(value) => setParam("large_scale", value / 100)}
-        hint="Height multiplier for buildings 40 m and over. Push this too far and the model passes the 60 mm print ceiling."
       />
 
-      <Field
-        label="Hero buildings"
-        hint="Click a building in the preview to pick it out. Heroes keep their true height and can take their own colour when the model is built."
-      >
+      <Field {...sectionProps("hero-buildings")}>
         <div data-testid="hero-list" className="space-y-1">
           {heroes.length === 0 ? (
             <p className="text-2xs text-ink-faint">
@@ -150,8 +144,11 @@ export function BuildingsGroup() {
                       </span>
                       <button
                         type="button"
+                        data-testid="hero-remove"
                         onClick={() => toggleHero(id)}
                         aria-label={`Remove hero building ${id}`}
+                        aria-describedby="hero-remove-hint"
+                        title={labelled("hero-remove").hint}
                         className="rounded-[2px] px-1.5 py-0.5 text-2xs text-ink-faint transition-colors hover:bg-plate-raised hover:text-danger"
                       >
                         Remove
@@ -160,17 +157,24 @@ export function BuildingsGroup() {
                   );
                 })}
               </ul>
+              {/* One description for every Remove button in the list: the same
+                  sentence printed once per row would bury the list itself. */}
+              <SrHint id="hero-remove-hint">{labelled("hero-remove").hint}</SrHint>
               <div className="flex items-center justify-between gap-2 pt-0.5">
                 <span className="text-2xs text-ink-faint">
                   {heroes.length} of {HERO_CAP} picked
                 </span>
                 <button
                   type="button"
+                  data-testid="hero-clear-all"
                   onClick={clearHeroes}
+                  aria-describedby="hero-clear-all-hint"
+                  title={labelled("hero-clear-all").hint}
                   className="text-2xs text-accent underline-offset-2 hover:underline"
                 >
                   Clear all
                 </button>
+                <SrHint id="hero-clear-all-hint">{labelled("hero-clear-all").hint}</SrHint>
               </div>
             </>
           )}
@@ -189,16 +193,13 @@ export function BuildingsGroup() {
       ) : null}
 
       <Toggle
-        id="hero_auto_enabled"
-        label="Auto-detect heroes"
+        {...labelled("hero_auto_enabled")}
         checked={autoEnabled}
         onChange={(value) => setNested("hero_auto", { enabled: value })}
-        hint="Promotes the tallest, biggest-footprint and most landmark-tagged buildings automatically, on top of anything picked by hand."
       />
 
       <Slider
-        id="hero_auto_count"
-        label="Auto-detected count"
+        {...labelled("hero_auto_count")}
         min={PARAM_RANGES.hero_auto.count.min}
         max={PARAM_RANGES.hero_auto.count.max}
         step={1}
@@ -206,11 +207,10 @@ export function BuildingsGroup() {
         display={String(autoCount)}
         onChange={(value) => setNested("hero_auto", { count: value })}
         disabled={!autoEnabled}
-        hint="How many buildings to promote automatically. Manual picks are never evicted for one of these."
       />
 
       {autoEnabled ? (
-        <Field label="Auto-detected">
+        <Field {...sectionProps("hero-auto-list")}>
           <div data-testid="hero-auto-list" className="space-y-1">
             {autoOnlyIds.length === 0 ? (
               <p className="text-2xs text-ink-faint">

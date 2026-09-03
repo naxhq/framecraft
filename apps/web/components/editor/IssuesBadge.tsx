@@ -38,6 +38,33 @@ import { useEditorStore } from "@/store/editor";
  * task's remaining scope; flagged to the team lead for a follow-up
  * consolidation if a single surface is still wanted.
  */
+/**
+ * The "Fixed" marks that survive a new list of issues.
+ *
+ * A mark says "you pressed this row's fix button and the store reported a
+ * change", so it belongs to the ROW, and it is retired when that row is: the
+ * finding is gone, and so is the button that carried the mark. Clearing every
+ * mark whenever the LIST changed was the defect (`findings.md`, open for W3b):
+ * with `PIPELINE_DEBOUNCE_MS` at 80 ms an incremental run lands a new findings
+ * array within a frame or two of the click, and a row still present in that
+ * array had its mark wiped and went back to offering the same fix a second
+ * time -- which is exactly what `e2e/print.spec.ts` was asserting must never
+ * happen. Now the mark falls away with its row and not before.
+ *
+ * Returns the SAME set when nothing was dropped, so the effect that calls it
+ * cannot cause a render of its own on an unchanged list.
+ */
+export function survivingFixedIds(
+  previous: ReadonlySet<string>,
+  issues: readonly Issue[],
+): ReadonlySet<string> {
+  if (previous.size === 0) return previous;
+  const present = new Set(issues.map((issue) => issue.id));
+  const kept = [...previous].filter((id) => present.has(id));
+  if (kept.length === previous.size) return previous;
+  return new Set(kept);
+}
+
 export function IssuesBadge({ issues }: { issues: readonly Issue[] }) {
   const open = useEditorStore((state) => state.issuesOpen);
   const setOpen = useEditorStore((state) => state.setIssuesOpen);
@@ -49,6 +76,8 @@ export function IssuesBadge({ issues }: { issues: readonly Issue[] }) {
 
   const [report, setReport] = useState<string | null>(null);
   const [fixedIds, setFixedIds] = useState<ReadonlySet<string>>(new Set());
+  /** The rows the current auto-fix report is about, so it can be retired with them. */
+  const reportedIds = useRef<ReadonlySet<string>>(new Set());
 
   const count = issues.length;
   const issueKey = issues.map((issue) => issue.id).join(",");
@@ -68,13 +97,21 @@ export function IssuesBadge({ issues }: { issues: readonly Issue[] }) {
     if (uninteresting) buttonRef.current?.focus();
   }, [open]);
 
-  // A fresh set of issues (a new build, a new scene) retires last time's
-  // "Fixed" marks and report: they described a PREVIOUS list, and a stale
-  // "Fixed" on a row that has since come back (the fix did not stick, or the
-  // model changed again) would lie.
+  /**
+   * A new list of issues retires the marks whose ROWS are gone, and no others
+   * (`survivingFixedIds`). The auto-fix report goes the same way: it described
+   * a batch of rows, so it stands until none of them is on screen any more.
+   *
+   * `issueKey` is the identity of the LIST. A fresh array carrying the same
+   * ids is the same list and must not disturb a mark; that is the whole point
+   * of keying on the ids rather than on the array.
+   */
   useEffect(() => {
-    setFixedIds(new Set());
-    setReport(null);
+    setFixedIds((previous) => survivingFixedIds(previous, issues));
+    setReport((current) =>
+      current !== null && !issues.some((issue) => reportedIds.current.has(issue.id)) ? null : current,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issueKey]);
 
   if (count === 0) return null;
@@ -101,6 +138,7 @@ export function IssuesBadge({ issues }: { issues: readonly Issue[] }) {
   const onAutoFixSafe = (): void => {
     const outcome = applySafeFindingFixes();
     setReport(safeFixesSummary(outcome.changes));
+    reportedIds.current = new Set(outcome.applied);
     if (outcome.applied.length > 0) {
       setFixedIds((previous) => {
         const next = new Set(previous);

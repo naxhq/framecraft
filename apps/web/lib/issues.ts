@@ -12,7 +12,7 @@
  *    (`WarningBanners.tsx` still reads them directly for that; nothing here
  *    changes that path).
  *  - `lib/engine/types.ts`'s `AuditFinding[]`, the live browser engine's own
- *    findings (`state.engine.result.findings`) -- the only source that ever
+ *    findings (`state.pipeline.result.findings`) -- the only source that ever
  *    carries a `fix`.
  *
  * Merged by id: a client warning and an engine finding sharing an id today

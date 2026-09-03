@@ -18,8 +18,6 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_PRINT_PARAMS, defaultPrintParams } from "@/lib/contracts";
-import type { PartColors } from "@/lib/contracts";
 
 const TOKENS: Record<string, Record<string, string>> = {
   light: {
@@ -169,84 +167,6 @@ describe("readPreviewPalette", () => {
   });
 });
 
-describe("paletteFor", () => {
-  it("keeps the themed palette in single-filament mode", async () => {
-    const { paletteFor, readPreviewPalette } = await load();
-    const themed = readPreviewPalette("light");
-    const params = defaultPrintParams();
-    expect(params.color_mode).toBe("single");
-    expect(paletteFor(params, themed, params.part_colors)).toBe(themed);
-  });
-
-  it("paints with the user's filaments in parts mode", async () => {
-    const { paletteFor, readPreviewPalette } = await load();
-    const themed = readPreviewPalette("light");
-    const params = defaultPrintParams();
-    params.color_mode = "parts";
-    const parts = params.part_colors as PartColors;
-
-    const palette = paletteFor(params, themed, parts);
-    expect(palette.base).toBe(parts.base);
-    expect(palette.building).toBe(parts.buildings);
-    expect(palette.road).toBe(parts.roads);
-    expect(palette.frame).toBe(parts.frame);
-    expect(palette.water).toBe(parts.water);
-    expect(palette.green).toBe(parts.green);
-    expect(palette.tree).toBe(parts.trees);
-    // Not vacuous: the default palette really does differ from the theme.
-    expect(parts.base).not.toBe(themed.base);
-  });
-
-  it("leaves the room the object sits in alone", async () => {
-    const { paletteFor, readPreviewPalette } = await load();
-    const themed = readPreviewPalette("light");
-    const params = defaultPrintParams();
-    params.color_mode = "parts";
-    const palette = paletteFor(params, themed, params.part_colors);
-    // The background, the ground grid and the hero highlight are chrome, not
-    // filament: `part_colors` has no slot for them and they stay themed.
-    expect(palette.background).toBe(themed.background);
-    expect(palette.grid).toBe(themed.grid);
-    expect(palette.hero).toBe(themed.hero);
-  });
-
-  it("falls back to the themed palette if part_colors is missing", async () => {
-    const { paletteFor, readPreviewPalette } = await load();
-    const themed = readPreviewPalette("light");
-    const params = defaultPrintParams();
-    params.color_mode = "parts";
-    expect(paletteFor(params, themed, undefined)).toBe(themed);
-  });
-
-  it("uses the four-filament default palette the contract ships", async () => {
-    const { paletteFor, readPreviewPalette } = await load();
-    const themed = readPreviewPalette("light");
-    const params = defaultPrintParams();
-    params.color_mode = "parts";
-    const palette = paletteFor(params, themed, DEFAULT_PRINT_PARAMS.part_colors);
-    // [V2-P2]: base and buildings share a filament, roads and frame share one,
-    // trees share with the planting -- four slots, not seven.
-    expect(new Set([palette.base, palette.building]).size).toBe(1);
-    expect(new Set([palette.road, palette.frame]).size).toBe(1);
-    expect(new Set([palette.green, palette.tree]).size).toBe(1);
-    expect(
-      new Set([palette.base, palette.road, palette.water, palette.green]).size,
-    ).toBe(4);
-  });
-});
-
-// ==========================================================================
-// The tokens the palette reads really exist ([V2-P6])
-// ==========================================================================
-
-/**
- * `readPreviewPalette` falls back to `magenta` for a token that is not there,
- * which is the right runtime behaviour and a terrible test: every assertion
- * above stubs the values it wants. This suite reads the real token file, so a
- * slot added to `VARIABLES` without a declaration -- or a declaration removed
- * from one theme only -- fails here instead of turning the canvas magenta in a
- * browser nobody has opened yet.
- */
 describe("app/globals.css declares every slot the preview reads", () => {
   const TOKEN_FILE = readFileSync(
     path.resolve(__dirname, "..", "..", "app", "globals.css"),
@@ -301,24 +221,68 @@ describe("app/globals.css declares every slot the preview reads", () => {
   });
 });
 
-describe("lettering keeps its own colours in parts mode", () => {
-  it("does not repaint the text with the frame filament", () => {
-    // An engraving is a groove in the lip, so in parts mode it prints in the
-    // frame's own colour -- and painting it that colour here would make it
-    // invisible against the lip it sits on. The lettering tones are chrome,
-    // like the grid and the background: they say "this is text", not "this is
-    // what it will look like".
-    return load().then(({ paletteFor, readPreviewPalette }) => {
-      const themed = readPreviewPalette("light");
-      const params = defaultPrintParams();
-      params.color_mode = "parts";
-      const palette = paletteFor(params, themed, params.part_colors);
-      expect(palette.textEngraved).toBe(themed.textEngraved);
-      expect(palette.textEmbossed).toBe(themed.textEmbossed);
-      expect(palette.pocket).toBe(themed.pocket);
-      expect(palette.heroPick).toBe(themed.heroPick);
-      // Not vacuous: the frame slot next to them really did change.
-      expect(palette.frame).not.toBe(themed.frame);
+describe("readViewportMultipliers", () => {
+  it("reads the dim and recess multipliers off the element carrying the viewport theme", async () => {
+    const { readViewportMultipliers, VIEWPORT_MULTIPLIER_TOKENS } = await load();
+    const element = { id: "viewport" } as unknown as Element;
+    let asked: Element | undefined;
+    vi.stubGlobal("window", {
+      getComputedStyle: (target: Element) => {
+        asked = target;
+        return {
+          getPropertyValue: (name: string) =>
+            name === VIEWPORT_MULTIPLIER_TOKENS.dim
+              ? " 0.3 "
+              : name === VIEWPORT_MULTIPLIER_TOKENS.recess
+                ? " 0.5 "
+                : "",
+        };
+      },
     });
+    vi.stubGlobal("document", { documentElement: {} });
+    expect(readViewportMultipliers(element)).toEqual({ dim: 0.3, recess: 0.5 });
+    // The ELEMENT, not the document: the viewport theme's own values win.
+    expect(asked).toBe(element);
+  });
+
+  it("refuses a value that is not a fraction, rather than blanking the viewport", async () => {
+    const { readViewportMultipliers, DEFAULT_VIEWPORT_MULTIPLIERS } = await load();
+    vi.stubGlobal("window", {
+      getComputedStyle: () => ({ getPropertyValue: () => "nonsense" }),
+    });
+    vi.stubGlobal("document", { documentElement: {} });
+    expect(readViewportMultipliers(null)).toEqual(DEFAULT_VIEWPORT_MULTIPLIERS);
+
+    vi.stubGlobal("window", {
+      getComputedStyle: () => ({ getPropertyValue: () => "4" }),
+    });
+    expect(readViewportMultipliers(null)).toEqual(DEFAULT_VIEWPORT_MULTIPLIERS);
+  });
+
+  it("falls back without a window at all", async () => {
+    const { readViewportMultipliers, DEFAULT_VIEWPORT_MULTIPLIERS } = await load();
+    vi.stubGlobal("window", undefined);
+    expect(readViewportMultipliers(null)).toEqual(DEFAULT_VIEWPORT_MULTIPLIERS);
+  });
+
+  it("app/globals.css declares both multipliers in both themes, as fractions", () => {
+    const source = readFileSync(
+      path.resolve(__dirname, "..", "..", "app", "globals.css"),
+      "utf-8",
+    );
+    const block = (from: string, to: string): string =>
+      source.slice(source.indexOf(from), source.indexOf(to));
+    for (const [name, text] of [
+      ["light", block(":root {", ".dark {")],
+      ["dark", block(".dark {", "@theme inline {")],
+    ] as Array<[string, string]>) {
+      for (const token of ["--fc-preview-dim-opacity", "--fc-preview-recess-shade"]) {
+        const match = new RegExp(`${token}:\\s*([0-9.]+);`).exec(text);
+        expect(match, `${token} is not declared for the ${name} theme`).not.toBeNull();
+        const value = Number(match?.[1]);
+        expect(value, `${token} (${name}) is not a fraction`).toBeGreaterThan(0);
+        expect(value, `${token} (${name}) is not a fraction`).toBeLessThan(1);
+      }
+    }
   });
 });

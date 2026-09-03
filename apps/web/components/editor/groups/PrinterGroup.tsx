@@ -2,6 +2,7 @@
 
 import { DEFAULT_PRINT_PARAMS, PARAM_RANGES } from "@/lib/contracts";
 import type { Tiling } from "@/lib/contracts";
+import { labelled, sectionProps } from "@/lib/controlCatalog";
 import { PRINTER_PROFILE_IDS, PRINTER_PROFILES, resolveProfile } from "@/lib/printers";
 import type { PrinterProfileId } from "@/lib/printers";
 import { useEditorStore } from "@/store/editor";
@@ -50,12 +51,10 @@ export function PrinterGroup() {
   return (
     <>
       <SelectField
-        id="printer_profile"
-        label="Printer profile"
+        {...labelled("printer_profile")}
         value={printerProfileId}
         options={PRINTER_PROFILE_OPTIONS}
         onChange={(value) => setPrinterProfile(value)}
-        hint="Sets the plate size and the nozzle once, on selection; move them afterwards and they stay put. Also sets the height ceiling below and how many filament slots the Colour group's slot warning checks against."
       />
 
       {printerProfileId === "custom" ? (
@@ -64,8 +63,7 @@ export function PrinterGroup() {
           data-testid="custom-profile-fields"
         >
           <Slider
-            id="custom_profile_plate_x_mm"
-            label="Plate width"
+            {...labelled("custom_profile_plate_x_mm")}
             min={PARAM_RANGES.custom_profile.plate_x_mm.min}
             max={PARAM_RANGES.custom_profile.plate_x_mm.max}
             step={1}
@@ -74,8 +72,7 @@ export function PrinterGroup() {
             onChange={(value) => setNested("custom_profile", { plate_x_mm: value })}
           />
           <Slider
-            id="custom_profile_plate_y_mm"
-            label="Plate depth"
+            {...labelled("custom_profile_plate_y_mm")}
             min={PARAM_RANGES.custom_profile.plate_y_mm.min}
             max={PARAM_RANGES.custom_profile.plate_y_mm.max}
             step={1}
@@ -84,8 +81,7 @@ export function PrinterGroup() {
             onChange={(value) => setNested("custom_profile", { plate_y_mm: value })}
           />
           <Slider
-            id="custom_profile_max_height_mm"
-            label="Height ceiling"
+            {...labelled("custom_profile_max_height_mm")}
             min={PARAM_RANGES.custom_profile.max_height_mm.min}
             max={PARAM_RANGES.custom_profile.max_height_mm.max}
             step={5}
@@ -94,8 +90,7 @@ export function PrinterGroup() {
             onChange={(value) => setNested("custom_profile", { max_height_mm: value })}
           />
           <Slider
-            id="custom_profile_slots"
-            label="Filament slots"
+            {...labelled("custom_profile_slots")}
             min={PARAM_RANGES.custom_profile.slots.min}
             max={PARAM_RANGES.custom_profile.slots.max}
             step={1}
@@ -104,8 +99,7 @@ export function PrinterGroup() {
             onChange={(value) => setNested("custom_profile", { slots: value })}
           />
           <TextField
-            id="custom_profile_change_gcode"
-            label="Colour-change command"
+            {...labelled("custom_profile_change_gcode")}
             value={custom.change_gcode ?? "M600"}
             onChange={(value) => setNested("custom_profile", { change_gcode: value })}
           />
@@ -118,14 +112,10 @@ export function PrinterGroup() {
         {profile.slots} filament {profile.slots === 1 ? "slot" : "slots"}.
       </Note>
 
-      <Field
-        label="Tiling"
-        hint="Split the model into a grid of interlocking tiles when it will not fit the plate as one piece. Each tile is built and exported through the same pipeline."
-      >
+      <Field {...sectionProps("tiling")}>
         <div className="space-y-3">
           <Toggle
-            id="tiling_enabled"
-            label="Split into tiles"
+            {...labelled("tiling_enabled")}
             checked={tiling.enabled ?? false}
             onChange={(checked) => setTiling("enabled", checked)}
           />
@@ -133,8 +123,7 @@ export function PrinterGroup() {
           {tiling.enabled ? (
             <div className="space-y-3" data-testid="tiling-fields">
               <Slider
-                id="tiling_cols"
-                label="Columns"
+                {...labelled("tiling_cols")}
                 min={PARAM_RANGES.tiling.cols.min}
                 max={PARAM_RANGES.tiling.cols.max}
                 step={1}
@@ -143,8 +132,7 @@ export function PrinterGroup() {
                 onChange={(value) => setTiling("cols", value)}
               />
               <Slider
-                id="tiling_rows"
-                label="Rows"
+                {...labelled("tiling_rows")}
                 min={PARAM_RANGES.tiling.rows.min}
                 max={PARAM_RANGES.tiling.rows.max}
                 step={1}
@@ -153,30 +141,24 @@ export function PrinterGroup() {
                 onChange={(value) => setTiling("rows", value)}
               />
               <SelectField
-                id="tiling_joint"
-                label="Joint"
+                {...labelled("tiling_joint")}
                 value={tiling.joint ?? "dovetail"}
                 options={JOINT_OPTIONS}
                 onChange={(value) => setTiling("joint", value)}
-                hint="How adjacent tiles key into each other."
               />
               <Slider
-                id="tiling_tolerance_mm"
-                label="Joint tolerance"
+                {...labelled("tiling_tolerance_mm")}
                 min={PARAM_RANGES.tiling.tolerance_mm.min}
                 max={PARAM_RANGES.tiling.tolerance_mm.max}
                 step={0.01}
                 value={tiling.tolerance_mm ?? PARAM_RANGES.tiling.tolerance_mm.default}
                 display={`${(tiling.tolerance_mm ?? PARAM_RANGES.tiling.tolerance_mm.default).toFixed(2)} mm`}
                 onChange={(value) => setTiling("tolerance_mm", value)}
-                hint="Gap left in the joint so two printed tiles actually fit together."
               />
               <Toggle
-                id="tiling_index_mark"
-                label="Mark tile index"
+                {...labelled("tiling_index_mark")}
                 checked={tiling.index_mark ?? true}
                 onChange={(checked) => setTiling("index_mark", checked)}
-                hint="Cut a small (column, row) mark into each tile so they go back together in the right order."
               />
             </div>
           ) : null}

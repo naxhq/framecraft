@@ -15,7 +15,7 @@
  * still caught.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -131,6 +131,11 @@ const BOUNDARY_PAIRS: Array<[string, string, string]> = [
   ["control-border", "bench", "any control sitting on the page background"],
   ["control-border-strong", "plate", "emphasis boundaries on the panel"],
   ["control-border-strong", "plate-sunken", "the unchecked Toggle track and its knob"],
+  [
+    "control-border-strong",
+    "plate-raised",
+    "the filament swatch ring in the estimate card and on a colour chip",
+  ],
   ["primary", "plate", "the primary button against the panel"],
   ["accent", "plate-sunken", "the export progress fill against its track"],
   ["focus", "plate", "the focus ring on the panel"],
@@ -204,11 +209,45 @@ describe("SC 1.4.11 — non-text contrast (AA, 3:1)", () => {
 });
 
 describe("the components use the boundary token for control boundaries", () => {
+  /**
+   * Every file in the app that draws the visual edge of a control, and the
+   * boundary token(s) it must draw it with.
+   *
+   * This is an INVENTORY, not a sample: the guard below re-derives the same
+   * set from the tree and fails if the two disagree, so a component that
+   * starts drawing a control edge cannot quietly stay unlisted.
+   *
+   * `OutputPanel.tsx` used to be here and is deliberately not any more. Every
+   * control it once drew -- Preview, Export, the format select, Save, Load,
+   * Copy link -- moved into `ActionBar.tsx` (Task 6). What is left in the
+   * panel is container and badge edges plus the download link, whose boundary
+   * is `positive` and is held to the stricter 4.5:1 text floor above; the test
+   * below pins that, so the removal is asserted rather than merely dropped.
+   */
   const CONTROL_FILES = [
+    // The settings column.
     ["components/editor/Controls.tsx", ["border-control", "border-control-strong"]],
-    ["components/editor/OutputPanel.tsx", ["border-control"]],
     ["components/editor/PresetRow.tsx", ["border-control"]],
     ["components/editor/ThemeToggle.tsx", ["border-control"]],
+    ["components/editor/EditorShell.tsx", ["border-control"]],
+    ["components/editor/ShortcutSheet.tsx", ["border-control"]],
+    ["components/editor/EngravingsEditor.tsx", ["border-control"]],
+    ["components/editor/EstimateCard.tsx", ["border-control-strong"]],
+    ["components/editor/groups/ColourGroup.tsx", ["border-control", "border-control-strong"]],
+    ["components/editor/groups/FrameTextGroup.tsx", ["border-control"]],
+    // The action bar and everything mounted inside it (Task 6).
+    ["components/editor/ActionBar.tsx", ["border-control"]],
+    ["components/editor/ExportErrorDetail.tsx", ["border-control"]],
+    ["components/editor/ExportMenu.tsx", ["border-control"]],
+    // The viewport's own chrome.
+    ["components/editor/AdjustmentsChip.tsx", ["border-control"]],
+    ["components/editor/HistoryChip.tsx", ["border-control"]],
+    ["components/editor/IssuesBadge.tsx", ["border-control"]],
+    ["components/editor/PerfHud.tsx", ["border-control"]],
+    ["components/scene/CityPreview.tsx", ["border-control"]],
+    ["components/scene/PreviewPane.tsx", ["border-control"]],
+    // The map picker.
+    ["components/map/SearchBox.tsx", ["border-control"]],
   ] as const;
 
   it("wires the token into every file that draws a control edge", () => {
@@ -218,6 +257,62 @@ describe("the components use the boundary token for control boundaries", () => {
         expect(source, `${file} should use ${token}`).toContain(token);
       }
     }
+  });
+
+  it("keeps that inventory complete", () => {
+    // Guards the list against going stale in either direction: a new
+    // control-bearing component that is not named above, and a name above
+    // that no longer draws a control edge at all.
+    const root = path.resolve(__dirname, "..");
+    const found: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!entry.name.endsWith(".tsx")) continue;
+        if (!readFileSync(full, "utf-8").includes("border-control")) continue;
+        found.push(path.relative(root, full).split(path.sep).join("/"));
+      }
+    };
+    walk(path.join(root, "components"));
+    expect(found.sort()).toEqual(CONTROL_FILES.map(([file]) => file).slice().sort());
+  });
+
+  it("leaves the results panel with container edges only", () => {
+    const source = readFileSync(
+      path.resolve(__dirname, "..", "components/editor/OutputPanel.tsx"),
+      "utf-8",
+    );
+    // The actions really did leave; they did not merely lose their token.
+    for (const marker of [
+      'data-testid="preview-button"',
+      'data-testid="export-button"',
+      'data-testid="copy-link-button"',
+      "<select",
+    ]) {
+      expect(source, `${marker} belongs to the action bar now`).not.toContain(marker);
+    }
+    // And the one interactive edge that stayed is a token held above 4.5:1,
+    // not the hairline.
+    expect(source).toContain("border border-positive");
+    expect(source).not.toContain("border-control");
+  });
+
+  it("draws the progress control as a fill, with no boundary of its own", () => {
+    // `ProgressBar` is the one new control in the action bar with no border:
+    // its track is a filled well and its fill is `accent`, a pair asserted at
+    // the 3:1 floor above. If it ever grows an edge, this fails and the file
+    // has to join the inventory rather than reaching for the hairline.
+    const source = readFileSync(
+      path.resolve(__dirname, "..", "components/editor/ProgressBar.tsx"),
+      "utf-8",
+    );
+    expect(source).not.toContain("border-");
+    expect(source).toContain("bg-plate-sunken");
+    expect(source).toContain("bg-accent");
   });
 
   it("leaves no text input, select or toggle track on the hairline", () => {

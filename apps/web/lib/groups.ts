@@ -58,7 +58,7 @@ export const GROUPS: readonly GroupSpec[] = [
   {
     id: "scale",
     title: "Scale and size",
-    summary: "Plate, base and nozzle — these set the printed scale.",
+    summary: "Plate, base and nozzle: these three set the printed scale.",
     collapsedByDefault: false,
   },
   {
@@ -76,7 +76,7 @@ export const GROUPS: readonly GroupSpec[] = [
   {
     id: "surface",
     title: "Surface",
-    summary: "Roads, water and planting on the plate.",
+    summary: "Roads, water and trees on the plate.",
     collapsedByDefault: false,
   },
   {
@@ -94,7 +94,7 @@ export const GROUPS: readonly GroupSpec[] = [
   {
     id: "colour",
     title: "Colour",
-    summary: "One filament, or one per part.",
+    summary: "A filament slot and a colour for every region of the model.",
     collapsedByDefault: true,
   },
   {

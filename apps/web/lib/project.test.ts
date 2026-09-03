@@ -181,3 +181,37 @@ describe("parseProject: refusals", () => {
     }
   });
 });
+
+
+/**
+ * A project file written before the settings truth audit carries its colours
+ * in `part_colors` (DECISIONS [V3.1-P1-2]). It is migrated by the same code a
+ * share link is, because both go through `parsePrintParams`: a file and a link
+ * must never migrate a payload two different ways.
+ */
+describe("parseProject: the part_colors migration", () => {
+  const saved = serializeProject(buildProject(LOCATION, defaultPrintParams(), SAVED_AT));
+
+  it("carries an older file's part colours onto the regions the engine paints", () => {
+    const project = JSON.parse(saved) as Record<string, unknown>;
+    const params = project.params as Record<string, unknown>;
+    params.part_colors = { water: "#123456", green: "#654321" };
+    delete (params.colour as Record<string, unknown>).region_colors;
+    const result = parseProject(JSON.stringify(project));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.params.colour!.region_colors!.water).toBe("#123456");
+    expect(result.params.colour!.region_colors!.parks).toBe("#654321");
+  });
+
+  it("leaves a file that already names region colours alone", () => {
+    const project = JSON.parse(saved) as Record<string, unknown>;
+    const params = project.params as Record<string, unknown>;
+    params.part_colors = { water: "#123456" };
+    (params.colour as Record<string, unknown>).region_colors = { water: "#abcdef" };
+    const result = parseProject(JSON.stringify(project));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.params.colour!.region_colors!.water).toBe("#abcdef");
+  });
+});

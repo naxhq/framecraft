@@ -49,6 +49,23 @@ jobs:
           NEXT_PUBLIC_BASE_PATH: /framecraft
         run: npm run build
 
+      # The six preset Overpass responses, gzipped, beside the app.
+      #
+      # Live Overpass is the single largest cost of a first preview on the
+      # deployed site: 8.5 to 32.4 s on the runs that finished, 504s from
+      # overpass-api.de on three of eight attempts, and two of five measured
+      # flows that never produced a preview at all (v3-00-baseline 1.6, 1.7).
+      # A static host has one shared cache, the build, so the build carries the
+      # answers to the six questions every visitor asks first: 8.7 MB of gzip,
+      # of which a visitor downloads only the preset they click.
+      #
+      # Deliberately NOT part of `npm run build`: the e2e suite route-mocks
+      # Overpass and clicks the Chicago preset, and a bundled asset in the tree
+      # under test would answer before the mock. See the script's header.
+      - name: bundle the preset Overpass responses
+        working-directory: apps/web
+        run: node scripts/bundle-preset-assets.mjs --out out
+
       # Pages runs Jekyll by default, and Jekyll drops underscore-prefixed
       # paths, which would eat the whole /_next tree. .nojekyll disables it.
       - name: Disable Jekyll

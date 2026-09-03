@@ -32,6 +32,9 @@ import {
   upstreamOf,
   validateGraph,
 } from "./index";
+import { EXPORT_TARGETS } from "../export/index";
+import { chicagoScene } from "../solid/fixture";
+import { StageCache, runPipeline } from "./index";
 import { blockScene, bridgeScene, railScene, terrainScene } from "./testScenes";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -213,5 +216,39 @@ describe("the stage graph: strict claims", () => {
     expect(draped.stats.terrainReliefMm).toBeDefined();
     const dressed = await buildModel({ scene: blockScene(), params: styled, date: "2026-09-02", rotationDeg: 15 }, { strictClaims: true });
     expect(dressed.regions.some((region) => region.region === "matting")).toBe(true);
+  }, 120_000);
+
+  it("the export stage reads nothing it did not claim, for every target (audit finding 11)", async () => {
+    const cache = new StageCache();
+    try {
+      for (const target of EXPORT_TARGETS) {
+        const outcome = await runPipeline(
+          {
+            source: { kind: "scene", scene: blockScene(), key: "block" },
+            params: { ...styled, tiling: { ...styled.tiling, enabled: false } },
+            terrain: null,
+            heroIds: null,
+            date: "2026-09-02",
+            rotationDeg: 15,
+            mode: "export",
+            exportRequest: { target, stem: "strict", createdIso: "2026-09-02T00:00:00Z", force: true },
+            known: {},
+            knownSceneHash: null,
+          },
+          cache,
+          () => undefined,
+          { strictClaims: true },
+        );
+        expect(outcome.status, `${target}: ${outcome.error?.message ?? ""}`).toBe("done");
+        expect(outcome.files?.files.length ?? 0, target).toBeGreaterThan(0);
+      }
+    } finally {
+      cache.dispose();
+    }
+  }, 120_000);
+
+  it("the Chicago fixture at the defaults reads nothing undeclared either", async () => {
+    const result = await buildModel({ scene: chicagoScene(), params: defaultPrintParams(), date: "2026-09-02" }, { strictClaims: true });
+    expect(result.regions.length).toBe(6);
   }, 120_000);
 });

@@ -109,3 +109,33 @@ describe("EngineClient: an in-flight build never blocks an ingest", () => {
     }
   }, 90_000);
 });
+
+describe("cancel latency (audit finding 9)", () => {
+  it("an ingest requested during a build on the block scene resolves within the longest stage of that scene, well under 3 s", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, json: async () => RAW })));
+    const client = createEngineClient();
+    try {
+      const states: string[] = [];
+      const build = client.buildModel({ scene: blockScene(), params: defaultPrintParams(), date: "2026-09-02" }, { onProgress: (m) => states.push(m) });
+      // The build is expected to reject while the ingest is awaited below;
+      // settle it through a handler first so the rejection is never unhandled.
+      const outcome = build.then(
+        () => "done" as const,
+        (error: unknown) => error,
+      );
+      await vi.waitFor(() => {
+        expect(states.length).toBeGreaterThan(3);
+      });
+      const started = Date.now();
+      const ingested = await client.ingest(REQUEST);
+      // The build yields at its next stage boundary; on the block scene no
+      // stage takes longer than the audit's merged (about 0.6 s), so the
+      // ingest cannot wait more than that plus its own fetch and normalise.
+      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(ingested.ok).toBe(true);
+      expect(await outcome).toMatchObject({ code: "cancelled" });
+    } finally {
+      client.dispose();
+    }
+  }, 60_000);
+});

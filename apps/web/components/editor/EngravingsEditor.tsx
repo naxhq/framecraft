@@ -2,9 +2,10 @@
 
 import { PARAM_LIMITS, PARAM_RANGES } from "@/lib/contracts";
 import type { Engraving } from "@/lib/contracts";
+import { labelled, labelledAs } from "@/lib/controlCatalog";
 import { TOKENS, resolve_text, type TokenContext } from "@/lib/tokens";
 import type { TextFit } from "@/lib/transform";
-import { Note, SelectField, Slider, TextField } from "./Controls";
+import { Note, SelectField, Slider, SrHint, TextField } from "./Controls";
 
 /**
  * Up to eight lines of lettering cut into (or raised off) the frame.
@@ -81,7 +82,7 @@ export function newEngraving(existing: readonly Engraving[]): Engraving {
  */
 function fitVerdict(fit: TextFit, reasonOverride?: string | null): { text: string; refused: boolean } {
   if (fit.refused) {
-    return { text: `Not cut — ${reasonOverride ?? fit.reason}`, refused: true };
+    return { text: `Not cut: ${reasonOverride ?? fit.reason}`, refused: true };
   }
   if (fit.size_mm < fit.requested_mm) {
     return {
@@ -161,15 +162,17 @@ export function EngravingsEditor({
                 onClick={() => remove(index)}
                 disabled={disabled}
                 aria-label={`Remove engraving line ${index + 1}`}
+                aria-describedby={`${id}-remove-hint`}
+                title={labelled("engraving_*-remove").hint}
                 className="rounded-[2px] px-1.5 py-0.5 text-2xs text-ink-faint transition-colors hover:bg-plate-raised hover:text-danger disabled:opacity-45"
               >
                 Remove
               </button>
+              <SrHint id={`${id}-remove-hint`}>{labelled("engraving_*-remove").hint}</SrHint>
             </div>
 
             <TextField
-              id={`${id}_text`}
-              label="Text"
+              {...labelledAs("engraving_*_text", `${id}_text`)}
               value={engraving.text}
               maxLength={TEXT_MAX}
               meta={`${engraving.text.length}/${TEXT_MAX}`}
@@ -187,40 +190,36 @@ export function EngravingsEditor({
               ) : (
                 <span className="text-ink-faint">
                   {emptyToken !== null
-                    ? `nothing yet — the {${emptyToken}} token has no value`
-                    : "nothing yet — the tokens in this line have no value"}
+                    ? `nothing yet: the {${emptyToken}} token has no value`
+                    : "nothing yet: the tokens in this line have no value"}
                 </span>
               )}
             </p>
 
             <div className="grid grid-cols-2 gap-3">
               <SelectField
-                id={`${id}_edge`}
-                label="Edge"
+                {...labelledAs("engraving_*_edge", `${id}_edge`)}
                 value={engraving.edge}
                 options={EDGES}
                 disabled={disabled}
                 onChange={(value) => patch(index, { edge: value })}
               />
               <SelectField
-                id={`${id}_align`}
-                label="Align"
+                {...labelledAs("engraving_*_align", `${id}_align`)}
                 value={engraving.align ?? "center"}
                 options={ALIGNMENTS}
                 disabled={disabled}
                 onChange={(value) => patch(index, { align: value })}
               />
               <SelectField
-                id={`${id}_mode`}
-                label="Mode"
+                {...labelledAs("engraving_*_mode", `${id}_mode`)}
                 value={engraving.mode ?? "engrave"}
                 options={MODES}
                 disabled={disabled}
                 onChange={(value) => patch(index, { mode: value })}
               />
               <SelectField
-                id={`${id}_font`}
-                label="Font"
+                {...labelledAs("engraving_*_font", `${id}_font`)}
                 value={engraving.font ?? "sans"}
                 options={FONTS}
                 disabled={disabled}
@@ -229,8 +228,7 @@ export function EngravingsEditor({
             </div>
 
             <Slider
-              id={`${id}_size_mm`}
-              label="Cap height"
+              {...labelledAs("engraving_*_size_mm", `${id}_size_mm`)}
               min={PARAM_RANGES.engravings.size_mm.min}
               max={PARAM_RANGES.engravings.size_mm.max}
               step={0.1}
@@ -240,8 +238,7 @@ export function EngravingsEditor({
               onChange={(value) => patch(index, { size_mm: value })}
             />
             <Slider
-              id={`${id}_depth_mm`}
-              label="Depth"
+              {...labelledAs("engraving_*_depth_mm", `${id}_depth_mm`)}
               min={PARAM_RANGES.engravings.depth_mm.min}
               max={PARAM_RANGES.engravings.depth_mm.max}
               step={0.05}
@@ -265,10 +262,14 @@ export function EngravingsEditor({
         data-testid="engraving-add"
         disabled={disabled || full}
         onClick={() => onChange([...engravings, newEngraving(engravings)])}
+        aria-describedby="engraving-add-hint"
         className="w-full rounded-milled border border-dashed border-control px-3 py-2 text-2xs text-ink-muted transition-colors hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-45"
       >
-        Add a line of lettering
+        {labelled("engraving-add").label}
       </button>
+      <p id="engraving-add-hint" className="text-xs leading-snug text-ink-faint">
+        {labelled("engraving-add").hint}
+      </p>
 
       {full ? (
         <Note tone="warn" testId="engraving-cap-notice">
@@ -278,7 +279,7 @@ export function EngravingsEditor({
 
       <Note testId="engraving-tokens">
         Tokens: {TOKENS.map((token) => `{${token}}`).join(" ")}. They expand when
-        the file is built, and the line above each field shows what they say now.
+        the file is written, and the line above each field shows what they say now.
       </Note>
     </div>
   );

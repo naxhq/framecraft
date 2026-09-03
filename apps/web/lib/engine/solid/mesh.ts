@@ -81,6 +81,15 @@ export const WELD_LADDER_MM = [WELD_EPSILON_MM, 1e-5, 1e-4];
 export const REPAIR_ROUNDS = 4;
 
 /**
+ * How many float32 steps the pinch separation may take before it gives up.
+ *
+ * One step is enough for every case measured (a pinch is two vertices on ONE
+ * float32 grid point, and one step leaves it); the doubling exists only so a
+ * group of three or more coincident vertices cannot loop.
+ */
+export const PINCH_STEPS = 8;
+
+/**
  * Longest edge a needle's LOCAL collapse may close, mm.
  *
  * The last resort, and the narrowest tool in this file: it welds the two ends
@@ -156,14 +165,81 @@ export function triangleAreaMm2(
 
 /** Triangles under 04's degenerate-face threshold. */
 export function degenerateFaces(mesh: Mesh, threshold = DEGENERATE_AREA_MM2): number {
+  return countDegenerate(mesh, threshold, doubleArea(mesh));
+}
+
+/**
+ * The same coordinates a binary STL will carry: every one through `Math.fround`.
+ *
+ * A binary STL stores float32, so the file is not the mesh, it is the mesh on a
+ * grid whose step is 1.2e-7 of the coordinate: 7.6e-6 mm at 90 mm and 1.5e-5 mm
+ * at 180 mm. That grid is what the validator measures, because it reads the
+ * file, and it is the only grid on which "is this face degenerate?" has the
+ * same answer as the one 04 stage 4 gives the shipped artifact.
+ */
+export function float32Positions(p: ArrayLike<number>): Float64Array {
+  const out = new Float64Array(p.length);
+  for (let i = 0; i < p.length; i += 1) out[i] = Math.fround(p[i]);
+  return out;
+}
+
+/** Triangles under `threshold` once the mesh is quantised to float32. */
+export function float32DegenerateFaces(mesh: Mesh, threshold = DEGENERATE_AREA_MM2): number {
+  const quantised = float32Positions(mesh.positions);
+  return countDegenerate(mesh, threshold, (a, b, c) => triangleAreaMm2(quantised, a, b, c));
+}
+
+/**
+ * Distinct vertices that share one float32 grid point.
+ *
+ * A binary STL has no vertex index, so a reader recovers the topology by
+ * welding identical coordinates - `services/bake/app/cli.py`'s
+ * `_index_stl_triangle_soup` does it bitwise on the float32 rows the file
+ * stores. Two vertices the mesh keeps apart and the file cannot are therefore a
+ * defect of the FILE: their merge hands an edge to four faces, and `manifold`,
+ * `watertight` and `self_intersection` all fail on a model the 3MF of the same
+ * mesh passes. Counted as the number of vertices that would be lost.
+ */
+export function float32Collisions(mesh: Mesh): number {
+  const quantised = float32Positions(mesh.positions);
+  const seen = new Set<string>();
+  let lost = 0;
+  for (let v = 0; v + 2 < quantised.length; v += 3) {
+    const key = `${quantised[v]},${quantised[v + 1]},${quantised[v + 2]}`;
+    if (seen.has(key)) lost += 1;
+    else seen.add(key);
+  }
+  return lost;
+}
+
+/** Area of one triangle as a given measure sees it. */
+type AreaOf = (ia: number, ib: number, ic: number) => number;
+
+function doubleArea(mesh: Mesh): AreaOf {
+  const p = mesh.positions;
+  return (a, b, c) => triangleAreaMm2(p, a, b, c);
+}
+
+/**
+ * The area a FILE will report for a face: the smaller of what the mesh measures
+ * in double and what it measures once quantised to float32.
+ *
+ * Both writers are covered by one number. A 3MF writes decimal text at
+ * {@link VERTEX_DECIMALS} places, so its faces keep their double area; a binary
+ * STL writes float32, and a triangle whose three vertices are collinear to
+ * within a float32 step has no area at all in it. Taking the minimum means a
+ * repair that clears this measure clears the row in either file.
+ */
+function exportArea(mesh: Mesh): AreaOf {
+  const p = mesh.positions;
+  const quantised = float32Positions(p);
+  return (a, b, c) => Math.min(triangleAreaMm2(p, a, b, c), triangleAreaMm2(quantised, a, b, c));
+}
+
+function countDegenerate(mesh: Mesh, threshold: number, area: AreaOf): number {
   let count = 0;
   for (let i = 0; i + 2 < mesh.indices.length; i += 3) {
-    if (
-      triangleAreaMm2(mesh.positions, mesh.indices[i], mesh.indices[i + 1], mesh.indices[i + 2]) <
-      threshold
-    ) {
-      count += 1;
-    }
+    if (area(mesh.indices[i], mesh.indices[i + 1], mesh.indices[i + 2]) < threshold) count += 1;
   }
   return count;
 }
@@ -309,6 +385,7 @@ function collapseNeedles(
   mesh: Mesh,
   threshold: number,
   maxEdgeMm: number,
+  area: AreaOf,
 ): { mesh: Mesh; collapsed: number } {
   const { positions: p, indices } = mesh;
   const parent = new Int32Array(p.length / 3);
@@ -330,7 +407,7 @@ function collapseNeedles(
     const a = indices[i];
     const b = indices[i + 1];
     const c = indices[i + 2];
-    if (triangleAreaMm2(p, a, b, c) >= threshold) continue;
+    if (area(a, b, c) >= threshold) continue;
     const edges: Array<[number, number]> = [
       [a, b],
       [b, c],
@@ -380,7 +457,7 @@ function collapseNeedles(
  * the needle leaves every other edge paired exactly as it was, and moves no
  * vertex at all.
  */
-function splitNeedles(mesh: Mesh, threshold: number): { mesh: Mesh; split: number } {
+function splitNeedles(mesh: Mesh, threshold: number, area: AreaOf): { mesh: Mesh; split: number } {
   const tri: number[] = Array.from(mesh.indices);
   const alive: boolean[] = new Array(tri.length / 3).fill(true);
   const key = (a: number, b: number): string => `${a},${b}`;
@@ -403,7 +480,7 @@ function splitNeedles(mesh: Mesh, threshold: number): { mesh: Mesh; split: numbe
     const a = tri[t * 3];
     const b = tri[t * 3 + 1];
     const c = tri[t * 3 + 2];
-    if (triangleAreaMm2(mesh.positions, a, b, c) >= threshold) continue;
+    if (area(a, b, c) >= threshold) continue;
 
     // The middle vertex is the one opposite the longest edge.
     const lengths = [
@@ -423,11 +500,7 @@ function splitNeedles(mesh: Mesh, threshold: number): { mesh: Mesh; split: numbe
     // the Chicago parks region). The next pass reaches it once its own
     // neighbour has been resolved.
     const n = neighbour * 3;
-    if (
-      triangleAreaMm2(mesh.positions, tri[n], tri[n + 1], tri[n + 2]) < threshold
-    ) {
-      continue;
-    }
+    if (area(tri[n], tri[n + 1], tri[n + 2]) < threshold) continue;
     let x = -1;
     for (let k = 0; k < 3; k += 1) {
       if (tri[n + k] === v0 && tri[n + ((k + 1) % 3)] === v2) x = tri[n + ((k + 2) % 3)];
@@ -614,12 +687,45 @@ function edgeLength(p: ArrayLike<number>, ia: number, ib: number): number {
  */
 export function cleanMesh(
   input: Mesh,
-  options: { epsilonMm?: number; threshold?: number; collapseNeedles?: boolean } = {},
+  options: {
+    epsilonMm?: number;
+    threshold?: number;
+    collapseNeedles?: boolean;
+    /**
+     * Judge every face by {@link exportArea} - the smaller of its double and
+     * its float32 area - instead of by its double area alone.
+     *
+     * OFF by default, and off for the engine, because the float32 grid does not
+     * exist until the mesh is in the frame the FILE is written in: the exporter
+     * translates the model into build space (`export/common.placeInBuildSpace`),
+     * which moves a coordinate from 0.033 mm to 90 mm and its grid step from
+     * 4e-9 mm to 7.6e-6 mm. Asked in the engine frame the question has a
+     * different answer, so it is asked by the STL writer, on the placed mesh
+     * (`export/stl.ts`, {@link hardenForFloat32}).
+     */
+    float32?: boolean;
+    /**
+     * Run the whole-mesh weld at all. Default true; `hardenForFloat32` passes
+     * false when its float32 scan found no colliding vertex.
+     *
+     * The weld is the expensive rung of this repair - a 27-cell neighbourhood
+     * scan over every vertex, 1.0 s on a 46 962-vertex plate - and it is the
+     * only one that can be skipped on evidence. Its whole effect is to merge
+     * vertices within `epsilonMm` of each other, and on a placed model a pair
+     * that close shares a float32 grid point (a nanometre against a 7.6e-6 mm
+     * step at 90 mm), so a scan that finds no collision has proved there is
+     * nothing for it to merge that the FILE can see. What is left is the
+     * needle, and `splitNeedles` resolves that without moving a vertex.
+     */
+    weld?: boolean;
+  } = {},
 ): { mesh: Mesh; report: MeshReport } {
   const epsilon = options.epsilonMm ?? WELD_EPSILON_MM;
   const threshold = options.threshold ?? REPAIR_AREA_MM2;
+  const measure = options.float32 === true ? exportArea : doubleArea;
   const before = meshVolumeMm3(input);
-  const beforeDegenerate = degenerateFaces(input, threshold);
+  const inputArea = measure(input);
+  const beforeDegenerate = countDegenerate(input, threshold, inputArea);
   const beforeOpen = openEdges(input);
   // Only ever needed by the needle collapse below, and only when there is
   // something to repair, so it is computed behind the early return.
@@ -651,7 +757,7 @@ export function cleanMesh(
   const acceptable = (candidate: Mesh, open: number, degenerate: number): boolean =>
     degenerate <= beforeDegenerate &&
     open <= beforeOpen &&
-    Math.abs(meshVolumeMm3(candidate) - before) <= Math.max(1e-6, Math.abs(before) * 1e-9);
+    Math.abs(meshVolumeMm3(candidate) - before) <= volumeNoiseMm3(before);
 
   let best = input;
   let bestDegenerate = beforeDegenerate;
@@ -667,17 +773,23 @@ export function cleanMesh(
   const ladder = options.epsilonMm === undefined ? WELD_LADDER_MM : [epsilon];
   for (const rung of ladder) {
     let candidate = input;
+    let candidateArea = inputArea;
     let candidateDegenerate = beforeDegenerate;
     let candidateOpen = beforeOpen;
     let candidateWelded = 0;
     let candidateSplit = 0;
 
-    const first = weld(input, rung);
+    const first = options.weld === false ? { mesh: input, welded: 0 } : weld(input, rung);
     if (first.welded > 0) {
+      // A weld rewrites the position array, so the measure has to be rebuilt on
+      // it; the two repairs below keep the positions they were given and reuse
+      // this one.
+      const weldedArea = measure(first.mesh);
       const open = openEdges(first.mesh);
-      const degenerate = degenerateFaces(first.mesh, threshold);
+      const degenerate = countDegenerate(first.mesh, threshold, weldedArea);
       if (acceptable(first.mesh, open, degenerate)) {
         candidate = first.mesh;
+        candidateArea = weldedArea;
         candidateDegenerate = degenerate;
         candidateOpen = open;
         candidateWelded = first.welded;
@@ -687,10 +799,10 @@ export function cleanMesh(
     // Every pass is a transaction: a pass that leaves the mesh no better, or
     // leaves a hole in it, is thrown away and the last good mesh is kept.
     for (let pass = 0; pass < REPAIR_ROUNDS && candidateDegenerate > 0; pass += 1) {
-      const attempt = splitNeedles(candidate, threshold);
+      const attempt = splitNeedles(candidate, threshold, candidateArea);
       if (attempt.split === 0) break;
       const open = openEdges(attempt.mesh);
-      const degenerate = degenerateFaces(attempt.mesh, threshold);
+      const degenerate = countDegenerate(attempt.mesh, threshold, candidateArea);
       if (degenerate >= candidateDegenerate || !acceptable(attempt.mesh, open, degenerate)) {
         break;
       }
@@ -703,10 +815,10 @@ export function cleanMesh(
     // The local collapse, last: it is the narrowest repair here and the only
     // one that can close a needle the whole-mesh weld had to give up on.
     if (options.collapseNeedles === true && candidateDegenerate > 0) {
-      const attempt = collapseNeedles(candidate, threshold, NEEDLE_COLLAPSE_MM);
+      const attempt = collapseNeedles(candidate, threshold, NEEDLE_COLLAPSE_MM, candidateArea);
       if (attempt.collapsed > 0) {
         const open = openEdges(attempt.mesh);
-        const degenerate = degenerateFaces(attempt.mesh, threshold);
+        const degenerate = countDegenerate(attempt.mesh, threshold, candidateArea);
         // The extra guard this repair needs and the other two do not: see
         // `componentCount`. A pinch is closed, oriented and volume-preserving,
         // and it is still three objects where there was one.
@@ -743,6 +855,353 @@ export function cleanMesh(
       openEdges: bestOpen,
       volumeDeltaMm3: best === input ? 0 : meshVolumeMm3(best) - before,
       applied: bestDegenerate < beforeDegenerate,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// What a binary STL can carry
+// ---------------------------------------------------------------------------
+
+/**
+ * The volume difference a repair may show without having moved material, mm^3.
+ *
+ * `cleanMesh`'s own bound, in one place so the pinch separation beside it is
+ * held to the same floor: the accumulation noise of a divergence sum over
+ * 100 000 terms, a relative 1e-9, which on a 172 000 mm^3 model is a cube
+ * 0.06 mm on a side.
+ */
+export function volumeNoiseMm3(volumeMm3: number): number {
+  return Math.max(1e-6, Math.abs(volumeMm3) * 1e-9);
+}
+
+const EMPTY_PINCH_REPORT: PinchReport = {
+  groups: 0,
+  moved: 0,
+  unresolved: 0,
+  rejected: 0,
+  maxShiftMm: 0,
+  volumeDeltaMm3: 0,
+};
+
+/** One float32 step away from zero at `value`, mm. */
+export function float32StepMm(value: number): number {
+  const view = new DataView(new ArrayBuffer(4));
+  view.setFloat32(0, value);
+  const here = view.getFloat32(0);
+  view.setUint32(0, view.getUint32(0) + 1);
+  const next = view.getFloat32(0);
+  const step = Math.abs(next - here);
+  return Number.isFinite(step) && step > 0 ? step : Number.MIN_VALUE;
+}
+
+/**
+ * The float32 grid step at a mesh's own scale, mm.
+ *
+ * One step at the largest coordinate the mesh holds, so the separation is the
+ * same size wherever it lands rather than vanishing to a denormal at a vertex
+ * that happens to sit on z = 0 - which is every vertex of a placed model's
+ * underside. 1.5e-5 mm on a 180 mm plate.
+ */
+function gridStepMm(p: ArrayLike<number>): number {
+  let largest = 1;
+  for (let i = 0; i < p.length; i += 1) {
+    const size = Math.abs(p[i]);
+    if (size > largest) largest = size;
+  }
+  return float32StepMm(largest);
+}
+
+export interface PinchReport {
+  /** Float32 grid points that carried more than one vertex before the repair. */
+  groups: number;
+  /** Vertices moved off a shared grid point, in the result that was kept. */
+  moved: number;
+  /** Vertices that could not be given a grid point of their own. */
+  unresolved: number;
+  /** Vertices whose move the acceptance test threw away, leaving the pinch. */
+  rejected: number;
+  /** Largest distance any vertex was moved, mm. */
+  maxShiftMm: number;
+  /** Signed volume change of the accepted move, mm^3. Zero when it was rolled back. */
+  volumeDeltaMm3: number;
+}
+
+/**
+ * Give every vertex a float32 grid point of its own.
+ *
+ * The defect this closes is not a repairable property of the MESH: two vertices
+ * at one point, joined to a common neighbour, are how manifold3d represents two
+ * sheets of a surface that touch along an edge - two building corners meeting
+ * exactly, which the Paris, Tokyo and London plates each carry one or two of.
+ * The 3MF is indexed and carries it faithfully; a binary STL is a triangle soup,
+ * the reader recovers the topology by welding identical coordinates, and the
+ * weld hands that edge to four faces. Welding the pair in the mesh instead does
+ * not help - it is the same non-manifold edge, made explicit, and manifold3d
+ * refuses to re-import it. The reference implementation's own ladder does not
+ * reach it either, and not because it gives up: `assemble.float32_defect_count`
+ * scores `len(unique(vertices)) - len(unique(quantised))`, so a pair that is
+ * already one row of `unique(vertices)` contributes nothing and `finalize`
+ * stops with `_is_clean` answering true (traced on Paris, where the ladder
+ * clears 9 rounding collisions and 19 float32 degenerate faces and leaves
+ * exactly this one pair).
+ *
+ * So the file is made to say what the mesh says, to the finest the format has:
+ * the second vertex of a colliding pair is moved by ONE float32 step at the
+ * model's own scale ({@link gridStepMm}, 1.5e-5 mm on a 180 mm plate), into its
+ * own material - against its area-weighted vertex normal, along that vector's
+ * dominant axis. That is four orders of magnitude under the print grid and the
+ * smallest move the file can express at all: a smaller one rounds straight back
+ * onto the point it came from.
+ *
+ * The positions are returned as a new array; the mesh's own are not touched.
+ *
+ * TRANSACTIONAL, like every other repair in this file: the move is kept only
+ * when it did what it is for and cost no more than it possibly can.
+ *
+ * * no face that the file can measure becomes degenerate that was not already;
+ * * the volume moves by no more than one step across the faces the moved
+ *   vertices carry (`Σ shift * incident area`, which is the exact worst case
+ *   for a translation), or by `cleanMesh`'s own noise bound, whichever is
+ *   larger. The pure relative bound is the wrong test on its own here: this
+ *   repair MOVES a vertex on purpose, so the cost scales with the incident
+ *   area and not with the model's volume, and on a 10 mm cube it would reject
+ *   a legitimate 1.5e-5 mm step (4.1e-3 mm3 against a 3e-6 mm3 tolerance)
+ *   while accepting the same step on a plate. Both bounds are reported.
+ * * the topology is untouched by construction and is asserted, not recomputed:
+ *   `openEdges` and `componentCount` read the INDEX array, and this function
+ *   returns the caller's own indices unchanged (`mesh.test.ts` pins both on a
+ *   three-cube pinch, as does `services/bake/tests/test_bake.py`).
+ *
+ * A rejected move is rolled back whole and counted in `rejected`, which leaves
+ * the collision in the file and is what `hardenForFloat32` reports on.
+ */
+export function separateFloat32Pinches(mesh: Mesh): { positions: Float64Array; report: PinchReport } {
+  const p = mesh.positions;
+  const count = Math.floor(p.length / 3);
+  const quantised = float32Positions(p);
+  const home = new Map<string, number[]>();
+  const keyAt = (source: ArrayLike<number>, v: number): string =>
+    `${Math.fround(source[v * 3])},${Math.fround(source[v * 3 + 1])},${Math.fround(source[v * 3 + 2])}`;
+  for (let v = 0; v < count; v += 1) {
+    const key = `${quantised[v * 3]},${quantised[v * 3 + 1]},${quantised[v * 3 + 2]}`;
+    const bucket = home.get(key);
+    if (bucket === undefined) home.set(key, [v]);
+    else bucket.push(v);
+  }
+  const groups: number[][] = [];
+  for (const bucket of home.values()) {
+    if (bucket.length > 1) groups.push(bucket);
+  }
+  if (groups.length === 0) {
+    return { positions: p, report: EMPTY_PINCH_REPORT };
+  }
+
+  // Area-weighted vertex normals, from the cross products the winding gives,
+  // and the plain incident area beside them for the acceptance bound.
+  const normals = new Float64Array(count * 3);
+  const incident = new Float64Array(count);
+  for (let i = 0; i + 2 < mesh.indices.length; i += 3) {
+    const a = mesh.indices[i] * 3;
+    const b = mesh.indices[i + 1] * 3;
+    const c = mesh.indices[i + 2] * 3;
+    const ux = p[b] - p[a];
+    const uy = p[b + 1] - p[a + 1];
+    const uz = p[b + 2] - p[a + 2];
+    const vx = p[c] - p[a];
+    const vy = p[c + 1] - p[a + 1];
+    const vz = p[c + 2] - p[a + 2];
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const area = 0.5 * Math.hypot(nx, ny, nz);
+    for (const corner of [a, b, c]) {
+      normals[corner] += nx;
+      normals[corner + 1] += ny;
+      normals[corner + 2] += nz;
+      incident[corner / 3] += area;
+    }
+  }
+
+  const grid = gridStepMm(p);
+  const moved = new Float64Array(p);
+  let movedCount = 0;
+  let unresolved = 0;
+  let maxShiftMm = 0;
+  /** Exact worst case the accepted moves can cost in volume, mm^3. */
+  let budgetMm3 = 0;
+  for (const bucket of groups) {
+    // The first vertex keeps the grid point; the rest look for their own.
+    for (let member = 1; member < bucket.length; member += 1) {
+      const v = bucket[member];
+      // Into the material: against the outward normal, on the axis that vector
+      // leans on hardest, so the step retreats from the contact rather than
+      // sliding along it.
+      let axis = 0;
+      for (let k = 1; k < 3; k += 1) {
+        if (Math.abs(normals[v * 3 + k]) > Math.abs(normals[v * 3 + axis])) axis = k;
+      }
+      const inward = -normals[v * 3 + axis];
+      const direction = inward >= 0 ? 1 : -1;
+      const origin = moved[v * 3 + axis];
+      let step = Math.max(float32StepMm(origin), grid);
+      let placed = false;
+      for (let tries = 0; tries < PINCH_STEPS; tries += 1) {
+        moved[v * 3 + axis] = origin + direction * step;
+        const key = keyAt(moved, v);
+        if (!home.has(key)) {
+          home.set(key, [v]);
+          placed = true;
+          const shift = Math.abs(moved[v * 3 + axis] - origin);
+          maxShiftMm = Math.max(maxShiftMm, shift);
+          budgetMm3 += shift * incident[v];
+          movedCount += 1;
+          break;
+        }
+        step *= 2;
+      }
+      if (!placed) {
+        moved[v * 3 + axis] = origin;
+        unresolved += 1;
+      }
+    }
+  }
+  if (movedCount === 0) {
+    return { positions: p, report: { ...EMPTY_PINCH_REPORT, groups: groups.length, unresolved } };
+  }
+
+  // The transaction. `moved` shares this mesh's indices, so the only things a
+  // translation can break are the two it is measured on.
+  const candidate: Mesh = { positions: moved, indices: mesh.indices };
+  const before = meshVolumeMm3(mesh);
+  const delta = meshVolumeMm3(candidate) - before;
+  const allowance = Math.max(volumeNoiseMm3(before), budgetMm3);
+  const degenerateBefore = float32DegenerateFaces(mesh);
+  const accepted =
+    Math.abs(delta) <= allowance && float32DegenerateFaces(candidate) <= degenerateBefore;
+  if (!accepted) {
+    return {
+      positions: p,
+      report: {
+        groups: groups.length,
+        moved: 0,
+        unresolved,
+        rejected: movedCount,
+        maxShiftMm: 0,
+        volumeDeltaMm3: 0,
+      },
+    };
+  }
+  return {
+    positions: moved,
+    report: {
+      groups: groups.length,
+      moved: movedCount,
+      unresolved,
+      rejected: 0,
+      maxShiftMm,
+      volumeDeltaMm3: delta,
+    },
+  };
+}
+
+export interface HardenReport {
+  mesh: MeshReport;
+  pinches: PinchReport;
+  /** Faces under 04's threshold in the float32 rendering, after the repair. */
+  degenerate: number;
+  /** Vertices a float32 reader would still lose, after the repair. */
+  collisions: number;
+  /**
+   * Faces under 04's threshold before any repair ran, measured the same way
+   * {@link HardenReport.degenerate} is so the two can be subtracted. The PROBE
+   * that decides whether to repair at all counts at {@link REPAIR_AREA_MM2}
+   * instead, two decades higher, because a face at 4e-9 in memory can land
+   * under 1e-9 in the file.
+   */
+  degenerateBefore: number;
+  /** Colliding vertices the probe found before any repair ran. */
+  collisionsBefore: number;
+  /** True when the probe found nothing and no repair was run at all. */
+  probedClean: boolean;
+}
+
+const CLEAN_MESH_REPORT: MeshReport = {
+  welded: 0,
+  split: 0,
+  degenerate: 0,
+  openEdges: 0,
+  volumeDeltaMm3: 0,
+  applied: true,
+};
+
+/**
+ * A mesh a binary STL can carry: nothing degenerate and nothing coincident,
+ * measured on the float32 grid the file writes.
+ *
+ * Two repairs, in the only order that works. First {@link cleanMesh} with
+ * `float32: true`, which sees the needles the double measure cannot - on the
+ * Chicago plate exactly one, three vertices of a vertical edge whose x and y
+ * agree to 1.8e-6 mm, which is real geometry in double (6.2e-7 mm^2) and
+ * nothing at all on a grid whose step there is 7.6e-6 mm. Then
+ * {@link separateFloat32Pinches}, for the coincidences no repair can remove.
+ *
+ * Called on the PLACED mesh, in build space, because that is the frame the file
+ * is written in and the grid is a property of the coordinate.
+ */
+export function hardenForFloat32(input: Mesh): { mesh: Mesh; report: HardenReport } {
+  // PROBE FIRST. Two full-mesh passes, 5 ms and 25 ms on a 46 962-vertex plate
+  // against the 1.0 s the weld costs, and on most meshes they find nothing: a
+  // tile, a member of the parts zip, five of the six presets. A mesh the format
+  // can already carry is handed straight back and no repair runs on it.
+  const candidates = float32DegenerateFaces(input, REPAIR_AREA_MM2);
+  const collisionsBefore = float32Collisions(input);
+  if (candidates === 0 && collisionsBefore === 0) {
+    return {
+      mesh: input,
+      report: {
+        mesh: CLEAN_MESH_REPORT,
+        pinches: EMPTY_PINCH_REPORT,
+        degenerate: 0,
+        collisions: 0,
+        degenerateBefore: 0,
+        collisionsBefore: 0,
+        probedClean: true,
+      },
+    };
+  }
+
+  // One rung, not the ladder. The coarsest rung merges vertices up to 6.5
+  // float32 steps apart at a 180 mm coordinate, and the weld path has no body
+  // guard (only `collapseNeedles` does), so a weld that pinched one body into
+  // two would pass `acceptable` and be invisible in an STL until the reader
+  // welds the file back. The finest rung is the one the reference implementation
+  // starts on and the only one this writer needs; it also bounds what a plate
+  // the repair cannot fix costs.
+  const degenerateBefore = float32DegenerateFaces(input);
+  const cleaned = cleanMesh(input, {
+    float32: true,
+    epsilonMm: WELD_EPSILON_MM,
+    weld: collisionsBefore > 0,
+  });
+  const separated =
+    collisionsBefore > 0
+      ? separateFloat32Pinches(cleaned.mesh)
+      : { positions: cleaned.mesh.positions, report: EMPTY_PINCH_REPORT };
+  const mesh: Mesh =
+    separated.positions === cleaned.mesh.positions
+      ? cleaned.mesh
+      : { positions: separated.positions, indices: cleaned.mesh.indices };
+  return {
+    mesh,
+    report: {
+      mesh: cleaned.report,
+      pinches: separated.report,
+      degenerate: float32DegenerateFaces(mesh),
+      collisions: float32Collisions(mesh),
+      degenerateBefore,
+      collisionsBefore,
+      probedClean: false,
     },
   };
 }

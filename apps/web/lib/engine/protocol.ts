@@ -21,7 +21,7 @@
  */
 
 import type { PrintParams, SceneGraph, SceneRequest } from "../contracts";
-import type { PerfTiming } from "../perf";
+import { perfDrainTimings, perfEnabled, perfMark, type PerfTiming } from "../perf";
 import { hasIndexedDb, IndexedDbOverpassCache, MemoryOverpassCache, type OverpassCache } from "./osm/overpass";
 import {
   StageCache,
@@ -78,6 +78,9 @@ export interface RunJobMessage extends PerfJobFlag {
   /** `region -> hash` the page already holds; those are not re-sent. */
   known: Record<string, string>;
   knownSceneHash: string | null;
+  /** The merged mesh and tiling hashes the page holds; `done` strips what is unchanged. Optional: an older client sends neither. */
+  knownMergedHash?: string | null;
+  knownTilesHash?: string | null;
 }
 
 /** Export the last run's model: the remaining uncached stages plus the writer. */
@@ -100,6 +103,25 @@ export type WorkerResponse = { id: number } & PipelineEvent & PerfTimingsField;
 /** The message kinds that end a job; `worker.ts` drains the perf buffer onto them. */
 export function isTerminalResponse(response: WorkerResponse): boolean {
   return response.kind === "done" || response.kind === "files" || response.kind === "error" || response.kind === "cancelled";
+}
+
+/**
+ * Perf mode's stamp on a terminal response (`lib/perf.ts`): `engine.post` is
+ * marked immediately before the message goes out, which is what lets
+ * `client.ts` measure the structured-clone hop itself, and this realm's
+ * timings ride on `timings`, so a worker's marks reach the page instead of
+ * dying with its buffer. `worker.ts` posts through this; a test can wrap an
+ * in-page session in it to see exactly what a worker would send. With perf
+ * off this is one boolean read and the message goes out untouched.
+ */
+export function perfStampedPost(post: Post): Post {
+  return (message, transfer) => {
+    if (perfEnabled() && isTerminalResponse(message)) {
+      perfMark("engine.post");
+      message.timings = perfDrainTimings();
+    }
+    post(message, transfer);
+  };
 }
 
 /** What a handler posts a response through. `transfer` is honoured by the real worker's `postMessage` and ignored by the in-page fallback (nothing to transfer across a realm boundary that never existed). */
@@ -159,6 +181,7 @@ export function resetOverpassCacheForTest(): void {
 
 interface ActiveJob {
   id: number;
+  kind: "run" | "export";
   controller: AbortController;
 }
 
@@ -232,11 +255,13 @@ export class PipelineSession {
 
   private enqueue(job: QueuedJob): void {
     if (this.current !== null) {
-      // Supersede at the next stage boundary: the running job stops there,
-      // replies `cancelled`, and the newest request starts. An intermediate
-      // request that never started posts nothing at all.
+      // An export waits for the run in flight: it needs that run's model, and
+      // the page needs that run's `done`. Anything else supersedes at the next
+      // stage boundary: the running job stops there, replies `cancelled`, and
+      // the newest request starts. An intermediate request that never started
+      // posts nothing at all.
       this.queued = job;
-      this.current.controller.abort();
+      if (!(job.msg.kind === "export" && this.current.kind === "run")) this.current.controller.abort();
       return;
     }
     this.start(job);
@@ -244,7 +269,7 @@ export class PipelineSession {
 
   private start(job: QueuedJob): void {
     const controller = new AbortController();
-    this.current = { id: job.msg.id, controller };
+    this.current = { id: job.msg.id, kind: job.msg.kind, controller };
     void this.runOne(job.msg, job.post, controller.signal).finally(() => {
       this.current = null;
       const next = this.queued;
@@ -280,14 +305,18 @@ export class PipelineSession {
   private jobFor(msg: RunJobMessage | ExportJobMessage): PipelineJob {
     if (msg.kind === "run") {
       const source: PipelineJob["source"] = msg.source;
-      this.last = {
-        source,
-        params: msg.params,
-        terrain: msg.terrain,
-        heroIds: msg.heroIds,
-        date: msg.date,
-        rotationDeg: msg.rotationDeg,
-      };
+      // Only a run that built a model can be exported; an ingest (`scene`
+      // mode) may carry no params at all.
+      if (msg.mode === "preview" || msg.mode === "full") {
+        this.last = {
+          source,
+          params: msg.params,
+          terrain: msg.terrain,
+          heroIds: msg.heroIds,
+          date: msg.date,
+          rotationDeg: msg.rotationDeg,
+        };
+      }
       return {
         source,
         params: msg.params,
@@ -299,9 +328,11 @@ export class PipelineSession {
         exportRequest: null,
         known: msg.known,
         knownSceneHash: msg.knownSceneHash,
+        knownMergedHash: msg.knownMergedHash ?? null,
+        knownTilesHash: msg.knownTilesHash ?? null,
       };
     }
-    if (this.last === null) throw new Error("nothing to export: no model has been run in this session");
+    if (this.last === null) throw new Error("nothing to export: no model has been run in this session (an ingest alone does not build one)");
     // The last run's own inputs: the export is that model's remaining stages.
     return {
       source: this.last.source,

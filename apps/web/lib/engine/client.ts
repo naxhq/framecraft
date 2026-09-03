@@ -27,11 +27,13 @@
  */
 
 import { installWasmBasePathFetchShim } from "../basePath";
-import type { PrintParams, SceneGraph, SceneRequest } from "../contracts";
+import type { PrintParams, SceneRequest } from "../contracts";
 import { perfEnabled, perfMergeTimings, perfRecord, perfSpan } from "../perf";
 import type { OverpassFetchError } from "./osm/overpass";
 import type { EngineSceneGraph } from "./osm/types";
-import { hashString, type ExportOut, type ExportRequest, type RunMode, type StageEvent, type TerrainGridInput } from "./pipeline";
+import { seedSceneHash, type ExportOut, type ExportRequest, type RunMode, type StageEvent, type TerrainGridInput } from "./pipeline";
+import { sceneKeyOf } from "./engine";
+import type { TileResult } from "./types";
 import { PipelineSession, allocateJobId, type RunSource, type WorkerRequest, type WorkerResponse } from "./protocol";
 import type { EngineInput, EngineResult, RegionMesh } from "./types";
 
@@ -208,6 +210,8 @@ export type ProgressEvent =
 export interface RegionsEvent {
   regions: RegionMesh[];
   removed: string[];
+  /** The finish hash of every region in `regions`: keep it with the mesh, and send the map back as `known`. */
+  hashes: Record<string, string>;
 }
 
 export interface SceneEvent {
@@ -230,14 +234,23 @@ export interface RunInput {
   /** `region -> hash` the caller already holds; those regions are not re-sent. */
   known?: Record<string, string>;
   knownSceneHash?: string | null;
+  /**
+   * The merged mesh and tiling hashes the caller holds. Omit them: the client
+   * remembers the last `done` it received and fills them in, then re-attaches
+   * the meshes it kept when the worker strips them as unchanged.
+   */
+  knownMergedHash?: string | null;
+  knownTilesHash?: string | null;
 }
 
 export interface RunDone {
-  /** Null for a `scene` or `preview` run. Regions carry NO positions: they were streamed on `regions`. */
+  /** Null for a `scene` or `preview` run. Regions carry NO positions: they were streamed on `regions`; `merged` and `tiles` are whole (re-attached by the client when the worker stripped them). */
   result: EngineResult | null;
   regionHashes: Record<string, string>;
   scene: SceneEvent | null;
   elapsedMs: number;
+  mergedHash: string | null;
+  tilesHash: string | null;
 }
 
 export interface RunHandle {
@@ -270,6 +283,9 @@ export class PipelineClient {
   private readonly transport: Transport;
   private pendingRun: PendingRun | null = null;
   private pendingExport: PendingExport | null = null;
+  /** The last merged mesh and tiles a `done` carried, kept so the worker need not send them again. */
+  private lastMerged: { hash: string; mesh: RegionMesh } | null = null;
+  private lastTiles: { hash: string; tiles: TileResult[] } | null = null;
   private disposed = false;
 
   constructor(transport: Transport = createDefaultTransport()) {
@@ -280,6 +296,10 @@ export class PipelineClient {
 
   /** Start a run. A run (or export) already in flight is superseded: its promise rejects `cancelled` and the worker stops it at the next stage boundary. */
   run(input: RunInput): RunHandle {
+    return this.startRun(input, true);
+  }
+
+  private startRun(input: RunInput, supersede: boolean): RunHandle {
     if (this.disposed) {
       const error = new EngineClientError("disposed", "the engine client was disposed");
       const rejected = Promise.reject(error);
@@ -287,7 +307,7 @@ export class PipelineClient {
       const empty = new Subject<never>();
       return { id: -1, progress: empty, regions: empty, scene: empty, done: rejected, cancel: () => undefined };
     }
-    this.supersede();
+    if (supersede) this.supersede();
     const id = allocateJobId();
     const progress = new Subject<ProgressEvent>();
     const regions = new Subject<RegionsEvent>();
@@ -310,6 +330,8 @@ export class PipelineClient {
       mode: input.mode ?? "full",
       known: input.known ?? {},
       knownSceneHash: input.knownSceneHash ?? null,
+      knownMergedHash: input.knownMergedHash === undefined ? (this.lastMerged?.hash ?? null) : input.knownMergedHash,
+      knownTilesHash: input.knownTilesHash === undefined ? (this.lastTiles?.hash ?? null) : input.knownTilesHash,
       ...(perfEnabled() ? { perf: true } : {}),
     });
     return {
@@ -322,10 +344,15 @@ export class PipelineClient {
     };
   }
 
-  /** Export the last run's model: the remaining uncached stages and the writer, in the worker. Files arrive transferred. */
+  /**
+   * Export the last run's model: the remaining uncached stages and the writer,
+   * in the worker. Files arrive transferred. A run in flight is NOT superseded:
+   * the export queues behind it in the worker, the run's `done` still arrives,
+   * and the files describe that run's model. A previous export is superseded.
+   */
   exportFiles(request: ExportRequest): Promise<ExportOut> {
     if (this.disposed) return Promise.reject(new EngineClientError("disposed", "the engine client was disposed"));
-    this.supersede();
+    this.supersedeExport();
     const id = allocateJobId();
     const pending = new Promise<ExportOut>((resolve, reject) => {
       this.pendingExport = { id, resolve, reject };
@@ -380,6 +407,10 @@ export class PipelineClient {
       this.transport.postMessage({ kind: "cancel", id: run.id });
       run.reject(new EngineClientError("cancelled", "a newer request superseded this run"));
     }
+    this.supersedeExport();
+  }
+
+  private supersedeExport(): void {
     if (this.pendingExport !== null) {
       const job = this.pendingExport;
       this.pendingExport = null;
@@ -436,13 +467,21 @@ export class PipelineClient {
         return;
       }
       case "region-ready":
-        run?.regions.next({ regions: message.regions, removed: message.removed });
+        run?.regions.next({ regions: message.regions, removed: message.removed, hashes: message.hashes ?? {} });
         return;
-      case "done":
+      case "done": {
         if (run === null) return;
         this.pendingRun = null;
-        run.resolve({ result: message.result, regionHashes: message.regionHashes, scene: run.lastScene, elapsedMs: message.elapsedMs });
+        run.resolve({
+          result: this.reattach(message.result, message.mergedHash ?? null, message.tilesHash ?? null),
+          regionHashes: message.regionHashes,
+          scene: run.lastScene,
+          elapsedMs: message.elapsedMs,
+          mergedHash: message.mergedHash ?? null,
+          tilesHash: message.tilesHash ?? null,
+        });
         return;
+      }
       case "files":
         if (exporting === null) return;
         this.pendingExport = null;
@@ -477,6 +516,28 @@ export class PipelineClient {
         throw new Error(`engine client: unknown response ${JSON.stringify(never)}`);
       }
     }
+  }
+
+  /**
+   * Put back the merged mesh and the tile meshes the worker stripped as
+   * unchanged, from the copies this client kept, and keep whatever arrived
+   * whole for next time.
+   */
+  private reattach(result: EngineResult | null, mergedHash: string | null, tilesHash: string | null): EngineResult | null {
+    if (result === null) return null;
+    let merged = result.merged;
+    if (merged.positions.length === 0 && mergedHash !== null && this.lastMerged?.hash === mergedHash) {
+      merged = this.lastMerged.mesh;
+    } else if (mergedHash !== null && merged.positions.length > 0) {
+      this.lastMerged = { hash: mergedHash, mesh: merged };
+    }
+    let tiles = result.tiles;
+    if (tiles !== undefined && tilesHash !== null) {
+      const stripped = tiles.some((tile) => tile.regions.some((region) => region.positions.length === 0));
+      if (stripped && this.lastTiles?.hash === tilesHash) tiles = this.lastTiles.tiles;
+      else if (!stripped) this.lastTiles = { hash: tilesHash, tiles };
+    }
+    return { ...result, merged, ...(tiles === undefined ? {} : { tiles }) };
   }
 
   private handleTransportError(error: Error): void {
@@ -595,9 +656,10 @@ export class EngineClient {
 
   private async runBuild(input: EngineInput, options: BuildOptions, resend: boolean): Promise<EngineResult> {
     const cached = !resend && this.lastScene !== null && this.lastScene.scene === (input.scene as EngineSceneGraph);
+    const sceneKey = cached ? null : sceneKeyOf(input.scene);
     const source: RunSource = cached
       ? { kind: "cached", key: this.lastScene?.hash ?? "" }
-      : { kind: "scene", scene: input.scene, key: sceneKeyOf(input.scene) };
+      : { kind: "scene", scene: input.scene, key: sceneKey ?? "" };
     const handle = this.pipeline.run({
       source,
       params: input.params,
@@ -607,6 +669,8 @@ export class EngineClient {
       rotationDeg: input.rotationDeg ?? 0,
       mode: "full",
       known: {},
+      // The worker must not echo the scene back: this side already holds it.
+      knownSceneHash: cached ? (this.lastScene?.hash ?? null) : seedSceneHash(sceneKey ?? ""),
     });
     if (options.onProgress) {
       options.onProgress("Building...");
@@ -645,11 +709,6 @@ export class EngineClient {
     this.disposed = true;
     this.pipeline.dispose();
   }
-}
-
-/** A content key for a scene object sent whole, so a warm worker recognises the same scene again. */
-export function sceneKeyOf(scene: SceneGraph): string {
-  return hashString(JSON.stringify(scene));
 }
 
 export function createEngineClient(): EngineClient {

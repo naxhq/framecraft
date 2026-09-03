@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_PRINT_PARAMS, defaultPrintParams } from "@/lib/contracts";
 import type { PrintParams } from "@/lib/contracts";
 import type { PreviewBuilding } from "@/lib/preview";
-import { matrixDeps } from "./InstancedBuildings";
+import { matrixDeps } from "./BuildingPickProxies";
 
 const BUILDINGS: PreviewBuilding[] = [
   {

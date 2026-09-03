@@ -1,26 +1,34 @@
 /**
- * Frame lettering and ornaments -> flat preview geometry, in PRINT MILLIMETRES.
+ * Frame lettering and ornaments -> flat contours, in PRINT MILLIMETRES.
  *
- * Rules, the same three `lib/preview.ts` states for the city:
+ * This is the SHARED lettering shape layer. The engine's own `solid/lettering`,
+ * `solid/frame`, `solid/ornaments`, `solid/attribution` and `solid/tiling` all
+ * extrude the contours `glyphAreas`, `placeArea`, `northArrowArea` and
+ * `scaleBarAreas` produce here, so the letterforms the editor counts are the
+ * letterforms the model carries.
+ *
+ * Since v3.1 nothing in the viewport DRAWS these: the engine cuts the real
+ * pockets and the preview shows those. What the editor still needs from
+ * `buildPreviewText` is what the shared layout has to SAY about a text before
+ * a run finishes -- how many rings it produces (the viewport publishes the
+ * count), which faces it needs, and every refusal, auto-fit and dropped
+ * character it reports -- because those answers must be on screen the moment
+ * the user types, not seconds later.
+ *
+ * Rules:
  *
  * 1. **No layout maths of its own.** Every size, anchor, rotation, refusal and
- *    warning comes from `transform.lettering_layout`, the mirror of the build's
+ *    warning comes from `transform.lettering_layout`, the mirror of
  *    `app/geom/transform.py`. This module turns those numbers into *shapes*
  *    -- glyph outlines, an arrowhead, a bar, a keyhole -- and nothing else. A
  *    string the editor shows on the bottom edge at 4.28 mm is cut on the bottom
- *    edge at 4.28 mm, or the preview is lying.
+ *    edge at 4.28 mm, or the editor is lying.
  * 2. **No booleans.** The keyhole is built as ONE analytic outline (two arcs and
  *    two tangents) rather than as a union of a circle, a box and a circle, and
  *    the text is never clipped to the lip band -- the auto-fit already
  *    guarantees it fits.
- * 3. **No three.js.** Output is plain `PreviewArea` records, the same shape
- *    `lib/preview.ts` emits for water and green, so `components/scene` can put
- *    them through the identical earcut path and `previewText.test.ts` can check
- *    them in node.
- *
- * What the build does that this cannot: it CUTS. An engraving here is a flat
- * fill on the lip's top face, exactly as an engraved road is a flat fill on the
- * plate, and the approximation note in the viewport says so.
+ * 3. **No three.js.** Output is plain `PreviewArea` records, so this is
+ *    importable from the worker and `previewText.test.ts` can check it in node.
  */
 
 import type { PrintParams, SceneGraph } from "./contracts";
@@ -626,59 +634,3 @@ function shift(area: PreviewArea, dx: number, dy: number): PreviewArea {
 // ---------------------------------------------------------------------------
 // Where each piece is drawn
 // ---------------------------------------------------------------------------
-
-/**
- * Z of a flat text fill, mm.
- *
- * Both faces are drawn ON the surface rather than cut into it -- the browser
- * never runs a boolean -- so each tone gets its own hair of clearance to keep
- * two coincident fills from stippling: the lip's top face for the frame
- * lettering, and a whisker under z = 0 for the underside mark and the hanger
- * pockets, which are visible when the model is orbited from below.
- */
-export const TEXT_Z_LIFT_MM = 0.02;
-
-export function textPieceZMm(piece: PreviewTextPiece, params: PrintParams): number {
-  if (piece.face === "bottom") return -TEXT_Z_LIFT_MM;
-  const lipTop = T.frame_geometry_mm(params).top_mm;
-  return lipTop + (piece.tone === "embossed" ? 2 : 1) * TEXT_Z_LIFT_MM;
-}
-
-/** One draw call's worth: every piece that shares a face, a tone and a z. */
-export interface PreviewTextLayer {
-  key: string;
-  face: TextFace;
-  tone: TextTone;
-  z_mm: number;
-  areas: PreviewArea[];
-}
-
-/**
- * The pieces, merged by (face, tone).
- *
- * Same reason `AreaSurfaces` merges the 711 green polygons of a Chicago crop
- * into one BufferGeometry: four engravings, an arrow, a bar and a label are
- * seven meshes and seven uploads otherwise, for a few hundred triangles.
- */
-export function textLayers(
-  model: PreviewTextModel,
-  params: PrintParams,
-): PreviewTextLayer[] {
-  const byKey = new Map<string, PreviewTextLayer>();
-  for (const piece of model.pieces) {
-    const key = `${piece.face}:${piece.tone}`;
-    const existing = byKey.get(key);
-    if (existing) {
-      existing.areas.push(...piece.areas);
-      continue;
-    }
-    byKey.set(key, {
-      key,
-      face: piece.face,
-      tone: piece.tone,
-      z_mm: textPieceZMm(piece, params),
-      areas: [...piece.areas],
-    });
-  }
-  return [...byKey.values()];
-}

@@ -16,6 +16,7 @@ import type { Building, PrintParams, SceneGraph } from "./contracts";
 import type { TokenContext } from "./tokens";
 import * as T from "./transform";
 import {
+  pipelineFailureWarning,
   ESTIMATED_HEIGHT_RATIO,
   MIN_BUILDINGS_TO_EXPORT,
   exportBlockReason,
@@ -620,5 +621,25 @@ describe("tintPreviewOnlyWarning", () => {
     expect(warnings[0].level).toBe("info");
     expect(warnings[0].id).toBe("tint-preview-only");
     expect(warnings[0].message).toContain("bambu-3mf");
+  });
+});
+
+describe("pipelineFailureWarning", () => {
+  it("reports a failed stage through the Issues badge, naming the stage", () => {
+    const warnings = pipelineFailureWarning({
+      stage: "surface-roads",
+      message: "the road layer is not manifold",
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].id).toBe("pipeline-stage-failed");
+    expect(warnings[0].level).toBe("warn");
+    expect(warnings[0].message).toContain("surface-roads");
+    expect(warnings[0].message).toContain("the road layer is not manifold");
+    // ...and says what the user is looking at, which is not nothing.
+    expect(warnings[0].message).toContain("last one that built");
+  });
+
+  it("says nothing when no stage failed", () => {
+    expect(pipelineFailureWarning(null)).toEqual([]);
   });
 });

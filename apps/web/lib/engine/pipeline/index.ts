@@ -28,8 +28,8 @@ export type { GraphDescription, StageDescription } from "./graph";
 export { hashBytes, hashParts, hashString, stableJson } from "./hash";
 export { PARAM_PATHS, expandClaims, isParamPath, pathRoot, readParamPath } from "./paths";
 export type { ParamClaim, ParamPath, ParamValue, PathValue } from "./paths";
-export { assembleResult, finishedRegions, regionHashes, resolveParamsEcho } from "./result";
-export { REGION_BATCH_MS, collectHandles, keyPartsFor, planFor, runPipeline } from "./runner";
+export { assembleResult, finishedRegions, regionHashes, resolveParamsEcho, strippedMesh, strippedTiles } from "./result";
+export { REGION_BATCH_MS, collectHandles, keyPartsFor, planFor, runPipeline, seedSceneHash } from "./runner";
 export type {
   Emit,
   OverpassOptions,

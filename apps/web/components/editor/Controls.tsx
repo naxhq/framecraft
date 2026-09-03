@@ -123,12 +123,33 @@ function Readout({
  * The explanatory line under a control. 12 px rather than the 11 px the rest of
  * the secondary layer uses: the audit found this the least readable text on a
  * 1280 screen, and it is the text that carries the printing consequences.
+ *
+ * Exported so a repeated control -- the eleven filament-slot rows, the height
+ * bands -- can render its help ONCE and have every row point at it through
+ * `aria-describedby`, rather than either repeating the same sentence eleven
+ * times on screen or leaving the rows undescribed.
  */
-function Hint({ id, children }: { id: string; children: ReactNode }) {
+export function Hint({ id, children }: { id: string; children: ReactNode }) {
   return (
     <p id={id} className="text-xs leading-snug text-ink-faint">
       {children}
     </p>
+  );
+}
+
+/**
+ * The same description, for a control with no room for a visible line: a text
+ * button in a row, one of the eleven filament-slot cells. The help string is
+ * still the catalog's, still attached through `aria-describedby`, and still
+ * offered to a mouse user as the button's `title`; it is only the printed line
+ * that is dropped, because a sentence under every Remove button would bury the
+ * list it belongs to.
+ */
+export function SrHint({ id, children }: { id: string; children: ReactNode }) {
+  return (
+    <span id={id} className="sr-only">
+      {children}
+    </span>
   );
 }
 
@@ -196,6 +217,7 @@ export function Slider({
       </div>
       <input
         id={id}
+        data-testid={id}
         type="range"
         className="w-full"
         min={min}
@@ -256,6 +278,7 @@ export function Toggle({
       */}
       <button
         id={id}
+        data-testid={id}
         type="button"
         role="switch"
         aria-checked={checked}
@@ -298,9 +321,67 @@ interface SegmentedProps<T extends string> {
  * arrow keys move the selection, Home/End jump to the ends.
  *
  * Before this it was three plain buttons carrying `role="radio"`, so a screen
- * reader announced "radio 1 of 3" — which tells the user arrows will work —
- * and then arrows did nothing while Tab walked through all three.
+ * reader announced "radio 1 of 3", which tells the user arrows will work, and
+ * then arrows did nothing while Tab walked through all three.
  */
+/**
+ * The ARIA radiogroup keyboard contract, as one function.
+ *
+ * Exported because `Segmented` is not the only radiogroup in the panel: the
+ * frame-profile picker draws a cross-section glyph per option and cannot be a
+ * `Segmented`, but it must behave like one. Shipping the pattern twice is how
+ * the panel ended up with a group that announced "radio 1 of 7" and then did
+ * nothing on an arrow press. Pair it with a roving `tabIndex` (0 on the
+ * selected option, -1 on the rest) so the group is one Tab stop.
+ */
+export function radioGroupKeyDown<T extends string>(
+  values: readonly T[],
+  value: T,
+  onChange: (next: T) => void,
+  container: { current: HTMLElement | null },
+  disabled = false,
+): (event: { key: string; preventDefault: () => void }) => void {
+  const move = (delta: number | "first" | "last"): void => {
+    if (disabled || values.length === 0) return;
+    const current = values.indexOf(value);
+    const from = current === -1 ? 0 : current;
+    const index =
+      delta === "first"
+        ? 0
+        : delta === "last"
+          ? values.length - 1
+          : (from + delta + values.length) % values.length;
+    onChange(values[index]);
+    // Selection follows focus, so focus has to follow it back.
+    const buttons = container.current?.querySelectorAll<HTMLButtonElement>("button");
+    buttons?.[index]?.focus();
+  };
+  return (event) => {
+    switch (event.key) {
+      case "ArrowRight":
+      case "ArrowDown":
+        event.preventDefault();
+        move(1);
+        return;
+      case "ArrowLeft":
+      case "ArrowUp":
+        event.preventDefault();
+        move(-1);
+        return;
+      case "Home":
+        event.preventDefault();
+        move("first");
+        return;
+      case "End":
+        event.preventDefault();
+        move("last");
+        return;
+      default:
+        return;
+    }
+  };
+}
+
 export function Segmented<T extends string>({
   label,
   value,
@@ -313,55 +394,23 @@ export function Segmented<T extends string>({
   const hintId = `${id}-hint`;
   const groupRef = useRef<HTMLDivElement | null>(null);
 
-  const move = (delta: number | "first" | "last"): void => {
-    if (disabled || options.length === 0) return;
-    const current = options.findIndex((option) => option.value === value);
-    const from = current === -1 ? 0 : current;
-    const index =
-      delta === "first"
-        ? 0
-        : delta === "last"
-          ? options.length - 1
-          : (from + delta + options.length) % options.length;
-    onChange(options[index].value);
-    // Selection follows focus, so focus has to follow it back.
-    const buttons = groupRef.current?.querySelectorAll<HTMLButtonElement>("button");
-    buttons?.[index]?.focus();
-  };
-
   return (
     <div className="space-y-1.5">
       <span className="text-sm font-medium text-ink">{label}</span>
       <div
         id={id}
+        data-testid={id}
         ref={groupRef}
         role="radiogroup"
         aria-label={label}
         aria-describedby={hint ? hintId : undefined}
-        onKeyDown={(event) => {
-          switch (event.key) {
-            case "ArrowRight":
-            case "ArrowDown":
-              event.preventDefault();
-              move(1);
-              return;
-            case "ArrowLeft":
-            case "ArrowUp":
-              event.preventDefault();
-              move(-1);
-              return;
-            case "Home":
-              event.preventDefault();
-              move("first");
-              return;
-            case "End":
-              event.preventDefault();
-              move("last");
-              return;
-            default:
-              return;
-          }
-        }}
+        onKeyDown={radioGroupKeyDown(
+          options.map((option) => option.value),
+          value,
+          onChange,
+          groupRef,
+          disabled,
+        )}
         className="flex rounded-milled border border-control bg-plate-sunken p-0.5"
       >
         {options.map((option) => (
@@ -428,6 +477,7 @@ export function TextField({
       </div>
       <input
         id={id}
+        data-testid={id}
         type="text"
         value={value}
         placeholder={placeholder}
@@ -473,6 +523,7 @@ export function SelectField<T extends string>({
       </label>
       <select
         id={id}
+        data-testid={id}
         value={value}
         disabled={disabled}
         aria-describedby={hint ? hintId : undefined}
@@ -486,61 +537,6 @@ export function SelectField<T extends string>({
         ))}
       </select>
       {hint ? <Hint id={hintId}>{hint}</Hint> : null}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// ColorField
-// ---------------------------------------------------------------------------
-
-interface ColorFieldProps {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  id: string;
-  disabled?: boolean;
-}
-
-/**
- * A native colour well plus the hex it holds.
- *
- * The hex is shown, not merely implied: a filament is chosen by its code as
- * often as by its look, and a swatch alone cannot be read out to a slicer.
- * `<input type="color">` only accepts `#rrggbb`, while the contract also
- * allows an 8-digit value, so the well is fed a truncated copy and the full
- * value is what gets written back.
- */
-export function ColorField({
-  label,
-  value,
-  onChange,
-  id,
-  disabled = false,
-}: ColorFieldProps) {
-  const wellValue = value.slice(0, 7);
-  return (
-    <div className="flex items-center justify-between gap-2">
-      <label htmlFor={id} className="text-sm text-ink">
-        {label}
-      </label>
-      <span className="flex items-center gap-1.5">
-        <span
-          className="text-2xs uppercase text-ink-faint"
-          data-testid={`${id}-hex`}
-        >
-          {value.toUpperCase()}
-        </span>
-        <input
-          id={id}
-          type="color"
-          value={wellValue}
-          disabled={disabled}
-          aria-label={`${label} colour`}
-          onChange={(event) => onChange(event.target.value)}
-          className="h-6 w-9"
-        />
-      </span>
     </div>
   );
 }

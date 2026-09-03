@@ -7,12 +7,14 @@
  * them uses, and flipping `.dark` on <html> re-themes the canvas from the same
  * source as the panels.
  *
- * In `parts` colour mode the palette comes from `PrintParams.part_colors`
- * instead: those are real filament colours the user picked, and the point of
- * that mode is to see them.
+ * Since v3.1 the MODEL's own colours come from the engine
+ * (`RegionMesh.colorHex`, resolved from `colour.region_colors`), so nothing
+ * here paints a part any more: what the viewport still reads is the room the
+ * object sits in (background, sky, ground bounce, grid), the tiling overlay
+ * and the two multipliers below. The part slots stay declared because they are
+ * the app's preview palette and the per-object work in Tasks 10 and 11 needs
+ * the hero and cursor colours back.
  */
-
-import type { PartColors, PrintParams } from "@/lib/contracts";
 
 export interface PreviewPalette {
   background: string;
@@ -122,6 +124,52 @@ export function readPreviewPalette(theme: string): PreviewPalette {
 }
 
 /**
+ * The two viewport multipliers, as design tokens rather than literals in the
+ * render path (v3.1).
+ *
+ * `dim` is how far the model fades while a newer run is under way; `recess` is
+ * how far a triangle inside a declared recess band is darkened so an engraved
+ * line reads at viewing distance. Both multiply the model's own filament
+ * colours, so neither invents a colour: `app/globals.css` owns the numbers and
+ * gives the dark viewport its own pair.
+ */
+export const VIEWPORT_MULTIPLIER_TOKENS = {
+  dim: "--fc-preview-dim-opacity",
+  recess: "--fc-preview-recess-shade",
+} as const;
+
+export interface ViewportMultipliers {
+  dim: number;
+  recess: number;
+}
+
+/**
+ * Fallbacks used when the stylesheet has not arrived (SSR, a test DOM). Both
+ * are visible-but-conservative: a missing token must not make the model
+ * invisible or the recesses black.
+ */
+export const DEFAULT_VIEWPORT_MULTIPLIERS: ViewportMultipliers = { dim: 0.45, recess: 0.62 };
+
+/**
+ * Read the two multipliers off `element` (the canvas wrapper carrying
+ * `data-fc-viewport-theme`, so the viewport theme's own values win) or off the
+ * document. A value that is not a finite number in `[0, 1]` is refused rather
+ * than trusted: a typo in the sheet would otherwise blank the viewport.
+ */
+export function readViewportMultipliers(element: Element | null): ViewportMultipliers {
+  if (typeof window === "undefined") return DEFAULT_VIEWPORT_MULTIPLIERS;
+  const styles = window.getComputedStyle(element ?? document.documentElement);
+  const out = { ...DEFAULT_VIEWPORT_MULTIPLIERS };
+  for (const [slot, variable] of Object.entries(VIEWPORT_MULTIPLIER_TOKENS) as Array<
+    [keyof ViewportMultipliers, string]
+  >) {
+    const value = Number.parseFloat(styles.getPropertyValue(variable).trim());
+    if (Number.isFinite(value) && value >= 0 && value <= 1) out[slot] = value;
+  }
+  return out;
+}
+
+/**
  * The four viewport-only slots `colour.preview_theme` controls
  * (`app/globals.css`'s `[data-fc-viewport-theme]` rules), independent of the
  * app's own light/dark theme (v3 phase 5, `[V3-P5-C]`).
@@ -164,29 +212,4 @@ export function readViewportPalette(
     if (value) out[slot] = value;
   }
   return out;
-}
-
-/**
- * The palette the canvas should paint with: the user's filament colours in
- * `parts` mode, the themed preview tokens otherwise.
- *
- * `background`, `grid`, the lights and the two selection colours always stay
- * themed -- they are the room the object sits in, not part of the object.
- */
-export function paletteFor(
-  params: PrintParams,
-  themed: PreviewPalette,
-  parts: PartColors | undefined,
-): PreviewPalette {
-  if (params.color_mode !== "parts" || !parts) return themed;
-  return {
-    ...themed,
-    base: parts.base,
-    frame: parts.frame,
-    building: parts.buildings,
-    road: parts.roads,
-    water: parts.water,
-    green: parts.green,
-    tree: parts.trees,
-  };
 }

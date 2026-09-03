@@ -1,24 +1,26 @@
 /**
- * Export, v3: turning a fresh `EngineResult` into a downloaded file.
+ * Export, v3.1: turning the worker's finished files into downloads.
  *
- * There is no server round trip left in this module. Export means:
- * export `EngineResult` for `PrintParams.export_target` through
- * `lib/engine/export`, build the same sidecar JSON the CLI/Python validator
- * expects (`lib/engine/export/common.ts:buildSidecarJson`, so the two can
- * never drift), and hand the browser two (or more) Blob object URLs to
- * download. `store/editor.ts` is the only caller: it decides whether to
- * reuse the fresh engine result or run one first, and calls the pure
- * functions here to turn that result into files.
+ * There is no server round trip left in this module, and since v3.1 there is
+ * no exporter call either: the writer and the sidecar are the pipeline's own
+ * `export` stage (`lib/engine/pipeline/stages.ts`), so an export is "run the
+ * remaining uncached stages and write the file" rather than a second build on
+ * the main thread. What is left here is the part that can only happen on the
+ * page: turning the transferred bytes into Blob object URLs, and the staleness
+ * labelling that stops an outdated file being offered.
+ *
+ * `store/editor.ts` is the only caller: it awaits the run that is already
+ * under way (or starts one), asks `PipelineClient.exportFiles` for the files,
+ * and hands the result here.
  */
 
-import type { SceneGraph } from "./contracts";
-import { perfMark, perfSpan } from "./perf";
+import { perfMark } from "./perf";
 import { isTauri, saveFileWithDialog } from "./platform";
-import { buildSidecarJson, sanitizeStem } from "./engine/export/common";
-import { exportForTarget, type ExportOutput, type ExportTarget, type SourceLocation } from "./engine/export";
+import { sanitizeStem } from "./engine/export/common";
+import type { ExportTarget } from "./engine/export";
 import type { ColorChangePlan } from "./engine/export/colorchange";
+import type { ExportOut } from "./engine/pipeline";
 import type { AuditFinding, EngineResult } from "./engine/types";
-import { resolveProfile } from "./printers";
 
 export type ExportPhase = "idle" | "exporting" | "done" | "failed";
 
@@ -101,80 +103,39 @@ export function exportFailedLocally(previous: ExportState, message: string): Exp
   return { ...previous, phase: "failed", error: message };
 }
 
-/** The stem `runExport` defaults to when the caller does not name one: the city label, or "framecraft". */
+/**
+ * The file stem the store asks the `export` stage for: the city label, or
+ * "framecraft".
+ *
+ * The stage falls back to the same label with the same slug rule when no stem
+ * is passed, but it does NOT run `sanitizeStem`, so this is what keeps a label
+ * carrying a slash or a colon out of the file name.
+ */
 export function stemForResult(result: EngineResult): string {
   const label = (result.params.city_label ?? "").trim();
   const base = label !== "" ? label.toLowerCase().replace(/\s+/g, "-") : "framecraft";
   return sanitizeStem(base);
 }
 
-export interface RunExportOptions {
-  stem?: string;
-  title?: string;
-  source?: SourceLocation;
-  layerHeightMm?: number;
-}
-
-export interface RunExportOutcome {
-  output: ExportOutput;
-  sidecarBytes: Uint8Array;
-  sidecarName: string;
-}
-
 /**
- * Export `result` for `target` and build its sidecar JSON. Pure (besides the
- * `Date.now()` the sidecar's `created_at` reads): no Blob, no download, no
- * store write. `exportDone` turns the result into `DownloadFile[]`.
+ * Turn the worker's `ExportOut` into the new terminal `ExportState`, as Blob
+ * object URLs the OUTPUT panel can hand straight to `<a download>`. Revokes
+ * whatever URLs the previous state was holding first.
+ *
+ * The bytes arrive transferred from the worker; the sidecar arrives as the
+ * object the reference validator reads, and is encoded here so the two files
+ * are offered the same way.
  */
-export function runExport(result: EngineResult, target: ExportTarget, scene: SceneGraph, options: RunExportOptions = {}): RunExportOutcome {
-  // The whole export as the user experiences it: the writer plus the sidecar.
-  // `export.<target>` inside it is the writer alone (`export/index.ts`).
-  return perfSpan("export.run", () => writeExport(result, target, scene, options));
-}
-
-function writeExport(result: EngineResult, target: ExportTarget, scene: SceneGraph, options: RunExportOptions): RunExportOutcome {
-  const created = new Date();
-  const stem = options.stem ?? stemForResult(result);
-  const output = exportForTarget(result, target, {
-    stem,
-    title: options.title,
-    created,
-    source: options.source,
-    layerHeightMm: options.layerHeightMm,
-  });
-  const sidecarBytes = perfSpan("export.sidecar", () => {
-    const sidecar = buildSidecarJson({
-      result,
-      target,
-      // The sidecar's provenance block names the same place the FILES do
-      // (`[V3-P7-A10]`); passing it here is what keeps the two from disagreeing.
-      source: options.source ?? null,
-      files: output.files,
-      notes: output.notes,
-      scene,
-      elapsedS: result.stats.elapsedMs / 1000,
-      created,
-      printerProfileId: resolveProfile(result.params).id,
-    });
-    return new TextEncoder().encode(`${JSON.stringify(sidecar, null, 2)}\n`);
-  });
+export function exportDone(previous: ExportState, outcome: ExportOut, findings: AuditFinding[]): ExportState {
+  revokeExportUrls(previous);
+  const sidecarBytes = new TextEncoder().encode(`${JSON.stringify(outcome.sidecar, null, 2)}\n`);
   // A mark, not a span: what matters about an export payload is its SIZE, and
   // the report's bytes column is where a 40 MB STEP file makes itself obvious.
   let bytes = sidecarBytes.byteLength;
-  for (const file of output.files) bytes += file.bytes.byteLength;
+  for (const file of outcome.files) bytes += file.bytes.byteLength;
   perfMark("export.bytes", { bytes });
-  return { output, sidecarBytes, sidecarName: `${stem}.json` };
-}
-
-/**
- * Turn a `RunExportOutcome` into the new terminal `ExportState`, as Blob object
- * URLs the OUTPUT panel can hand straight to `<a download>`. Revokes whatever
- * URLs the previous state was holding first.
- */
-export function exportDone(previous: ExportState, target: ExportTarget, outcome: RunExportOutcome, findings: AuditFinding[]): ExportState {
-  revokeExportUrls(previous);
   const files: DownloadFile[] = [
-    ...outcome.output.files.map((file) => ({
+    ...outcome.files.map((file) => ({
       label: file.name,
       filename: file.name,
       href: URL.createObjectURL(new Blob([file.bytes as BlobPart], { type: file.mime })),
@@ -183,7 +144,7 @@ export function exportDone(previous: ExportState, target: ExportTarget, outcome:
     {
       label: outcome.sidecarName,
       filename: outcome.sidecarName,
-      href: URL.createObjectURL(new Blob([outcome.sidecarBytes as BlobPart], { type: "application/json" })),
+      href: URL.createObjectURL(new Blob([sidecarBytes as BlobPart], { type: "application/json" })),
       mime: "application/json",
     },
   ];
@@ -191,10 +152,13 @@ export function exportDone(previous: ExportState, target: ExportTarget, outcome:
     phase: "done",
     error: null,
     files,
-    target,
-    notes: outcome.output.notes,
-    findings,
-    plan: outcome.output.plan,
+    target: outcome.target,
+    notes: outcome.notes,
+    // The engine's findings for the model, plus the writer's own for the FILE:
+    // a format that could not carry every face says so here rather than leaving
+    // the user to find it in `make validate` (`export/stl.ts`).
+    findings: [...findings, ...(outcome.findings ?? [])],
+    plan: outcome.plan,
     stale: false,
   };
 }

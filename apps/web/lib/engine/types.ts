@@ -66,6 +66,9 @@ export type RegionName = (typeof REGION_NAMES)[number];
 /** Most gradient bands the buildings can be split into (`[V3-P5-F7]`). */
 export const GRADIENT_MAX_BANDS = 8;
 
+/** `RegionMesh.triangleOwner` entry for a triangle no building could be attributed to. */
+export const NO_OWNER = 0xffffffff;
+
 /** Region name for gradient band `index` (1-based); band 1 is `buildings`. */
 export function bandRegionName(index: number): RegionName {
   if (index <= 1) return "buildings";
@@ -114,6 +117,16 @@ export interface RegionMesh {
   slot: number;
   /** Colour from params.colour.region_colors, "#RRGGBB". */
   colorHex: string;
+  /**
+   * Per-triangle building identity, on the `buildings`, `buildings_band_N`
+   * and `hero_building` meshes only: one entry per triangle, an index into
+   * `owners`, or `NO_OWNER` for a triangle the attribution could not place
+   * (`solid/owners.ts`). Transferred with the positions; emptied wherever the
+   * positions are.
+   */
+  triangleOwner?: Uint32Array;
+  /** The building ids `triangleOwner` indexes: SceneGraph ids (or `block-<n>`), sorted, unique to this mesh. */
+  owners?: string[];
 }
 
 export type Severity = "info" | "warning" | "error";

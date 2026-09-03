@@ -13,7 +13,8 @@ import { describe, expect, it } from "vitest";
 
 import { DEFAULT_PRINT_PARAMS } from "./contracts";
 import type { Building, PrintParams, SceneGraph } from "./contracts";
-import { scaleRatio, specStrip } from "./hud";
+import { scaleRatio, specStrip, stageEtaText, stageLabel, stageOverlayText } from "./hud";
+import { IDLE_PIPELINE_PROGRESS, type PipelineProgress } from "@/store/editor";
 import { format_scale } from "./tokens";
 import * as T from "./transform";
 
@@ -133,5 +134,64 @@ describe("specStrip", () => {
     const graph = scene([building("w1", 100, true)]);
     const doubled = specStrip(graph, { ...DEFAULTS, large_scale: 2.0 });
     expect(doubled[1].value).toBe("21.7 mm");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The pipeline stage overlay
+// ---------------------------------------------------------------------------
+
+function progress(over: Partial<PipelineProgress> = {}): PipelineProgress {
+  return { ...IDLE_PIPELINE_PROGRESS, ...over };
+}
+
+describe("stageLabel", () => {
+  it("says the region, whichever phase of it is running", () => {
+    // `surface-roads`, `region-roads` and `finish-roads` are all "roads" to
+    // someone watching the model appear.
+    expect(stageLabel("surface-roads")).toBe("roads");
+    expect(stageLabel("region-roads")).toBe("roads");
+    expect(stageLabel("finish-roads")).toBe("roads");
+    expect(stageLabel("finish-buildings_band_2")).toBe("buildings band 2");
+  });
+
+  it("spells out the stages whose ids are not English", () => {
+    expect(stageLabel("fetch")).toBe("fetching from OpenStreetMap");
+    expect(stageLabel("repair-buildings")).toBe("repairing footprints");
+    expect(stageLabel("merged")).toBe("cleaning the mesh");
+  });
+
+  it("names an unknown stage after itself rather than hiding it", () => {
+    // A stage added to the registry without an entry here still reads.
+    expect(stageLabel("some-new-stage")).toBe("some new stage");
+    expect(stageLabel("lettering")).toBe("lettering");
+    expect(stageLabel("")).toBe("");
+  });
+});
+
+describe("stageOverlayText", () => {
+  it("names the stage and its place in the plan, counting from one", () => {
+    expect(stageOverlayText(progress({ stage: "surface-roads", index: 13, total: 71 }))).toBe(
+      "Building: roads (14 of 71)",
+    );
+  });
+
+  it("says nothing before a run has named its first stage", () => {
+    expect(stageOverlayText(progress())).toBeNull();
+    expect(stageOverlayText(progress({ stage: "context", total: 0 }))).toBeNull();
+  });
+});
+
+describe("stageEtaText", () => {
+  it("rounds to whole seconds, because it is an estimate from the previous run", () => {
+    expect(stageEtaText(progress({ etaMs: 3200 }))).toBe("about 3 s left");
+    expect(stageEtaText(progress({ etaMs: 3600 }))).toBe("about 4 s left");
+  });
+
+  it("says nothing while there is no honest number", () => {
+    // Null for the first three stages of a run and for a plan nothing has
+    // timed; under half a second there is nothing worth saying either.
+    expect(stageEtaText(progress({ etaMs: null }))).toBeNull();
+    expect(stageEtaText(progress({ etaMs: 200 }))).toBeNull();
   });
 });

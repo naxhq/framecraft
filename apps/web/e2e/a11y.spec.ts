@@ -135,7 +135,11 @@ for (const theme of ["light", "dark"] as const) {
         await toggle.click();
       }
     }
-    await expect(page.getByTestId("part-colors")).toBeVisible();
+    // The seven v1 part-colour wells are gone (Task 2, DECISIONS
+    // [V3.1-P1-2]); the filament-slot rows are the colour controls now, and
+    // they are what has to be on screen for axe to audit the Colour group.
+    await expect(page.getByTestId("colour-region-rows")).toBeVisible();
+    await expect(page.getByTestId("colour-color-water")).toBeVisible();
     await auditWithAxe(page, `${theme} / Chicago generated, all groups open`);
 
     // 3. The adjustments drawer open.
@@ -234,12 +238,14 @@ test("every control is reachable by Tab, in order, with a visible focus ring", a
   await page.goto("/");
   await expect(page.getByTestId("editor")).toBeVisible();
   await generateChicago(page);
-  // Let the debounced WASM engine job settle before spending the walk's own
-  // budget: a Tab press that lands mid-build pays for whatever store-wide
-  // re-render the engine result's arrival triggers on TOP of its own work,
-  // which is exactly the kind of unrelated cost this walk should not have to
-  // absorb 120 times over.
-  await expect(page.getByTestId("engine-updating")).toHaveCount(0, { timeout: WARMUP_BUDGET_MS });
+  // Let the pipeline run settle before spending the walk's own budget: a Tab
+  // press that lands mid-run pays for whatever store-wide re-render the next
+  // region's arrival triggers on TOP of its own work, which is exactly the
+  // kind of unrelated cost this walk should not have to absorb 120 times over.
+  // The stage overlay is on screen for exactly as long as a run is.
+  await expect(page.getByTestId("pipeline-stage-overlay")).toHaveCount(0, {
+    timeout: WARMUP_BUDGET_MS,
+  });
   for (const group of ["frame", "colour", "printer"]) {
     const toggle = page.getByTestId(`group-${group}-toggle`);
     if ((await toggle.getAttribute("aria-expanded")) === "false") await toggle.click();

@@ -38,6 +38,7 @@ import {
   decodeShare,
   encodeShare,
   paramsDiff,
+  parsePrintParams,
   readShareParam,
   shareUrl,
 } from "./share";
@@ -428,7 +429,39 @@ describe("encodeShare / decodeShare", () => {
       )[key];
       const decoded = decodeShare(encodeShare(REQUEST, params));
       expect(decoded.ok, key).toBe(true);
-      if (decoded.ok) expect(decoded.params, key).toEqual(params);
+      if (!decoded.ok) continue;
+      if (key === "part_colors") {
+        // The one key whose round trip is deliberately not the identity
+        // (DECISIONS [V3.1-P1-2]). A payload carrying `part_colors` and no
+        // `colour.region_colors` has its v1 colours moved onto the regions
+        // the engine actually paints, because nothing reads `part_colors`
+        // any more.
+        //
+        // The deep equality is NOT dropped for this key, it is aimed at the
+        // expected post-migration object: everything else about the params,
+        // `colour.palette` and `colour.region_slots` included, still has to
+        // come back untouched, and the six moved colours are named on top.
+        const parts = params.part_colors!;
+        const expected: PrintParams = {
+          ...params,
+          colour: {
+            ...params.colour,
+            region_colors: {
+              ...params.colour!.region_colors,
+              base: parts.base,
+              frame: parts.frame,
+              buildings: parts.buildings,
+              roads: parts.roads,
+              water: parts.water,
+              parks: parts.green,
+            },
+          },
+        };
+        expect(decoded.params, key).toEqual(expected);
+        expect(decoded.params.part_colors, key).toEqual(parts);
+        continue;
+      }
+      expect(decoded.params, key).toEqual(params);
     }
   });
 
@@ -1108,5 +1141,118 @@ describe("shareUrl and readShareParam", () => {
     expect(readShareParam(`${SHARE_PARAM}=${payload}`)).toBe(payload);
     expect(readShareParam("?other=1")).toBeNull();
     expect(readShareParam("")).toBeNull();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// The v1 colour block, carried forward
+// ---------------------------------------------------------------------------
+
+/**
+ * `part_colors` is the v1 colour block. No pipeline stage claims any of its
+ * seven leaves, so as of the settings truth audit it has no control and no
+ * effect on any exported file (DECISIONS [V3.1-P1-2]). Every link and project
+ * file written before that carries its colours in exactly that field, so they
+ * are moved into `colour.region_colors` on the way in -- and only when the
+ * payload did not already choose region colours of its own.
+ */
+describe("parsePrintParams: the part_colors migration", () => {
+  const DEFAULTS = defaultPrintParams().colour!.region_colors!;
+
+  it("carries a v1 payload's seven wells onto the regions the engine paints", () => {
+    const result = parsePrintParams({
+      part_colors: {
+        base: "#111111",
+        frame: "#222222",
+        buildings: "#333333",
+        roads: "#444444",
+        water: "#555555",
+        green: "#666666",
+        trees: "#777777",
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const colors = result.params.colour!.region_colors!;
+    expect(colors.base).toBe("#111111");
+    expect(colors.frame).toBe("#222222");
+    expect(colors.buildings).toBe("#333333");
+    expect(colors.roads).toBe("#444444");
+    expect(colors.water).toBe("#555555");
+    // `green` and `trees` both land on `parks`: the tree cones are unioned into
+    // the parks region, so the printed object has one colour for both and the
+    // area colour is the one that wins.
+    expect(colors.parks).toBe("#666666");
+    // Regions the v1 block never had keep the contract's own defaults.
+    expect(colors.lettering).toBe(DEFAULTS.lettering);
+    expect(colors.hero_building).toBe(DEFAULTS.hero_building);
+  });
+
+  it("takes the tree colour for the parks when a payload names no planting colour", () => {
+    const result = parsePrintParams({ part_colors: { trees: "#0a0b0c" } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.params.colour!.region_colors!.parks).toBe("#0a0b0c");
+    // Nothing else moved.
+    expect(result.params.colour!.region_colors!.water).toBe(DEFAULTS.water);
+  });
+
+  it("migrates a v2 payload whose colour block names no region colours", () => {
+    const result = parsePrintParams({
+      part_colors: { water: "#123456" },
+      colour: { palette: "noir" },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.params.colour!.region_colors!.water).toBe("#123456");
+    // The rest of the colour block survives the migration untouched.
+    expect(result.params.colour!.palette).toBe("noir");
+    expect(result.params.colour!.region_slots!.water).toBe(
+      defaultPrintParams().colour!.region_slots!.water,
+    );
+  });
+
+  it("leaves a v3 payload that carries both alone: region_colors wins", () => {
+    const defaults = defaultPrintParams().colour!.region_colors!;
+    const result = parsePrintParams({
+      part_colors: { water: "#123456", base: "#654321" },
+      colour: { region_colors: { ...defaults, water: "#abcdef" } },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.params.colour!.region_colors!.water).toBe("#abcdef");
+    // Not "#654321": a payload that chose region colours chose all of them.
+    expect(result.params.colour!.region_colors!.base).toBe(DEFAULTS.base);
+    // The field itself still round-trips, for v3 payload compatibility.
+    expect(result.params.part_colors!.water).toBe("#123456");
+  });
+
+  it("changes nothing for a payload with no part_colors at all", () => {
+    const result = parsePrintParams({ plate_mm: 200 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.params.colour!.region_colors).toEqual(DEFAULTS);
+  });
+
+  it("refuses a payload whose v1 colour is not a colour, before the migration runs", () => {
+    // `PART_COLOR_SPEC` validates every well against the hex pattern, so a
+    // malformed one is refused whole rather than migrated into the region
+    // table. Pinned because the migration is the only new reader of the field
+    // and a validator that stopped running would be invisible otherwise.
+    const result = parsePrintParams({ part_colors: { water: "nope" } });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("part_colors.water");
+    expect(result.reason).toContain("not in the form");
+  });
+
+  it("applies through a whole shared link, not only through the parser", () => {
+    const decoded = decodeShare(
+      payloadOf({ r: REQUEST, p: { part_colors: { water: "#123456" } } }),
+    );
+    expect(decoded.ok).toBe(true);
+    if (!decoded.ok) return;
+    expect(decoded.params.colour!.region_colors!.water).toBe("#123456");
   });
 });

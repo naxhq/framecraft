@@ -2,8 +2,9 @@
 
 import { PARAM_RANGES } from "@/lib/contracts";
 import type { PrintParams } from "@/lib/contracts";
+import { labelled } from "@/lib/controlCatalog";
 import { useEditorStore } from "@/store/editor";
-import { Segmented, Slider, Toggle } from "../Controls";
+import { Note, Segmented, Slider, Toggle } from "../Controls";
 
 const ROAD_MODES = [
   { value: "engrave" as const, label: "engrave" },
@@ -24,17 +25,14 @@ export function SurfaceGroup() {
   return (
     <>
       <Segmented
-        id="road_mode"
-        label="Road mode"
+        {...labelled("road_mode")}
         value={params.road_mode}
         options={ROAD_MODES}
         onChange={(value) => setParam("road_mode", value)}
-        hint="Engraved roads are cut 0.6 mm into the slab; embossed ones stand 0.4 mm proud."
       />
 
       <Slider
-        id="road_scale"
-        label="Road scale"
+        {...labelled("road_scale")}
         min={PARAM_RANGES.road_scale.min * 100}
         max={PARAM_RANGES.road_scale.max * 100}
         step={PERCENT_STEP}
@@ -42,23 +40,24 @@ export function SurfaceGroup() {
         display={`${percent("road_scale")} %`}
         onChange={(value) => setParam("road_scale", value / 100)}
         disabled={params.road_mode === "off"}
-        hint="Width multiplier, applied before the minimum-feature clamp."
       />
 
+      {params.road_mode === "off" ? (
+        <Note testId="road-scale-off-note">
+          There is no road layer to widen while Road mode is off.
+        </Note>
+      ) : null}
+
       <Toggle
-        id="water"
-        label="Water"
+        {...labelled("water")}
         checked={params.water}
         onChange={(value) => setParam("water", value)}
-        hint="Recessed 0.5 mm below the base top."
       />
 
       <Toggle
-        id="trees"
-        label="Trees"
+        {...labelled("trees")}
         checked={params.trees}
         onChange={(value) => setParam("trees", value)}
-        hint="Cones on the green areas, three times as tall as they are wide, capped at 2000. Trees too small to print are dropped."
       />
     </>
   );

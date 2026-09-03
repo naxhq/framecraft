@@ -230,23 +230,109 @@ Recorded here so the next phase does not re-investigate them:
 
 ---
 
-## Open: nightly export matrix defects found by the Task 14 CI diet (2026-09-02)
+## Nightly export matrix defects found by the Task 14 CI diet (2026-09-02)
 
 Found by `scripts/ci-export-matrix.sh` and `scripts/ci-preset-matrix.sh` (the
 new `nightly.yml` jobs, also `make gate-nightly`) on the first local run against
 the Task 3 tree. Owner: `lib/engine/solid` and `lib/engine/export` (the geometry
 and perf wave). The checks were not weakened.
 
+All three are **FIXED by the Task 7 geometry wave (2026-09-02)**. The diagnosis,
+the measurements and the four repairs that were built and discarded on the way
+are in `docs/handoff/v3-07-geometry.md`. Both scripts now pass end to end.
+
 1. `stl` target on the Chicago fixture fails the validator's `degenerate_faces`
    row with 1 face, while the `generic-3mf` of the same build passes.
+
+   **FIXED.** Same mesh, one format. Triangle 49 182 is a needle at build-space
+   (89.966697693, 145.642852783) whose three vertices are one vertical edge at
+   z 2.800048828 / 3.0 / 3.5 and whose x and y agree to 1.8e-6 mm. In double it
+   measures **6.184e-7 mm2** - real geometry, six times `mesh.REPAIR_AREA_MM2`,
+   which is why `cleanMesh` never touched it - and one float32 step at a 90 mm
+   coordinate is 7.6e-6 mm, so in the file its three vertices are collinear and
+   it measures **0**. The 3MF writes decimal text at twelve places and carries
+   it perfectly; the STL cannot. `mesh.ts` gained a float32 measure
+   (`float32DegenerateFaces`, `cleanMesh`'s `float32` option) and
+   `hardenForFloat32`, which `export/stl.ts` runs on the PLACED mesh - the grid
+   is a property of the coordinate, and in the engine frame that vertex sits at
+   x = -0.033 mm where the step is 4e-9 mm and nothing collapses. One
+   T-junction split, which retires the needle and the neighbour holding its long
+   edge and puts two triangles in their place. Before: 1 face under 1e-9 mm2.
+   After: **0**, `ALL CHECKS PASS`, and the mesh is the same 46 962 vertices and
+   93 920 triangles it was.
+
 2. `--tiling 2x2`: tile A1 fails `min_wall` (0.037 mm) and `bodies` (one water
    debris shell); tiles A2, B1, B2 pass.
-3. Presets Paris, Tokyo and London (through `--overpass fixtures/<sha1>.json`)
-   each produce a `.3mf` that passes and an `.stl` that fails `manifold`,
-   `watertight` and `self_intersection`. Chicago, New York and San Francisco
-   pass both. Since both files are written from `EngineResult.merged`, the
-   suspect is the STL writer's handling of the merged mesh (or the validator
-   reading a binary STL differently from the 3MF), to be settled by diffing
-   the two meshes before touching geometry.
 
-Status: OPEN, queued for the Task 7 geometry wave after the pipeline lands.
+   **FIXED**, two independent causes in `solid/tiling.ts`.
+
+   *`min_wall`*: a needle the sliver cutter STRANDED. The cutter removed a
+   1.64 mm band across a city block near the seam and left the block's southern
+   tip behind as an island of its own - 0.0479 x 0.238 mm, **0.00535 mm2**,
+   standing from z 6.35 to 20.67. `thinPart` then could not see it, because it
+   dropped any whole component under `SLIVER_MIN_AREA_MM2` (0.01 mm2) before
+   asking whether a wall fits in it, and the reference validator has no such
+   floor: it measures every region a slice holds, however small. That floor is
+   gone; it survives on the GROWN cutter and on the band-clipped result, where
+   it is cheap and can hide nothing. Before: 6 of 176 sampled regions under
+   0.72 mm, narrowest **0.037 mm**. After: **0.9379 mm**.
+
+   *`bodies`*: the tile's own booleans - two trims per axis, the keys, the
+   sockets, the sliver cutter - sheared a 0.064 x 0.017 x 1.2 mm splinter of
+   **0.000458 mm3** off the water region and left it floating. The region solids
+   arrive pruned from the finish stage and were never pruned again after the
+   cut. `buildTile` now sweeps every tile solid with `pruneDebris` at the shared
+   `DEBRIS_MM3` (0.01), which is the validator's own
+   `MIN_PART_BODY_VOLUME_MM3`. Before: 116 shells with one debris shell. After:
+   **114 shells, no debris**. All four tiles `ALL CHECKS PASS`; the seam trim
+   finding moved from 2510.35 to 2516.77 mm3 (+6.42, +0.26 %).
+
+3. Presets Paris, Tokyo and London each produce a `.3mf` that passes and an
+   `.stl` that fails `manifold`, `watertight` and `self_intersection`.
+
+   **FIXED**, and the premise in the original note was wrong twice. These files
+   come from the REFERENCE pipeline (`ci-preset-matrix.sh` bakes every preset
+   with `python -m app.cli bake --preset`; the browser CLI's `--overpass` path is
+   Chicago-only), so the writer at fault is `services/bake/app/export/stl.py`.
+   And float32 rounding does not create the coincidence, it only exposes it: the
+   Paris mesh holds two DISTINCT vertices at exactly the same point (indices
+   7246 and 7247, at -19.079999998212, -77.350000001490, 4.649760), both joined
+   to the same neighbour 0.879 mm below them. Two building corners meeting
+   exactly. A 3MF is indexed and carries that faithfully; a binary STL is a
+   triangle soup, `app/cli.py`'s `_index_stl_triangle_soup` welds the identical
+   float32 rows to recover the index, and the weld hands that edge to four
+   faces - 53 016 vertices become 53 015 and the file has **2 non-manifold
+   directed edges**. No weld can repair it, and `assemble.finalize` does not
+   even see it: traced on this bake it receives 53 035 vertices with 10 float32
+   collisions (9 from rounding, 1 an exact duplicate) plus 7 degenerate faces in
+   double and 19 in float32, clears every one of those, and stops at 53 016 with
+   the one exact duplicate left, because `float32_defect_count` scores
+   `len(unique(vertices)) - len(unique(quantised))` and a pair that is already
+   one row of `unique(vertices)` contributes nothing to that difference.
+   So the FILE is made to say what the mesh says: `separate_float32_pinches`
+   moves the second vertex of a colliding group one float32 step at the model's
+   scale (1.5e-5 mm on a 180 mm plate) into its own material, against its
+   area-weighted vertex normal. Mirrored in `mesh.separateFloat32Pinches` for
+   the browser engine. Counts: Paris 1 pinch, Tokyo 1, London 2, Chicago 0,
+   New York 0, San Francisco 0. Before: `manifold`, `watertight`,
+   `self_intersection` red on three presets. After: **`ALL CHECKS PASS` on all
+   six presets, both files each**, `PRESET-MATRIX PASS`.
+
+**Note for the team lead**: `services/bake/app/export/stl.py` is outside the
+file list this wave was given. It was changed because it is the only place
+defect 3 can be closed - the validator (untouched) reads what that writer
+writes. The change adds no face and welds nothing; a mesh with no colliding
+pair, which is Chicago, New York and San Francisco, is written byte for byte
+what it was.
+
+---
+
+## Open: STEP writer's 6-decimal grid loses the same faces as float32 at plate 256 (v3-07 geometry audit finding 8, 2026-09-03)
+
+`export/step.ts` formats coordinates to six decimals; at plate 256 the same 6
+to 12 needles that collapse on the float32 grid collapse on that grid, and the
+STEP writer gets neither the hardening nor the `float32-degenerate` report.
+Closing it needs a second quantiser in `cleanMesh` keyed by the writer's grid
+plus a change in `export/step.ts`, over the wave's thirty-line bar. STEP is a
+faceted B-rep whose consumers re-mesh anyway; the reference validator does not
+read STEP. Status: OPEN, queued for the Task 7 geometry wave.

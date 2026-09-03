@@ -137,4 +137,15 @@ describe("the shortcut sheet's own list", () => {
       expect(shortcut.description.length).toBeGreaterThan(0);
     }
   });
+
+  it("tells the reader that Escape also cancels a run in flight", () => {
+    // Escape is ONE action with two meanings, resolved by `EditorShell`: it
+    // closes the outermost overlay when there is one and cancels the run when
+    // there is not. The sheet is the only place a user finds that out, so the
+    // row has to say both.
+    const escape = SHORTCUTS.find((shortcut) => shortcut.action === "dismiss");
+    expect(escape).toBeDefined();
+    expect(escape?.description.toLowerCase()).toContain("cancel");
+    expect(escape?.description.toLowerCase()).toContain("close");
+  });
 });

@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { DEFAULT_PRINT_PARAMS, PARAM_LIMITS, PARAM_RANGES } from "@/lib/contracts";
+import { labelled, sectionProps } from "@/lib/controlCatalog";
 import type { FrameStyle, HangerMagnet, NorthArrow, ScaleBar, UndersideMark } from "@/lib/contracts";
 import type { EngineBuilding } from "@/lib/engine/osm/types";
 import { heroTokenInfo } from "@/lib/heroes";
@@ -12,7 +13,7 @@ import { resolve_text, type TokenContext } from "@/lib/tokens";
 import * as T from "@/lib/transform";
 import { useEditorStore } from "@/store/editor";
 import EngravingsEditor from "../EngravingsEditor";
-import { Field, Note, SelectField, Slider, TextField, Toggle } from "../Controls";
+import { Field, Note, SelectField, Slider, TextField, Toggle, radioGroupKeyDown } from "../Controls";
 
 const CORNERS = [
   { value: "ne" as const, label: "Top right" },
@@ -101,6 +102,9 @@ const FRAME_PROFILES: ReadonlyArray<{
   },
 ];
 
+/** The profile ids in display order: the radiogroup's arrow-key sequence. */
+const FRAME_PROFILE_VALUES = FRAME_PROFILES.map((option) => option.value);
+
 const CORNER_STYLES = [
   { value: "square" as const, label: "Square" },
   { value: "mitred" as const, label: "Mitred" },
@@ -138,6 +142,7 @@ const DEFAULT_HANGER_MAGNET: HangerMagnet = DEFAULT_PRINT_PARAMS.hanger_magnet ?
  * would ever notice it changed.
  */
 export function FrameTextGroup() {
+  const profileGroupRef = useRef<HTMLDivElement | null>(null);
   const params = useEditorStore((state) => state.params);
   const graph = useEditorStore((state) => state.scene.graph);
   const { lat, lon, radius_m, rotation_deg } = useEditorStore(
@@ -168,7 +173,8 @@ export function FrameTextGroup() {
   const separate = frameStyle.separate ?? DEFAULT_FRAME_STYLE.separate ?? {};
   const texture = frameStyle.texture ?? DEFAULT_FRAME_STYLE.texture ?? {};
   const hangerMagnet = params.hanger_magnet ?? DEFAULT_HANGER_MAGNET;
-  const magnetInUse = params.hanger === "magnets" || separate.mount === "magnet";
+  const magnetMountInUse = (separate.enabled ?? false) && separate.mount === "magnet";
+  const wallMagnetsOnly = params.hanger === "magnets" && !magnetMountInUse;
 
   /**
    * What `{hero}` says right now: the effective count (manual plus, once
@@ -258,18 +264,34 @@ export function FrameTextGroup() {
   return (
     <>
       <Toggle
-        id="frame"
-        label="Frame"
+        {...labelled("frame")}
         checked={params.frame}
         onChange={(value) => setParam("frame", value)}
-        hint="A 6 mm border standing 2 mm proud of the base. It costs 12 mm of plate, so the city inside gets smaller."
       />
 
-      <Field
-        label="Frame profile"
-        hint="Every profile costs the same plate footprint as the plain lip; only the cross-section changes. A profile the engine has not built yet still previews as the plain lip and the Issues badge says so."
-      >
-        <div className="grid grid-cols-2 gap-1.5" data-testid="frame-profile-options" role="radiogroup" aria-label="Frame profile">
+      <Field {...sectionProps("frame-profile")}>
+        {/*
+          A real radiogroup, not seven buttons wearing the role. It cannot be a
+          `Segmented` (each option draws a cross-section glyph), so it takes
+          `Controls.radioGroupKeyDown` and a roving tabIndex instead: one Tab
+          stop, arrows move the selection, Home and End jump to the ends. The
+          pattern lives in one function so the two groups cannot drift.
+        */}
+        <div
+          ref={profileGroupRef}
+          className="grid grid-cols-2 gap-1.5"
+          data-testid="frame-profile-options"
+          role="radiogroup"
+          aria-label={labelled("frame-profile-*").label}
+          aria-describedby="frame-profile-hint"
+          onKeyDown={radioGroupKeyDown(
+            FRAME_PROFILE_VALUES,
+            frameStyle.profile ?? "plain",
+            (value) => setNested("frame_style", { profile: value }),
+            profileGroupRef,
+            !params.frame,
+          )}
+        >
           {FRAME_PROFILES.map((option) => (
             <button
               key={option.value}
@@ -277,6 +299,7 @@ export function FrameTextGroup() {
               data-testid={`frame-profile-${option.value}`}
               role="radio"
               aria-checked={(frameStyle.profile ?? "plain") === option.value}
+              tabIndex={(frameStyle.profile ?? "plain") === option.value ? 0 : -1}
               title={option.hint}
               disabled={!params.frame}
               onClick={() => setNested("frame_style", { profile: option.value })}
@@ -300,11 +323,13 @@ export function FrameTextGroup() {
             </button>
           ))}
         </div>
+        <p id="frame-profile-hint" className="mt-1.5 text-xs leading-snug text-ink-faint">
+          {labelled("frame-profile-*").hint}
+        </p>
 
         <div className="mt-3 space-y-3">
           <SelectField
-            id="frame_style_corner"
-            label="Corners"
+            {...labelled("frame_style_corner")}
             value={frameStyle.corner ?? "square"}
             options={CORNER_STYLES}
             disabled={!params.frame}
@@ -312,8 +337,7 @@ export function FrameTextGroup() {
           />
           {(frameStyle.corner ?? "square") !== "square" ? (
             <Slider
-              id="frame_style_corner_radius_mm"
-              label="Corner radius"
+              {...labelled("frame_style_corner_radius_mm")}
               min={PARAM_RANGES.frame_style.corner_radius_mm.min}
               max={PARAM_RANGES.frame_style.corner_radius_mm.max}
               step={0.5}
@@ -323,25 +347,20 @@ export function FrameTextGroup() {
               onChange={(value) => setNested("frame_style", { corner_radius_mm: value })}
             />
           ) : null}
-          <Slider
-            id="frame_style_lip_depth_mm"
-            label="Lip depth"
-            min={PARAM_RANGES.frame_style.lip_depth_mm.min}
-            max={PARAM_RANGES.frame_style.lip_depth_mm.max}
-            step={0.1}
-            value={frameStyle.lip_depth_mm ?? PARAM_RANGES.frame_style.lip_depth_mm.default}
-            display={`${(frameStyle.lip_depth_mm ?? PARAM_RANGES.frame_style.lip_depth_mm.default).toFixed(1)} mm`}
-            disabled={!params.frame}
-            hint="How far the lip's own moulding cuts into its 6 mm width."
-            onChange={(value) => setNested("frame_style", { lip_depth_mm: value })}
-          />
+          {/*
+            No Lip depth slider. `frame_style.lip_depth_mm` is in the matrix's
+            own KNOWN_DEFECTS: `solid/frame.ts` resolves it into
+            `FrameStyle.lipDepthMm` and nothing reads that field, so the
+            setting moves no geometry at any profile. `[V3.1-P2-2]` lands the
+            sight-edge rebate in the next wave and that wave re-adds the
+            control with it. A control must never ship ahead of its effect.
+          */}
         </div>
       </Field>
 
-      <Field label="Shadow gap" hint="A recessed groove between the frame and the base, as if the frame floats above the plate.">
+      <Field {...sectionProps("shadow-gap")}>
         <Toggle
-          id="frame_style_shadow_gap_enabled"
-          label="Add a shadow gap"
+          {...labelled("frame_style_shadow_gap_enabled")}
           checked={shadowGap.enabled ?? false}
           disabled={!params.frame}
           onChange={(value) => setNested("frame_style", { shadow_gap: { ...shadowGap, enabled: value } })}
@@ -349,8 +368,7 @@ export function FrameTextGroup() {
         {shadowGap.enabled ? (
           <div className="mt-3 space-y-3">
             <Slider
-              id="frame_style_shadow_gap_width_mm"
-              label="Width"
+              {...labelled("frame_style_shadow_gap_width_mm")}
               min={PARAM_RANGES.frame_style.shadow_gap.width_mm.min}
               max={PARAM_RANGES.frame_style.shadow_gap.width_mm.max}
               step={0.1}
@@ -360,8 +378,7 @@ export function FrameTextGroup() {
               onChange={(value) => setNested("frame_style", { shadow_gap: { ...shadowGap, width_mm: value } })}
             />
             <Slider
-              id="frame_style_shadow_gap_depth_mm"
-              label="Depth"
+              {...labelled("frame_style_shadow_gap_depth_mm")}
               min={PARAM_RANGES.frame_style.shadow_gap.depth_mm.min}
               max={PARAM_RANGES.frame_style.shadow_gap.depth_mm.max}
               step={0.1}
@@ -374,10 +391,9 @@ export function FrameTextGroup() {
         ) : null}
       </Field>
 
-      <Field label="Matting" hint="A recessed board between the frame and the city, like the mat around a photograph.">
+      <Field {...sectionProps("matting")}>
         <Toggle
-          id="frame_style_matting_enabled"
-          label="Add matting"
+          {...labelled("frame_style_matting_enabled")}
           checked={matting.enabled ?? false}
           disabled={!params.frame}
           onChange={(value) => setNested("frame_style", { matting: { ...matting, enabled: value } })}
@@ -385,20 +401,17 @@ export function FrameTextGroup() {
         {matting.enabled ? (
           <div className="mt-3 space-y-3">
             <Slider
-              id="frame_style_matting_width_mm"
-              label="Width"
+              {...labelled("frame_style_matting_width_mm")}
               min={PARAM_RANGES.frame_style.matting.width_mm.min}
               max={PARAM_RANGES.frame_style.matting.width_mm.max}
               step={0.5}
               value={matting.width_mm ?? PARAM_RANGES.frame_style.matting.width_mm.default}
               display={`${(matting.width_mm ?? PARAM_RANGES.frame_style.matting.width_mm.default).toFixed(1)} mm`}
               disabled={!params.frame}
-              hint="Plate the city loses to the matting, on top of what the frame itself already costs."
               onChange={(value) => setNested("frame_style", { matting: { ...matting, width_mm: value } })}
             />
             <Slider
-              id="frame_style_matting_proud_mm"
-              label="Standing proud"
+              {...labelled("frame_style_matting_proud_mm")}
               min={PARAM_RANGES.frame_style.matting.proud_mm.min}
               max={PARAM_RANGES.frame_style.matting.proud_mm.max}
               step={0.1}
@@ -411,10 +424,9 @@ export function FrameTextGroup() {
         ) : null}
       </Field>
 
-      <Field label="Separate frame part" hint="Prints the frame as its own piece from the base, so each can be a different filament without a colour change.">
+      <Field {...sectionProps("separate-frame")}>
         <Toggle
-          id="frame_style_separate_enabled"
-          label="Print the frame separately"
+          {...labelled("frame_style_separate_enabled")}
           checked={separate.enabled ?? false}
           disabled={!params.frame}
           onChange={(value) => setNested("frame_style", { separate: { ...separate, enabled: value } })}
@@ -422,33 +434,29 @@ export function FrameTextGroup() {
         {separate.enabled ? (
           <div className="mt-3 space-y-3">
             <SelectField
-              id="frame_style_separate_mount"
-              label="Mount"
+              {...labelled("frame_style_separate_mount")}
               value={separate.mount ?? "snap"}
               options={SEPARATE_MOUNTS}
               disabled={!params.frame}
               onChange={(value) => setNested("frame_style", { separate: { ...separate, mount: value } })}
             />
             <Slider
-              id="frame_style_separate_tolerance_mm"
-              label="Fit tolerance"
+              {...labelled("frame_style_separate_tolerance_mm")}
               min={PARAM_RANGES.frame_style.separate.tolerance_mm.min}
               max={PARAM_RANGES.frame_style.separate.tolerance_mm.max}
               step={0.05}
               value={separate.tolerance_mm ?? PARAM_RANGES.frame_style.separate.tolerance_mm.default}
               display={`${(separate.tolerance_mm ?? PARAM_RANGES.frame_style.separate.tolerance_mm.default).toFixed(2)} mm`}
               disabled={!params.frame}
-              hint="Extra clearance between the two parts. Widen it if the frame prints too tight to seat."
               onChange={(value) => setNested("frame_style", { separate: { ...separate, tolerance_mm: value } })}
             />
           </div>
         ) : null}
       </Field>
 
-      <Field label="Face texture" hint="A relief pattern cut into the frame's visible front face.">
+      <Field {...sectionProps("face-texture")}>
         <SelectField
-          id="frame_style_texture_pattern"
-          label="Pattern"
+          {...labelled("frame_style_texture_pattern")}
           value={texture.pattern ?? "none"}
           options={TEXTURE_PATTERNS}
           disabled={!params.frame}
@@ -457,8 +465,7 @@ export function FrameTextGroup() {
         {(texture.pattern ?? "none") !== "none" ? (
           <div className="mt-3 space-y-3">
             <Slider
-              id="frame_style_texture_scale_mm"
-              label="Pattern scale"
+              {...labelled("frame_style_texture_scale_mm")}
               min={PARAM_RANGES.frame_style.texture.scale_mm.min}
               max={PARAM_RANGES.frame_style.texture.scale_mm.max}
               step={0.1}
@@ -468,8 +475,7 @@ export function FrameTextGroup() {
               onChange={(value) => setNested("frame_style", { texture: { ...texture, scale_mm: value } })}
             />
             <Slider
-              id="frame_style_texture_depth_mm"
-              label="Pattern depth"
+              {...labelled("frame_style_texture_depth_mm")}
               min={PARAM_RANGES.frame_style.texture.depth_mm.min}
               max={PARAM_RANGES.frame_style.texture.depth_mm.max}
               step={0.05}
@@ -482,10 +488,7 @@ export function FrameTextGroup() {
         ) : null}
       </Field>
 
-      <Field
-        label="Lettering"
-        hint="Cut into the frame edges. Up to eight lines."
-      >
+      <Field {...sectionProps("lettering")}>
         <EngravingsEditor
           engravings={params.engravings ?? []}
           onChange={(next) => setParam("engravings", next)}
@@ -497,15 +500,16 @@ export function FrameTextGroup() {
 
       {!params.frame ? (
         <Note tone="warn" testId="frame-off-notice">
-          The north arrow and the scale bar live on the frame. Turn on Frame
-          to use them.
+          Everything on this list is cut into the frame: the profile, the
+          corners, the shadow gap, the matting, the separate part, the face
+          texture, the lettering, the north arrow and the scale bar. Turn on
+          Frame to use any of them.
         </Note>
       ) : null}
 
-      <Field label="North arrow">
+      <Field {...sectionProps("north-arrow")}>
         <Toggle
-          id="north_arrow_enabled"
-          label="Show a north arrow"
+          {...labelled("north_arrow_enabled")}
           checked={northArrow.enabled ?? false}
           disabled={!params.frame}
           onChange={(value) => setNested("north_arrow", { enabled: value })}
@@ -513,16 +517,14 @@ export function FrameTextGroup() {
         {northArrow.enabled ? (
           <div className="mt-3 space-y-3">
             <SelectField
-              id="north_arrow_corner"
-              label="Corner"
+              {...labelled("north_arrow_corner")}
               value={northArrow.corner ?? "ne"}
               options={CORNERS}
               disabled={!params.frame}
               onChange={(value) => setNested("north_arrow", { corner: value })}
             />
             <Slider
-              id="north_arrow_size_mm"
-              label="Size"
+              {...labelled("north_arrow_size_mm")}
               min={PARAM_RANGES.north_arrow.size_mm.min}
               max={PARAM_RANGES.north_arrow.size_mm.max}
               step={0.1}
@@ -535,10 +537,9 @@ export function FrameTextGroup() {
         ) : null}
       </Field>
 
-      <Field label="Scale bar">
+      <Field {...sectionProps("scale-bar")}>
         <Toggle
-          id="scale_bar_enabled"
-          label="Show a scale bar"
+          {...labelled("scale_bar_enabled")}
           checked={scaleBar.enabled ?? false}
           disabled={!params.frame}
           onChange={(value) => setNested("scale_bar", { enabled: value })}
@@ -546,26 +547,22 @@ export function FrameTextGroup() {
         {scaleBar.enabled ? (
           <div className="mt-3 space-y-3">
             <SelectField
-              id="scale_bar_edge"
-              label="Edge"
+              {...labelled("scale_bar_edge")}
               value={scaleBar.edge ?? "bottom"}
               options={EDGES}
               disabled={!params.frame}
               onChange={(value) => setNested("scale_bar", { edge: value })}
             />
             <SelectField
-              id="scale_bar_length_mode"
-              label="Length"
+              {...labelled("scale_bar_length_mode")}
               value={scaleBar.length_mode ?? "auto"}
               options={LENGTH_MODES}
               disabled={!params.frame}
               onChange={(value) => setNested("scale_bar", { length_mode: value })}
-              hint="Auto picks a round distance that fits the edge."
             />
             {scaleBar.length_mode === "fixed" ? (
               <Slider
-                id="scale_bar_length_m"
-                label="Ground length"
+                {...labelled("scale_bar_length_m")}
                 min={PARAM_RANGES.scale_bar.length_m.min}
                 max={PARAM_RANGES.scale_bar.length_m.max}
                 step={10}
@@ -579,19 +576,16 @@ export function FrameTextGroup() {
         ) : null}
       </Field>
 
-      <Field label="Underside mark">
+      <Field {...sectionProps("underside-mark")}>
         <Toggle
-          id="underside_mark_enabled"
-          label="Mark the underside"
+          {...labelled("underside_mark_enabled")}
           checked={underside.enabled ?? false}
           onChange={(value) => setNested("underside_mark", { enabled: value })}
-          hint="Cut into the bottom of the base, where it never shows on a shelf."
         />
         {underside.enabled ? (
           <div className="mt-3 space-y-2">
             <TextField
-              id="underside_mark_template"
-              label="Template"
+              {...labelled("underside_mark_template")}
               value={underside.template ?? ""}
               maxLength={PARAM_LIMITS.underside_mark.template.max_length}
               meta={`${(underside.template ?? "").length}/${
@@ -613,8 +607,8 @@ export function FrameTextGroup() {
                   ) : (
                     <span className="text-ink-faint">
                       {emptyToken !== null
-                        ? `nothing yet — the {${emptyToken}} token has no value`
-                        : "nothing yet — the template has no text"}
+                        ? `nothing yet: the {${emptyToken}} token has no value`
+                        : "nothing yet: the template has no text"}
                     </span>
                   )}
                 </p>
@@ -634,19 +628,25 @@ export function FrameTextGroup() {
         ) : null}
       </Field>
 
-      <Field label="Hanger" hint="A fitting added to the back so the plate can go on a wall or an easel.">
+      <Field {...sectionProps("hanger")}>
         <SelectField
-          id="hanger"
-          label="Fitting"
+          {...labelled("hanger")}
           value={params.hanger ?? "none"}
           options={HANGERS}
           onChange={(value) => setParam("hanger", value)}
         />
-        {magnetInUse ? (
+        {wallMagnetsOnly ? (
+          <Note testId="hanger-magnet-fixed-note">
+            The wall pockets are a fixed 6.1 mm across and 3.1 mm deep, sized
+            for the magnets FrameCraft assumes. The three sliders below appear
+            once the frame prints separately on a magnet mount, which is the
+            only thing they size.
+          </Note>
+        ) : null}
+        {magnetMountInUse ? (
           <div className="mt-3 space-y-3" data-testid="hanger-magnet-dims">
             <Slider
-              id="hanger_magnet_diameter_mm"
-              label="Magnet diameter"
+              {...labelled("hanger_magnet_diameter_mm")}
               min={PARAM_RANGES.hanger_magnet.diameter_mm.min}
               max={PARAM_RANGES.hanger_magnet.diameter_mm.max}
               step={0.5}
@@ -655,8 +655,7 @@ export function FrameTextGroup() {
               onChange={(value) => setNested("hanger_magnet", { diameter_mm: value })}
             />
             <Slider
-              id="hanger_magnet_thickness_mm"
-              label="Magnet thickness"
+              {...labelled("hanger_magnet_thickness_mm")}
               min={PARAM_RANGES.hanger_magnet.thickness_mm.min}
               max={PARAM_RANGES.hanger_magnet.thickness_mm.max}
               step={0.5}
@@ -665,14 +664,12 @@ export function FrameTextGroup() {
               onChange={(value) => setNested("hanger_magnet", { thickness_mm: value })}
             />
             <Slider
-              id="hanger_magnet_count"
-              label="Magnet count"
+              {...labelled("hanger_magnet_count")}
               min={PARAM_RANGES.hanger_magnet.count.min}
               max={PARAM_RANGES.hanger_magnet.count.max}
               step={1}
               value={hangerMagnet.count ?? PARAM_RANGES.hanger_magnet.count.default}
               display={String(hangerMagnet.count ?? PARAM_RANGES.hanger_magnet.count.default)}
-              hint="Shared by the magnet hanger and a separate frame's magnet mount -- one pocket size either way."
               onChange={(value) => setNested("hanger_magnet", { count: value })}
             />
           </div>

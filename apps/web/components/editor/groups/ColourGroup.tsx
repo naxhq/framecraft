@@ -10,10 +10,13 @@ import {
   planMergeToSlots,
   printedColors,
   slotColourConflicts,
+  type ColourRow,
+  type SlotColourConflict,
 } from "@/lib/colourMap";
 import { contrastIssueSentence, contrastIssues } from "@/lib/contrastCheck";
 import { DEFAULT_PRINT_PARAMS, PARAM_RANGES } from "@/lib/contracts";
-import type { PartColors, RegionColors, RegionSlots } from "@/lib/contracts";
+import type { Colour, RegionColors, RegionSlots } from "@/lib/contracts";
+import { labelled, sectionProps } from "@/lib/controlCatalog";
 import { GRADIENT_MAX_BANDS, bandRegionName, type RegionName } from "@/lib/engine/types";
 import {
   BUILTIN_PALETTES,
@@ -24,12 +27,14 @@ import {
   paletteApplyPatch,
   savedAsPalette,
   saveCustomPalettes,
+  type Palette,
   type SavedPalette,
 } from "@/lib/palettes";
+import { EXPORT_TARGET_LABELS } from "@/lib/engine/export";
 import { resolveProfile } from "@/lib/printers";
 import { boundGradientSlots, tintIsPreviewOnly } from "@/lib/tint";
 import { useEditorStore } from "@/store/editor";
-import { ColorField, Field, Note, SelectField, Segmented, Slider, TextField, Toggle } from "../Controls";
+import { Field, Hint, Note, SelectField, Segmented, Slider, SrHint, TextField, Toggle } from "../Controls";
 
 const COLOR_MODES = [
   { value: "single" as const, label: "one filament" },
@@ -43,28 +48,14 @@ const HERO_MODES = [
 ];
 
 /**
- * The seven parts, in the order they stack up off the plate. The pairing note
- * on each is DECISIONS [V2-P2]: the defaults are four distinct filaments, not
- * seven, so a four-slot AMS prints the file with no slot re-assignment.
- *
- * This "Part colours" section (and its `color_mode` toggle) is the v1/v2
- * palette: it still decides the instanced preview's fallback colours while an
- * engine job is computing, and `generic-3mf`'s own `single`/`parts` default
- * ([lib/engine/export/generic3mf.ts]). It is NOT what the real engine result,
- * the Bambu export or the colour-change plan use for filament SLOTS -- that
- * is the "Filament slots" section below, `params.colour`, added in v3.
+ * The seven `part_colors` wells that used to open this group are gone
+ * (Task 2, DECISIONS [V3.1-P1-2]). `part_colors` is the v1 colour block and
+ * no pipeline stage claims a single one of its leaves, so the wells changed
+ * nothing in any exported file; a payload that still carries them and no
+ * `colour.region_colors` is migrated at parse time instead
+ * (`lib/share.ts:parsePrintParams`). The real wells are the per-region ones
+ * in the "Filament slots" section below.
  */
-const PARTS: ReadonlyArray<{ key: keyof PartColors; label: string }> = [
-  { key: "base", label: "Base" },
-  { key: "buildings", label: "Buildings" },
-  { key: "roads", label: "Roads" },
-  { key: "frame", label: "Frame" },
-  { key: "water", label: "Water" },
-  { key: "green", label: "Planting" },
-  { key: "trees", label: "Trees" },
-];
-
-const DEFAULT_PART_COLORS = DEFAULT_PRINT_PARAMS.part_colors as PartColors;
 const DEFAULT_REGION_SLOTS = DEFAULT_PRINT_PARAMS.colour?.region_slots as RegionSlots;
 const DEFAULT_REGION_COLORS = DEFAULT_PRINT_PARAMS.colour?.region_colors as RegionColors;
 const DEFAULT_TINT = DEFAULT_PRINT_PARAMS.colour!.tint!;
@@ -100,38 +91,130 @@ const REGION_LABELS: Record<RegionName, string> = {
   buildings_band_8: "Buildings, band 8",
 };
 
+/** The three targets whose bodies `color_mode: "single"` merges into one. */
+const WELDS_ON_SINGLE: ReadonlySet<string> = new Set(["generic-3mf", "obj", "step"]);
+
 const SLOT_MAX: number = PARAM_RANGES.colour.region_slots.base.max;
 const SLOT_OPTIONS = Array.from({ length: SLOT_MAX }, (_, i) => {
   const value = String(i + 1);
   return { value, label: `Slot ${i + 1}` };
 });
 
+// ---------------------------------------------------------------------------
+// The three colour patches, as pure functions
+// ---------------------------------------------------------------------------
+
 /**
- * The v1/v2 parts palette (still read by the instanced fallback preview and
- * by `generic-3mf`'s single/parts default), plus the v3 filament-slot table
- * that the real engine result, the preview once it is fresh, the Bambu
- * export and the colour-change plan all read from the same place
- * (`params.colour`, resolved through `lib/engine/solid/context.ts`'s
- * `regionSlot`/`regionColor` -- the one function every one of those reads,
- * so they can never disagree). One row per region the current build produced,
- * or every colourable region name before the first one has (`lib/colourMap.ts:
- * colourRows`), plus the palette picker, per-building tint and the
- * height-gradient controls (v3 phase 5, `[V3-P5-C]`).
+ * A region-colour patch with `attribution` taken out.
+ *
+ * DECISIONS `[V3.1-P1-13]`: no control may write
+ * `colour.region_colors.attribution`. The mandatory credit marks are engraved
+ * cuts into the base and the frame and never a body of their own, so no stage
+ * ever asks for their colour and nothing written here could reach a file.
+ *
+ * Three helpers upstream of this group do write it: every built-in palette
+ * declares an `attribution` colour (`lib/palettes.ts`'s
+ * `PALETTE_REGION_NAMES`), `planMergeToSlots` writes every region of every
+ * cluster, and `alignConflictsPatch` writes any region that loses its slot.
+ * Rather than trusting three call sites to remember, every patch this group
+ * hands the store goes through here first, and `ColourGroup.test.ts` drives
+ * the real builders over every built-in palette, a real merge and a real
+ * align to prove the leaf never moves.
+ */
+export function withoutAttributionColour(
+  patch: Partial<Record<RegionName, string>>,
+): Partial<Record<RegionName, string>> {
+  if (!("attribution" in patch)) return patch;
+  const out = { ...patch };
+  delete out.attribution;
+  return out;
+}
+
+/** `colour.palette` for a table: the built-in it still matches, or "custom". */
+function paletteIdFor(colors: RegionColors): string {
+  const match = BUILTIN_PALETTES.find((palette) => matchesPalette(palette, colors));
+  return match === undefined ? CUSTOM_PALETTE_ID : match.id;
+}
+
+/**
+ * Applying a palette: its ten colours over the current table, its slots, and
+ * its name. The name reaches the exported file (`framecraft:palette`), so it
+ * is part of what this control writes.
+ */
+export function palettePatch(
+  palette: Palette,
+  currentColors: RegionColors,
+  currentSlots: RegionSlots,
+): Colour {
+  const applied = paletteApplyPatch(palette, currentSlots);
+  return {
+    region_colors: {
+      ...currentColors,
+      ...withoutAttributionColour(applied.region_colors),
+    } as RegionColors,
+    region_slots: applied.region_slots,
+    palette: applied.palette,
+  };
+}
+
+/**
+ * Merging to a profile's slot count. Null when the plan changes nothing.
+ *
+ * The palette id is re-derived rather than left alone: a merge rewrites
+ * region colours, so a file still claiming a palette whose table no longer
+ * matches would be a lie in the 3MF metadata.
+ */
+export function mergePatch(
+  rows: readonly ColourRow[],
+  targetSlots: number,
+  currentColors: RegionColors,
+  currentSlots: RegionSlots,
+): Colour | null {
+  const plan = planMergeToSlots(rows, targetSlots);
+  if (!plan.changed) return null;
+  const region_colors = {
+    ...currentColors,
+    ...withoutAttributionColour(plan.regionColors),
+  } as RegionColors;
+  return {
+    region_slots: { ...currentSlots, ...plan.regionSlots } as RegionSlots,
+    region_colors,
+    palette: paletteIdFor(region_colors),
+  };
+}
+
+/** Aligning a slot's losers to the colour that really prints. Null when there is nothing to align. */
+export function alignPatch(
+  conflicts: readonly SlotColourConflict[],
+  currentColors: RegionColors,
+): Colour | null {
+  const patch = withoutAttributionColour(alignConflictsPatch(conflicts));
+  if (Object.keys(patch).length === 0) return null;
+  const region_colors = { ...currentColors, ...patch } as RegionColors;
+  return { region_colors, palette: paletteIdFor(region_colors) };
+}
+
+/**
+ * The filament-slot table the preview, the Bambu export, the generic 3MF and
+ * the colour-change plan all read from one place (`params.colour`, resolved
+ * through `lib/engine/solid/context.ts`'s `regionSlot`/`regionColor` -- the
+ * one function every one of those calls, so they can never disagree), plus
+ * the palette picker, the per-building tint and the height-gradient controls
+ * (v3 phase 5, `[V3-P5-C]`).
+ *
+ * One row per region the current model produced, or every colourable region
+ * name before one has been (`lib/colourMap.ts: colourRows`). `color_mode` is
+ * still here and still real: the export stage reads it to decide one merged
+ * object or one per region in the generic 3MF, the OBJ and the STEP.
  */
 export function ColourGroup() {
   const params = useEditorStore((state) => state.params);
   const setParam = useEditorStore((state) => state.setParam);
   const setNested = useEditorStore((state) => state.setNested);
-  const engineResult = useEditorStore((state) => state.engine.result);
+  const engineResult = useEditorStore((state) => state.pipeline.result);
 
   const mode = params.color_mode ?? "single";
-  const colours = params.part_colors ?? DEFAULT_PART_COLORS;
-  const single = mode === "single";
   const heroes = params.hero_building_ids ?? [];
-
-  const setPart = (key: keyof PartColors, value: string): void => {
-    setNested("part_colors", { ...colours, [key]: value } as PartColors);
-  };
 
   const rows = colourRows(params, engineResult);
   const slots = params.colour?.region_slots ?? DEFAULT_REGION_SLOTS;
@@ -144,7 +227,8 @@ export function ColourGroup() {
     const nextColors = { ...regionColors, [region]: value } as RegionColors;
     // Editing any single swatch by hand is what flips the picker to "custom"
     // -- a palette id left pointing at a table the user has since diverged
-    // from would relabel their own choice with someone else's name.
+    // from would relabel their own choice with someone else's name. The id
+    // reaches the exported file, so the catalog row declares it too.
     const stillMatches = BUILTIN_PALETTES.some((p) => p.id === params.colour?.palette && matchesPalette(p, nextColors));
     setNested("colour", {
       region_colors: nextColors,
@@ -153,25 +237,29 @@ export function ColourGroup() {
   };
 
   const profile = resolveProfile(params);
+  /*
+    `export/common.ts:isSingleObject` welds every region into one body for the
+    generic 3MF, the OBJ and the STEP when `color_mode` is single, so the
+    per-region colours below cannot reach those three files. The Bambu project
+    always writes one object per region, and STL carries no colour at all.
+  */
+  const exportTarget = params.export_target ?? "bambu-3mf";
+  const weldedIntoOneObject =
+    mode === "single" && WELDS_ON_SINGLE.has(exportTarget);
   const usedSlots = distinctSlots(rows);
   const overProfile = exceedsProfileSlots(rows, profile.slots);
 
   const mergeToProfile = (): void => {
-    const plan = planMergeToSlots(rows, profile.slots);
-    if (!plan.changed) return;
-    setNested("colour", {
-      region_slots: { ...slots, ...plan.regionSlots } as RegionSlots,
-      region_colors: { ...regionColors, ...plan.regionColors } as RegionColors,
-    });
+    const patch = mergePatch(rows, profile.slots, regionColors, slots);
+    if (patch !== null) setNested("colour", patch);
   };
 
   const printed = printedColors(rows);
   const conflicts = slotColourConflicts(rows);
 
   const alignColours = (): void => {
-    const patch = alignConflictsPatch(conflicts);
-    if (Object.keys(patch).length === 0) return;
-    setNested("colour", { region_colors: { ...regionColors, ...patch } as RegionColors });
+    const patch = alignPatch(conflicts, regionColors);
+    if (patch !== null) setNested("colour", patch);
   };
 
   const contrastProblems = useMemo(() => contrastIssues(rows), [rows]);
@@ -184,8 +272,8 @@ export function ColourGroup() {
     setCustomPalettes(loadCustomPalettes());
   }, []);
 
-  const applyPalette = (palette: (typeof BUILTIN_PALETTES)[number]): void => {
-    setNested("colour", paletteApplyPatch(palette, slots));
+  const applyPalette = (palette: Palette): void => {
+    setNested("colour", palettePatch(palette, regionColors, slots));
   };
 
   const saveCurrentAsPalette = (): void => {
@@ -235,58 +323,27 @@ export function ColourGroup() {
   return (
     <>
       <Segmented
-        id="color_mode"
-        label="Colour"
+        {...labelled("color_mode")}
         value={mode}
         options={COLOR_MODES}
         onChange={(value) => setParam("color_mode", value)}
-        hint="One filament exports a single object. One per part exports each part with its own colour, ready for a multi-material printer."
       />
 
-      <Field
-        label="Part colours"
-        hint="The defaults are four filaments, not seven: the base shares with the buildings, the frame with the roads, and the trees with the planting."
-      >
-        <div className="space-y-2" data-testid="part-colors">
-          {PARTS.map((part) => (
-            <ColorField
-              key={part.key}
-              id={`part_color_${part.key}`}
-              label={part.label}
-              value={colours[part.key]}
-              disabled={single}
-              onChange={(value) => setPart(part.key, value)}
-            />
-          ))}
-        </div>
-      </Field>
-
-      {single ? (
-        <Note testId="part-colors-disabled-note">
-          Switch to one filament per part to change these.
-        </Note>
-      ) : null}
-
       <SelectField
-        id="hero_mode"
-        label="Hero buildings print as"
+        {...labelled("hero_mode")}
         value={params.hero_mode ?? "true_height"}
         options={HERO_MODES}
         onChange={(value) => setParam("hero_mode", value)}
-        hint="True height keeps a hero at its real relative height even when the other buildings are scaled down. Own colour gives it its own filament."
       />
 
       {heroes.length === 0 ? (
         <Note testId="hero-mode-idle-note">
-          No hero buildings picked yet — click one in the preview and this starts
+          No hero buildings picked yet. Click one in the preview and this starts
           to matter.
         </Note>
       ) : null}
 
-      <Field
-        label="Palette"
-        hint="Applying a palette sets every region's colour and slot in one step. The active colours travel in a shared link (region_colors), not the palette name -- share it and the recipient sees the same colours even if they never load this palette."
-      >
+      <Field {...sectionProps("palette")}>
         <div className="space-y-2">
           <div className="grid grid-cols-2 gap-1.5" data-testid="palette-builtin-list">
             {BUILTIN_PALETTES.map((palette) => (
@@ -296,6 +353,7 @@ export function ColourGroup() {
                 data-testid={`palette-apply-${palette.id}`}
                 onClick={() => applyPalette(palette)}
                 aria-pressed={activePaletteId === palette.id}
+                aria-describedby="palette-apply-hint"
                 title={palette.description}
                 className={`flex items-center gap-1.5 rounded-milled border px-2 py-1.5 text-left text-2xs transition-colors ${
                   activePaletteId === palette.id
@@ -314,6 +372,7 @@ export function ColourGroup() {
               </button>
             ))}
           </div>
+          <Hint id="palette-apply-hint">{labelled("palette-apply-*").hint}</Hint>
 
           {activePaletteId === CUSTOM_PALETTE_ID ? (
             <Note testId="palette-custom-note">Custom: a region colour was edited by hand.</Note>
@@ -331,6 +390,7 @@ export function ColourGroup() {
                     data-testid={`palette-apply-${saved.id}`}
                     onClick={() => applyPalette(savedAsPalette(saved))}
                     aria-pressed={activePaletteId === saved.id}
+                    aria-describedby="palette-apply-hint"
                     className="min-w-0 flex-1 truncate text-left text-2xs text-ink"
                   >
                     {saved.name}
@@ -339,6 +399,8 @@ export function ColourGroup() {
                     type="button"
                     data-testid={`palette-delete-${saved.id}`}
                     aria-label={`Delete palette ${saved.name}`}
+                    aria-describedby="palette-delete-hint"
+                    title={labelled("palette-delete-*").hint}
                     onClick={() => deleteCustomPalette(saved.id)}
                     className="text-2xs text-ink-faint hover:text-danger"
                   >
@@ -346,13 +408,13 @@ export function ColourGroup() {
                   </button>
                 </div>
               ))}
+              <Hint id="palette-delete-hint">{labelled("palette-delete-*").hint}</Hint>
             </div>
           ) : null}
 
           <div className="flex items-center gap-1.5">
             <TextField
-              id="palette-save-name"
-              label="Save current colours as"
+              {...labelled("palette-save-name")}
               value={saveName}
               placeholder="My palette"
               onChange={setSaveName}
@@ -362,18 +424,18 @@ export function ColourGroup() {
               data-testid="palette-save"
               disabled={saveName.trim() === ""}
               onClick={saveCurrentAsPalette}
+              aria-describedby="palette-save-hint"
+              title={labelled("palette-save").hint}
               className="mt-6 shrink-0 rounded-milled border border-control bg-plate-raised px-2 py-1.5 text-2xs font-medium text-ink transition-colors hover:border-ink-faint disabled:cursor-not-allowed disabled:opacity-45"
             >
-              Save
+              {labelled("palette-save").label}
             </button>
           </div>
+          <Hint id="palette-save-hint">{labelled("palette-save").hint}</Hint>
         </div>
       </Field>
 
-      <Field
-        label="Filament slots"
-        hint="What the exported file, the Bambu project and the colour-change plan actually use: a slot and a colour per region. This is what the preview shows once the model has been built."
-      >
+      <Field {...sectionProps("filament-slots")}>
         <div className="space-y-1.5" data-testid="colour-region-rows">
           {rows.map((row) => {
             const printedHex = printed.get(row.region) ?? row.colorHex;
@@ -387,9 +449,24 @@ export function ColourGroup() {
                 <span className="min-w-0 flex-1 truncate text-sm text-ink">
                   {REGION_LABELS[row.region]}
                 </span>
+                {/*
+                  The hex, not just the swatch. A filament is chosen by its code
+                  as often as by its look, and a swatch alone cannot be read out
+                  to a slicer; the removed `ColorField` primitive was the only
+                  place that said so, so the reason moved here with the value.
+                */}
+                {row.region === "attribution" ? null : (
+                  <span
+                    data-testid={`colour-hex-${row.region}`}
+                    className="shrink-0 text-2xs uppercase tracking-tight text-ink-faint"
+                  >
+                    {row.colorHex.toUpperCase()}
+                  </span>
+                )}
                 <select
                   id={`colour_slot_${row.region}`}
-                  aria-label={`${REGION_LABELS[row.region]} filament slot`}
+                  aria-label={`${REGION_LABELS[row.region]} ${labelled("colour_slot_*").label.toLowerCase()}`}
+                  aria-describedby="colour-slot-hint"
                   data-testid={`colour-slot-${row.region}`}
                   value={String(row.slot)}
                   onChange={(event) => setSlot(row.region, Number(event.target.value))}
@@ -401,15 +478,33 @@ export function ColourGroup() {
                     </option>
                   ))}
                 </select>
-                <input
-                  id={`colour_color_${row.region}`}
-                  type="color"
-                  aria-label={`${REGION_LABELS[row.region]} colour`}
-                  data-testid={`colour-color-${row.region}`}
-                  value={row.colorHex.slice(0, 7)}
-                  onChange={(event) => setColor(row.region, event.target.value)}
-                  className="h-6 w-9 shrink-0"
-                />
+                {/*
+                  No colour well for `attribution` (DECISIONS [V3.1-P1-13]).
+                  The mandatory credit marks are engraved CUTS into the base and
+                  the frame, never a body of their own, so no stage ever asks
+                  for their colour and no value here could reach a file. The
+                  slot select above stays: the audit's slot rule does read
+                  `colour.region_slots.attribution`.
+                */}
+                {row.region === "attribution" ? (
+                  <span
+                    data-testid="colour-color-attribution-absent"
+                    className="w-9 shrink-0 text-right text-2xs text-ink-faint"
+                  >
+                    cut
+                  </span>
+                ) : (
+                  <input
+                    id={`colour_color_${row.region}`}
+                    type="color"
+                    aria-label={`${REGION_LABELS[row.region]} ${labelled("colour_color_*").label.toLowerCase()}`}
+                    aria-describedby="colour-color-hint"
+                    data-testid={`colour-color-${row.region}`}
+                    value={row.colorHex.slice(0, 7)}
+                    onChange={(event) => setColor(row.region, event.target.value)}
+                    className="h-6 w-9 shrink-0"
+                  />
+                )}
                 {disagrees ? (
                   <span
                     role="img"
@@ -424,6 +519,21 @@ export function ColourGroup() {
             );
           })}
         </div>
+        <Hint id="colour-slot-hint">{labelled("colour_slot_*").hint}</Hint>
+        <Hint id="colour-color-hint">{labelled("colour_color_*").hint}</Hint>
+        <Note testId="colour-attribution-note">
+          The attribution marks are cut into the base and the frame rather than
+          printed as a body, so they take a filament slot but no colour of their
+          own.
+        </Note>
+        {weldedIntoOneObject ? (
+          <Note tone="warn" testId="colour-welded-note">
+            One filament welds every region into a single object in the{" "}
+            {EXPORT_TARGET_LABELS[exportTarget]}, so these colours reach the
+            preview and not that file. Switch to one filament per part, or
+            export a Bambu project, which always writes one object per region.
+          </Note>
+        ) : null}
       </Field>
 
       {contrastProblems.length > 0 ? (
@@ -455,10 +565,15 @@ export function ColourGroup() {
             type="button"
             data-testid="align-slot-colours"
             onClick={alignColours}
+            aria-describedby="align-slot-colours-hint"
+            title={labelled("align-slot-colours").hint}
             className="font-medium text-accent underline-offset-2 hover:underline"
           >
-            Align colours to what will print
+            {labelled("align-slot-colours").label}
           </button>
+          <SrHint id="align-slot-colours-hint">
+            {labelled("align-slot-colours").hint}
+          </SrHint>
         </Note>
       ) : null}
 
@@ -470,28 +585,28 @@ export function ColourGroup() {
             type="button"
             data-testid="merge-to-profile-slots"
             onClick={mergeToProfile}
+            aria-describedby="merge-to-profile-slots-hint"
+            title={labelled("merge-to-profile-slots").hint}
             className="font-medium text-accent underline-offset-2 hover:underline"
           >
             Merge to {profile.slots} slot{profile.slots === 1 ? "" : "s"}
           </button>
+          <SrHint id="merge-to-profile-slots-hint">
+            {labelled("merge-to-profile-slots").hint}
+          </SrHint>
         </Note>
       ) : null}
 
-      <Field
-        label="Building tint"
-        hint="A small random colour shift per building, so a block of identical footprints does not read as one slab."
-      >
+      <Field {...sectionProps("building-tint")}>
         <Toggle
-          id="colour_tint_enabled"
-          label="Vary building colour"
+          {...labelled("colour_tint_enabled")}
           checked={tint.enabled ?? false}
           onChange={(value) => setNested("colour", { tint: { ...tint, enabled: value } })}
         />
         {tint.enabled ? (
           <div className="mt-3 space-y-3">
             <Slider
-              id="colour_tint_hue"
-              label="Hue range"
+              {...labelled("colour_tint_hue")}
               min={PARAM_RANGES.colour.tint.hue_range_deg.min}
               max={PARAM_RANGES.colour.tint.hue_range_deg.max}
               step={1}
@@ -500,8 +615,7 @@ export function ColourGroup() {
               onChange={(value) => setNested("colour", { tint: { ...tint, hue_range_deg: value } })}
             />
             <Slider
-              id="colour_tint_lightness"
-              label="Lightness range"
+              {...labelled("colour_tint_lightness")}
               min={PARAM_RANGES.colour.tint.lightness_range.min}
               max={PARAM_RANGES.colour.tint.lightness_range.max}
               step={0.01}
@@ -516,12 +630,15 @@ export function ColourGroup() {
               <button
                 type="button"
                 data-testid="colour-tint-reroll"
+                aria-describedby="colour-tint-reroll-hint"
+                title={labelled("colour-tint-reroll").hint}
                 onClick={() => setNested("colour", { tint: { ...tint, seed: Math.floor(Math.random() * 1_000_000) } })}
                 className="rounded-milled border border-control bg-plate-raised px-2 py-1 text-2xs font-medium text-ink transition-colors hover:border-ink-faint"
               >
-                Reroll
+                {labelled("colour-tint-reroll").label}
               </button>
             </div>
+            <Hint id="colour-tint-reroll-hint">{labelled("colour-tint-reroll").hint}</Hint>
             {tintPreviewOnly ? (
               <Note tone="info" testId="colour-tint-preview-only-note">
                 Building tint affects the preview and the OBJ export only. No printer
@@ -534,21 +651,16 @@ export function ColourGroup() {
         ) : null}
       </Field>
 
-      <Field
-        label="Height gradient"
-        hint="Bands the buildings by height, tallest in one filament, shortest in another. Bounded by the active printer profile's own filament count."
-      >
+      <Field {...sectionProps("height-gradient")}>
         <Toggle
-          id="colour_gradient_enabled"
-          label="Band buildings by height"
+          {...labelled("colour_gradient_enabled")}
           checked={gradient.enabled ?? false}
           onChange={(value) => setNested("colour", { gradient: { ...gradient, enabled: value } })}
         />
         {gradient.enabled ? (
           <div className="mt-3 space-y-2">
             <Slider
-              id="colour_gradient_bands"
-              label="Bands"
+              {...labelled("colour_gradient_bands")}
               min={1}
               max={maxBands}
               step={1}
@@ -567,6 +679,7 @@ export function ColourGroup() {
                   </span>
                   <select
                     aria-label={`Band ${index + 1} filament slot`}
+                    aria-describedby="colour-gradient-band-hint"
                     data-testid={`colour-gradient-band-slot-${index}`}
                     value={String(slot)}
                     onChange={(event) => setGradientBandSlot(index, Number(event.target.value))}
@@ -581,6 +694,9 @@ export function ColourGroup() {
                 </div>
               ))}
             </div>
+            <Hint id="colour-gradient-band-hint">
+              {labelled("colour-gradient-band-slot-*").hint}
+            </Hint>
           </div>
         ) : null}
       </Field>

@@ -97,6 +97,29 @@ async function fetchBlob(page: Page, url: string): Promise<Buffer> {
   return Buffer.from(base64, "base64");
 }
 
+/**
+ * Click Export and wait for the files THIS click produced.
+ *
+ * Choosing a format in the export menu already exports (`ExportMenu`'s own
+ * `onChange` writes `export_target` and then exports), so the panel can be
+ * showing a finished export before the button is ever pressed. Since v3.1 the
+ * writer runs in the worker, so the previous export's Blob links stay on
+ * screen for the whole round trip -- and `exportDone` revokes them the moment
+ * the new ones arrive. Reading an href without waiting for the links to CHANGE
+ * therefore reads a URL this click is about to revoke.
+ */
+async function exportAndWait(page: Page, timeoutMs: number): Promise<void> {
+  const downloads = page.getByTestId("download-links");
+  const links = downloads.getByRole("link");
+  const firstHref = async (): Promise<string | null> =>
+    (await links.count()) > 0 ? links.first().getAttribute("href") : null;
+  const before = await firstHref();
+  await page.getByTestId("export-button").click();
+  await expect(downloads).toBeVisible({ timeout: timeoutMs });
+  await expect.poll(firstHref, { timeout: timeoutMs, intervals: [50] }).not.toBe(before);
+  await expect(page.getByTestId("export-button")).toBeEnabled({ timeout: timeoutMs });
+}
+
 test.describe.configure({ mode: "serial" });
 
 // ==========================================================================
@@ -499,9 +522,8 @@ test("the downloaded file passes the Python printability validator (small scene)
 
   const exportButton = page.getByTestId("export-button");
   await expect(exportButton).toBeEnabled();
-  await exportButton.click();
+  await exportAndWait(page, A4_BUDGET_MS);
   const downloads = page.getByTestId("download-links");
-  await expect(downloads).toBeVisible({ timeout: A4_BUDGET_MS });
 
   const meshLink = downloads.getByRole("link", { name: /\.3mf$/ });
   const meshHref = await meshLink.getAttribute("href");
@@ -571,9 +593,8 @@ test("the downloaded file passes the Python printability validator (full Chicago
   // how long it is given to become true scales with `E2E_BUDGET_FACTOR`.
   await expect(exportButton).toBeEnabled({ timeout: WARMUP_BUDGET_MS });
   const exportStartedAt = Date.now();
-  await exportButton.click();
+  await exportAndWait(page, A4_BUDGET_MS);
   const downloads = page.getByTestId("download-links");
-  await expect(downloads).toBeVisible({ timeout: A4_BUDGET_MS });
   log(`Chicago parts export -> done: ${((Date.now() - exportStartedAt) / 1000).toFixed(1)} s`);
 
   const meshLink = downloads.getByRole("link", { name: /\.3mf$/ });
@@ -704,3 +725,153 @@ function extractZipEntry(zip: Buffer, entryName: string): Buffer {
   }
   throw new Error(`zip entry not found: ${entryName}`);
 }
+
+// ==========================================================================
+// v3.1: the model stays on screen, and every setting rebuilds it
+// ==========================================================================
+
+/** `region -> version` off the viewport's own attribute. A version moves when that region's mesh is replaced. */
+async function regionVersions(page: Page): Promise<Record<string, number>> {
+  const raw = (await page.locator("[data-region-versions]").getAttribute("data-region-versions")) ?? "";
+  const out: Record<string, number> = {};
+  for (const pair of raw.split(" ").filter((entry) => entry !== "")) {
+    const [region, version] = pair.split(":");
+    out[region] = Number(version);
+  }
+  return out;
+}
+
+/** Wait until the pipeline is idle, i.e. no stage is running. */
+async function pipelineSettled(page: Page): Promise<void> {
+  await expect(page.locator("[data-pipeline-status]")).toHaveAttribute("data-pipeline-status", "ready", {
+    timeout: WARMUP_BUDGET_MS,
+  });
+  await expect(page.getByTestId("pipeline-stage-overlay")).toHaveCount(0, { timeout: WARMUP_BUDGET_MS });
+}
+
+/** Preview Chicago and wait for the whole model. */
+async function previewChicago(page: Page): Promise<void> {
+  await mockChicagoOverpass(page);
+  await page.goto("/");
+  await page.locator('[data-preset-id="chicago-loop"]').click();
+  await expect(page.getByTestId("preview-stats")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
+  await pipelineSettled(page);
+}
+
+test("a settings change keeps the model on screen, dimmed, under a stage overlay @smoke", async ({
+  page,
+}) => {
+  test.setTimeout(300_000 * BUDGET_FACTOR);
+  const calls = watchOverpass(page);
+  await previewChicago(page);
+
+  const before = await regionVersions(page);
+  const regionsBefore = Object.keys(before).length;
+  expect(regionsBefore, "the first preview drew no regions").toBeGreaterThan(1);
+  const fetchesBefore = ingestFetches(calls);
+
+  // The frame profile: the control the v3 preview could not draw at all, and
+  // the one whose click USED to take the styled frame off the screen and put
+  // four constant boxes in its place.
+  await page.getByTestId("group-frame-toggle").click();
+  await page.getByTestId("frame-profile-chamfer").click();
+
+  // The model is still there, and it says why it looks the way it does.
+  const overlay = page.getByTestId("pipeline-stage-overlay");
+  await expect(overlay).toBeVisible({ timeout: 30_000 * BUDGET_FACTOR });
+  await expect(overlay).toContainText("Building:");
+  const stage = await overlay.getAttribute("data-stage");
+  expect(stage, "the overlay names no stage").toBeTruthy();
+  await expect(page.locator("[data-pipeline-dimmed]")).toHaveAttribute("data-pipeline-dimmed", "true");
+  // Not an empty canvas: every region that was on screen is still on screen.
+  expect(Object.keys(await regionVersions(page)).length).toBe(regionsBefore);
+
+  await pipelineSettled(page);
+  const after = await regionVersions(page);
+  expect(Object.keys(after).length).toBe(regionsBefore);
+  // The frame really was rebuilt...
+  expect(after.frame).toBeGreaterThan(before.frame);
+  // ...and the buildings, which a frame profile cannot touch, were not.
+  expect(after.buildings).toBe(before.buildings);
+  // Nothing went back to Overpass for any of it.
+  expect(ingestFetches(calls) - fetchesBefore).toBe(0);
+});
+
+test("a lettering change reaches the model inside the interaction budget @smoke", async ({
+  page,
+}) => {
+  test.setTimeout(300_000 * BUDGET_FACTOR);
+  // The design's target for a live incremental change (`[V3.1-P1-14]`),
+  // measured from the input event to the moment the FRAME region's mesh is
+  // replaced on screen -- not to the end of the run, which also does the
+  // audit phase.
+  const LETTERING_BUDGET_MS = 400 * BUDGET_FACTOR;
+  await previewChicago(page);
+
+  await page.getByTestId("group-frame-toggle").click();
+  await page.getByTestId("engraving-add").click();
+  await expect(page.getByTestId("engraving-row")).toHaveCount(1);
+  await pipelineSettled(page);
+
+  const before = await regionVersions(page);
+  expect(before.frame, "no frame region to watch").toBeGreaterThan(0);
+
+  // Measured INSIDE the page, from the input event to the animation frame on
+  // which the frame region's mesh has been replaced. Polling from Node instead
+  // costs a round trip per sample (measured: 1.4 s for the same 0.55 s of
+  // work), which would make this a test of Playwright's IPC.
+  const elapsedMs = await page.evaluate(async () => {
+    const root = document.querySelector("[data-region-versions]") as HTMLElement;
+    const read = (): string => root.getAttribute("data-region-versions") ?? "";
+    const seen = read();
+    const input = document.getElementById("engraving_0_text") as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    const startedAt = performance.now();
+    setter?.call(input, "Chicago Loop");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    return await new Promise<number>((resolve) => {
+      const tick = (): void => {
+        if (read() !== seen) resolve(performance.now() - startedAt);
+        else requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  });
+  log(
+    `lettering change -> frame region on screen: ${elapsedMs} ms ` +
+      `(budget ${LETTERING_BUDGET_MS} ms at factor ${BUDGET_FACTOR})`,
+  );
+  expect(elapsedMs).toBeLessThan(LETTERING_BUDGET_MS);
+
+  await pipelineSettled(page);
+  // The text really is on the plate, from the shared layout the engine cuts.
+  expect(
+    Number(await page.locator("[data-preview-text-count]").getAttribute("data-preview-text-count")),
+  ).toBeGreaterThan(0);
+});
+
+test("Stop during a plate resize leaves the previous model on screen @smoke", async ({
+  page,
+}) => {
+  test.setTimeout(300_000 * BUDGET_FACTOR);
+  await previewChicago(page);
+  const before = await regionVersions(page);
+  const regionsBefore = Object.keys(before).length;
+
+  // A plate resize re-runs everything under `context`: the longest run the app
+  // has, and the one worth being able to abandon.
+  await setSlider(page, "plate_mm", 240);
+  const overlay = page.getByTestId("pipeline-stage-overlay");
+  await expect(overlay).toBeVisible({ timeout: 30_000 * BUDGET_FACTOR });
+  await page.getByTestId("pipeline-cancel").click();
+
+  // The overlay goes with the run; the model does not.
+  await expect(overlay).toHaveCount(0, { timeout: 30_000 * BUDGET_FACTOR });
+  await expect(page.locator("[data-pipeline-status]")).toHaveAttribute("data-pipeline-status", "ready");
+  expect(Object.keys(await regionVersions(page)).length).toBe(regionsBefore);
+  await expect(page.getByTestId("preview-stats")).toBeVisible();
+  // A cancel is not a failure: the model still reports its own triangle count,
+  // and nothing anywhere on the page says a stage broke.
+  await expect(page.getByTestId("preview-triangles")).toContainText("triangles");
+  await expect(page.getByText("could not finish")).toHaveCount(0);
+});

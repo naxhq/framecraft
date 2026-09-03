@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { defaultPrintParams } from "../contracts";
+import { defaultPrintParams, type PrintParams } from "../contracts";
+import { perfReport, perfReset, setPerfEnabled } from "../perf";
 import {
   EngineClient,
   EngineClientError,
@@ -9,8 +10,9 @@ import {
   createWorkerTransportForTest,
   type WorkerLike,
 } from "./client";
+import { seedSceneHash, type ExportOut } from "./pipeline";
 import { blockScene } from "./pipeline/testScenes";
-import type { RunJobMessage, WorkerRequest, WorkerResponse } from "./protocol";
+import { PipelineSession, perfStampedPost, type RunJobMessage, type WorkerRequest, type WorkerResponse } from "./protocol";
 import { building, scene } from "./solid/fixture";
 import type { EngineResult, RegionMesh } from "./types";
 
@@ -395,6 +397,146 @@ describe("the in-page fallback (no Worker: this is what vitest itself uses)", ()
       expect(files.sidecar).toHaveProperty("print_params");
     } finally {
       client.dispose();
+    }
+  }, 90_000);
+});
+
+describe("audit fixes: exports, re-attachment, scene echo, dead regions", () => {
+  it("exportFiles during a run does not supersede it: the run's done resolves and the files describe that run (inline transport)", async () => {
+    const client = new PipelineClient();
+    try {
+      const params = defaultPrintParams();
+      params.engravings = [{ edge: "top", text: "TWO", mode: "engrave", size_mm: 4 }];
+      const handle = client.run({ source: { kind: "scene", scene: blockScene(), key: "block" }, params, date: "2026-09-02", mode: "full" });
+      const files = await new Promise<Promise<ExportOut>>((resolve) => {
+        handle.progress.subscribe((event) => {
+          if (event.kind === "stage" && event.stage === "repair-buildings" && event.state === "done") {
+            resolve(client.exportFiles({ target: "stl", stem: "two", createdIso: "2026-09-02T00:00:00Z" }));
+          }
+        });
+      });
+      const done = await handle.done;
+      expect(done.result?.stats.buildings).toBeGreaterThan(0);
+      expect(done.mergedHash).toBeTypeOf("string");
+      const output = await files;
+      expect(output.files.map((file) => file.name)).toEqual(["two.stl"]);
+      const sidecar = output.sidecar as { print_params?: { engravings?: Array<{ text: string }> } };
+      expect(sidecar.print_params?.engravings?.[0]?.text).toBe("TWO");
+    } finally {
+      client.dispose();
+    }
+  }, 90_000);
+
+  it("a second run of the same params gets the merged mesh and the tile meshes back from the client's own copy (the worker strips them)", async () => {
+    const client = new PipelineClient();
+    try {
+      const params: PrintParams = { ...defaultPrintParams(), tiling: { ...defaultPrintParams().tiling, enabled: true, cols: 2, rows: 1 } };
+      const input = { source: { kind: "scene" as const, scene: blockScene(), key: "block" }, params, date: "2026-09-02", mode: "full" as const };
+      const first = await client.run(input).done;
+      expect(first.result?.merged.positions.length ?? 0).toBeGreaterThan(0);
+      const second = await client.run(input).done;
+      expect(second.mergedHash).toBe(first.mergedHash);
+      expect(second.tilesHash).toBe(first.tilesHash);
+      expect(second.result?.merged.positions).toBe(first.result?.merged.positions);
+      expect(second.result?.tiles?.[0]?.regions[0]?.positions).toBe(first.result?.tiles?.[0]?.regions[0]?.positions);
+      expect(second.result?.tiles?.[0]?.merged?.positions.length ?? 0).toBeGreaterThan(0);
+    } finally {
+      client.dispose();
+    }
+  }, 90_000);
+
+  it("the compat build tells the worker which scene it holds, so the scene is never echoed back", () => {
+    const { client, worker } = clientOverMockWorker();
+    const tiny = scene();
+    void client.buildModel({ scene: tiny, params: defaultPrintParams() });
+    const posted = lastRun(worker);
+    expect(posted.source.kind).toBe("scene");
+    expect(posted.knownSceneHash).toBe(seedSceneHash(posted.source.kind === "scene" ? posted.source.key : ""));
+    expect(posted.knownMergedHash).toBeNull();
+  });
+
+  it("a region streamed by a cancelled run and gone from the next model is deleted from a map driven by the client's events", async () => {
+    const client = new PipelineClient();
+    try {
+      const base = defaultPrintParams();
+      const on: PrintParams = { ...base, colour: { ...base.colour, gradient: { enabled: true, slots: [2, 3] } } };
+      const held = new Map<string, string>();
+      const source = { kind: "scene" as const, scene: blockScene(), key: "block" };
+      const first = client.run({ source, params: on, date: "2026-09-02", mode: "full" });
+      first.regions.subscribe((event) => {
+        for (const region of event.regions) held.set(region.region, event.hashes[region.region]);
+        for (const region of event.removed) held.delete(region);
+      });
+      first.progress.subscribe((event) => {
+        if (event.kind === "stage" && event.stage === "assembly" && event.state === "done") first.cancel();
+      });
+      await expect(first.done).rejects.toMatchObject({ code: "cancelled" });
+      expect(held.has("buildings_band_2")).toBe(true);
+      const second = client.run({ source, params: base, date: "2026-09-02", mode: "full", known: Object.fromEntries(held) });
+      second.regions.subscribe((event) => {
+        for (const region of event.regions) held.set(region.region, event.hashes[region.region]);
+        for (const region of event.removed) held.delete(region);
+      });
+      const done = await second.done;
+      const present = new Set<string>(done.result?.regions.map((region) => region.region));
+      expect([...held.keys()].filter((region) => !present.has(region))).toEqual([]);
+      expect(held.has("buildings_band_2")).toBe(false);
+    } finally {
+      client.dispose();
+    }
+  }, 120_000);
+});
+
+/**
+ * A worker without the thread: the real session behind the real transport
+ * wiring, posting through `perfStampedPost` exactly as `worker.ts` does, so
+ * what the client merges into the page's report is what a worker sends.
+ */
+class SessionWorker implements WorkerLike {
+  private readonly session = new PipelineSession();
+  onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null = null;
+  onerror: ((event: ErrorEvent) => void) | null = null;
+
+  postMessage(message: unknown): void {
+    this.session.handle(
+      message as WorkerRequest,
+      perfStampedPost((response) => {
+        this.onmessage?.({ data: response } as MessageEvent<WorkerResponse>);
+      }),
+    );
+  }
+
+  terminate(): void {
+    this.session.dispose();
+  }
+}
+
+describe("perf mode through the client: the run's own engine.build row", () => {
+  it("is in the report the moment a run resolves, for the first run and the last, recorded in the worker's scope", async () => {
+    setPerfEnabled(true);
+    perfReset();
+    const client = new PipelineClient(createWorkerTransportForTest(new SessionWorker()));
+    try {
+      const source = { kind: "scene" as const, scene: blockScene(), key: "block" };
+      let count = 0;
+      for (const text of ["ONE", "TWO"]) {
+        const params = defaultPrintParams();
+        params.engravings = [{ edge: "top", text, mode: "engrave", size_mm: 4 }];
+        await client.run({ source, params, date: "2026-09-02", mode: "full" }).done;
+        count += 1;
+        const report = perfReport();
+        const rows = report.rows.filter((row) => row.runId === report.runId && row.name === "engine.build");
+        expect(rows, `${text}: one engine.build row`).toHaveLength(1);
+        expect(rows[0].count, `${text}: this run's build is counted`).toBe(count);
+        expect(rows[0].scope).toBe("worker");
+        expect(rows[0].lastMs ?? 0).toBeGreaterThan(0);
+        // The hop the client measures from the worker's `engine.post` stamp.
+        expect(report.rows.some((row) => row.name === "engine.transfer" && row.runId === report.runId)).toBe(true);
+      }
+    } finally {
+      client.dispose();
+      setPerfEnabled(false);
+      perfReset();
     }
   }, 90_000);
 });

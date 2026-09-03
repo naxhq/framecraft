@@ -13,18 +13,18 @@
 #                        and normalisation on six real cities (16k to 19k
 #                        elements each).
 #
-#   browser engine       Chicago only, `npm run export:cli --overpass
-#                        fixtures/<sha1>.json`, which feeds the raw response
-#                        through apps/web/lib/engine/osm.
+#   browser engine       All six presets too, `npm run export:cli --overpass
+#                        fixtures/<sha1>.json --center <lat,lon> --rotation
+#                        <deg>`, which feeds the raw response through
+#                        apps/web/lib/engine/osm.
 #
-# The browser CLI is Chicago-only here for a real reason, not a preference: a
-# raw Overpass response carries no centre of its own (the centre is part of the
-# REQUEST), export-cli.ts hard-codes `DEMO_CENTER` = the Chicago Loop for
-# `--overpass`, and it has no flag to override it. Feeding it the Paris fixture
-# would crop Paris data around a point in Illinois and build an empty plate.
-# Closing that gap means a `--center lat,lon` flag on export-cli.ts, which is
-# application source this script does not get to change. Recorded in
-# docs/handoff/v3-14-ci.md.
+# The browser run used to be Chicago-only for a real reason: a raw Overpass
+# response carries no centre of its own (the centre is part of the REQUEST) and
+# export-cli.ts hard-coded `DEMO_CENTER` = the Chicago Loop for `--overpass`,
+# so the Paris fixture would have been cropped around a point in Illinois and
+# built an empty plate. `--center lat,lon` (and `--rotation`, which New York's
+# preset needs at 29 deg) closed that gap, and both pipelines are now judged on
+# every preset. DECISIONS.md [V3.1-P7-4], docs/handoff/v3-08-siteperf.md.
 #
 # Usage: ci-preset-matrix.sh [make]
 set -u
@@ -120,35 +120,68 @@ for id in $presets; do
 done
 
 echo
-echo "== preset-matrix: the browser engine on a raw Overpass response =="
-chicago=$(node -e "
+echo "== preset-matrix: the browser engine on every raw Overpass response =="
+# One line per preset: `id fixture_file lat lon radius rotation`, read from the
+# same committed index the reference run uses, so the two pipelines are given
+# the identical request for each city.
+web_rows=$(node -e "
   const idx = require('./fixtures/presets-index.json');
-  const p = idx.presets.find((x) => x.preset_id === 'chicago-loop');
-  if (!p) { console.error('chicago-loop is not in presets-index.json'); process.exit(1); }
-  console.log(p.fixture_file);
+  for (const p of idx.presets) {
+    const r = p.request || {};
+    console.log([p.preset_id, p.fixture_file, r.lat, r.lon, r.radius_m, r.rotation_deg].join(' '));
+  }
 ")
-if [ -z "$chicago" ]; then
-	echo "preset-matrix: could not resolve the chicago-loop fixture" >&2
+if [ -z "$web_rows" ]; then
+	echo "preset-matrix: could not read the preset requests out of presets-index.json" >&2
 	rc=1
-else
-	log="$LOGS/preset-matrix-web-chicago.log"
+fi
+web_built=0
+rm -f "$OUT/.web-failures" "$OUT/.web-built"
+echo "$web_rows" | while read -r id fixture lat lon radius rotation; do
+	[ -z "$id" ] && continue
+	echo "-- web $id"
+	log="$LOGS/preset-matrix-web-$id.log"
 	( cd apps/web && npm run export:cli -- \
-		--overpass "../../fixtures/$chicago" \
+		--overpass "../../fixtures/$fixture" \
 		--params ../../fixtures/print-params-parts.json \
+		--center "$lat,$lon" \
+		--radius "$radius" \
+		--rotation "$rotation" \
 		--target generic-3mf \
-		--out "../../$OUT/web-chicago-loop.3mf" ) > "$log" 2>&1
+		--out "../../$OUT/web-$id.3mf" ) > "$log" 2>&1
 	wrc=$?
 	tail -3 "$log"
 	if [ $wrc -ne 0 ]; then
-		echo "preset-matrix: export:cli --overpass (chicago-loop) FAILED (see $log)" >&2
+		echo "preset-matrix: export:cli --overpass ($id) FAILED (see $log)" >&2
 		tail -20 "$log" >&2
-		rc=1
-	else
-		judge web-chicago-loop "$OUT/web-chicago-loop.3mf" || rc=1
+		echo "fail" >> "$OUT/.web-failures"
+		continue
 	fi
+	judge "web-$id" "$OUT/web-$id.3mf" || echo "fail" >> "$OUT/.web-failures"
+	web_built=$((web_built + 1))
+	echo "$web_built" > "$OUT/.web-built"
+done
+# The loop above runs in a `while read` subshell (POSIX sh has no process
+# substitution), so its `rc` assignments do not survive it. The two files are
+# how the counts and the failures come back out.
+if [ -f "$OUT/.web-failures" ]; then
+	web_failed=$(wc -l < "$OUT/.web-failures" | tr -d ' ')
+	echo "preset-matrix: $web_failed browser-engine preset run(s) FAILED" >&2
+	rm -f "$OUT/.web-failures"
+	rc=1
+fi
+web_total=0
+if [ -f "$OUT/.web-built" ]; then
+	web_total=$(cat "$OUT/.web-built")
+	rm -f "$OUT/.web-built"
 fi
 
 echo
 echo "preset-matrix: $built of $count preset(s) built and validated through the reference pipeline"
+echo "preset-matrix: $web_total of $count preset(s) built and validated through the browser engine"
+if [ "$web_total" -lt "$count" ]; then
+	echo "preset-matrix: the browser engine did not build every preset" >&2
+	rc=1
+fi
 if [ $rc -eq 0 ]; then echo "PRESET-MATRIX PASS"; else echo "PRESET-MATRIX FAIL" >&2; fi
 exit $rc

@@ -1,13 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Grid, OrbitControls } from "@react-three/drei";
-import { Canvas, useThree } from "@react-three/fiber";
-import type { PerspectiveCamera } from "three";
+import { Canvas } from "@react-three/fiber";
 
 import AdjustmentsChip from "@/components/editor/AdjustmentsChip";
 import IssuesBadge from "@/components/editor/IssuesBadge";
-import PerfFrameMark from "@/components/scene/PerfFrameMark";
 import { collectAdjustments } from "@/lib/adjustments";
 import {
   advisorDeps,
@@ -19,40 +16,32 @@ import {
 } from "@/lib/advisor";
 import type { PrintParams, SceneGraph } from "@/lib/contracts";
 import type { EngineBuilding } from "@/lib/engine/osm/types";
-import type { AuditFinding } from "@/lib/engine/types";
-import { freshEngineResult as engineFresh } from "@/lib/enginePreview";
+import type { AuditFinding, RecessBand, RegionMesh } from "@/lib/engine/types";
+import { previewView } from "@/lib/enginePreview";
 import { loadGlyphFace, loadedGlyphFace } from "@/lib/fontGlyphs";
 import { autoHeroIds, heroCandidates, heroCapMessage } from "@/lib/heroes";
 import { mergeIssues } from "@/lib/issues";
+import { perfSpan } from "@/lib/perf";
 import {
   cursorLabel,
   cursorOrder,
   cursorStepFor,
   moveCursor,
 } from "@/lib/heroCursor";
-import { specStrip } from "@/lib/hud";
-import {
-  buildAreas,
-  buildBuildings,
-  buildRoads,
-  buildTrees,
-  dilatedNotice,
-  mergeNoticeMetres,
-  treeFloorNoticeMetres,
-} from "@/lib/preview";
+import { specStrip, stageEtaText, stageOverlayText } from "@/lib/hud";
+import { buildBuildings, dilatedNotice, treeFloorNoticeMetres } from "@/lib/preview";
 import {
   buildPreviewText,
   facesNeeded,
-  textLayers,
   textParamsKey,
   textTokenContext,
   type PreviewTextModel,
 } from "@/lib/previewText";
-import { buildingTintMap } from "@/lib/tint";
 import * as T from "@/lib/transform";
 import {
   heightCeilingMm,
   letteringWarnings,
+  pipelineFailureWarning,
   predictedTopDeps,
   predictedTopMm,
   sceneWarnings,
@@ -60,53 +49,53 @@ import {
   warningDeps,
 } from "@/lib/warnings";
 import { useEditorStore } from "@/store/editor";
-import AreaSurfaces from "./AreaSurfaces";
-import BasePlate from "./BasePlate";
-import InstancedBuildings from "./InstancedBuildings";
-import RegionMeshes from "./RegionMeshes";
-import RoadRibbons from "./RoadRibbons";
-import TileGrid from "./TileGrid";
-import TreeInstances from "./TreeInstances";
-import { paletteFor, readPreviewPalette, readViewportPalette, type PreviewPalette } from "./palette";
+import PreviewScene from "./PreviewScene";
+import {
+  readPreviewPalette,
+  readViewportMultipliers,
+  readViewportPalette,
+  DEFAULT_VIEWPORT_MULTIPLIERS,
+} from "./palette";
 
 /**
  * The live 3D preview.
  *
- * Everything below is drawn in PRINT MILLIMETRES in the SceneGraph frame
- * (x east, y north, z up); the single `rotation` on the root group is the only
- * concession to three.js being y-up, so no component has to think in two
- * coordinate systems.
+ * Since v3.1 the viewport draws ONE thing: the solids the pipeline finished
+ * (`state.pipeline.regions`), at the export's own resolution, in the export's
+ * own colours. The approximate stack that used to stand in for them -- the
+ * constant frame bars, the oriented building boxes, the flat road ribbons, the
+ * earcut water and green fills, the flat lettering fills -- is gone, and with
+ * it the mechanism behind "the settings do nothing": a control that moves the
+ * model now moves the model, and a control that appears to do nothing can only
+ * be a pipeline stage that did not claim it.
  *
- * Slider budget (02: under 33 ms): every `useMemo` below is keyed through
- * `previewDeps`, which names exactly the primitives that change its output --
- * never the `params` object, which `setParam` re-creates on every write. A
- * height slider therefore touches nothing except `InstancedBuildings`'s matrix
- * buffer.
+ * What that changes about this file:
  *
- * Preview approximations, all deliberate, all because the browser never runs
- * booleans (02):
- *  - buildings are oriented boxes, not their real footprints;
- *  - the minimum-feature repair is a per-footprint dilation, so neighbours that
- *    the build would merge into one block are still drawn separately;
- *  - engraved roads and recessed water are drawn on the surface instead of cut
- *    into the slab;
- *  - lettering, the ornaments and the underside pockets are flat fills on the
- *    surface too, at the shared layout's own sizes and anchors, rather than
- *    grooves. What the build refuses, the preview does not draw.
- * The note under the canvas says so, using the real threshold.
+ *  - nothing rendered reads `PrintParams`. Everything inside `<Canvas>` lives
+ *    in `PreviewScene`, whose props are pipeline output; the one exception is
+ *    `BuildingPickProxies`, which places invisible boxes for hero picking and
+ *    paints nothing. `CityPreview.test.ts` enforces both halves.
+ *  - a run in flight does not empty the viewport. The previous meshes stay up,
+ *    dimmed, under an overlay naming the stage the worker is on, and each
+ *    region is replaced on its own as it finishes.
+ *  - the readouts below the canvas come from the finished model (its measured
+ *    height, its triangle count) or from the shared transform pair, never from
+ *    a second approximation of the same numbers.
+ *
+ * The HUD around the canvas still reads parameters, and must: the spec strip,
+ * the detail advisor, the adjustments drawer and the Issues badge are all
+ * statements ABOUT the settings, and the shared transform pair is what makes
+ * them agree with the build rather than guess at it.
  */
 
 /**
- * The memo keys of every derived preview layer, in one place.
+ * The memo keys of every derived HUD layer, in one place.
  *
- * 02: "rebuild only the affected instance buffer when a slider moves". The
- * trap is that `store.setParam` rebuilds `params` by spread on every write, so
- * ANY dependency list that names `params` (or an object derived from it, such
- * as the `Thresholds` record) is invalidated by every slider tick -- including
- * the height sliders, which would re-run earcut over ~700 green polygons and
- * re-upload a fresh BufferGeometry per frame of a drag.
- *
- * Every entry below must therefore be a primitive read off `params`, or an
+ * The trap is that `store.setParam` rebuilds `params` by spread on every
+ * write, so ANY dependency list that names `params` is invalidated by every
+ * slider tick -- including the height sliders, which would re-run the hull
+ * maths over every footprint and re-triangulate the glyphs on every frame of
+ * a drag. Every entry below is therefore a primitive read off `params`, or an
  * identity-stable object (`graph`). `CityPreview.test.ts` enforces both halves.
  */
 export const previewDeps = {
@@ -116,47 +105,17 @@ export const previewDeps = {
     params.plate_mm,
     params.frame,
   ],
-  /** `thresholds_ground_m` reads the nozzle and the (numeric) scale. */
-  thresholds: (scale: number | null, params: PrintParams): unknown[] => [
-    scale,
-    params.nozzle_mm,
-  ],
-  /** Hulls and oriented rectangles: scale + thresholds, never a height. */
+  /**
+   * The pick proxies' footprints: hulls and oriented rectangles, keyed on the
+   * parameters that move the scale (plate, frame) and the thresholds (nozzle).
+   * Height sliders must NOT invalidate it: rebuilding 5000 convex hulls per
+   * frame blows the budget, and a box only has to sit where its building does.
+   */
   layout: (graph: SceneGraph | null, params: PrintParams): unknown[] => [
     graph,
     params.plate_mm,
     params.frame,
     params.nozzle_mm,
-  ],
-  roads: (graph: SceneGraph | null, params: PrintParams): unknown[] => [
-    graph,
-    params.plate_mm,
-    params.frame,
-    params.nozzle_mm,
-    params.road_scale,
-    params.road_mode,
-  ],
-  water: (
-    graph: SceneGraph | null,
-    scale: number | null,
-    params: PrintParams,
-  ): unknown[] => [graph, scale, params.nozzle_mm, params.water],
-  green: (
-    graph: SceneGraph | null,
-    scale: number | null,
-    params: PrintParams,
-  ): unknown[] => [graph, scale, params.nozzle_mm],
-  /**
-   * The tree filter reads the nozzle too: `transform.tree_min_radius_mm` raises
-   * the printed-radius floor above 04's 0.5 mm from a 0.47 mm nozzle up, and the
-   * preview must hide exactly the trees the build drops (DECISIONS [P5-web]).
-   */
-  trees: (graph: SceneGraph | null, params: PrintParams): unknown[] => [
-    graph,
-    params.plate_mm,
-    params.frame,
-    params.nozzle_mm,
-    params.trees,
   ],
   /**
    * The predicted model top: the 60 mm guard and the HUD read it.
@@ -165,25 +124,21 @@ export const previewDeps = {
    * of it. `warningDeps` also names the hanger, the underside mark, `road_mode`
    * and `water`, because the OTHER block warning ([V2-P7-fix], the base a
    * hanger needs) moves with those; none of them changes how tall the model is
-   * drawn, so keying this pass on them would re-run it for nothing.
+   * predicted to be, so keying this pass on them would re-run it for nothing.
    */
   height: (graph: SceneGraph | null, params: PrintParams): unknown[] =>
     predictedTopDeps(graph, params),
   /**
-   * Frame lettering, the ornaments and the underside pockets.
+   * The lettering layout: how many glyph rings the shared layout produces, and
+   * what it had to say about them (an auto-fitted size, a dropped character, a
+   * refused engraving).
    *
-   * `textParamsKey` is a STRING of exactly the parameters that move a layout
-   * (plate, frame, nozzle, city label, engravings, north arrow, scale bar,
-   * underside mark, hanger) rather than those nested objects themselves: every
-   * entry in these lists has to be a primitive or the graph, and a string
-   * compares by value, so moving a height slider produces the same key and the
-   * glyphs are not re-triangulated.
-   *
-   * `graph` is here because the token expansion reads the scene (`{scale}`,
-   * `{coords}`, `{buildings}`); `rotation_deg` because the north arrow is
-   * turned back by it; `date` because `{date}` is in it; `faces` because the
-   * glyph outlines arrive asynchronously and the layer has to be built again
-   * once they do.
+   * NOT a rendered layer any more -- the engine cuts the real letters -- but
+   * `transform.lettering_layout` is the function the engine cuts FROM, so this
+   * is the one place the editor can count the rings and read the refusals
+   * without waiting for a run. `textParamsKey` is a STRING of exactly the
+   * parameters that move a layout, so moving a height slider produces the same
+   * key and the glyphs are not re-triangulated.
    */
   text: (
     graph: SceneGraph | null,
@@ -208,20 +163,14 @@ export const previewDeps = {
 const NO_HEROES: readonly string[] = [];
 /**
  * Identity-stable fallback for a zustand selector, for the same reason: a
- * store selector returning a FRESH `[]` when there is no engine result yet
- * reports "changed" to `useSyncExternalStore` on every render (a new
- * reference is never `Object.is`-equal to the last one), which reproduces as
- * "Maximum update depth exceeded" -- measured, not theoretical, in a real
- * browser click-through of the Chicago preset before this constant existed.
+ * store selector returning a FRESH `[]` when there is no result yet reports
+ * "changed" to `useSyncExternalStore` on every render (a new reference is
+ * never `Object.is`-equal to the last one), which reproduces as "Maximum
+ * update depth exceeded" -- measured, not theoretical, in a real browser
+ * click-through of the Chicago preset before this constant existed.
  */
 const NO_FINDINGS: readonly AuditFinding[] = [];
-
-/** Which token each lettering tone paints with. */
-function textColour(tone: string, colours: PreviewPalette): string {
-  if (tone === "embossed") return colours.textEmbossed;
-  if (tone === "pocket") return colours.pocket;
-  return colours.textEngraved;
-}
+const NO_BANDS: readonly RecessBand[] = [];
 
 /**
  * The advisor band, as a design token.
@@ -238,15 +187,49 @@ const BAND_TEXT: Record<AdvisorTone, string> = {
   danger: "font-semibold text-danger",
 };
 
+/**
+ * `region:version` pairs for the regions currently on screen, published on the
+ * viewport so an end-to-end test can time a change from an input event to the
+ * exact moment the affected region's mesh was replaced.
+ *
+ * A version, not a hash: the worker only re-sends a region whose
+ * `finish-<region>` key moved, so a new `RegionMesh` object IS a changed hash,
+ * and the counter moves at the moment the mesh reaches the screen rather than
+ * at the end of the whole run. `data-region-hashes` publishes the worker's own
+ * keys as well, which arrive with the finished result.
+ */
+function useRegionVersions(regions: ReadonlyMap<string, RegionMesh>): string {
+  const seen = useRef(new Map<string, { mesh: RegionMesh; version: number }>());
+  return useMemo(() => {
+    const current = seen.current;
+    const parts: string[] = [];
+    for (const [name, mesh] of regions) {
+      const hit = current.get(name);
+      const version = hit === undefined || hit.mesh !== mesh ? (hit?.version ?? 0) + 1 : hit.version;
+      current.set(name, { mesh, version });
+      parts.push(`${name}:${version}`);
+    }
+    for (const name of [...current.keys()]) {
+      if (!regions.has(name)) current.delete(name);
+    }
+    return parts.join(" ");
+  }, [regions]);
+}
+
 export function CityPreview() {
   const graph = useEditorStore((state) => state.scene.graph);
   const status = useEditorStore((state) => state.scene.status);
   const params = useEditorStore((state) => state.params);
   const theme = useEditorStore((state) => state.theme);
-  const engineStatus = useEditorStore((state) => state.engine.status);
-  const engineResult = useEditorStore((state) => state.engine.result);
-  const engineStale = useEditorStore((state) => state.engine.stale);
-  const engineFindings = useEditorStore((state) => state.engine.result?.findings ?? NO_FINDINGS);
+  const previewTheme = useEditorStore((state) => state.params.colour?.preview_theme ?? "dark");
+  const regions = useEditorStore((state) => state.pipeline.regions);
+  const regionHashes = useEditorStore((state) => state.pipeline.regionHashes);
+  const pipelineStatus = useEditorStore((state) => state.pipeline.status);
+  const pipelineStale = useEditorStore((state) => state.pipeline.stale);
+  const pipelineResult = useEditorStore((state) => state.pipeline.result);
+  const pipelineError = useEditorStore((state) => state.pipeline.error);
+  const progressStage = useEditorStore((state) => state.pipeline.progress.stage);
+  const engineFindings = useEditorStore((state) => state.pipeline.result?.findings ?? NO_FINDINGS);
   const buildWarnings = useMemo(
     () =>
       engineFindings
@@ -259,7 +242,6 @@ export function CityPreview() {
   const rotationDeg = useEditorStore((state) => state.location.rotation_deg);
   const setRadius = useEditorStore((state) => state.setRadius);
   const setParam = useEditorStore((state) => state.setParam);
-  const setNested = useEditorStore((state) => state.setNested);
   const generate = useEditorStore((state) => state.generate);
 
   /**
@@ -275,32 +257,24 @@ export function CityPreview() {
   // is a real argument -- it keys the palette cache -- so this memo needs no
   // dependency exemption.
   const themed = useMemo(() => readPreviewPalette(theme), [theme]);
-  const partsColours = paletteFor(params, themed, params.part_colors);
 
   /**
-   * `colour.preview_theme`: a SEPARATE switch from the app's own `theme`
-   * above, scoped to the canvas wrapper's own `data-fc-viewport-theme`
-   * attribute (`app/globals.css`) rather than to `.dark` on `<html>`, so
-   * flipping it never touches the panels around the viewport. Read via an
-   * effect (not a memo) because the value lives on a DOM node this component
-   * itself renders -- the attribute has to be committed before the computed
-   * style reflects it. `[V3-P5-C]`.
+   * `colour.preview_theme` is a SEPARATE switch from the app's own `theme`,
+   * scoped to `data-fc-viewport-theme` on the wrapper `PreviewPane` renders
+   * (`app/globals.css`) rather than to `.dark` on `<html>`, so flipping it
+   * never touches the panels around the viewport. Read through an effect (not
+   * a memo) because the values live on a DOM node: the attribute has to be
+   * committed before the computed style reflects it. `[V3-P5-C]`.
    */
-  const previewTheme: "dark" | "light" = params.colour?.preview_theme ?? "dark";
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const [viewportPalette, setViewportPalette] = useState(() =>
     readViewportPalette(null, themed),
   );
+  const [multipliers, setMultipliers] = useState(DEFAULT_VIEWPORT_MULTIPLIERS);
   useEffect(() => {
     setViewportPalette(readViewportPalette(viewportRef.current, themed));
+    setMultipliers(readViewportMultipliers(viewportRef.current));
   }, [previewTheme, themed]);
-  const colours: PreviewPalette = {
-    ...partsColours,
-    background: viewportPalette.background,
-    sky: viewportPalette.sky,
-    bounce: viewportPalette.bounce,
-    grid: viewportPalette.grid,
-  };
 
   const scale = useMemo(
     () =>
@@ -308,18 +282,10 @@ export function CityPreview() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     previewDeps.scale(graph, params),
   );
-  // `scale` is a number, so an identical recomputation is identity-stable and
-  // the layers below are not invalidated by it. `thresholds` is an object, so
-  // it must be keyed on the nozzle alone or every slider tick re-triangulates.
-  const thresholds = useMemo(
-    () => (scale === null ? null : T.thresholds_ground_m(params, scale)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    previewDeps.thresholds(scale, params),
-  );
 
-  // The footprint layout depends only on the parameters that move the scale
-  // (plate, frame) and the thresholds (nozzle). Height sliders must NOT
-  // invalidate it: rebuilding 5000 convex hulls per frame blows the budget.
+  // The pick proxies' footprints. Hero picking needs per-building identity,
+  // which the fused region meshes do not carry, so this layout survives -- as
+  // invisible boxes only (named exception 1).
   const layout = useMemo(
     () =>
       graph
@@ -329,42 +295,12 @@ export function CityPreview() {
     previewDeps.layout(graph, params),
   );
 
-  const roads = useMemo(
-    () => (graph ? buildRoads(graph, params) : null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    previewDeps.roads(graph, params),
-  );
-
-  const water = useMemo(
-    () =>
-      graph && scale !== null && thresholds !== null && params.water
-        ? buildAreas(graph.water, params, scale, thresholds)
-        : [],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    previewDeps.water(graph, scale, params),
-  );
-
-  const green = useMemo(
-    () =>
-      graph && scale !== null && thresholds !== null
-        ? buildAreas(graph.green, params, scale, thresholds)
-        : [],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    previewDeps.green(graph, scale, params),
-  );
-
-  const trees = useMemo(
-    () => (graph ? buildTrees(graph, params) : []),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    previewDeps.trees(graph, params),
-  );
-
-  // --- frame lettering, ornaments and the underside ------------------------
+  // --- the lettering layout (counted and reported, never drawn) ------------
   //
   // The glyph outlines are ~280 KB per face and are fetched only when a layout
-  // actually names one, so the build runs twice for a face's first use: once
-  // reporting it missing (drawing nothing), then again once it has landed.
-  // `faceVersion` is what makes the second run happen.
+  // actually names one, so the layout runs twice for a face's first use: once
+  // reporting it missing, then again once it has landed. `faceVersion` is what
+  // makes the second run happen.
   const [faceVersion, setFaceVersion] = useState(0);
   const facesKey = useMemo(
     () => facesNeeded(params).join(","),
@@ -399,11 +335,6 @@ export function CityPreview() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     previewDeps.text(graph, params, rotationDeg, today, faceVersion),
   );
-  const textDraw = useMemo(
-    () => textLayers(textModel, params),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [textModel, params.base_thickness_mm, params.frame],
-  );
 
   // --- the detail advisor --------------------------------------------------
   const sceneRadiusM = graph ? T.radius_m_from_bounds(graph.bounds) : null;
@@ -415,7 +346,7 @@ export function CityPreview() {
   const onAdvisorAction = useCallback(
     (action: AdvisorAction) => {
       // The radius goes through exactly the path a slider release takes:
-      // `setRadius` marks the scene stale and retires the build, `generate`
+      // `setRadius` marks the scene stale and retires the model, `generate`
       // fetches. The plate is a plain parameter write and stays client-side.
       applyAdvisorAction(action, {
         setRadius,
@@ -426,9 +357,9 @@ export function CityPreview() {
     [setRadius, generate, setParam],
   );
 
-  // 04 stage 4 caps the model at 60 mm and the build refuses to start above it.
-  // Showing the number on the canvas is what makes the disabled Export button
-  // legible while the height sliders move.
+  // 04 stage 4 caps the model at 60 mm and the engine refuses to start above
+  // it. Showing the number on the canvas is what makes the disabled Export
+  // button legible while the height sliders move.
   const predictedTop = useMemo(
     () => predictedTopMm(graph, params),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -444,9 +375,12 @@ export function CityPreview() {
       // lettering configured for it.
       ...letteringWarnings(params, textTokenContext(graph, params, today)),
       ...tintPreviewOnlyWarning(params),
+      // A stage that threw is a warning for the user like any other: the
+      // Issues badge is the one place findings and failures are reported.
+      ...pipelineFailureWarning(pipelineError),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [...warningDeps(graph, params), textParamsKey(params), today, params.colour?.tint?.enabled, params.export_target],
+    [...warningDeps(graph, params), textParamsKey(params), today, params.colour?.tint?.enabled, params.export_target, pipelineError],
   );
 
   /**
@@ -474,7 +408,7 @@ export function CityPreview() {
         buildWarnings,
         // The shared layout's own messages, verbatim: an auto-fitted size, a
         // dropped character, a refused engraving. They are informational -- the
-        // build reports the same strings -- so they belong in the drawer with
+        // engine reports the same strings -- so they belong in the drawer with
         // the rest of "what the pipeline quietly did".
         textNotices: textModel.notices,
       }),
@@ -497,32 +431,23 @@ export function CityPreview() {
     [...previewDeps.height(graph, params), params.nozzle_mm],
   );
 
-  const approximationNote =
-    thresholds === null
-      ? ""
-      : "Preview is approximate: the build merges buildings closer than " +
-        `${mergeNoticeMetres(thresholds).toFixed(1)} m, and roads, water, ` +
-        "lettering, the ornaments and the underside marks are drawn as flat " +
-        "fills here instead of being cut into the plate. Sizes, anchors and " +
-        "refusals are the build's own.";
+  // --- what the viewport is showing ---------------------------------------
+  const view = previewView({
+    status: pipelineStatus,
+    stale: pipelineStale,
+    regions,
+    result: pipelineResult,
+  });
+  const regionVersions = useRegionVersions(regions);
+  const recessBands = pipelineResult?.recessBands ?? NO_BANDS;
+  // The camera follows the real model once there is one, and the plate the
+  // controls ask for until then.
+  const frameWidthMm = pipelineResult?.stats.widthMm ?? params.plate_mm;
 
-  const baseTop = T.base_top_mm(params);
-  const roadZ = T.road_z_mm(params);
-  const waterZ = T.water_z_mm(params);
-  // The real thing, when there is one to show: `RegionMeshes` replaces every
-  // approximate instanced/flat-fill layer below (base, frame, water, green,
-  // roads, buildings, trees, lettering) the moment a fresh `EngineResult`
-  // lands, so the preview and a downloaded file can never disagree. See
-  // `lib/enginePreview.ts:freshEngineResult`'s own docstring for what "fresh"
-  // means and why a stale result is never shown here.
-  const freshEngineResult = engineFresh({ status: engineStatus, result: engineResult, stale: engineStale });
   // Manual picks plus, once `hero_auto` is on, the auto-promoted ones -- the
-  // same effective set `store/editor.ts:currentHeroIds` builds with, so the
-  // preview highlight and the keyboard cursor's "hero" announcement never
-  // disagree with what a click on Export would actually produce. Deps are
-  // primitives/identity-stable references only (`graph`, the hero arrays),
-  // never `params` itself or `params.hero_auto` -- `setParam` rebuilds
-  // `params` by spread on every write, and this scores every building.
+  // same effective set the `heroes` stage resolves in the worker, so the
+  // keyboard cursor's "hero" announcement never disagrees with what the model
+  // actually prints. Deps are primitives/identity-stable references only.
   const manualHeroIds = params.hero_building_ids ?? NO_HEROES;
   const heroAutoEnabled = params.hero_auto?.enabled ?? false;
   const heroAutoCount = params.hero_auto?.count ?? 0;
@@ -531,32 +456,6 @@ export function CityPreview() {
     const candidates = heroCandidates(graph.buildings as EngineBuilding[]);
     return autoHeroIds(candidates, manualHeroIds, heroAutoCount);
   }, [graph, manualHeroIds, heroAutoEnabled, heroAutoCount]);
-  /*
-    A hero takes the printed hero filament only in a mode that actually gives it
-    one. In `true_height` the pick is still shown -- it has to be, or a click
-    would look like it did nothing -- but in a colour that does not claim to be
-    a material (DECISIONS [V2-P6]).
-  */
-  const heroColour = T.hero_own_color(params) ? colours.hero : colours.heroPick;
-
-  /**
-   * Per-building tint (v3 phase 5, `[V3-P5-C]`): the live engine's own
-   * `EngineResult.buildingTints` when a fresh one carries any (real geometry,
-   * so it wins), `lib/tint.ts`'s deterministic client-side draw otherwise --
-   * the fast instanced preview shows a tint immediately on toggling it, with
-   * no build to wait for, and swaps to the engine's own numbers the moment one
-   * lands. `null` (not an empty Map) when tint is off, so `InstancedBuildings`
-   * never spends a pass building `Color`s it will not use.
-   */
-  const tintColors = useMemo(() => {
-    const fromEngine = engineResult?.buildingTints;
-    if (fromEngine && fromEngine.length > 0) {
-      return new Map(fromEngine.map((tint) => [tint.id, tint.colorHex]));
-    }
-    if (!params.colour?.tint?.enabled) return null;
-    const ids = layout.buildings.map((building) => building.id);
-    return new Map(Object.entries(buildingTintMap(ids, colours.building, params.colour.tint)));
-  }, [engineResult?.buildingTints, params.colour?.tint, layout.buildings, colours.building]);
 
   // --- the keyboard path to a hero (lib/heroCursor.ts) --------------------
   const [cursorId, setCursorId] = useState<string | null>(null);
@@ -578,7 +477,7 @@ export function CityPreview() {
     [cursorId, order, toggleHero],
   );
 
-  if (!graph || scale === null || thresholds === null) {
+  if (!graph || scale === null) {
     return status === "loading" ? <PreviewSkeleton /> : <PreviewEmpty />;
   }
 
@@ -587,15 +486,24 @@ export function CityPreview() {
       ref={viewportRef}
       className="relative h-full w-full"
       /*
-        What is actually drawn on the frame and the underside, so an e2e can see
-        that enabling an engraving put geometry on the plate rather than only a
-        line in the panel. It counts RINGS, so a refused engraving -- which the
-        build will not cut and this does not draw -- leaves it unchanged.
+        How many rings of lettering the SHARED layout puts on the plate -- the
+        same `transform.lettering_layout` the engine cuts from -- so an e2e can
+        see that enabling an engraving really adds geometry rather than only a
+        line in the panel. A refused engraving, which the engine will not cut,
+        leaves it unchanged.
       */
       data-preview-text-count={textModel.shapeCount}
-      // `colour.preview_theme` scope (`app/globals.css`), read back by the
-      // `readViewportPalette` effect above once this attribute is committed.
-      data-fc-viewport-theme={previewTheme}
+      /* What the pipeline is doing, and which region meshes are on screen.
+         `data-region-versions` moves the moment a region's mesh is replaced;
+         `data-region-hashes` carries the worker's own keys, which arrive with
+         the finished result. */
+      data-pipeline-status={pipelineStatus}
+      data-pipeline-stage={progressStage}
+      data-pipeline-dimmed={view.dimmed ? "true" : "false"}
+      data-region-versions={regionVersions}
+      data-region-hashes={Object.entries(regionHashes)
+        .map(([region, hash]) => `${region}:${hash}`)
+        .join(" ")}
     >
       {/*
         The viewport is a focus stop with its own key handling: Tab reaches it,
@@ -618,165 +526,39 @@ export function CityPreview() {
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
       >
-        <color attach="background" args={[colours.background]} />
-        <ambientLight intensity={0.65} />
-        {/* Sky and ground bounce are tokens too: they were the last two raw
-            colour literals in this file, and they set how the model reads. */}
-        <hemisphereLight args={[colours.sky, colours.bounce, 0.5]} />
-        <directionalLight
-          position={[180, 260, 160]}
-          intensity={1.5}
-          castShadow
-          shadow-mapSize={[1024, 1024]}
+        <PreviewScene
+          regions={regions}
+          recessBands={recessBands}
+          dimmed={view.dimmed}
+          dimOpacity={multipliers.dim}
+          recessShade={multipliers.recess}
+          tiles={pipelineResult?.tiles}
+          tileColor={themed.tileLine}
+          background={viewportPalette.background}
+          sky={viewportPalette.sky}
+          bounce={viewportPalette.bounce}
+          gridColor={viewportPalette.grid}
+          plateMm={frameWidthMm}
+          fitTrigger={graph}
+          pickBuildings={layout.buildings}
+          pickParams={params}
+          pickScale={scale}
+          onPick={(id) => {
+            setCursorId(id);
+            toggleHero(id);
+          }}
         />
-        <directionalLight position={[-160, 120, -140]} intensity={0.4} />
-
-        {/* Perf mode only: with it off this renders nothing and registers no
-            per-frame callback at all (`PerfFrameMark`). */}
-        <PerfFrameMark name="preview.firstFrame" />
-        <FitView plateMm={params.plate_mm} trigger={graph} />
-
-        {/* Print space is z-up; three is y-up. One rotation, once. */}
-        <group rotation={[-Math.PI / 2, 0, 0]}>
-          {/*
-            The real thing, the moment there is a fresh one: every RegionMesh
-            the engine produced, replacing every approximate layer below so the
-            preview and a downloaded file can never disagree (E4 brief, item 3).
-          */}
-          {freshEngineResult ? <RegionMeshes regions={freshEngineResult.regions} /> : null}
-          {freshEngineResult ? (
-            <TileGrid tiles={freshEngineResult.tiles} color={colours.tileLine} />
-          ) : null}
-
-          {!freshEngineResult ? (
-            <BasePlate params={params} baseColor={colours.base} frameColor={colours.frame} />
-          ) : null}
-          {!freshEngineResult && water.length > 0 && waterZ !== null ? (
-            <AreaSurfaces
-              areas={water}
-              zMm={baseTop + Math.max(waterZ, 0.02)}
-              color={colours.water}
-            />
-          ) : null}
-          {!freshEngineResult ? (
-            <AreaSurfaces
-              areas={green}
-              zMm={baseTop + T.green_z_mm(params)}
-              color={colours.green}
-            />
-          ) : null}
-          {!freshEngineResult && roads && roadZ !== null ? (
-            <RoadRibbons
-              ribbons={roads}
-              zMm={baseTop + Math.max(roadZ, 0.04)}
-              color={colours.road}
-            />
-          ) : null}
-          {/*
-            Hero-picking (click and the keyboard cursor) has no equivalent on
-            the fused region mesh, which carries no per-building identity, so
-            this stays mounted and interactive even once RegionMeshes is what
-            is actually seen -- `hidden` only turns off its own draw and its
-            own shadow.
-          */}
-          <InstancedBuildings
-            buildings={layout.buildings}
-            params={params}
-            scale={scale}
-            color={colours.building}
-            heroColor={heroColour}
-            cursorColor={colours.cursor}
-            heroIds={heroIds}
-            cursorId={focused ? cursorId : null}
-            onPick={(id) => {
-              setCursorId(id);
-              toggleHero(id);
-            }}
-            hidden={Boolean(freshEngineResult)}
-            tintColors={tintColors}
-          />
-          {!freshEngineResult ? (
-            <TreeInstances trees={trees} baseTopMm={baseTop} color={colours.tree} />
-          ) : null}
-
-          {/*
-            Frame lettering, the north arrow, the scale bar, the underside mark
-            and the hanger pockets. Flat fills at the SHARED layout's own sizes
-            and anchors (`transform.lettering_layout`, the function the build
-            cuts from), two-sided because the underside half is looked at from
-            below. Once RegionMeshes is showing, its own `lettering` region (or
-            the frame's embossed letters) is the real cut -- these flat fills
-            would only sit on top of it.
-          */}
-          {!freshEngineResult
-            ? textDraw.map((textLayer) => (
-                <AreaSurfaces
-                  key={textLayer.key}
-                  areas={textLayer.areas}
-                  zMm={textLayer.z_mm}
-                  color={textColour(textLayer.tone, colours)}
-                  doubleSide
-                />
-              ))
-            : null}
-        </group>
-
-        <Grid
-          position={[0, -0.02, 0]}
-          args={[1200, 1200]}
-          cellSize={10}
-          cellThickness={0.5}
-          sectionSize={50}
-          sectionThickness={0.8}
-          cellColor={colours.grid}
-          sectionColor={colours.grid}
-          fadeDistance={900}
-          fadeStrength={1.5}
-          infiniteGrid
-        />
-        <OrbitControls makeDefault enableDamping dampingFactor={0.1} />
       </Canvas>
-
-      {/*
-        The preview theme toggle: the viewport's OWN light/dark switch,
-        independent of the app theme (`ThemeToggle` in the header). Docked
-        top-right so it never collides with the adjustments/issues badges at
-        top-left. It writes `colour.preview_theme` only -- an exported file's
-        bytes never depend on it (`preview.test.ts`'s isolation test).
-      */}
-      <div className="pointer-events-none absolute right-3 top-3">
-        <button
-          type="button"
-          data-testid="preview-theme-toggle"
-          aria-label={`Switch preview to ${previewTheme === "dark" ? "light" : "dark"}`}
-          title={`Preview theme: ${previewTheme}`}
-          onClick={() =>
-            setNested("colour", { preview_theme: previewTheme === "dark" ? "light" : "dark" })
-          }
-          className="pointer-events-auto rounded-milled border border-control bg-plate/95 px-2 py-1 text-2xs text-ink shadow-raised transition-colors hover:border-ink-faint"
-        >
-          {previewTheme === "dark" ? "Dark viewport" : "Light viewport"}
-        </button>
-      </div>
 
       {/* The chip docks top-left, over the model's own empty corner. */}
       <div className="pointer-events-none absolute left-3 top-3 flex flex-col items-start gap-2">
         {/*
-          Subtle, not blocking: the instanced approximation stays fully
-          interactive and on screen the whole time a newer engine job runs
-          underneath it, so there is never a flicker back to an empty canvas
-          -- this badge is the only thing that says a fresher result is on
-          its way (E4 brief, item 3).
+          The stage overlay. It replaces the old "Updating model..." badge with
+          the thing the worker is actually doing, because the model under it is
+          still on screen (dimmed) and the only question left is what is being
+          rebuilt and roughly how much of it is left.
         */}
-        {engineStatus === "computing" ? (
-          <span
-            role="status"
-            data-testid="engine-updating"
-            className="rounded-milled border border-line bg-plate/95 px-2 py-1 text-2xs text-ink-muted shadow-raised"
-          >
-            Updating model...
-          </span>
-        ) : null}
+        <PipelineStageOverlay />
         <AdjustmentsChip adjustments={adjustments} />
         <IssuesBadge issues={issues} />
         {/*
@@ -828,19 +610,8 @@ export function CityPreview() {
       {/*
         The spec strip: the three numbers that describe this as a printed
         object. Scale comes from the mirrored token table, so it is the same
-        string the build engraves; the height is the number the build's own
-        60 mm guard compares; the wall is what every thin footprint is repaired
-        to. It is the signature element of this editor and it earns the space.
-      */}
-      {/*
-        ONE compact row. It used to be a `items-stretch` flex with a long
-        sentence in the last cell, so every cell inherited the tallest height:
-        159 px at 1280x800, 22% of the viewport, with the readouts sitting on
-        118 px of empty plate and the bottom fifth of the model behind it. The
-        label and value now sit on one line, and the approximation note is
-        clamped to a single line with the full text on its `title` (it is still
-        complete in the DOM, so a screen reader and `toContainText` both get all
-        of it).
+        string the engine engraves; the height is the number the 60 mm guard
+        compares; the wall is what every thin footprint is repaired to.
       */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0">
         {/*
@@ -895,10 +666,10 @@ export function CityPreview() {
           ))}
           {/*
             The fourth instrument: how much of this city survives the minimum
-            feature repair, 0-100, from the same shared predicates the canvas
-            draws with (`transform.detail_report`). The band is stated in a WORD
-            as well as a colour -- a hue alone would carry it only to people who
-            can see the hue.
+            feature repair, 0-100, from the same shared predicates the engine
+            builds with (`transform.detail_report`). The band is stated in a
+            WORD as well as a colour -- a hue alone would carry it only to
+            people who can see the hue.
           */}
           {advice !== null ? (
             <div
@@ -917,29 +688,29 @@ export function CityPreview() {
             </div>
           ) : null}
 
+          {/*
+            How many buildings the scene carries after the minimum-feature
+            repair, and -- once a model exists -- how many triangles the file
+            would carry. The building count is the scene's, so it is settled
+            the moment a Preview lands and does not move again under the same
+            scene; the triangle count is the MODEL's, measured, and says so.
+            The full measured table stays in the sidebar's Output group: a
+            predicted number and a built number must never sit in the same
+            table (DECISIONS [P5-web]).
+          */}
           <div
             data-testid="preview-stats"
             className="flex min-w-0 flex-1 items-baseline gap-2 bg-plate/95 px-3 py-1 text-2xs text-ink-muted"
           >
-            {/*
-              What was repaired or dropped is NOT repeated here: it is in the
-              adjustments drawer, and saying it twice is what made the old UI
-              read as a wall of remarks.
-            */}
-            <span className="shrink-0">
-              {layout.buildings.length} buildings · {trees.length} trees
-            </span>
-            <span
-              data-testid="preview-approximation"
-              title={approximationNote}
-              className="truncate text-ink-faint"
-            >
-              {approximationNote}
+            <span className="shrink-0">{layout.buildings.length} buildings</span>
+            <span data-testid="preview-triangles" className="truncate text-ink-faint">
+              {pipelineResult === null
+                ? "Building the model..."
+                : `${pipelineResult.stats.triangles.toLocaleString()} triangles, exactly the ones the file carries.`}
             </span>
           </div>
         </div>
       </div>
-
 
       {predictedTop !== null && predictedTop >= heightCeilingMm(params) ? (
         <span
@@ -947,7 +718,7 @@ export function CityPreview() {
           className="pointer-events-none absolute bottom-16 left-3 rounded-milled bg-danger px-2 py-1 text-2xs font-medium text-primary-ink shadow-raised"
         >
           Over the {heightCeilingMm(params).toFixed(0)} mm printer height ceiling. The
-          build will refuse this.
+          model will be refused.
         </span>
       ) : null}
       {treeFloor !== null ? (
@@ -964,8 +735,62 @@ export function CityPreview() {
 }
 
 /**
- * Before anything is generated. An empty screen is an invitation to act, so it
- * says what to do, in order, and how to do it from the keyboard.
+ * The stage overlay, as its own subscriber.
+ *
+ * A run reports every stage twice (start and done) -- 142 events on a full
+ * Chicago plan -- and each one writes `state.pipeline.progress`. Reading that
+ * from `CityPreview` re-rendered the whole viewport, its memos and its scene
+ * subtree on all 142; reading it HERE re-renders one span. Measured: the
+ * overlay's own derivation is 1 ms in total across a run, and the main thread
+ * is left to the renderer.
+ */
+function PipelineStageOverlay() {
+  const running = useEditorStore((state) => state.pipeline.status === "running");
+  const progress = useEditorStore((state) => state.pipeline.progress);
+  const cancelPipeline = useEditorStore((state) => state.cancelPipeline);
+  // Perf mode only: `perfSpan` is a boolean read with perf mode off.
+  const overlay = perfSpan("preview.overlay", () => ({
+    text: stageOverlayText(progress),
+    eta: stageEtaText(progress),
+  }));
+  if (!running || overlay.text === null) return null;
+  return (
+    <span
+      role="status"
+      data-testid="pipeline-stage-overlay"
+      data-stage={progress.stage}
+      data-index={progress.index}
+      data-total={progress.total}
+      className="pointer-events-auto flex items-center gap-2 rounded-milled border border-line bg-plate/95 px-2 py-1 text-2xs text-ink-muted shadow-raised"
+    >
+      <span>
+        {overlay.text}
+        {overlay.eta === null ? "" : ` · ${overlay.eta}`}
+      </span>
+      {/*
+        Stopping is the user's, not only ours. A run is superseded
+        automatically by the next write, but a long one (a plate resize on a
+        dense city) has to be abandonable without moving a control back and
+        forth: the worker stops at its next stage boundary and the model
+        already on screen stays exactly where it is.
+      */}
+      <button
+        type="button"
+        data-testid="pipeline-cancel"
+        aria-label="Stop building the model"
+        onClick={cancelPipeline}
+        className="rounded-milled border border-control px-1.5 py-0.5 text-2xs text-ink transition-colors hover:border-ink-faint hover:bg-plate-raised"
+      >
+        Stop
+      </button>
+    </span>
+  );
+}
+
+/**
+ * Before anything is previewed: the plate the model will fill, and what to do
+ * next. An empty screen is an invitation to act, so it says what to do, in
+ * order, and how to do it from the keyboard.
  */
 function PreviewEmpty() {
   return (
@@ -973,16 +798,19 @@ function PreviewEmpty() {
       data-testid="preview-empty"
       className="fc-drafting-sheet flex h-full w-full flex-col items-center justify-center gap-4 p-6 text-center"
     >
-      <p className="font-display text-2xs uppercase tracking-[0.18em] text-ink-faint">
-        Nothing built yet
-      </p>
+      {/* The plate outline: the object's own footprint, at rest. */}
+      <div
+        data-testid="preview-plate-outline"
+        aria-hidden="true"
+        className="h-32 w-32 rounded-plate border-2 border-dashed border-line-strong"
+      />
       <h2 className="max-w-sm font-display text-xl font-semibold tracking-tight text-ink">
-        Pick a place, and it becomes an object.
+        Preview a location to build the model
       </h2>
       <ol className="max-w-sm space-y-1 text-left text-sm text-ink-muted">
         <li>1. Choose a preset city, or click the map to drop the pin.</li>
         <li>2. Preview. The model arrives in a few seconds.</li>
-        <li>3. Tune it. The preview follows every control instantly.</li>
+        <li>3. Tune it. Every control rebuilds the model as you move it.</li>
         <li>4. Export, and download the .3mf.</li>
       </ol>
       <p className="text-2xs text-ink-faint">
@@ -1010,26 +838,6 @@ function PreviewSkeleton() {
       </p>
     </div>
   );
-}
-
-/** Frame the plate whenever a new scene arrives or the plate size changes. */
-function FitView({ plateMm, trigger }: { plateMm: number; trigger: unknown }) {
-  const camera = useThree((state) => state.camera) as PerspectiveCamera;
-  const controls = useThree((state) => state.controls) as {
-    target: { set: (x: number, y: number, z: number) => void };
-    update: () => void;
-  } | null;
-
-  useEffect(() => {
-    const distance = plateMm * 1.15;
-    camera.position.set(distance * 0.72, distance * 0.86, distance * 0.95);
-    camera.far = distance * 30;
-    camera.updateProjectionMatrix();
-    controls?.target.set(0, 0, 0);
-    controls?.update();
-  }, [camera, controls, plateMm, trigger]);
-
-  return null;
 }
 
 export default CityPreview;

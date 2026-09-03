@@ -34,9 +34,7 @@ import {
   northArrowArea,
   offsetRing,
   placeArea,
-  textLayers,
   textParamsKey,
-  textPieceZMm,
   textTokenContext,
   type PreviewTextModel,
 } from "./previewText";
@@ -570,44 +568,6 @@ describe("buildPreviewText", () => {
     } finally {
       for (const [face, asset] of Object.entries(ASSETS)) primeGlyphFace(face, asset);
     }
-  });
-});
-
-describe("textLayers", () => {
-  it("merges the pieces by face and tone into one draw each", () => {
-    const params = withText({
-      engravings: [
-        { edge: "top", text: "A", size_mm: 6 },
-        { edge: "bottom", text: "B", size_mm: 6 },
-        { edge: "left", text: "C", size_mm: 6, mode: "emboss" },
-      ],
-      hanger: "magnets",
-      underside_mark: { enabled: true, template: "X" },
-    });
-    const model = buildPreviewText(params, CTX);
-    const layers = textLayers(model, params);
-    expect(layers.map((layer) => layer.key).sort()).toEqual(
-      ["bottom:engraved", "bottom:pocket", "top:embossed", "top:engraved"].sort(),
-    );
-    // Nothing is lost in the merge.
-    const merged = layers.reduce((total, layer) => total + layer.areas.length, 0);
-    expect(merged).toBe(model.shapeCount);
-  });
-
-  it("puts the lip text on the lip and the underside under the plate", () => {
-    const params = withText({ hanger: "keyhole" });
-    const lipTop = T.frame_geometry_mm(params).top_mm;
-    expect(
-      textPieceZMm({ id: "x", tone: "engraved", face: "top", areas: [] }, params),
-    ).toBeGreaterThan(lipTop);
-    expect(
-      textPieceZMm({ id: "x", tone: "embossed", face: "top", areas: [] }, params),
-    ).toBeGreaterThan(
-      textPieceZMm({ id: "x", tone: "engraved", face: "top", areas: [] }, params),
-    );
-    expect(
-      textPieceZMm({ id: "x", tone: "pocket", face: "bottom", areas: [] }, params),
-    ).toBeLessThan(0);
   });
 });
 

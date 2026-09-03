@@ -1,7 +1,14 @@
 /**
  * The editor's keyboard map.
  *
- * G preview · B export · R reset · ? shortcuts · Escape closes what is open.
+ * G preview · B export · R reset · ? shortcuts · Escape closes what is open,
+ * and cancels the run in flight when nothing is open.
+ *
+ * `dismiss` is ONE action with two meanings, resolved by the dispatcher rather
+ * than here: this module is pure and cannot know whether an overlay is up or a
+ * run is in flight. `EditorShell` closes the outermost overlay if there is
+ * one, and calls `cancelPipeline()` only when there is not, so Escape never
+ * abandons a build the user cannot see behind a drawer.
  *
  * Two rules make this safe to hang off `window`:
  *
@@ -42,7 +49,11 @@ export const SHORTCUTS: readonly ShortcutSpec[] = [
   { action: "undo", keys: "Ctrl+Z", description: "Undo the last change (Cmd+Z on Mac)" },
   { action: "redo", keys: "Ctrl+Shift+Z", description: "Redo (Cmd+Shift+Z on Mac)" },
   { action: "help", keys: "?", description: "Show this list" },
-  { action: "dismiss", keys: "Esc", description: "Close the drawer, sheet or dialog" },
+  {
+    action: "dismiss",
+    keys: "Esc",
+    description: "Close the drawer, sheet or dialog, or cancel a run in flight",
+  },
   { action: null, keys: "Tab", description: "Move between controls, including the preview" },
   { action: null, keys: "← →", description: "Nudge the focused slider" },
   {

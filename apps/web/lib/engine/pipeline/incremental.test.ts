@@ -8,7 +8,9 @@ import { afterAll, describe, expect, it } from "vitest";
 import { defaultPrintParams, type PrintParams } from "../../contracts";
 import { outstandingWasmObjects } from "../solid/manifold";
 import type { TerrainGrid } from "../types";
-import { StageCache, runPipeline, stageIds, stagesInvalidatedBy, type ParamPath, type PipelineJob, type RunOutcome, type StageId, type StageState } from "./index";
+import { buildModel } from "../engine";
+import { StageCache, runPipeline, stageIds, stagesInvalidatedBy, type ParamPath, type PipelineEvent, type PipelineJob, type RunOutcome, type StageId, type StageState } from "./index";
+import { canonical, diffCanonical } from "./testCompare";
 import { blockScene, terrainScene } from "./testScenes";
 
 const REQUEST = { lat: 41.8827, lon: -87.6233, radius_m: 900.0, rotation_deg: 0.0, preset_id: "chicago-loop" };
@@ -348,4 +350,250 @@ describe("memory: the one-generation cache does not grow", () => {
     cache.dispose();
     expect(outstandingWasmObjects()).toBe(before);
   }, 180_000);
+});
+
+// ---------------------------------------------------------------------------
+// Audit fixes (docs/handoff/v3-01-pipeline-audit.md)
+// ---------------------------------------------------------------------------
+
+describe("audit finding 1: a stage's findings and resolved text are part of its digest", () => {
+  it("frame off, a refused underside line changed from X to Y: the warm findings and resolved text are the cold build's", async () => {
+    const cache = new StageCache();
+    try {
+      const frameOff: PrintParams = { ...defaultPrintParams(), frame: false, engravings: [] };
+      const refusedX: PrintParams = { ...frameOff, engravings: [{ edge: "underside", text: "X".repeat(400), mode: "engrave", size_mm: 3 }] };
+      const refusedY: PrintParams = { ...frameOff, engravings: [{ edge: "underside", text: "Y".repeat(400), mode: "engrave", size_mm: 3 }] };
+      await run(cache, jobFor(frameOff));
+      const x = await run(cache, jobFor(refusedX));
+      // The line is refused: lettering owns no handle, its output is plain
+      // data, and only its channels (the refusal) changed between X and Y.
+      expect(x.outcome.result?.resolvedText.some((line) => line.status === "skipped" && line.text.startsWith("XXXX"))).toBe(true);
+      const y = await run(cache, jobFor(refusedY));
+      expect(y.states.get("lettering")).toBe("done");
+      expect(y.states.get("audit")).toBe("done");
+      const cold = await buildModel({ scene: blockScene(), params: refusedY, date: "2026-09-02" });
+      expect(y.outcome.result?.resolvedText).toEqual(cold.resolvedText);
+      expect(y.outcome.result?.findings).toEqual(cold.findings);
+      expect(y.outcome.result?.params).toEqual(cold.params);
+      expect(y.outcome.result?.resolvedText.some((line) => line.text.startsWith("YYYY"))).toBe(true);
+      expect(y.outcome.result?.resolvedText.some((line) => line.text.startsWith("XXXX"))).toBe(false);
+    } finally {
+      cache.dispose();
+    }
+  }, 120_000);
+
+  it("an aliasing sequence on one warm cache matches a cold build of every step, whole result, byte for byte", async () => {
+    const cache = new StageCache();
+    try {
+      const A = withText("{city}");
+      const B = withText("{coords}");
+      const undersideC: PrintParams = { ...A, engravings: [...(A.engravings ?? []), { edge: "underside", text: "AAAA", mode: "engrave", size_mm: 3 }] };
+      const undersideD: PrintParams = { ...A, engravings: [...(A.engravings ?? []), { edge: "underside", text: "BBBB", mode: "engrave", size_mm: 3 }] };
+      const refused: PrintParams = { ...A, engravings: [...(A.engravings ?? []), { edge: "underside", text: "X".repeat(400), mode: "engrave", size_mm: 3 }] };
+      const frameOff: PrintParams = { ...A, frame: false };
+      const frameOffChamfer: PrintParams = { ...frameOff, frame_style: { ...A.frame_style, profile: "chamfer" } };
+      const frameOnChamfer: PrintParams = { ...A, frame_style: { ...A.frame_style, profile: "chamfer" } };
+      const gradientOn: PrintParams = { ...A, colour: { ...A.colour, gradient: { enabled: true, slots: [2, 3] } } };
+      const tilingOn: PrintParams = { ...A, tiling: { ...A.tiling, enabled: true, cols: 2, rows: 1 } };
+      const steps: Array<[string, PrintParams]> = [
+        ["A", A],
+        ["B: edge text differs, base digest same", B],
+        ["A again", A],
+        ["C: underside AAAA", undersideC],
+        ["D: underside BBBB", undersideD],
+        ["E: underside refused, base digest none like A", refused],
+        ["A again 2", A],
+        ["frame off", frameOff],
+        ["frame off + chamfer", frameOffChamfer],
+        ["frame on + chamfer", frameOnChamfer],
+        ["gradient on", gradientOn],
+        ["gradient off", A],
+        ["tiling on", tilingOn],
+        ["tiling off", A],
+      ];
+      for (const [name, params] of steps) {
+        const warm = await run(cache, jobFor(params));
+        const cold = await buildModel({ scene: blockScene(), params, date: "2026-09-02" });
+        const problems = diffCanonical(canonical(warm.outcome.result), canonical(cold));
+        expect(problems, `${name}: ${problems.join(" | ")}`).toEqual([]);
+      }
+    } finally {
+      cache.dispose();
+    }
+  }, 300_000);
+});
+
+describe("audit finding 2: region-ready carries hashes and removed names every region the model lost", () => {
+  it("a band streamed by a cancelled run is reported removed by the next run, and every region-ready carries its hashes", async () => {
+    const cache = new StageCache();
+    try {
+      const base = defaultPrintParams();
+      const on: PrintParams = { ...base, colour: { ...base.colour, gradient: { enabled: true, slots: [2, 3] } } };
+      const off: PrintParams = { ...base, colour: { ...base.colour, gradient: { enabled: false, slots: [2, 3] } } };
+      // A main-thread map driven only by what the worker posts.
+      const held = new Map<string, { hash: string }>();
+      const controller = new AbortController();
+      const first = await runPipeline(
+        jobFor(on, { known: {} }),
+        cache,
+        (event) => {
+          if (event.kind === "region-ready") {
+            for (const region of event.regions) {
+              expect(event.hashes?.[region.region], `hash for ${region.region}`).toBeTypeOf("string");
+              held.set(region.region, { hash: event.hashes?.[region.region] ?? "" });
+            }
+            for (const region of event.removed) held.delete(region);
+          }
+          if (event.kind === "stage" && event.state === "done" && event.stage === "assembly") controller.abort();
+        },
+        { signal: controller.signal, stripRegionMeshes: true, regionBatchMs: 0 },
+      );
+      expect(first.status).toBe("cancelled");
+      expect(held.has("buildings_band_2")).toBe(true);
+      const known = Object.fromEntries([...held].map(([region, entry]) => [region, entry.hash]));
+      const second = await runPipeline(
+        jobFor(off, { known }),
+        cache,
+        (event) => {
+          if (event.kind === "region-ready") {
+            for (const region of event.regions) held.set(region.region, { hash: event.hashes?.[region.region] ?? "" });
+            for (const region of event.removed) held.delete(region);
+          }
+        },
+        { stripRegionMeshes: true, regionBatchMs: 0 },
+      );
+      expect(second.status).toBe("done");
+      const present = new Set<string>(second.result?.regions.map((region) => region.region));
+      expect([...held.keys()].filter((region) => !present.has(region))).toEqual([]);
+      expect(held.has("buildings_band_2")).toBe(false);
+      // What it holds is exactly the model, hash for hash.
+      for (const region of present) expect(held.get(region)?.hash).toBe(second.regionHashes[region]);
+    } finally {
+      cache.dispose();
+    }
+  }, 120_000);
+});
+
+describe("audit finding 7: the export key covers the parameter echo", () => {
+  it("a leaf no stage claims (part_colors.base) still re-runs the export, and nothing else", async () => {
+    const cache = new StageCache();
+    try {
+      const exportJob = (params: PrintParams): PipelineJob =>
+        jobFor(params, { mode: "export", exportRequest: { target: "stl", stem: "echo", createdIso: "2026-09-02T00:00:00Z" } });
+      const first = await run(cache, exportJob(defaultPrintParams()));
+      expect(first.states.get("export")).toBe("done");
+      const recoloured: PrintParams = { ...defaultPrintParams(), part_colors: { ...(defaultPrintParams().part_colors ?? {}), base: "#123456" } as PrintParams["part_colors"] };
+      const second = await run(cache, exportJob(recoloured));
+      expect(second.states.get("export")).toBe("done");
+      expect(second.states.get("audit")).toBe("cached");
+      expect(second.states.get("finish-base")).toBe("cached");
+      const sidecar = second.outcome.files?.sidecar as { print_params?: { part_colors?: { base?: string } } } | undefined;
+      expect(sidecar?.print_params?.part_colors?.base).toBe("#123456");
+    } finally {
+      cache.dispose();
+    }
+  }, 90_000);
+});
+
+describe("audit finding 4: done carries the merged mesh and the tile meshes only when their hash is new", () => {
+  it("strips what the consumer already holds and names the hashes", async () => {
+    const cache = new StageCache();
+    try {
+      const tiled: PrintParams = { ...defaultPrintParams(), tiling: { ...defaultPrintParams().tiling, enabled: true, cols: 2, rows: 1 } };
+      const doneEvents: Array<Extract<PipelineEvent, { kind: "done" }>> = [];
+      const collect = (event: PipelineEvent): void => {
+        if (event.kind === "done") doneEvents.push(event);
+      };
+      await runPipeline(jobFor(tiled), cache, collect, { stripRegionMeshes: true });
+      const got = doneEvents[0];
+      expect(got.mergedHash).toBeTypeOf("string");
+      expect(got.tilesHash).toBeTypeOf("string");
+      expect(got.result?.merged.positions.length ?? 0).toBeGreaterThan(0);
+      expect(got.result?.tiles?.[0]?.regions[0]?.positions.length ?? 0).toBeGreaterThan(0);
+      await runPipeline(jobFor(tiled, { knownMergedHash: got.mergedHash ?? null, knownTilesHash: got.tilesHash ?? null }), cache, collect, { stripRegionMeshes: true });
+      const again = doneEvents[1];
+      expect(again.mergedHash).toBe(got.mergedHash);
+      expect(again.tilesHash).toBe(got.tilesHash);
+      expect(again.result?.merged.positions.length).toBe(0);
+      expect(again.result?.merged.volumeMm3).toBe(got.result?.merged.volumeMm3);
+      expect(again.result?.tiles?.every((tile) => tile.regions.every((region) => region.positions.length === 0) && (tile.merged?.positions.length ?? 0) === 0)).toBe(true);
+      // A change that moves the model sends them whole again.
+      await runPipeline(jobFor({ ...tiled, plate_mm: 200 }, { knownMergedHash: got.mergedHash ?? null, knownTilesHash: got.tilesHash ?? null }), cache, collect, { stripRegionMeshes: true });
+      const moved = doneEvents[2];
+      expect(moved.mergedHash).not.toBe(got.mergedHash);
+      expect(moved.result?.merged.positions.length ?? 0).toBeGreaterThan(0);
+    } finally {
+      cache.dispose();
+    }
+  }, 120_000);
+});
+
+describe("per-triangle building identity across warm runs", () => {
+  it("ids are stable across a warm re-run: a colour change re-finishes the buildings and yields the same owners, triangle for triangle", async () => {
+    const cache = new StageCache();
+    try {
+      const base = defaultPrintParams();
+      const first = await run(cache, jobFor(base));
+      const before = first.outcome.result?.regions.find((region) => region.region === "buildings");
+      expect(before?.owners).toEqual(["b-court", "b-low", "b-tall"]);
+      expect(before?.triangleOwner?.length).toBe((before?.indices.length ?? 0) / 3);
+      // A slot change is the finish's alone: the buildings stage keeps its
+      // solids and its original ids, and the finish attributes them again.
+      const reslotted: PrintParams = {
+        ...base,
+        colour: { ...base.colour, region_slots: { ...base.colour?.region_slots, buildings: 7 } } as PrintParams["colour"],
+      };
+      const second = await run(cache, jobFor(reslotted));
+      expect(second.states.get("buildings")).toBe("cached");
+      expect(second.states.get("finish-buildings")).toBe("done");
+      const after = second.outcome.result?.regions.find((region) => region.region === "buildings");
+      expect(after?.slot).toBe(7);
+      expect(after?.owners).toEqual(before?.owners);
+      expect(after?.triangleOwner).toEqual(before?.triangleOwner);
+      // A colour change re-runs the buildings stage itself (it tints by the
+      // colour), so every solid is extruded afresh with NEW original ids; the
+      // identity on the mesh is still the same, triangle for triangle.
+      const recoloured: PrintParams = {
+        ...reslotted,
+        colour: { ...reslotted.colour, region_colors: { ...reslotted.colour?.region_colors, buildings: "#112233" } } as PrintParams["colour"],
+      };
+      const third = await run(cache, jobFor(recoloured));
+      expect(third.states.get("buildings")).toBe("done");
+      const rebuilt = third.outcome.result?.regions.find((region) => region.region === "buildings");
+      expect(rebuilt?.colorHex).toBe("#112233");
+      expect(rebuilt?.owners).toEqual(before?.owners);
+      expect(rebuilt?.triangleOwner).toEqual(before?.triangleOwner);
+      // The same params again: served from the cache, the same hash, the same identity.
+      const fourth = await run(cache, jobFor(recoloured));
+      expect(fourth.states.get("finish-buildings")).toBe("cached");
+      expect(fourth.outcome.regionHashes.buildings).toBe(third.outcome.regionHashes.buildings);
+      expect(fourth.outcome.result?.regions.find((region) => region.region === "buildings")?.triangleOwner).toEqual(before?.triangleOwner);
+    } finally {
+      cache.dispose();
+    }
+  }, 90_000);
+
+  it("the region hash moves when ownership changes: a building promoted to hero leaves the buildings mesh and owns the hero mesh", async () => {
+    const cache = new StageCache();
+    try {
+      const base = defaultPrintParams();
+      const first = await run(cache, jobFor(base));
+      const hero: PrintParams = { ...base, hero_building_ids: ["b-tall"] };
+      const second = await run(cache, jobFor(hero));
+      expect(second.outcome.regionHashes.buildings).not.toBe(first.outcome.regionHashes.buildings);
+      const buildings = second.outcome.result?.regions.find((region) => region.region === "buildings");
+      const heroMesh = second.outcome.result?.regions.find((region) => region.region === "hero_building");
+      expect(buildings?.owners).toEqual(["b-court", "b-low"]);
+      expect(heroMesh?.owners).toEqual(["b-tall"]);
+      expect(heroMesh?.triangleOwner?.length).toBe((heroMesh?.indices.length ?? 0) / 3);
+      expect(heroMesh?.triangleOwner?.every((owner) => owner === 0)).toBe(true);
+      expect(buildings?.triangleOwner?.every((owner) => owner < 2)).toBe(true);
+      // Back to the defaults: the same hash and identity as the first run.
+      const third = await run(cache, jobFor(base));
+      expect(third.outcome.regionHashes.buildings).toBe(first.outcome.regionHashes.buildings);
+      expect(third.outcome.result?.regions.find((region) => region.region === "buildings")?.owners).toEqual(["b-court", "b-low", "b-tall"]);
+    } finally {
+      cache.dispose();
+    }
+  }, 90_000);
 });

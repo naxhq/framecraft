@@ -318,6 +318,31 @@ export function tintPreviewOnlyWarning(params: PrintParams): SceneWarning[] {
 }
 
 /**
+ * A pipeline stage that threw, as an Issues-badge entry (v3.1).
+ *
+ * The house rule is that everything the user needs to be told goes through the
+ * Issues badge, and a failed stage is exactly that: the model on screen is the
+ * last one that succeeded, and without this the only sign would be that it
+ * stopped following the controls. Error level, because nothing downstream of
+ * the stage ran; the stage is named, so the drawer says WHERE it broke rather
+ * than only that something did.
+ */
+export function pipelineFailureWarning(
+  failure: { stage: string; message: string } | null,
+): SceneWarning[] {
+  if (failure === null) return [];
+  return [
+    {
+      id: "pipeline-stage-failed",
+      level: "warn",
+      message:
+        `The ${failure.stage} stage could not finish: ${failure.message} ` +
+        "The model on screen is the last one that built.",
+    },
+  ];
+}
+
+/**
  * Lettering-specific warnings: an empty line, an empty underside mark, or the
  * frame being off with lettering configured for it.
  *

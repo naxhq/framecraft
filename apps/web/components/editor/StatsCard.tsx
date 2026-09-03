@@ -15,24 +15,27 @@ const INFILL_FACTOR = 0.35;
  * and the measured minimum wall.
  *
  * Since FrameCraft v3 E4 every number here comes straight from the live
- * `EngineResult` (`state.engine.result`), not from a finished Export: the debounced
- * engine job updates this card the moment it lands, whether or not the user has
- * clicked Export yet -- "one truth: engine result when fresh" (E4 brief, item 3).
- * Volume and grams are summed/derived here (no `estimate.ts` module exists yet;
- * that is phase 4 work, out of this task's scope) using the same formula the
- * footer text has always documented. Manifold is the absence of a `not-manifold`
- * or `floating-island` error finding.
+ * `EngineResult` (`state.pipeline.result`), not from a finished Export: the
+ * debounced pipeline run updates this card the moment it lands, whether or not
+ * the user has clicked Export yet -- "one truth: engine result when fresh" (E4
+ * brief, item 3). Volume and grams are summed here from the region volumes
+ * using the same formula the footer text has always documented; the filament
+ * and time card next to it is `lib/engine/estimate.ts`'s own, per slot.
+ * Manifold is the absence of a `not-manifold` or `floating-island` error
+ * finding.
  *
  * When the result has gone stale (a PrintParams value, the location or the
- * scene moved after it was computed) the numbers are kept but labelled as
- * describing the previous computation.
+ * scene moved after it was computed) the numbers are KEPT and labelled as
+ * describing the previous computation. That was always this card's choice and
+ * it is now the estimate card's too ([V3.1-T6]): a skeleton over a good
+ * previous value is a worse answer than the value.
  */
 export function StatsCard() {
-  const engine = useEditorStore((state) => state.engine);
+  const engine = useEditorStore((state) => state.pipeline);
   const graph = useEditorStore((state) => state.scene.graph);
   const result = engine.result;
 
-  if (engine.status === "error" && engine.error) {
+  if (engine.status === "error" && engine.error !== null) {
     return (
       <div
         data-testid="stats-card"
@@ -41,7 +44,7 @@ export function StatsCard() {
         <p className="font-display font-semibold uppercase tracking-[0.14em]">
           The engine could not build a model
         </p>
-        <p className="mt-1 leading-snug">{engine.error}</p>
+        <p className="mt-1 leading-snug">{engine.error.message}</p>
       </div>
     );
   }
@@ -92,7 +95,7 @@ export function StatsCard() {
     >
       <h4 className="mb-2 font-display text-2xs font-semibold uppercase tracking-[0.14em] text-ink-faint">
         {engine.stale ? "Print stats (previous computation)" : "Print stats"}
-        {engine.status === "computing" ? " — updating..." : ""}
+        {engine.status === "running" ? ", updating..." : ""}
       </h4>
       {engine.stale ? (
         <div className="mb-2">

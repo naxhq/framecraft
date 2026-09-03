@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { gzipSync } from "node:zlib";
+
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   bboxFor,
   buildQuery,
@@ -6,6 +8,7 @@ import {
   fetchOverpass,
   MemoryOverpassCache,
   querySha1,
+  resetBundledPresetManifest,
   type OverpassCache,
 } from "./overpass";
 
@@ -282,5 +285,181 @@ describe("fetchOverpass", () => {
     const result = await pending;
     expect(result.ok).toBe(false);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+/*
+ * The build's own copy of a preset response.
+ *
+ * Every test above drives the mirror path and passes `fetchImpl` only, which
+ * is exactly what keeps them out of this one: the bundled source has its own
+ * transport (`assetFetchImpl`, a same-origin GET, defaulting to the global
+ * `fetch`, which rejects a root-relative URL in Node). So none of the mirror
+ * mocks above ever sees an asset request, and none of these sees a mirror.
+ */
+describe("fetchOverpass, bundled preset assets", () => {
+  const MANIFEST = {
+    queries: {
+      a4e5375818f309940313e0ac08b8ebb88c615f9e: {
+        preset_id: "chicago-loop",
+        bytes: 12725477,
+        gzip_bytes: 1738011,
+      },
+    },
+  };
+  const PRESET_BODY = { version: 0.6, generator: "Overpass API", elements: [{ type: "node", id: 1 }] };
+
+  function gzipResponse(value: unknown): Response {
+    return new Response(gzipSync(Buffer.from(JSON.stringify(value), "utf-8")), {
+      status: 200,
+      headers: { "Content-Type": "application/gzip" },
+    });
+  }
+
+  /** A fake static host: the manifest, the assets it names, 404 for anything else. */
+  function assetHost(manifest: unknown, assets: Record<string, Response | (() => Response)>) {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/index.json")) {
+        return manifest === null
+          ? new Response("not found", { status: 404 })
+          : new Response(JSON.stringify(manifest), { status: 200 });
+      }
+      const key = url.slice(url.lastIndexOf("/") + 1);
+      const asset = assets[key];
+      if (asset === undefined) return new Response("not found", { status: 404 });
+      return typeof asset === "function" ? asset() : asset;
+    });
+  }
+
+  beforeEach(() => {
+    resetBundledPresetManifest();
+  });
+
+  it("answers a preset query from the build and never touches a mirror", async () => {
+    const fetchImpl = vi.fn(() => {
+      throw new Error("a bundled hit must not reach the network");
+    });
+    const assetFetchImpl = assetHost(MANIFEST, {
+      "a4e5375818f309940313e0ac08b8ebb88c615f9e.json.gz": () => gzipResponse(PRESET_BODY),
+    });
+    const cache = new MemoryOverpassCache();
+
+    const result = await fetchOverpass(CHICAGO_LOOP, { fetchImpl, assetFetchImpl, cache, sleep: noSleep });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.fromBundle).toBe(true);
+    expect(result.data.elements).toEqual(PRESET_BODY.elements);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    // The asset was addressed by the query sha1, which is also the cache key,
+    // so a second preview of the same preset does not even fetch the asset.
+    expect(await cache.get(querySha1(buildQuery(CHICAGO_LOOP)))).toEqual(PRESET_BODY);
+  });
+
+  it("asks the manifest once per realm, hit or miss", async () => {
+    const assetFetchImpl = assetHost(MANIFEST, {
+      "a4e5375818f309940313e0ac08b8ebb88c615f9e.json.gz": () => gzipResponse(PRESET_BODY),
+    });
+    await fetchOverpass(CHICAGO_LOOP, { fetchImpl: vi.fn(), assetFetchImpl, cache: new MemoryOverpassCache(), sleep: noSleep });
+    await fetchOverpass(CHICAGO_LOOP, { fetchImpl: vi.fn(), assetFetchImpl, cache: new MemoryOverpassCache(), sleep: noSleep });
+    const manifestCalls = assetFetchImpl.mock.calls.filter(([url]) => String(url).endsWith("/index.json"));
+    expect(manifestCalls).toHaveLength(1);
+  });
+
+  it("falls through to the mirrors on a build that ships no assets", async () => {
+    const seen: string[] = [];
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      seen.push(String(url));
+      return jsonResponse({ elements: [{ type: "way", id: 7 }] });
+    });
+    const assetFetchImpl = assetHost(null, {});
+
+    const result = await fetchOverpass(CHICAGO_LOOP, { fetchImpl, assetFetchImpl, cache: new MemoryOverpassCache(), sleep: noSleep });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.fromBundle).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual([DEFAULT_MIRRORS[0]]);
+  });
+
+  it("does not fetch an asset for a query the manifest does not name", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ elements: [] }));
+    const assetFetchImpl = assetHost({ queries: {} }, {});
+
+    await fetchOverpass(
+      { lat: 48.8584, lon: 2.2945, radius_m: 900, rotation_deg: 0 },
+      { fetchImpl, assetFetchImpl, cache: new MemoryOverpassCache(), sleep: noSleep },
+    );
+
+    const assetCalls = assetFetchImpl.mock.calls.filter(([url]) => String(url).endsWith(".json.gz"));
+    expect(assetCalls).toHaveLength(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the mirrors when the asset is corrupt", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ elements: [{ type: "way", id: 9 }] }));
+    const assetFetchImpl = assetHost(MANIFEST, {
+      "a4e5375818f309940313e0ac08b8ebb88c615f9e.json.gz": () =>
+        new Response(Buffer.from("this is not gzip"), { status: 200 }),
+    });
+
+    const result = await fetchOverpass(CHICAGO_LOOP, { fetchImpl, assetFetchImpl, cache: new MemoryOverpassCache(), sleep: noSleep });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.elements).toEqual([{ type: "way", id: 9 }]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the mirrors when the asset inflates to something that is not an Overpass response", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ elements: [{ type: "way", id: 11 }] }));
+    const assetFetchImpl = assetHost(MANIFEST, {
+      "a4e5375818f309940313e0ac08b8ebb88c615f9e.json.gz": () => gzipResponse({ elements: "not an array" }),
+    });
+
+    const result = await fetchOverpass(CHICAGO_LOOP, { fetchImpl, assetFetchImpl, cache: new MemoryOverpassCache(), sleep: noSleep });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.elements).toEqual([{ type: "way", id: 11 }]);
+  });
+
+  it("skips the build assets entirely when the caller turns them off", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ elements: [] }));
+    const assetFetchImpl = assetHost(MANIFEST, {});
+
+    await fetchOverpass(CHICAGO_LOOP, { fetchImpl, assetFetchImpl, cache: new MemoryOverpassCache(), sleep: noSleep, bundled: false });
+
+    expect(assetFetchImpl).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("prefers the response cache to the build assets", async () => {
+    const cached = { elements: [{ type: "node", id: 42 }] };
+    const cache = new MemoryOverpassCache();
+    await cache.set(querySha1(buildQuery(CHICAGO_LOOP)), cached);
+    const assetFetchImpl = assetHost(MANIFEST, {});
+
+    const result = await fetchOverpass(CHICAGO_LOOP, { fetchImpl: vi.fn(), assetFetchImpl, cache, sleep: noSleep });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.fromCache).toBe(true);
+    expect(assetFetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("reads the assets from under the deployment's base path", async () => {
+    const assetFetchImpl = assetHost(MANIFEST, {
+      "a4e5375818f309940313e0ac08b8ebb88c615f9e.json.gz": () => gzipResponse(PRESET_BODY),
+    });
+    await fetchOverpass(CHICAGO_LOOP, {
+      fetchImpl: vi.fn(),
+      assetFetchImpl,
+      assetBase: "/framecraft/presets",
+      cache: new MemoryOverpassCache(),
+      sleep: noSleep,
+    });
+    expect(assetFetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      "/framecraft/presets/index.json",
+      "/framecraft/presets/a4e5375818f309940313e0ac08b8ebb88c615f9e.json.gz",
+    ]);
   });
 });

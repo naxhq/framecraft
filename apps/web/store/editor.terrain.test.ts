@@ -45,7 +45,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  useEditorStore.getState().cancelEngineJob();
+  useEditorStore.getState().cancelPipeline();
   vi.useRealTimers();
 });
 
@@ -175,11 +175,11 @@ describe("terrain fetch: turning it back off", () => {
 });
 
 describe("terrain fetch: cancellation", () => {
-  it("cancelEngineJob drops a pending terrain fetch, not only a pending build", async () => {
+  it("cancelPipeline drops a pending terrain fetch, not only a pending run", async () => {
     fetchTerrainGridMock.mockResolvedValue(grid(1));
     const store = useEditorStore.getState();
     store.setNested("terrain", { enabled: true });
-    store.cancelEngineJob();
+    store.cancelPipeline();
     await vi.advanceTimersByTimeAsync(2000);
     expect(fetchTerrainGridMock).not.toHaveBeenCalled();
   });

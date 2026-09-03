@@ -4,7 +4,7 @@
 import type { PrintParams } from "../../contracts";
 import { perfSpan } from "../../perf";
 import { resolveProfile, type PrinterProfile } from "../../printers";
-import type { EngineResult, ExportFile } from "../types";
+import type { AuditFinding, EngineResult, ExportFile } from "../types";
 import { exportBambu3mf, type Bambu3mfOptions } from "./bambu3mf";
 import { exportTiledZip, isTiled } from "./tiles";
 import { describePlan, type ColorChangePlan } from "./colorchange";
@@ -52,7 +52,19 @@ export interface ExportOutput {
   files: ExportFile[];
   /** Human-readable remarks (STEP size, colour-change plan). */
   notes: string[];
+  /**
+   * Findings the WRITER raised, which the engine's own audit could not: what a
+   * format could not carry (`export/stl.ts`'s `float32-degenerate`). They are
+   * also repeated into `notes`, because that is the channel the OUTPUT panel
+   * and the sidecar's `bake_result.warnings` already read.
+   */
+  findings: AuditFinding[];
   plan: ColorChangePlan | null;
+}
+
+/** `title: detail`, the shape every other warning takes in `notes`. */
+function findingNotes(findings: readonly AuditFinding[]): string[] {
+  return findings.map((finding) => `${finding.title}: ${finding.detail}`);
 }
 
 /**
@@ -85,6 +97,7 @@ function writeForTarget(result: EngineResult, target: ExportTarget, options: Exp
         target,
         files: [file],
         notes: [`${file.plates} tiles, one plate each, in a single Bambu Studio project.`],
+        findings: [],
         plan: null,
       };
     }
@@ -103,6 +116,9 @@ function writeForTarget(result: EngineResult, target: ExportTarget, options: Exp
       notes: [
         `${tiles.length} tiles, one ${EXPORT_TARGET_LABELS[target]} file each, in a zip named by tile.`,
       ],
+      // A tile writes through `writeTile` above, whose findings the zip does not
+      // carry back; a tiled build is judged tile by tile (`ci-export-matrix.sh`).
+      findings: [],
       plan: null,
     };
   }
@@ -110,25 +126,29 @@ function writeForTarget(result: EngineResult, target: ExportTarget, options: Exp
     case "bambu-3mf": {
       const bambuOptions: Bambu3mfOptions = { ...options, singleNozzle: false };
       const file = exportBambu3mf(result, bambuOptions);
-      return { target, files: [file], notes: [], plan: null };
+      return { target, files: [file], notes: [], findings: [], plan: null };
     }
     case "color-change-3mf": {
       const bambuOptions: Bambu3mfOptions = { ...options, singleNozzle: true };
       const file = exportBambu3mf(result, bambuOptions);
-      return { target, files: [file], notes: file.plan ? describePlan(file.plan) : [], plan: file.plan };
+      return { target, files: [file], notes: file.plan ? describePlan(file.plan) : [], findings: [], plan: file.plan };
     }
     case "generic-3mf":
-      return { target, files: [exportGeneric3mf(result, options)], notes: [], plan: null };
-    case "stl":
-      return { target, files: [exportStl(result, options)], notes: [], plan: null };
-    case "stl-parts-zip":
-      return { target, files: [exportStlPartsZip(result, options)], notes: [], plan: null };
+      return { target, files: [exportGeneric3mf(result, options)], notes: [], findings: [], plan: null };
+    case "stl": {
+      const file = exportStl(result, options);
+      return { target, files: [file], notes: findingNotes(file.findings), findings: file.findings, plan: null };
+    }
+    case "stl-parts-zip": {
+      const zip = exportStlPartsZip(result, options);
+      return { target, files: [zip], notes: findingNotes(zip.findings), findings: zip.findings, plan: null };
+    }
     case "obj":
-      return { target, files: exportObj(result, options), notes: [], plan: null };
+      return { target, files: exportObj(result, options), notes: [], findings: [], plan: null };
     case "step": {
       const stepOptions: StepOptions = options;
       const file = exportStep(result, stepOptions);
-      return { target, files: [file], notes: file.notes, plan: null };
+      return { target, files: [file], notes: file.notes, findings: [], plan: null };
     }
     default: {
       const never: never = target;

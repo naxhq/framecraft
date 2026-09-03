@@ -28,19 +28,28 @@ const TIME_RANGE_HIGH = 1.5;
  * exactly like the stats card and the resolved-output panel already read the
  * engine result rather than re-deriving from `state.params`).
  *
- * Two states only, per the brief: a skeleton while a job is computing, and
- * nothing when there is no result yet. A STALE-but-present result still
- * renders (labelled "from the previous build"), the same choice the stats
- * card makes, rather than flashing empty on every keystroke.
+ * The skeleton rule ([V3.1-T6], the defect this replaces): a skeleton may
+ * appear ONLY while a request is genuinely in flight AND there is nothing
+ * previous to show. Before, the only condition was "a job is running", so
+ * every parameter write replaced a perfectly good estimate with four grey
+ * bars, 80 ms after the keystroke, for the whole build -- which is what made a
+ * loading placeholder read as a permanent one, and made the card's own
+ * docstring ("a STALE-but-present result still renders") false. Now a previous
+ * value stays on screen, dimmed and labelled, and the skeleton is what an
+ * empty card shows on the FIRST build only. In the idle, error and completed
+ * states there is no skeleton at all, which
+ * `components/editor/ActionBar.test.tsx` asserts for this card and its three
+ * neighbours.
  */
 export function EstimateCard() {
-  const status = useEditorStore((state) => state.engine.status);
-  const stale = useEditorStore((state) => state.engine.stale);
-  const result = useEditorStore((state) => state.engine.result);
+  const status = useEditorStore((state) => state.pipeline.status);
+  const stale = useEditorStore((state) => state.pipeline.stale);
+  const result = useEditorStore((state) => state.pipeline.result);
 
   const est = useMemo(() => (result ? estimate(result, result.params) : null), [result]);
+  const running = status === "running";
 
-  if (status === "computing") {
+  if (running && est === null) {
     return (
       <div
         data-testid="estimate-card-skeleton"
@@ -61,12 +70,23 @@ export function EstimateCard() {
 
   const low = formatDuration(est.seconds * TIME_RANGE_LOW);
   const high = formatDuration(est.seconds * TIME_RANGE_HIGH);
+  // Dimmed while the numbers describe a model the controls have moved past.
+  // Opacity, not a skeleton: the figures are still the best answer there is.
+  const superseded = stale || running;
 
   return (
-    <div data-testid="estimate-card" className="rounded-plate border border-line bg-plate-sunken p-3">
+    <div
+      data-testid="estimate-card"
+      data-stale={superseded ? "true" : "false"}
+      className={`rounded-plate border border-line bg-plate-sunken p-3 ${superseded ? "opacity-60" : ""}`}
+    >
       <h4 className="mb-2 flex items-baseline justify-between gap-2 font-display text-2xs font-semibold uppercase tracking-[0.14em] text-ink-faint">
         <span>Filament and time (estimate)</span>
-        {stale ? <span className="normal-case text-ink-faint">from the previous build</span> : null}
+        {superseded ? (
+          <span data-testid="estimate-card-stale-label" className="normal-case text-ink-faint">
+            from the previous build
+          </span>
+        ) : null}
       </h4>
 
       <ul className="space-y-1" data-testid="estimate-slots">

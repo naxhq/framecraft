@@ -9,6 +9,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { controlsInGroup } from "./controlCatalog";
 import {
   GROUPS,
   GROUP_IDS,
@@ -62,6 +63,28 @@ describe("the group table", () => {
     for (const group of GROUPS) {
       expect(group.title.length, group.id).toBeGreaterThan(0);
       expect(group.summary.length, group.id).toBeGreaterThan(0);
+    }
+  });
+
+  it("gives every group at least one control, so no heading opens onto nothing", () => {
+    for (const group of GROUPS) {
+      expect(controlsInGroup(group.id).length, group.id).toBeGreaterThan(0);
+    }
+  });
+
+  it("summarises what the group still contains", () => {
+    // The Colour group's summary used to promise "One filament, or one per
+    // part", which was the seven `part_colors` wells. Those are gone (Task 2,
+    // DECISIONS [V3.1-P1-2]) and the group is now the filament-slot table, the
+    // palette, the tint and the height gradient.
+    const colour = GROUPS.find((group) => group.id === "colour");
+    expect(colour?.summary).toContain("filament slot");
+    // Likewise Surface: there is no planting control, only trees on the parks.
+    const surface = GROUPS.find((group) => group.id === "surface");
+    expect(surface?.summary).not.toContain("planting");
+    for (const group of GROUPS) {
+      expect(group.summary, group.id).not.toContain("—");
+      expect(group.summary.toLowerCase(), group.id).not.toContain("bake");
     }
   });
 

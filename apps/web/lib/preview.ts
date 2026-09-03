@@ -1,28 +1,32 @@
 /**
- * SceneGraph + PrintParams -> preview geometry, in PRINT MILLIMETRES.
+ * SceneGraph + PrintParams -> the PICKING footprints, in PRINT MILLIMETRES.
  *
- * Rules this module exists to enforce:
+ * Since v3.1 the viewport draws the pipeline's own solids and nothing else, so
+ * what is left here is the one thing those solids cannot provide: a per-
+ * building box to raycast against, because the fused region meshes carry no
+ * per-building identity. `components/scene/BuildingPickProxies.tsx` turns these
+ * into one invisible InstancedMesh (named exception 1,
+ * `docs/handoff/v3-01-pipeline.md` section 5). `PreviewArea` stays because it
+ * is the flat-contour shape `lib/previewText.ts` emits and the engine's own
+ * lettering, frame and tiling code consumes.
  *
- * 1. **No maths of its own.** Every scale, threshold, height and z offset comes
- *    from `lib/transform.ts`, which is the mirror of the build's
- *    `app/geom/transform.py`. The only geometry this file computes on its own
- *    is *shape* (oriented bounding rectangles, ribbon triangles) -- never a
- *    printed dimension.
- * 2. **No booleans.** 02: the browser never runs CSG. The build's stage-1
- *    minimum-feature repair is approximated with a cheap per-footprint 2D
- *    dilation (see `buildBuildings`), which is why the UI carries the
- *    "preview is approximate" note.
- * 3. **No three.js.** Output is plain numbers and typed arrays so it can be
- *    unit-tested in node and so a slider change can rewrite one instance
- *    buffer without touching anything else. `components/scene/*` turns this
- *    into three objects.
+ * Rules this module still enforces:
+ *
+ * 1. **No maths of its own.** Every scale, threshold and height comes from
+ *    `lib/transform.ts`, the mirror of `app/geom/transform.py`. The only
+ *    geometry computed here is *shape* (oriented bounding rectangles), never a
+ *    printed dimension -- a pick box has to sit where the printed building
+ *    sits or a click lands on the wrong one.
+ * 2. **No three.js.** Output is plain numbers and typed arrays so it can be
+ *    unit-tested in node and so a slider can rewrite one instance buffer
+ *    without touching anything else.
  *
  * Coordinate frame: x east, y north, z up -- the same frame as the SceneGraph
- * and the build. `components/scene/CityPreview.tsx` rotates the whole group once
- * to satisfy three.js's Y-up convention.
+ * and the engine. `components/scene/PreviewScene.tsx` rotates the whole group
+ * once to satisfy three.js's Y-up convention.
  */
 
-import type { AreaFeature, PrintParams, SceneGraph } from "./contracts";
+import type { PrintParams, SceneGraph } from "./contracts";
 import * as T from "./transform";
 
 // ---------------------------------------------------------------------------
@@ -48,49 +52,12 @@ export interface PreviewBuilding {
   dilated: boolean;
 }
 
-/** A triangulated flat ribbon: interleaved xyz, z always 0 (the mesh sets z). */
-export interface PreviewRibbons {
-  positions: Float32Array;
-  triangleCount: number;
-}
-
 /** A polygon with holes, in mm, ready for `new THREE.Shape()`. */
 export interface PreviewArea {
   /** Flat [x0,y0,x1,y1,...] outer contour, mm. */
   outer: number[];
   /** Flat contours for the holes, mm. */
   holes: number[][];
-}
-
-export interface PreviewTree {
-  x_mm: number;
-  y_mm: number;
-  radius_mm: number;
-  height_mm: number;
-}
-
-export interface PreviewModel {
-  /** mm of print per metre of ground, from `transform.scale_mm_per_m`. */
-  scale: number;
-  /** Ground radius the scene was actually built with. */
-  radius_m: number;
-  thresholds: T.Thresholds;
-  base_top_mm: number;
-  plate: T.Extents;
-  content: T.Extents;
-  frame: T.FrameGeometry;
-  buildings: PreviewBuilding[];
-  /** Footprints the build's stage-1 repair would widen. */
-  dilatedCount: number;
-  /** Footprints the build would drop as sub-detail. */
-  droppedCount: number;
-  roads: PreviewRibbons | null;
-  road_z_mm: number | null;
-  water: PreviewArea[];
-  water_z_mm: number | null;
-  green: PreviewArea[];
-  green_z_mm: number;
-  trees: PreviewTree[];
 }
 
 // ---------------------------------------------------------------------------
@@ -341,229 +308,6 @@ export function buildingInstanceMatrices(
     out[o + 15] = 1;
   }
   return out;
-}
-
-// ---------------------------------------------------------------------------
-// Roads
-// ---------------------------------------------------------------------------
-
-/** Segments used to approximate the round join at each interior vertex. */
-const JOIN_SEGMENTS = 6;
-
-/**
- * Flat ribbon triangles for every road, in mm, merged into ONE buffer.
- *
- * 04 stage 1 buffers each centreline by `road_width_ground / 2` with flat caps
- * and round joins; this emits the quad per segment plus a small fan at each
- * interior vertex for the join. Roads are not subtracted from buildings (that
- * is a boolean) -- another documented preview approximation.
- *
- * Returns null when `road_mode` is "off", which is also what
- * `transform.road_z_mm` reports.
- */
-export function buildRoads(scene: SceneGraph, params: PrintParams): PreviewRibbons | null {
-  if (T.road_z_mm(params) === null) return null;
-  const radius_m = T.radius_m_from_bounds(scene.bounds);
-  const scale = T.scale_mm_per_m(params, radius_m);
-  const thresholds = T.thresholds_ground_m(params, scale);
-
-  const tris: number[] = [];
-  const pushTri = (
-    ax: number,
-    ay: number,
-    bx: number,
-    by: number,
-    cx: number,
-    cy: number,
-  ): void => {
-    tris.push(ax, ay, 0, bx, by, 0, cx, cy, 0);
-  };
-
-  for (const road of scene.roads) {
-    const path = road.path;
-    if (path.length < 2) continue;
-    const half = (T.road_width_ground_m(road, params, thresholds) * scale) / 2;
-
-    for (let i = 0; i < path.length - 1; i += 1) {
-      const ax = path[i][0] * scale;
-      const ay = path[i][1] * scale;
-      const bx = path[i + 1][0] * scale;
-      const by = path[i + 1][1] * scale;
-      const dx = bx - ax;
-      const dy = by - ay;
-      const length = Math.hypot(dx, dy);
-      if (length < 1e-9) continue;
-      const nx = (-dy / length) * half;
-      const ny = (dx / length) * half;
-      // Counter-clockwise in XY, so computeVertexNormals() points the ribbon
-      // up (+z) like every other surface in the print frame.
-      pushTri(ax + nx, ay + ny, ax - nx, ay - ny, bx - nx, by - ny);
-      pushTri(ax + nx, ay + ny, bx - nx, by - ny, bx + nx, by + ny);
-    }
-
-    for (let i = 1; i < path.length - 1; i += 1) {
-      const cx = path[i][0] * scale;
-      const cy = path[i][1] * scale;
-      for (let s = 0; s < JOIN_SEGMENTS; s += 1) {
-        const a0 = (s / JOIN_SEGMENTS) * Math.PI * 2;
-        const a1 = ((s + 1) / JOIN_SEGMENTS) * Math.PI * 2;
-        pushTri(
-          cx,
-          cy,
-          cx + Math.cos(a0) * half,
-          cy + Math.sin(a0) * half,
-          cx + Math.cos(a1) * half,
-          cy + Math.sin(a1) * half,
-        );
-      }
-    }
-  }
-
-  if (tris.length === 0) return null;
-  return { positions: new Float32Array(tris), triangleCount: tris.length / 9 };
-}
-
-// ---------------------------------------------------------------------------
-// Water and green
-// ---------------------------------------------------------------------------
-
-function toContour(ring: ReadonlyArray<ReadonlyArray<number>>, scale: number): number[] {
-  const flat: number[] = [];
-  for (const p of ring) {
-    flat.push(p[0] * scale, p[1] * scale);
-  }
-  return flat;
-}
-
-/**
- * Water/green contours in mm, with the sub-detail ones dropped exactly the way
- * 04 stage 1 drops them. Holes are kept so the ShapeGeometry earcut can cut
- * islands out of a lake.
- */
-export function buildAreas(
-  features: ReadonlyArray<AreaFeature>,
-  params: PrintParams,
-  scale: number,
-  thresholds: T.Thresholds,
-): PreviewArea[] {
-  void params;
-  const out: PreviewArea[] = [];
-  for (const feature of features) {
-    if (feature.ring.length < 3) continue;
-    if (T.area_dropped(T.ring_area_m2(feature.ring), thresholds)) continue;
-    out.push({
-      outer: toContour(feature.ring, scale),
-      holes: feature.holes
-        .filter((hole) => hole.length >= 3)
-        .map((hole) => toContour(hole, scale)),
-    });
-  }
-  return out;
-}
-
-// ---------------------------------------------------------------------------
-// Trees
-// ---------------------------------------------------------------------------
-
-/**
- * Visible trees only, capped and ordered exactly as the build orders them.
- *
- * The filter is `select_tree_indices_for`, i.e. 04's 0.5 mm rule AND the
- * nozzle-aware floor the build applies in stage 1 (`transform.tree_min_radius_mm`
- * -- an 8-gon cone of circumradius r is only `2 r cos(pi/8)` wide at its base).
- * At the default 0.4 mm nozzle the floor is 0.433 mm and 04's 0.5 mm still
- * binds, so nothing changes; from 0.5 mm up the preview drops exactly the trees
- * the build drops. The other half of 04's tree rule ("does not intersect a
- * building or road footprint") is a boolean the browser never runs, so the
- * preview can still show a tree the build removes -- never the reverse.
- */
-export function buildTrees(scene: SceneGraph, params: PrintParams): PreviewTree[] {
-  if (!params.trees) return [];
-  const radius_m = T.radius_m_from_bounds(scene.bounds);
-  const scale = T.scale_mm_per_m(params, radius_m);
-  return T.select_tree_indices_for(scene.trees, params, scale).map((index) => {
-    const tree = scene.trees[index];
-    return {
-      x_mm: tree.x * scale,
-      y_mm: tree.y * scale,
-      radius_mm: T.tree_radius_mm(tree, scale),
-      height_mm: T.tree_height_mm(tree, scale),
-    };
-  });
-}
-
-/**
- * Per-instance matrices for the tree cones. The unit cone is 1 mm tall and
- * 1 mm in radius, centred on the origin with its axis along +z, so the matrix
- * is `translate(x, y, base_top + h/2) * scale(r, r, h)`.
- */
-export function treeInstanceMatrices(
-  trees: ReadonlyArray<PreviewTree>,
-  baseTopMm: number,
-  into?: Float32Array,
-): Float32Array {
-  const out =
-    into && into.length >= trees.length * 16 ? into : new Float32Array(trees.length * 16);
-  for (let i = 0; i < trees.length; i += 1) {
-    const t = trees[i];
-    const o = i * 16;
-    out.fill(0, o, o + 16);
-    out[o + 0] = t.radius_mm;
-    out[o + 5] = t.radius_mm;
-    out[o + 10] = t.height_mm;
-    out[o + 12] = t.x_mm;
-    out[o + 13] = t.y_mm;
-    out[o + 14] = baseTopMm + t.height_mm / 2;
-    out[o + 15] = 1;
-  }
-  return out;
-}
-
-// ---------------------------------------------------------------------------
-// Whole model
-// ---------------------------------------------------------------------------
-
-/**
- * Build everything at once. The React components call the individual builders
- * with their own memo keys so a slider only rebuilds what it touched; this is
- * the convenience entry point used by tests and by anything that wants the
- * complete picture.
- */
-export function buildPreview(scene: SceneGraph, params: PrintParams): PreviewModel {
-  const radius_m = T.radius_m_from_bounds(scene.bounds);
-  const scale = T.scale_mm_per_m(params, radius_m);
-  const thresholds = T.thresholds_ground_m(params, scale);
-  const { buildings, dilatedCount, droppedCount } = buildBuildings(scene, params);
-  const waterZ = T.water_z_mm(params);
-
-  return {
-    scale,
-    radius_m,
-    thresholds,
-    base_top_mm: T.base_top_mm(params),
-    plate: T.plate_extents_mm(params),
-    content: T.content_extents_mm(params),
-    frame: T.frame_geometry_mm(params),
-    buildings,
-    dilatedCount,
-    droppedCount,
-    roads: buildRoads(scene, params),
-    road_z_mm: T.road_z_mm(params),
-    water: waterZ === null ? [] : buildAreas(scene.water, params, scale, thresholds),
-    water_z_mm: waterZ,
-    green: buildAreas(scene.green, params, scale, thresholds),
-    green_z_mm: T.green_z_mm(params),
-    trees: buildTrees(scene, params),
-  };
-}
-
-/**
- * The "the preview is approximate" line, using the real threshold rather than
- * a hard-coded number. 04 stage 1 step 4 closes the building layer with
- * `min_gap_ground / 2`, so anything closer than `min_gap_ground` merges.
- */
-export function mergeNoticeMetres(thresholds: T.Thresholds): number {
-  return thresholds.min_gap;
 }
 
 /**

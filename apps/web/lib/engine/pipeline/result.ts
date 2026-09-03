@@ -10,7 +10,7 @@
  */
 
 import type { Engraving, PrintParams } from "../../contracts";
-import type { EngineResult, RecessBand, RegionMesh, RegionName, ResolvedLine } from "../types";
+import type { EngineResult, RecessBand, RegionMesh, RegionName, ResolvedLine, TileResult } from "../types";
 import { REGION_NAMES } from "../types";
 import type { StageCache } from "./cache";
 import { finishStageId, type AuditOut, type FinishOut, type MergedOut, type StageId } from "./stage";
@@ -132,8 +132,22 @@ export interface AssembleOptions {
   stripRegionMeshes?: boolean;
 }
 
-function strippedMesh(mesh: RegionMesh): RegionMesh {
-  return { ...mesh, positions: new Float64Array(0), indices: new Uint32Array(0) };
+export function strippedMesh(mesh: RegionMesh): RegionMesh {
+  return {
+    ...mesh,
+    positions: new Float64Array(0),
+    indices: new Uint32Array(0),
+    ...(mesh.triangleOwner === undefined ? {} : { triangleOwner: new Uint32Array(0) }),
+  };
+}
+
+/** The tiles with every mesh emptied: what `done` carries when the consumer already holds them. */
+export function strippedTiles(tiles: readonly TileResult[]): TileResult[] {
+  return tiles.map((tile) => ({
+    ...tile,
+    regions: tile.regions.map(strippedMesh),
+    ...(tile.merged === undefined ? {} : { merged: strippedMesh(tile.merged) }),
+  }));
 }
 
 /**

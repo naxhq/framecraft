@@ -25,10 +25,11 @@ import { buildModel } from "../lib/engine/engine";
 import { sceneFromOverpass } from "../lib/engine/osm/scene";
 import type { TerrainGrid } from "../lib/engine/types";
 import { buildSidecarJson, sanitizeStem } from "../lib/engine/export/common";
+import { blockingFindings } from "../lib/engine/export/gate";
 import { EXPORT_TARGETS, exportForTarget, isExportTarget, resultForTile, tileStem, type ExportTarget } from "../lib/engine/export/index";
 import { CREDITS_TEXT } from "../lib/engine/export/stl";
 import { estimate } from "../lib/engine/estimate";
-import type { EngineResult } from "../lib/engine/types";
+import type { AuditFinding, EngineResult } from "../lib/engine/types";
 import { perfEnabled, perfReport, perfText, setPerfEnabled } from "../lib/perf";
 import { resolveProfile } from "../lib/printers";
 
@@ -42,9 +43,13 @@ interface Args {
   terrain: string | null;
   radiusM: number;
   rotationDeg: number;
+  /** Crop centre for `--overpass`, or null to use the Chicago Loop default. */
+  center: { lat: number; lon: number } | null;
   /** Raw `--tiling` text; resolved against the parameter file in `main`. */
   tilingSpec: string | null;
   tiling: PrintParams["tiling"] | null;
+  /** Write the files even when the engine's Stage 4 gate failed. */
+  force: boolean;
 }
 
 /**
@@ -85,7 +90,8 @@ function parseTiling(spec: string, base: PrintParams["tiling"]): PrintParams["ti
 const USAGE =
   "usage: export-cli (--scene <scene.json> | --overpass <overpass.json>) --params <print-params.json>\n" +
   "                [--target <export_target>] [--terrain <grid.json|demo|demo:<relief_m>>]\n" +
-  "                [--radius <m>] [--rotation <deg>] [--tiling COLSxROWS[:joint[:tol]]]\n" +
+  "                [--radius <m>] [--rotation <deg>] [--center <lat,lon>]\n" +
+  "                [--tiling COLSxROWS[:joint[:tol]]]\n" +
   "                --out <file> [--title <text>]\n" +
   `  targets: ${EXPORT_TARGETS.join(", ")}\n` +
   "  --tiling   split the model over COLS x ROWS beds, joint `dovetail` (default) or\n" +
@@ -98,14 +104,26 @@ const USAGE =
   "             west-to-east ramp over the crop (default 60 m of relief), so a DRAPED\n" +
   "             build can be put through `make validate` without a network fetch.\n" +
   "  --radius   ground radius in metres for --overpass (default 900).\n" +
+  "  --center   crop centre for --overpass as `lat,lon`. A raw Overpass response\n" +
+  "             carries no centre of its own -- the centre is part of the REQUEST --\n" +
+  "             so a fixture for any city but Chicago needs this or it is cropped\n" +
+  "             around the Chicago Loop and builds an empty plate.\n" +
+  "  --force    write the files even when the engine's printability gate failed a\n" +
+  "             Stage 4 check (the check is printed either way; without the flag\n" +
+  "             nothing is written and the exit code is 1).\n" +
   "  FRAMECRAFT_PERF=1 in the environment prints the per-stage timing table.";
 
 function parseArgs(argv: string[]): Args {
   const values = new Map<string, string>();
+  let force = false;
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i];
     if (!key.startsWith("--")) {
       throw new Error(`unexpected argument ${key}\n${USAGE}`);
+    }
+    if (key === "--force") {
+      force = true;
+      continue;
     }
     const value = argv[i + 1];
     if (value === undefined || value.startsWith("--")) {
@@ -129,6 +147,17 @@ function parseArgs(argv: string[]): Args {
   const rotation = Number(values.get("rotation") ?? 0);
   if (!Number.isFinite(radius) || radius <= 0) throw new Error(`--radius must be positive\n${USAGE}`);
   if (!Number.isFinite(rotation)) throw new Error(`--rotation must be a number\n${USAGE}`);
+  const centerSpec = values.get("center") ?? null;
+  let center: { lat: number; lon: number } | null = null;
+  if (centerSpec !== null) {
+    const [latText, lonText] = centerSpec.split(",");
+    const lat = Number(latText);
+    const lon = Number(lonText);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+      throw new Error(`--center wants <lat,lon> in degrees, got ${centerSpec}\n${USAGE}`);
+    }
+    center = { lat, lon };
+  }
   const tiling = values.get("tiling") ?? null;
   return {
     scene,
@@ -140,8 +169,10 @@ function parseArgs(argv: string[]): Args {
     terrain: values.get("terrain") ?? null,
     radiusM: radius,
     rotationDeg: rotation,
+    center,
     tilingSpec: tiling,
     tiling: null,
+    force,
   };
 }
 
@@ -195,12 +226,23 @@ function readJson<T>(path: string): T {
  * A raw Overpass response carries no centre of its own - the centre is part of
  * the REQUEST - and the committed fixture is the Chicago Loop, which is also
  * every other Chicago artefact's centre (`fixtures/chicago-scene.json`).
+ * `--center lat,lon` overrides it, which is what lets the nightly preset
+ * matrix put all six committed fixtures through this engine instead of only
+ * Chicago (`DECISIONS.md` [V3.1-P7-4]).
  */
 const DEMO_CENTER = { lat: 41.8827, lon: -87.6233 };
 
-function sidecar(args: Args, result: EngineResult, files: Array<{ name: string; bytes: Uint8Array }>, notes: string[], scene: SceneGraph, elapsedS: number, created: Date) {
+function sidecar(args: Args, result: EngineResult, files: Array<{ name: string; bytes: Uint8Array }>, output: { notes: string[]; findings: AuditFinding[] }, scene: SceneGraph, elapsedS: number, created: Date) {
+  // The writer's own findings ride with the engine's, exactly as the export
+  // stage does it (`pipeline/stages.ts`), so a file the CLI wrote and a file
+  // the app wrote carry the same sidecar - and once only, since the sidecar
+  // builds its warnings from the findings and the notes both.
+  const writerNotes = new Set(output.findings.map((finding) => `${finding.title}: ${finding.detail}`));
+  const notes = output.notes.filter((note) => !writerNotes.has(note));
+  const withWriter =
+    output.findings.length === 0 ? result : { ...result, findings: [...result.findings, ...output.findings] };
   return buildSidecarJson({
-    result,
+    result: withWriter,
     target: args.target ?? result.params.export_target ?? "bambu-3mf",
     // The scene's own centre, so the sidecar's provenance block names the place
     // the exported files name (`[V3-P7-A10]`).
@@ -234,8 +276,8 @@ async function main(): Promise<void> {
       : sceneFromOverpass(
           readJson<Parameters<typeof sceneFromOverpass>[0]>(resolve(args.overpass as string)),
           {
-            lat: DEMO_CENTER.lat,
-            lon: DEMO_CENTER.lon,
+            lat: args.center?.lat ?? DEMO_CENTER.lat,
+            lon: args.center?.lon ?? DEMO_CENTER.lon,
             radius_m: args.radiusM,
             rotation_deg: args.rotationDeg,
           },
@@ -245,6 +287,18 @@ async function main(): Promise<void> {
   const target: ExportTarget = args.target ?? params.export_target ?? "bambu-3mf";
 
   const result = await buildModel({ scene, params, terrain, rotationDeg: args.rotationDeg });
+
+  // A failing export ships nothing (04 stage 4, `lib/engine/export/gate.ts`):
+  // the same refusal the worker's export stage makes, so the CLI cannot write
+  // a file the app would refuse.
+  const blocking = blockingFindings(result.findings);
+  if (blocking.length > 0) {
+    for (const finding of blocking) console.error(`gate: ${finding.id}: ${finding.title} (${finding.detail})`);
+    if (!args.force) {
+      throw new Error(`export refused: the printability gate failed ${blocking.map((f) => f.id).join(", ")}; pass --force to write the files anyway`);
+    }
+    console.error("gate: --force given, writing the files anyway");
+  }
 
   const outPath = resolve(args.out);
   const outDir = dirname(outPath);
@@ -273,7 +327,7 @@ async function main(): Promise<void> {
     written.push(path);
   }
   const sidecarPath = resolve(outDir, `${stem}.json`);
-  writeFileSync(sidecarPath, JSON.stringify(sidecar(args, result, output.files, output.notes, scene, (Date.now() - started) / 1000, created), null, 2) + "\n");
+  writeFileSync(sidecarPath, JSON.stringify(sidecar(args, result, output.files, output, scene, (Date.now() - started) / 1000, created), null, 2) + "\n");
   writeFileSync(resolve(outDir, "CREDITS.txt"), CREDITS_TEXT);
 
   // Every tile as its own file too, with its own sidecar. The tiled export is
@@ -300,7 +354,7 @@ async function main(): Promise<void> {
     writeFileSync(
       tileSidecar,
       JSON.stringify(
-        sidecar(args, tileResult, tileOutput.files, tileOutput.notes, scene, (Date.now() - started) / 1000, created),
+        sidecar(args, tileResult, tileOutput.files, tileOutput, scene, (Date.now() - started) / 1000, created),
         null,
         2,
       ) + "\n",

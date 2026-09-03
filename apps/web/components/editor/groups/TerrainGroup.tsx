@@ -1,6 +1,7 @@
 "use client";
 
 import { PARAM_RANGES } from "@/lib/contracts";
+import { labelled } from "@/lib/controlCatalog";
 import { useEditorStore } from "@/store/editor";
 import { Note, Slider, Toggle } from "../Controls";
 
@@ -22,7 +23,7 @@ export function TerrainGroup() {
   const setParam = useEditorStore((state) => state.setParam);
   const setNested = useEditorStore((state) => state.setNested);
   const terrain = useEditorStore((state) => state.terrain);
-  const findings = useEditorStore((state) => state.engine.result?.findings);
+  const findings = useEditorStore((state) => state.pipeline.result?.findings);
 
   const enabled = params.terrain?.enabled ?? false;
   const smoothing = params.terrain?.smoothing ?? 1;
@@ -33,16 +34,13 @@ export function TerrainGroup() {
   return (
     <>
       <Toggle
-        id="terrain_enabled"
-        label="Terrain"
+        {...labelled("terrain_enabled")}
         checked={enabled}
         onChange={(value) => setNested("terrain", { enabled: value })}
-        hint="Drapes the base over real ground elevation instead of a flat slab. Off by default."
       />
 
       <Slider
-        id="terrain_exaggeration"
-        label="Vertical exaggeration"
+        {...labelled("terrain_exaggeration")}
         min={PARAM_RANGES.terrain_exaggeration.min * 100}
         max={PARAM_RANGES.terrain_exaggeration.max * 100}
         step={PERCENT_STEP}
@@ -50,12 +48,10 @@ export function TerrainGroup() {
         display={`${exaggerationPercent} %`}
         onChange={(value) => setParam("terrain_exaggeration", value / 100)}
         disabled={!enabled}
-        hint="Stretches the elevation relief so a gentle slope reads on the plate. Ignored while terrain is off."
       />
 
       <Slider
-        id="terrain_smoothing"
-        label="Smoothing"
+        {...labelled("terrain_smoothing")}
         min={PARAM_RANGES.terrain.smoothing.min}
         max={PARAM_RANGES.terrain.smoothing.max}
         step={1}
@@ -63,9 +59,14 @@ export function TerrainGroup() {
         display={String(smoothing)}
         onChange={(value) => setNested("terrain", { smoothing: value })}
         disabled={!enabled}
-        hint="Blurs the elevation sample before draping it, so buildings do not sit on a jagged terrace."
       />
 
+      {!enabled ? (
+        <Note testId="terrain-off-note">
+          The exaggeration and the smoothing shape a draped surface, so both
+          wait until Terrain is on.
+        </Note>
+      ) : null}
       {enabled && terrain.status === "loading" ? (
         <Note testId="terrain-loading">Fetching elevation data…</Note>
       ) : null}

@@ -48,6 +48,7 @@ import {
   cleanSection,
   extrudeSection,
   intersectSection,
+  pruneDebrisCounted,
   rectContour,
   sectionOf,
   subtractSection,
@@ -807,15 +808,17 @@ function buildTile(
   for (const source of sources) {
     const solid = tileSolid(ctx, source.solid, box, males, sockets, indexCut, slivers);
     if (solid === null) continue;
+    const swept = sweepTileDebris(ctx, solid);
     // `collapseNeedles`: a tile is a trim by up to four planes, a union with
     // its keys and three subtractions deep, and each of those can leave a
     // needle the whole-mesh weld ladder cannot reach (`mesh.NEEDLE_COLLAPSE_MM`,
     // `[V3-P7-A9]`). An untiled build never needs it and never asks for it.
-    const mesh = toRegionMesh(solid, source.region, source.slot, source.colorHex, undefined, {
+    const mesh = toRegionMesh(swept.solid, source.region, source.slot, source.colorHex, swept.bodies, {
       collapseNeedles: true,
     });
     regions.push(mesh);
     bbox = mergeBbox(bbox, mesh.bbox);
+    if (swept.solid !== solid) arena.drop(swept.solid);
     arena.drop(solid);
   }
   if (regions.length === 0 || bbox === null) return null;
@@ -824,18 +827,45 @@ function buildTile(
   if (merged !== null) {
     const solid = tileSolid(ctx, merged, box, males, sockets, indexCut, slivers);
     if (solid !== null) {
+      const swept = sweepTileDebris(ctx, solid);
       tile.merged = toRegionMesh(
-        solid,
+        swept.solid,
         "base",
         regions[0].slot,
         regions[0].colorHex,
-        undefined,
+        swept.bodies,
         { collapseNeedles: true },
       );
+      if (swept.solid !== solid) arena.drop(swept.solid);
       arena.drop(solid);
     }
   }
   return tile;
+}
+
+/**
+ * Drop the specks a tile's own booleans left behind.
+ *
+ * The region solids arrive already pruned (`pipeline/stages.ts`'s finish stage),
+ * but a tile is five booleans past that: two trims per axis, the keys added, the
+ * sockets and the sliver cutter taken out. Any of them can shear a chip off a
+ * region and leave it floating - measured on the Chicago 2x2 grid, tile A1's
+ * water region kept a 0.064 x 0.017 x 1.2 mm splinter of 0.000458 mm3, which the
+ * reference validator fails on the `bodies` row ("debris shell(s): water") and
+ * which would print as nothing at all.
+ *
+ * The floor is `manifold.DEBRIS_MM3`, which is the validator's own
+ * `MIN_PART_BODY_VOLUME_MM3`, so the two cannot disagree about what a speck is.
+ *
+ * `pruneDebrisCounted` and not `pruneDebris`, so the body count comes out of
+ * the SAME decomposition: `toRegionMesh` would otherwise run a second one to
+ * fill `RegionMesh.bodies`, which on a buildings region is hundreds of bodies
+ * twice and which `manifold.ts` and `stages.ts`'s finish stage already avoid
+ * for that reason. A 3x3 grid was paying it 63 times (v3-07 audit, finding 5).
+ */
+function sweepTileDebris(ctx: BuildContext, solid: Manifold): { solid: Manifold; bodies: number } {
+  const pruned = pruneDebrisCounted(ctx.wasm, ctx.arena, solid);
+  return { solid: pruned.solid, bodies: pruned.bodies.real };
 }
 
 /**
@@ -1150,10 +1180,18 @@ function thinPart(
   const components = arena.keepAll(section.decompose());
   const thin: CrossSection[] = [];
   for (const component of components) {
-    if (component.area() < SLIVER_MIN_AREA_MM2) {
-      arena.drop(component);
-      continue;
-    }
+    // NO area floor on a whole component, and that is the point: the reference
+    // validator measures every region a slice holds, however small, and fails
+    // the file when one is narrower than `0.9 * min_wall`. A floor here would be
+    // the gate agreeing to see less than the judge does. Measured on the Chicago
+    // 2x2 grid: `SLIVER_MIN_AREA_MM2` (0.01 mm2) let a 0.00535 mm2 needle -
+    // 0.046 mm wide, standing 14 mm tall from z 6.35 to 20.67, sheared off a
+    // block by an earlier pass of this same cutter - straight through, and the
+    // validator then failed tile A1's `min_wall` row at 0.037 mm. The two
+    // surviving uses of the constant guard against an EMPTY cutter and cannot
+    // filter a speck, because both are applied after the 0.15 mm growth; see
+    // the note at that offset for why moving one earlier is wrong.
+    //
     // A whole island the cut left behind: no disc of a full wall fits anywhere
     // in it, so all of it goes. This is the case the appendage rule below
     // CANNOT see - a fin sheared off a tower is its own region in the slice,
@@ -1194,6 +1232,21 @@ function thinPart(
   // subtracted from a mesh that already has 100 000 triangles.
   const grown = all.offset(SLIVER_GROW_MM, MITRE, 2, 0);
   arena.drop(all);
+  // This floor is a guard against an EMPTY cutter and nothing more, and saying
+  // otherwise would be a false comfort (v3-07 audit, finding 4): a 0.15 mm
+  // dilation turns a point into a disc of 0.0707 mm2, seven times
+  // `SLIVER_MIN_AREA_MM2`, so anything that reaches it has already passed it.
+  // Moving it before the growth was tried and is WRONG - it is applied to the
+  // union of a pass's findings, and the 0.00535 mm2 needle that failed tile A1
+  // is under it, so the floor would put the defect straight back.
+  //
+  // What actually bounds this is `holdsNoDisc`, which is `checks.min_wall`'s own
+  // rule: only material no full wall fits into is ever cut, so a speck that
+  // becomes a 0.3 mm prism through the tile was material a nozzle could not
+  // lay. Measured cost of having no component floor at all: seam trim 2510.35
+  // to 2516.77 mm3 at 2x2 (+0.26 %) and 4864.52 to 4873.31 at 3x3 (+0.18 %),
+  // with all four and all nine tiles passing every validator row, so
+  // `SLIVER_PASSES = 3` still converges at both grids.
   if (grown.isEmpty() || grown.area() < SLIVER_MIN_AREA_MM2) {
     grown.delete();
     return null;

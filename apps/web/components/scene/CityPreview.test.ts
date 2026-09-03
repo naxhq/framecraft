@@ -1,24 +1,221 @@
 /**
- * Preview memo keys.
+ * The viewport's two rules.
  *
- * 02: "rebuild only the affected instance buffer when a slider moves". The
- * regression this file guards: keying a layer on `params` (or on the
- * `Thresholds` object derived from it) rebuilds it on EVERY PrintParams write,
- * because `store.setParam` re-creates `params` by spread. Moving the height
- * sliders then re-ran earcut over every water/green polygon (711 of them on
- * the 900 m Chicago crop), allocated a fresh BufferGeometry, disposed the old
- * one and re-uploaded it to the GPU on every tick of a drag.
+ * **1. Nothing rendered reads a parameter.** This replaces the v3 discipline
+ * that this file used to hold (`previewDeps` covering every approximate layer,
+ * and a list of ten parameter groups asserted to "rebuild nothing"). That
+ * assertion was true and was the defect: those ten groups rebuilt nothing
+ * because no preview layer read them, so the frame profile, the matting, the
+ * shadow gap, the terrain, the tiling and the region depths were invisible
+ * until a build landed seconds later -- and touching one of them REMOVED the
+ * only layer that had ever drawn it, which is what "the settings do nothing"
+ * was made of.
  *
- * The dependency lists tested here are the exact arrays `CityPreview` passes
- * to `useMemo`, replayed through `render()` below, which reproduces React's
- * rule (recompute iff any dep fails `Object.is`).
+ * Since v3.1 the viewport draws the pipeline's own solids and nothing else, so
+ * the honest form of that assertion is the one below: no file that renders
+ * into the canvas may read a `PrintParams` field at all. Then a control that
+ * appears to do nothing can only ever be a pipeline stage that did not claim
+ * it, which `lib/engine/pipeline/graph.test.ts` makes impossible, and the
+ * check here is cross-referenced against the registry so the two cannot drift.
+ * Everything drawn comes from `state.pipeline.regions` and
+ * `state.pipeline.result`.
+ *
+ * The exceptions are named, and there are two of them: `BuildingPickProxies`,
+ * which places invisible boxes for hero picking and paints nothing (named
+ * exception 1, `docs/handoff/v3-01-pipeline.md` section 5), and the two HUD
+ * hosts, `CityPreview.tsx` and `PreviewPane.tsx`, whose readouts sit OUTSIDE
+ * the canvas and are statements about the settings by design.
+ *
+ * **2. A region re-uploads if and only if its hash changed.** That half lives
+ * in `RegionMeshes.test.tsx`, where the geometry cache can be driven twice
+ * with one region moved; the store half (a region's mesh object is replaced
+ * only when the worker re-sent it) is in `store/editor.pipeline.test.ts`.
+ *
+ * What remains of the memo discipline is the HUD's: `store.setParam` rebuilds
+ * `params` by spread on every write, so any dependency list naming `params`
+ * would re-run the footprint hulls and re-triangulate the glyphs on every tick
+ * of a drag. Those lists are still tested below.
  */
+
+import { readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_PRINT_PARAMS } from "@/lib/contracts";
 import type { PrintParams, SceneGraph } from "@/lib/contracts";
+import { claimedPaths, expandClaims, type ParamClaim } from "@/lib/engine/pipeline";
 import { previewDeps } from "./CityPreview";
+
+// ===========================================================================
+// 1. Nothing rendered reads a parameter
+// ===========================================================================
+
+const SCENE_DIR = path.resolve(__dirname);
+
+/** The HUD hosts (outside the canvas) and the one named picking exception. */
+const PARAM_READERS_ALLOWED = new Set([
+  "CityPreview.tsx",
+  "PreviewPane.tsx",
+  "BuildingPickProxies.tsx",
+]);
+
+/** A read of a PrintParams field: `params.plate_mm`, `params?.colour`, `pickParams.frame`. */
+const PARAM_READ = /\b[A-Za-z]*[Pp]arams\??\.[A-Za-z_]/;
+
+function sceneSources(): string[] {
+  return readdirSync(SCENE_DIR)
+    .filter((name) => (name.endsWith(".tsx") || name.endsWith(".ts")) && !name.includes(".test."))
+    .sort();
+}
+
+function read(name: string): string {
+  return readFileSync(path.join(SCENE_DIR, name), "utf-8");
+}
+
+/** The file's code lines, with every comment line dropped. */
+function codeLines(source: string): string[] {
+  return source
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => !line.startsWith("*") && !line.startsWith("//") && !line.startsWith("/*"));
+}
+
+/** Code lines that read a PrintParams field. */
+function paramReads(source: string): string[] {
+  return codeLines(source).filter((line) => PARAM_READ.test(line));
+}
+
+describe("no rendered layer reads PrintParams", () => {
+  it("has scene sources to check, and the exemptions all exist", () => {
+    // Guards the guard: a renamed file must not turn this suite vacuous.
+    const files = sceneSources();
+    expect(files.length).toBeGreaterThan(5);
+    for (const name of PARAM_READERS_ALLOWED) {
+      expect(files, `${name} is exempt but does not exist`).toContain(name);
+    }
+  });
+
+  it("finds no parameter read in any file that renders into the canvas", () => {
+    for (const name of sceneSources()) {
+      if (PARAM_READERS_ALLOWED.has(name)) continue;
+      expect(paramReads(read(name)), `${name} reads a PrintParams field`).toEqual([]);
+    }
+  });
+
+  it("names the PrintParams type in only one rendered file, and only to pass it through", () => {
+    // A file that names the type is a file about to read it. The exception is
+    // `PreviewScene`, which hands the object to the pick proxies untouched --
+    // so it may name the type exactly twice (the import and the prop) and
+    // never dereferences it, which the sweep above already proves.
+    for (const name of sceneSources()) {
+      if (PARAM_READERS_ALLOWED.has(name)) continue;
+      const mentions = codeLines(read(name)).filter((line) => /\bPrintParams\b/.test(line));
+      if (name === "PreviewScene.tsx") {
+        expect(mentions).toEqual([
+          'import type { PrintParams } from "@/lib/contracts";',
+          "pickParams: PrintParams;",
+        ]);
+        continue;
+      }
+      expect(mentions, `${name} names PrintParams`).toEqual([]);
+    }
+  });
+
+  it("hands the canvas nothing but pipeline output and the pick proxies' own params", () => {
+    // The whole `<PreviewScene .../>` element in `CityPreview.tsx`. Every prop
+    // it takes has to come from the pipeline, the palette or the scene; the one
+    // parameter object crossing the boundary goes straight to the pick proxies
+    // without being read on the way.
+    const source = read("CityPreview.tsx");
+    const start = source.indexOf("<PreviewScene");
+    expect(start, "CityPreview no longer mounts PreviewScene").toBeGreaterThan(0);
+    const element = source.slice(start, source.indexOf("/>", start));
+    // The one parameter object crossing the boundary, handed to the pick
+    // proxies by name...
+    expect(element).toContain("pickParams={params}");
+    // ...and not one field read on the way in.
+    expect(paramReads(element)).toEqual([]);
+  });
+
+  it("mounts no approximate layer any more", () => {
+    // The v3 stack: a constant frame, oriented boxes, flat ribbons, earcut
+    // fills and flat lettering. Each one is a place the preview could disagree
+    // with the file, and each is gone.
+    const files = sceneSources();
+    for (const gone of ["BasePlate.tsx", "RoadRibbons.tsx", "AreaSurfaces.tsx", "TreeInstances.tsx"]) {
+      expect(files, `${gone} is back`).not.toContain(gone);
+    }
+    const scene = read("PreviewScene.tsx");
+    expect(scene).not.toMatch(/textLayers|buildRoads|buildAreas|buildTrees/);
+  });
+
+  it("keeps the pick proxies invisible: visible={false} would take raycasting with them", () => {
+    const source = codeLines(read("BuildingPickProxies.tsx")).join("\n");
+    // three's Raycaster checks `visible` and stops; it does not consult a
+    // material's opacity, so THIS is how a mesh is picked but never painted.
+    expect(source).toMatch(/colorWrite={false}/);
+    expect(source).toMatch(/depthWrite={false}/);
+    expect(source).toMatch(/opacity={0}/);
+    expect(source).not.toMatch(/visible={false}/);
+    expect(source).toMatch(/castShadow={false}/);
+    expect(source).toMatch(/receiveShadow={false}/);
+  });
+});
+
+// ===========================================================================
+// 2. The parameters the HUD does not read are the pipeline's, and it claims them
+// ===========================================================================
+
+/**
+ * The groups the old suite asserted "rebuild nothing", plus the rest of the
+ * contract. The claim is no longer "no preview layer reads them" (that was the
+ * defect) but "the MODEL reads them", which is checkable against the stage
+ * registry itself.
+ */
+const MODEL_ONLY_CLAIMS: ParamClaim[] = [
+  "regions.*",
+  "colour.gradient.*",
+  "colour.tint.*",
+  "colour.region_colors.base",
+  "colour.region_slots.base",
+  "terrain.*",
+  "heights.*",
+  "bridges.*",
+  "height_exaggeration.*",
+  "tiling.*",
+  "frame_style.*",
+  "hanger_magnet.*",
+  "export_target",
+  "printer_profile",
+  "custom_profile.*",
+];
+
+describe("the parameters the viewport no longer reads are claimed by a stage", () => {
+  it("claims every one of them, so the model moves when they do", () => {
+    const claimed = claimedPaths();
+    const paths = expandClaims(MODEL_ONLY_CLAIMS);
+    // Not vacuous: these are real, expanded leaves, not a prefix nobody kept.
+    expect(paths.length).toBeGreaterThan(20);
+    for (const leaf of paths) {
+      expect(claimed.has(leaf), `${leaf} is read by no pipeline stage`).toBe(true);
+    }
+  });
+
+  it("rebuilds no HUD memo for any of them: they are the model's business, not the readouts'", () => {
+    // The old assertion, kept word for word in effect. What changed is the
+    // REASON it is safe: the model reads them (asserted just above), so a
+    // control that moves one is visible in the viewport within the run, not
+    // only in a number under it.
+    for (const [key, value] of MODEL_ONLY_HUD_MOVES) {
+      expect(rebuiltBy(key, value as never), key).toEqual([]);
+    }
+  });
+});
+
+// ===========================================================================
+// 3. The HUD's own memo discipline
+// ===========================================================================
 
 const GRAPH: SceneGraph = {
   bounds: { min_x: -900, min_y: -900, max_x: 900, max_y: 900 },
@@ -40,20 +237,16 @@ const FACE_VERSION = 0;
 /** The scene's own ground radius, which `detailAdvice` is asked about. */
 const RADIUS_M = 900;
 
-/** All ten memo keys for one (graph, scale, params) render. */
+/** Every memo key for one (graph, scale, params) render. */
 function allDeps(
   graph: SceneGraph | null,
   scale: number | null,
   params: PrintParams,
 ): Record<string, DepList> {
+  void scale;
   return {
     scale: previewDeps.scale(graph, params),
-    thresholds: previewDeps.thresholds(scale, params),
     layout: previewDeps.layout(graph, params),
-    roads: previewDeps.roads(graph, params),
-    water: previewDeps.water(graph, scale, params),
-    green: previewDeps.green(graph, scale, params),
-    trees: previewDeps.trees(graph, params),
     height: previewDeps.height(graph, params),
     text: previewDeps.text(graph, params, ROTATION_DEG, DATE, FACE_VERSION),
     advisor: previewDeps.advisor(graph, params, RADIUS_M),
@@ -66,7 +259,7 @@ function changed(before: DepList, after: DepList): boolean {
   return before.some((value, i) => !Object.is(value, after[i]));
 }
 
-/** Which layers a single `setParam` write would rebuild. */
+/** Which memos a single `setParam` write would rebuild. */
 function rebuiltBy<K extends keyof PrintParams>(
   key: K,
   value: PrintParams[K],
@@ -81,6 +274,20 @@ function rebuiltBy<K extends keyof PrintParams>(
   const after = allDeps(GRAPH, scaleOf(next), next);
   return Object.keys(before).filter((name) => changed(before[name], after[name]));
 }
+
+/** The `MODEL_ONLY_CLAIMS` groups as contract writes, for the HUD assertion above. */
+const MODEL_ONLY_HUD_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintParams]]> = [
+  ["regions", { roads: { depth_mm: 1.0 }, building_skirt_mm: 0.6 }],
+  ["colour", { palette: "noir", preview_theme: "light" }],
+  ["export_target", "stl"],
+  ["terrain", { enabled: true, smoothing: 3 }],
+  ["heights", { floor_height_m: 3.5 }],
+  ["bridges", { enabled: false }],
+  ["height_exaggeration", { multiplier: 1.5 }],
+  ["tiling", { enabled: true, cols: 2, rows: 2 }],
+  ["frame_style", { profile: "chamfer", corner: "mitred" }],
+  ["hanger_magnet", { diameter_mm: 8, thickness_mm: 3, count: 4 }],
+];
 
 describe("previewDeps", () => {
   it("never puts the params object (or anything derived from it) in a key", () => {
@@ -99,24 +306,24 @@ describe("previewDeps", () => {
   });
 
   /**
-   * `height` is not a geometry layer: it is one pass over `buildings[].height_m`
+   * `height` is not a footprint pass: it is one walk over `buildings[].height_m`
    * (`transform.predicted_top_mm`) feeding the 60 mm guard and the HUD readout,
-   * with no hulls, no earcut and no GPU upload. It is the one memo a height
-   * slider is *supposed* to invalidate.
+   * with no hulls and no triangulation. It is the one memo a height slider is
+   * *supposed* to invalidate.
    *
    * `advisor` is the same shape of thing -- `transform.detail_report` over the
    * scene, feeding the HUD chip -- and no height slider may reach it either,
    * which is asserted rather than assumed just below.
    */
-  const GEOMETRY = (names: string[]): string[] =>
+  const HEAVY = (names: string[]): string[] =>
     names.filter((name) => name !== "height" && name !== "advisor").sort();
 
-  it("rebuilds no geometry when a height slider moves", () => {
-    expect(GEOMETRY(rebuiltBy("small_scale", 1.5))).toEqual([]);
-    expect(GEOMETRY(rebuiltBy("large_scale", 2.0))).toEqual([]);
-    expect(GEOMETRY(rebuiltBy("base_thickness_mm", 8))).toEqual([]);
-    expect(GEOMETRY(rebuiltBy("terrain_exaggeration", 3.0))).toEqual([]);
-    // ... but the predicted model top must follow them, or the Build button
+  it("rebuilds no footprint or glyph work when a height slider moves", () => {
+    expect(HEAVY(rebuiltBy("small_scale", 1.5))).toEqual([]);
+    expect(HEAVY(rebuiltBy("large_scale", 2.0))).toEqual([]);
+    expect(HEAVY(rebuiltBy("base_thickness_mm", 8))).toEqual([]);
+    expect(HEAVY(rebuiltBy("terrain_exaggeration", 3.0))).toEqual([]);
+    // ... but the predicted model top must follow them, or the Export button
     // would stay enabled past 04's 60 mm ceiling.
     expect(rebuiltBy("small_scale", 1.5)).toEqual(["height"]);
     expect(rebuiltBy("large_scale", 2.0)).toEqual(["height"]);
@@ -124,76 +331,68 @@ describe("previewDeps", () => {
     expect(rebuiltBy("terrain_exaggeration", 3.0)).toEqual([]);
   });
 
-  it("still rebuilds the layers a parameter really changes", () => {
+  it("still rebuilds the readouts a parameter really changes", () => {
     // Not vacuous: the nozzle moves every threshold, so everything that reads
-    // one has to come back -- including the trees, whose printed-radius floor
-    // is nozzle-aware (DECISIONS [P5-web]), the lettering, whose stroke target
-    // and lip margin are both nozzle-derived, and the advisor.
+    // one has to come back -- including the pick footprints, whose dilation is
+    // nozzle-derived, the lettering, whose stroke target and lip margin are
+    // both nozzle-derived, and the advisor.
     expect(rebuiltBy("nozzle_mm", 0.6).sort()).toEqual(
-      [
-        "advisor",
-        "green",
-        "layout",
-        "roads",
-        "text",
-        "thresholds",
-        "trees",
-        "water",
-      ].sort(),
+      ["advisor", "layout", "text"].sort(),
     );
-    // The plate and the frame move the scale, hence every metric layer -- and
+    // The plate and the frame move the scale, hence every metric readout -- and
     // the lettering, whose edge length and 6 mm band they set.
     expect(rebuiltBy("plate_mm", 256).sort()).toEqual(
-      [
-        "advisor",
-        "green",
-        "height",
-        "layout",
-        "roads",
-        "scale",
-        "text",
-        "thresholds",
-        "trees",
-        "water",
-      ].sort(),
+      ["advisor", "height", "layout", "scale", "text"].sort(),
     );
     expect(rebuiltBy("frame", false).sort()).toEqual(
-      [
-        "advisor",
-        "green",
-        "height",
-        "layout",
-        "roads",
-        "scale",
-        "text",
-        "thresholds",
-        "trees",
-        "water",
-      ].sort(),
+      ["advisor", "height", "layout", "scale", "text"].sort(),
     );
-    // The advisor is NOT in these two. `transform.detail_report` never mentions
-    // roads and walks `scene.water` unconditionally, so listing either in
-    // `advisorDeps` re-ran a whole-scene walk plus two grid searches for a
-    // byte-identical answer -- and this suite pinned that waste as correct
-    // until the audit measured it (v2-06 finding 3).
-    expect(rebuiltBy("road_scale", 2.0)).toEqual(["roads"]);
-    expect(rebuiltBy("road_mode", "emboss")).toEqual(["roads"]);
-    // Green has no toggle on the frozen PrintParams (DECISIONS [P4]).
-    expect(rebuiltBy("water", false)).toEqual(["water"]);
+    // `road_mode`, `road_scale` and `water` used to rebuild the ribbons and the
+    // fills. Those layers are gone; the engine draws them, and no readout
+    // moves. The advisor is deliberately NOT in these: `detail_report` never
+    // mentions roads and walks `scene.water` unconditionally (v2-06 finding 3).
+    expect(rebuiltBy("road_scale", 2.0)).toEqual([]);
+    expect(rebuiltBy("road_mode", "emboss")).toEqual([]);
+    expect(rebuiltBy("water", false)).toEqual([]);
     // The tree toggle really does reach the advisor: `detail_report` measures
-    // the trees it would drop.
-    expect(rebuiltBy("trees", false).sort()).toEqual(["advisor", "height", "trees"]);
+    // the trees it would drop, and the height guard counts them.
+    expect(rebuiltBy("trees", false).sort()).toEqual(["advisor", "height"]);
   });
 
   /**
-   * schema_version 2's personalisation block.
-   *
-   * The colour half is still pure paint -- `paletteFor` reads it at render time
-   * and no layer is rebuilt -- so each of these must rebuild NOTHING. The
-   * lettering half is now real geometry and has its own list below; conflating
-   * the two would have let a text parameter quietly start rebuilding the water.
+   * The lettering block. It is no longer a rendered layer -- the engine cuts
+   * the letters -- but the shared layout still tells the editor how many rings
+   * a text produces and what it refused, so the memo has to follow it.
    */
-  const V2_PAINT_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintParams]]> = [
+  const TEXT_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintParams]]> = [
+    ["city_label", "Chicago"],
+    // {country}/{state}/{neighbourhood}/{author} all read `place` ([V3-P1]).
+    [
+      "place",
+      { country: "United States", state: "Illinois", neighbourhood: "The Loop", author: "V" },
+    ],
+    ["engravings", [{ edge: "bottom", text: "{city}" }]],
+    ["north_arrow", { enabled: true, corner: "sw", size_mm: 6 }],
+    [
+      "scale_bar",
+      { enabled: true, edge: "top", length_mode: "fixed", length_m: 1000 },
+    ],
+    ["hanger", "keyhole"],
+    ["underside_mark", { enabled: true, template: "{coords}" }],
+  ];
+
+  it("rebuilds only the lettering layout when a lettering parameter moves", () => {
+    for (const [key, value] of TEXT_MOVES) {
+      expect(rebuiltBy(key, value as never), key).toEqual(["text"]);
+    }
+  });
+
+  /**
+   * The v1/v2 colour block. `part_colors` and `color_mode` paint nothing in the
+   * viewport any more (the region meshes carry the engine's own colours), and
+   * `schema_version` and `hero_mode` were always inert here.
+   */
+  const INERT_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintParams]]> = [
     ["schema_version", 2],
     ["color_mode", "parts"],
     [
@@ -213,116 +412,30 @@ describe("previewDeps", () => {
     ["hero_mode", "both"],
   ];
 
-  /** The lettering block: it moves the text layer, and ONLY the text layer. */
-  const V2_TEXT_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintParams]]> = [
-    ["city_label", "Chicago"],
-    // {country}/{state}/{neighbourhood}/{author} all read `place` ([V3-P1]).
-    [
-      "place",
-      { country: "United States", state: "Illinois", neighbourhood: "The Loop", author: "V" },
-    ],
-    ["engravings", [{ edge: "bottom", text: "{city}" }]],
-    ["north_arrow", { enabled: true, corner: "sw", size_mm: 6 }],
-    [
-      "scale_bar",
-      { enabled: true, edge: "top", length_mode: "fixed", length_m: 1000 },
-    ],
-    ["hanger", "keyhole"],
-    ["underside_mark", { enabled: true, template: "{coords}" }],
-  ];
-
-  it("rebuilds nothing when a v2 colour or hero-mode parameter moves", () => {
-    for (const [key, value] of V2_PAINT_MOVES) {
+  it("rebuilds nothing for a colour or hero-mode parameter", () => {
+    for (const [key, value] of INERT_MOVES) {
       expect(rebuiltBy(key, value as never), key).toEqual([]);
     }
   });
 
-  it("rebuilds only the text layer when a lettering parameter moves", () => {
-    for (const [key, value] of V2_TEXT_MOVES) {
-      expect(rebuiltBy(key, value as never), key).toEqual(["text"]);
-    }
-  });
-
-  it("rebuilds the predicted height and the text layer when a hero is picked", () => {
-    // A hero is drawn at its hero height, so the 60 mm guard and the HUD have
-    // to follow it -- but no hull, no earcut, no advisor pass and no glyph
-    // asset fetch is touched. (The instance matrices do move;
-    // `InstancedBuildings.test.ts` owns that key.) `text` rebuilds too, since
-    // [V3-P1]'s `{hero}` token counts `hero_building_ids.length`.
+  it("rebuilds the predicted height and the lettering layout when a hero is picked", () => {
+    // A hero stands at its hero height, so the 60 mm guard and the HUD have to
+    // follow it -- but no hull and no glyph asset fetch is touched. (The pick
+    // proxies' matrices do move; `BuildingPickProxies.test.ts` owns that key.)
+    // `text` rebuilds too, since [V3-P1]'s `{hero}` token counts
+    // `hero_building_ids.length`.
     expect(rebuiltBy("hero_building_ids", ["w1"])).toEqual(["height", "text"]);
   });
 
-  /**
-   * schema_version 3's engine block ([V3-P1], landed concurrently with this
-   * phase by `v3-01-contracts`; ruling from the team lead recorded verbatim
-   * in DECISIONS.md).
-   *
-   * Twelve of these thirteen groups are STILL not read by the CURRENT
-   * (client-side, instanced/flat-fill) fallback preview these `previewDeps`
-   * functions describe: the real browser engine
-   * (`lib/engine/solid/**`/`lib/transform.ts`, owned this phase by a parallel
-   * builder, not this file's) is what will actually drape terrain, cut region
-   * recesses, apply an exaggeration curve, split tiles, style the frame
-   * profile and place a magnet hanger's pockets -- and it already reruns on
-   * every one of these writes regardless (`store/editor.ts`'s
-   * `scheduleEngineJob` debounces a fresh WASM build on EVERY `setParam` call,
-   * not a subset), so there is nothing to add there. `regions`, `colour`,
-   * `printer_profile`, `custom_profile`, `export_target`, `terrain`,
-   * `heights`, `bridges`, `height_exaggeration`, `tiling`, `frame_style` and
-   * `hanger_magnet` therefore still rebuild NOTHING in `previewDeps` today,
-   * which is what this test asserts -- a real behaviour change, not a
-   * checklist -- so a read added later without a matching dep is caught here
-   * instead of silently over- or under-invalidating.
-   *
-   * `hero_auto` is the ONE exception, moved out of this bucket into its own
-   * test below: `lib/warnings.ts:predictedTopDeps` (which `previewDeps.height`
-   * IS) now composes `lib/heroes.ts:effectiveHeroHeightKey` -- the manual
-   * picks plus, once `hero_auto` is on, the auto-promoted ones -- so an
-   * auto-promoted hero raises the predicted top and moves `height` exactly
-   * like a manual pick already did (`warnings.test.ts` owns the arithmetic;
-   * this file only owns the dependency-list claim).
-   *
-   * `place` is deliberately NOT in this list either: unlike the rest, it
-   * already IS live today, in `V2_TEXT_MOVES` above -- `{country}`,
-   * `{state}`, `{neighbourhood}` and `{author}` are real engraving tokens
-   * this phase wired up, not a future engine's job.
-   *
-   * `printer_profile` and `custom_profile` are ALSO not in this list, moved
-   * out by phase 4 ([V3-P4-U]): `lib/warnings.ts:predictedTopDeps` (which
-   * `previewDeps.height` IS) now reads `printer_profile` and
-   * `custom_profile?.max_height_mm`, because `heightCeilingMm` -- what the
-   * predicted top is compared AGAINST for the HUD tone and the too-tall pill
-   * -- moves with them (their own test is below, mirroring the `hero_auto`
-   * pattern above).
-   */
-  const V3_ENGINE_MOVES: Array<[keyof PrintParams, PrintParams[keyof PrintParams]]> = [
-    ["regions", { roads: { depth_mm: 1.0 }, building_skirt_mm: 0.6 }],
-    ["colour", { palette: "noir", preview_theme: "light" }],
-    ["export_target", "stl"],
-    ["terrain", { enabled: true, smoothing: 3 }],
-    ["heights", { floor_height_m: 3.5 }],
-    ["bridges", { enabled: false }],
-    ["height_exaggeration", { multiplier: 1.5 }],
-    ["tiling", { enabled: true, cols: 2, rows: 2 }],
-    ["frame_style", { profile: "chamfer", corner: "mitred" }],
-    ["hanger_magnet", { diameter_mm: 8, thickness_mm: 3, count: 4 }],
-  ];
-
-  /** Kept out of `V3_ENGINE_MOVES` on purpose; still needed for coverage below. */
+  /** Kept out of `MODEL_ONLY_HUD_MOVES` on purpose; still needed for coverage below. */
   const HERO_AUTO_MOVE: [keyof PrintParams, PrintParams[keyof PrintParams]] = [
     "hero_auto",
     { enabled: true, count: 1 },
   ];
 
-  it("rebuilds nothing for the rest of the v3 engine block: the geometry engine that will read it is a separate rebuild path", () => {
-    for (const [key, value] of V3_ENGINE_MOVES) {
-      expect(rebuiltBy(key, value as never), key).toEqual([]);
-    }
-  });
-
   it("rebuilds only the predicted height when the printer profile or a custom profile's height ceiling moves (phase 4, [V3-P4-U])", () => {
-    // No hull, no earcut, no advisor pass, no glyph fetch -- only the height
-    // ceiling comparison the HUD tone and the too-tall pill read.
+    // `heightCeilingMm` -- what the predicted top is compared AGAINST for the
+    // HUD tone and the too-tall pill -- moves with them.
     expect(rebuiltBy("printer_profile", "bambu-x1c")).toEqual(["height"]);
     expect(rebuiltBy("custom_profile", { plate_x_mm: 256, plate_y_mm: 256, max_height_mm: 40 })).toEqual([
       "height",
@@ -330,10 +443,6 @@ describe("previewDeps", () => {
   });
 
   it("rebuilds the predicted height when hero_auto promotes a real building", () => {
-    // A building has to exist for `hero_auto` to promote: the shared `GRAPH`
-    // fixture above has none, so this uses its own graph with one tall
-    // building, exactly the shape `warnings.test.ts`'s hero_auto describe
-    // block already exercises the arithmetic on.
     const graph: SceneGraph = {
       ...GRAPH,
       buildings: [
@@ -354,11 +463,10 @@ describe("previewDeps", () => {
     expect(changed(before, after)).toBe(true);
   });
 
-  it("hero_auto still rebuilds only the text layer on the shared empty-building GRAPH fixture, exactly like a manual hero move", () => {
+  it("hero_auto still rebuilds only the lettering layout on the shared empty-building GRAPH fixture", () => {
     // No building for it to promote, so `height` does not move (asserted
-    // above); `text` still does, same as `hero_building_ids` in
-    // `V2_TEXT_MOVES` -- `textParamsKey` embeds `hero_auto` itself
-    // (`lib/previewText.ts`) because `{hero}` can read it, whether or not
+    // above); `text` still does, same as `hero_building_ids` -- `textParamsKey`
+    // embeds `hero_auto` itself because `{hero}` can read it, whether or not
     // this particular scene has anything for it to say.
     expect(rebuiltBy(HERO_AUTO_MOVE[0], HERO_AUTO_MOVE[1] as never)).toEqual(["text"]);
   });
@@ -377,9 +485,9 @@ describe("previewDeps", () => {
       "water",
       "frame",
       "hero_building_ids",
-      ...V2_PAINT_MOVES.map(([key]) => key),
-      ...V2_TEXT_MOVES.map(([key]) => key),
-      ...V3_ENGINE_MOVES.map(([key]) => key),
+      ...INERT_MOVES.map(([key]) => key),
+      ...TEXT_MOVES.map(([key]) => key),
+      ...MODEL_ONLY_HUD_MOVES.map(([key]) => key),
       HERO_AUTO_MOVE[0],
       "printer_profile",
       "custom_profile",
@@ -387,34 +495,22 @@ describe("previewDeps", () => {
     expect([...covered].sort()).toEqual(Object.keys(DEFAULT_PRINT_PARAMS).sort());
   });
 
-  it("rebuilds everything when a new SceneGraph arrives", () => {
+  it("rebuilds every readout when a new SceneGraph arrives", () => {
     const params = { ...DEFAULT_PRINT_PARAMS };
     const before = allDeps(GRAPH, 0.1, params);
     const after = allDeps({ ...GRAPH }, 0.1, params);
     const rebuilt = Object.keys(before).filter((n) => changed(before[n], after[n]));
-    expect(rebuilt.sort()).toEqual(
-      [
-        "advisor",
-        "green",
-        "height",
-        "layout",
-        "roads",
-        "scale",
-        "text",
-        "trees",
-        "water",
-      ].sort(),
-    );
+    expect(rebuilt.sort()).toEqual(["advisor", "height", "layout", "scale", "text"].sort());
   });
 
   /**
-   * The text layer's own key, spelled out.
+   * The lettering memo's own key, spelled out.
    *
    * It is a STRING, not the nested objects, so that the all-primitives rule
    * above can hold; the risk a string key carries in exchange is that it stops
    * noticing a change, which is what these two assert against.
    */
-  it("keys the text layer on the layout parameters and nothing else", () => {
+  it("keys the lettering layout on the layout parameters and nothing else", () => {
     const params = { ...DEFAULT_PRINT_PARAMS };
     // Same values, fresh objects: the key must NOT move, or every `setNested`
     // write would re-triangulate the glyphs.

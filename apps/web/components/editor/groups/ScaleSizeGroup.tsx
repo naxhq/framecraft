@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 
 import { PARAM_RANGES } from "@/lib/contracts";
+import { labelled } from "@/lib/controlCatalog";
 import { scaleRatio } from "@/lib/hud";
 import * as T from "@/lib/transform";
 import { warningDeps } from "@/lib/warnings";
@@ -30,39 +31,33 @@ export function ScaleSizeGroup() {
   return (
     <>
       <Slider
-        id="plate_mm"
-        label="Plate size"
+        {...labelled("plate_mm")}
         min={PARAM_RANGES.plate_mm.min}
         max={PARAM_RANGES.plate_mm.max}
         step={1}
         value={params.plate_mm}
         display={`${params.plate_mm} mm`}
         onChange={(value) => setParam("plate_mm", value)}
-        hint="The square the model is printed on. With the frame on, 12 mm of it becomes border."
       />
 
       <Slider
-        id="base_thickness_mm"
-        label="Base thickness"
+        {...labelled("base_thickness_mm")}
         min={PARAM_RANGES.base_thickness_mm.min}
         max={PARAM_RANGES.base_thickness_mm.max}
         step={0.1}
         value={params.base_thickness_mm}
         display={`${params.base_thickness_mm.toFixed(1)} mm`}
         onChange={(value) => setParam("base_thickness_mm", value)}
-        hint="Solid slab under everything."
       />
 
       <Slider
-        id="nozzle_mm"
-        label="Nozzle diameter"
+        {...labelled("nozzle_mm")}
         min={PARAM_RANGES.nozzle_mm.min}
         max={PARAM_RANGES.nozzle_mm.max}
         step={0.05}
         value={params.nozzle_mm}
         display={`${params.nozzle_mm.toFixed(2)} mm`}
         onChange={(value) => setParam("nozzle_mm", value)}
-        hint="Your printer's nozzle. It sets the minimum wall, gap and detail, so a wider one merges more of the city into fewer blocks."
       />
 
       <Note testId="scale-summary">

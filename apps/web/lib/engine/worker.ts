@@ -17,8 +17,8 @@
  */
 
 import { installWasmBasePathFetchShim } from "../basePath";
-import { perfDrainTimings, perfEnabled, perfMark, setPerfEnabled } from "../perf";
-import { PipelineSession, isTerminalResponse, type Post, type WorkerRequest, type WorkerResponse } from "./protocol";
+import { setPerfEnabled } from "../perf";
+import { PipelineSession, perfStampedPost, type Post, type WorkerRequest, type WorkerResponse } from "./protocol";
 
 // Under a sub-path deployment (NEXT_PUBLIC_BASE_PATH set) the manifold WASM
 // fetch needs its prefix; installed before any job can run. No-op otherwise.
@@ -36,18 +36,9 @@ const session = new PipelineSession();
 /**
  * Perf mode (`lib/perf.ts`): a worker cannot read `?perf=1` or `localStorage`,
  * so the page's flag arrives on the job message and the terminal response
- * carries this realm's marks back on `timings`. `engine.post` is stamped
- * immediately before `postMessage`, which is what lets `client.ts` measure the
- * structured-clone hop itself. With perf off this is one boolean read and the
- * message goes out exactly as the session built it.
+ * carries this realm's marks back on `timings` (`protocol.perfStampedPost`).
  */
-const post: Post = (message, transfer) => {
-  if (perfEnabled() && isTerminalResponse(message)) {
-    perfMark("engine.post");
-    message.timings = perfDrainTimings();
-  }
-  ctx.postMessage(message, transfer);
-};
+const post: Post = perfStampedPost((message, transfer) => ctx.postMessage(message, transfer));
 
 ctx.onmessage = (event) => {
   const msg = event.data;

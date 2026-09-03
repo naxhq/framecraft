@@ -13,6 +13,23 @@
  * With --base, the tree is served ONLY under that prefix (a request outside
  * it 404s), which is what makes a root-absolute URL bug visible locally
  * instead of first appearing on Pages.
+ *
+ * Two things it now does that a bare file server does not, both because this
+ * is also the server the site's performance is measured on:
+ *
+ *   Precompressed variants. If `<file>.br` exists and the client sent
+ *   `Accept-Encoding: br`, that file is sent with `Content-Encoding: br`;
+ *   likewise `.gz`. `scripts/precompress.mjs` writes them. GitHub Pages
+ *   compresses on the fly and serves gzip only (measured, never brotli), so
+ *   this buys nothing THERE; it is for self-hosting the release zip, where it
+ *   is worth about 18 % of the JS on the wire.
+ *
+ *   Real cache lifetimes on content-addressed paths. Every response used to
+ *   carry `Cache-Control: no-store`, which makes a warm-load measurement
+ *   meaningless: nothing can ever be reused. `_next/static/**` and
+ *   `/presets/<sha1>.json.gz` carry a content hash or a query hash in the URL,
+ *   so they get `immutable`. Everything else, the HTML included, stays
+ *   `no-store`.
  */
 
 import { createReadStream, existsSync, statSync } from "node:fs";
@@ -46,15 +63,47 @@ const MIME = {
   ".woff": "font/woff",
   ".map": "application/json",
   ".webmanifest": "application/manifest+json",
+  // A bundled preset response. The bytes ARE gzip and the client inflates them
+  // itself (`lib/engine/osm/overpass.ts`), so this must never be served with
+  // `Content-Encoding: gzip`: the browser would inflate it a second time.
+  ".gz": "application/gzip",
 };
 
-function send(res, status, filePath) {
-  res.writeHead(status, {
+/** URLs whose bytes cannot change without the URL changing: a content hash or a query sha1. */
+function isImmutablePath(pathname) {
+  return pathname.startsWith("/_next/static/") || /^\/presets\/[0-9a-f]{40}\.json\.gz$/.test(pathname);
+}
+
+/**
+ * The precompressed sibling to send for this request, or null.
+ *
+ * Only ever `<file>.br` / `<file>.gz` beside the file that was asked for, so
+ * a request for a `.gz` asset is served as itself, not as somebody's encoding
+ * of something else.
+ */
+function encodedVariant(filePath, acceptEncoding) {
+  const accepts = String(acceptEncoding ?? "").toLowerCase();
+  if (/\bbr\b/.test(accepts) && existsSync(`${filePath}.br`)) {
+    return { file: `${filePath}.br`, encoding: "br" };
+  }
+  if (/\bgzip\b/.test(accepts) && existsSync(`${filePath}.gz`)) {
+    return { file: `${filePath}.gz`, encoding: "gzip" };
+  }
+  return null;
+}
+
+function send(res, status, filePath, pathname = "", acceptEncoding = "") {
+  const variant = status === 200 ? encodedVariant(filePath, acceptEncoding) : null;
+  const bodyFile = variant === null ? filePath : variant.file;
+  const headers = {
     "Content-Type": MIME[path.extname(filePath).toLowerCase()] ?? "application/octet-stream",
-    "Content-Length": statSync(filePath).size,
-    "Cache-Control": "no-store",
-  });
-  createReadStream(filePath).pipe(res);
+    "Content-Length": statSync(bodyFile).size,
+    "Cache-Control": isImmutablePath(pathname) ? "public, max-age=31536000, immutable" : "no-store",
+    Vary: "Accept-Encoding",
+  };
+  if (variant !== null) headers["Content-Encoding"] = variant.encoding;
+  res.writeHead(status, headers);
+  createReadStream(bodyFile).pipe(res);
 }
 
 function notFound(res) {
@@ -103,7 +152,7 @@ const server = http.createServer((req, res) => {
   }
   for (const candidate of candidates) {
     if (existsSync(candidate) && statSync(candidate).isFile()) {
-      send(res, 200, candidate);
+      send(res, 200, candidate, pathname, req.headers["accept-encoding"]);
       return;
     }
   }

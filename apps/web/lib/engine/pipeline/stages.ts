@@ -33,6 +33,7 @@ import { expand_tokens } from "../../tokens";
 import { resolveProfile } from "../../printers";
 import { auditPrintability } from "../audit/rules";
 import { buildSidecarJson } from "../export/common";
+import { ExportBlockedError, blockingFindings } from "../export/gate";
 import { exportForTarget } from "../export/index";
 import type { OverpassResponse } from "../osm/normalize";
 import { sceneFromOverpass } from "../osm/scene";
@@ -53,6 +54,7 @@ import { buildAttribution, undersideReserveMm, undersideSkipBands } from "../sol
 import { buildPlate, carveBase, cutterTopMm } from "../solid/base";
 import { buildBridges } from "../solid/bridges";
 import { buildBuildings } from "../solid/buildings";
+import { attributeTriangleOwners } from "../solid/owners";
 import { addFinding, finding, makeContext, regionColor, regionSlot, type BuildContext } from "../solid/context";
 import { LOW_RELIEF_MM, drapeSolid, makeDrape, type Drape } from "../solid/drape";
 import {
@@ -875,12 +877,20 @@ const sit = defineStage({
   },
 });
 
+/** The regions whose triangles carry a building identity (`RegionMesh.triangleOwner`). */
+export function ownedRegion(region: RegionName): boolean {
+  return region === "buildings" || region === "hero_building" || region.startsWith("buildings_band_");
+}
+
 function finishStage(region: RegionName): StageDef<FinishStageId> {
+  const owned = ownedRegion(region);
   return defineStage({
     id: finishStageId(region),
     phase: "region",
     params: finishClaims(region),
-    inputs: [regionStageId(region), "sit"],
+    // A building region reads the `buildings` stage's original-id map to name
+    // the owner of every triangle it ships.
+    inputs: owned ? [regionStageId(region), "sit", "buildings"] : [regionStageId(region), "sit"],
     run(ctx) {
       const solid = ctx.input(regionStageId(region)).solid;
       if (solid === null || solid.isEmpty()) return null;
@@ -892,6 +902,11 @@ function finishStage(region: RegionName): StageDef<FinishStageId> {
       const mesh = perfSpan("finish.mesh", () =>
         toRegionMesh(placed, region, regionSlot(ctx.params, twin), regionColor(ctx.params, twin), pruned.bodies.real + pruned.bodies.debris),
       );
+      if (owned) {
+        const attribution = perfSpan("finish.owners", () => attributeTriangleOwners(placed, mesh, ctx.input("buildings").ownerIds));
+        mesh.triangleOwner = attribution.triangleOwner;
+        mesh.owners = attribution.owners;
+      }
       return { solid: placed, bodies: pruned.bodies, mesh };
     },
   });
@@ -1166,11 +1181,16 @@ const exportStage = defineStage({
   id: "export",
   phase: "export",
   params: ["export_target", "color_mode", "printer_profile", "custom_profile.*", "place.author", "city_label", "colour.palette", "colour.preview_theme", "schema_version"],
-  inputs: ["audit", "merged", "tiling", "attribution", "buildings", "lettering", "ornaments", "normalise", ...ALL_FINISH_IDS],
-  extra: ["export-request"],
+  inputs: ["audit", "merged", "tiling", "attribution", "buildings", "lettering", "ornaments", "normalise", "validate", ...ALL_FINISH_IDS],
+  // `params-echo`: the files persist every leaf, so the key covers every leaf.
+  extra: ["export-request", "params-echo"],
   run(ctx) {
     const request = ctx.extra("export-request");
     if (request === null) throw new Error("export: the job carries no export request");
+    // A failing export ships nothing: a Stage 4 row the gate failed refuses
+    // the files, by name, unless the caller forces it (`export/gate.ts`).
+    const blocking = blockingFindings(ctx.input("validate"));
+    if (blocking.length > 0 && request.force !== true) throw new ExportBlockedError(blocking);
     const result = ctx.assembled();
     const target = request.target ?? ctx.param("export_target") ?? "bambu-3mf";
     const created = new Date(request.createdIso);
@@ -1193,13 +1213,23 @@ const exportStage = defineStage({
         ...(author === "" ? {} : { designer: author }),
       }),
     );
+    // A writer's own findings ride with the engine's into the sidecar, so its
+    // `findings` list and its `bake_result.warnings` both say what the FILE
+    // lost - which the engine's audit cannot know, because it depends on the
+    // format (`export/stl.ts`'s `float32-degenerate`).
+    const written = output.findings.length === 0 ? result : { ...result, findings: [...result.findings, ...output.findings] };
+    // ... and once only. `buildSidecarJson` builds its warnings from the
+    // findings AND the notes, and the writer's findings are repeated into
+    // `notes` for the OUTPUT panel, so the sidecar's copy of them is dropped
+    // from the notes it is given.
+    const writerNotes = new Set(output.findings.map((finding) => `${finding.title}: ${finding.detail}`));
     const sidecar = perfSpan("export.sidecar", () =>
       buildSidecarJson({
-        result,
+        result: written,
         target,
         source: request.source ?? null,
         files: output.files,
-        notes: output.notes,
+        notes: output.notes.filter((note) => !writerNotes.has(note)),
         scene: ctx.scene,
         elapsedS: result.stats.elapsedMs / 1000,
         created,
@@ -1215,6 +1245,7 @@ const exportStage = defineStage({
       sidecar,
       sidecarName: `${stem}.json`,
       notes: output.notes,
+      findings: output.findings,
       plan: output.plan,
     };
   },

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { DEFAULT_PRINT_PARAMS, PARAM_RANGES } from "../lib/contracts";
+import { control } from "../lib/controlCatalog";
 import * as T from "../lib/transform";
 import { mockChicagoOverpass, watchOverpass, type OverpassCall } from "./overpassMock";
 
@@ -186,11 +187,14 @@ test("control groups collapse, persist across a reload, and hide their controls"
   );
   await expect(page.locator("#plate_mm")).toHaveCount(0);
 
-  // Opening Colour reveals all seven part-colour wells.
+  // Opening Colour reveals the per-region filament rows. The seven v1
+  // part-colour wells that used to be here are gone (Task 2, DECISIONS
+  // [V3.1-P1-2]): no pipeline stage read `part_colors`, so they changed
+  // nothing in any exported file.
   await page.getByTestId("group-colour-toggle").click();
-  await expect(page.getByTestId("part-colors").locator('input[type="color"]')).toHaveCount(
-    7,
-  );
+  await expect(page.getByTestId("colour-region-rows")).toBeVisible();
+  await expect(page.getByTestId("colour-color-water")).toBeVisible();
+  await expect(page.locator('[data-testid^="part_color_"]')).toHaveCount(0);
 
   // ...and the state survives a reload.
   await page.reload();
@@ -224,12 +228,9 @@ test("the v2 personalisation fields never trigger a fetch", async ({ page }) => 
   await expect(page.locator("#city_label")).toHaveValue("Chicago");
 
   await page.getByTestId("group-colour-toggle").click();
-  // The wells are disabled until the user asks for one filament per part.
-  await expect(page.locator("#part_color_water")).toBeDisabled();
   await page.locator("#color_mode").getByRole("radio", { name: "one per part" }).click();
-  await expect(page.locator("#part_color_water")).toBeEnabled();
-  await page.locator("#part_color_water").fill("#123456");
-  await expect(page.getByTestId("part_color_water-hex")).toHaveText("#123456");
+  await page.getByTestId("colour-color-water").fill("#123456");
+  await expect(page.getByTestId("colour-color-water")).toHaveValue("#123456");
 
   await page.getByTestId("group-frame-toggle").click();
   await page.getByTestId("engraving-add").click();
@@ -982,4 +983,93 @@ test("the viewport says what to do before anything is generated", async ({ page 
   // itself rather than sitting there dead.
   await expect(page.getByTestId("preview-button")).toBeEnabled();
   await expect(page.getByTestId("export-button")).toBeDisabled();
+});
+
+// ==========================================================================
+// Every control says what it does to the printed object
+// ==========================================================================
+
+/**
+ * The settings truth audit's user-visible half (Task 2).
+ *
+ * Every control carries a one-line help string in physical terms, and it is
+ * the control's DESCRIPTION -- `aria-describedby` pointing at an element that
+ * really exists -- rather than a tooltip only a mouse can reach.
+ *
+ * All five primitives are read here, plus the two controls that point at a
+ * SHARED hint rather than at one of their own (the region colour well and the
+ * filament-slot select, which are drawn eleven times each and would bury the
+ * table if every row printed the same sentence). Those two are the ones a
+ * refactor can break silently, so they are the reason this test exists at all.
+ * The strings come from `lib/controlCatalog.ts`, which is where the vitest
+ * suite checks the rest.
+ */
+test("a control's help string is reachable as its description, not just as a tooltip", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  /** What a screen reader would read out for `#id`, through aria-describedby. */
+  const describedBy = async (selector: string): Promise<string> => {
+    const ids = await page.locator(selector).getAttribute("aria-describedby");
+    expect(ids, `${selector} has no aria-describedby`).toBeTruthy();
+    const parts: string[] = [];
+    for (const id of (ids ?? "").split(/\s+/).filter(Boolean)) {
+      parts.push(((await page.locator(`#${id}`).textContent()) ?? "").trim());
+    }
+    return parts.join(" ");
+  };
+
+  // A slider, in an open group: the nozzle, whose consequence is the minimum
+  // wall and gap the whole model is clamped to.
+  const nozzle = await describedBy("#nozzle_mm");
+  expect(nozzle).toContain("minimum wall is twice it");
+  expect(nozzle).toBe(control("nozzle_mm").help);
+
+  // A toggle: water, whose numbers come from the water region's placement.
+  const water = await describedBy("#water");
+  expect(water).toContain("0.5 mm below the base top");
+  expect(water).toBe(control("water").help);
+
+  // A slider that only works through the ingest stage. Its help has to say
+  // that a change re-reads the building heights rather than refetching.
+  const floors = await describedBy("#heights_floor_height_m");
+  expect(floors).toContain("re-reads every building height");
+  expect(floors).toContain("no refetch");
+  expect(floors).toBe(control("heights_floor_height_m").help);
+
+  // A text field.
+  const author = await describedBy("#author");
+  expect(author).toContain("{author} token");
+  expect(author).toBe(control("author").help);
+
+  // A segmented radiogroup: the description hangs off the group, not off the
+  // selected option.
+  const roadMode = await describedBy("#road_mode");
+  expect(roadMode).toContain("0.6 mm deep");
+  expect(roadMode).toBe(control("road_mode").help);
+
+  // The two that share one hint between eleven rows: a select and a colour
+  // well inside the filament-slot table.
+  await page.getByTestId("group-colour-toggle").click();
+  const slot = await describedBy("#colour_slot_base");
+  expect(slot).toContain("Two regions on one slot");
+  expect(slot).toBe(control("colour_slot_*").help);
+
+  const well = await describedBy("#colour_color_water");
+  expect(well).toContain("into the exported file");
+  expect(well).toBe(control("colour_color_*").help);
+
+  // And the description is never merely the label said twice.
+  for (const id of [
+    "nozzle_mm",
+    "water",
+    "heights_floor_height_m",
+    "author",
+    "road_mode",
+    "colour_slot_*",
+    "colour_color_*",
+  ] as const) {
+    expect(control(id).help.toLowerCase()).not.toBe(control(id).label.toLowerCase());
+  }
 });

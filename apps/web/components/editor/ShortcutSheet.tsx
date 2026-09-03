@@ -86,10 +86,18 @@ export function ShortcutSheet({ open, onClose }: { open: boolean; onClose: () =>
           </button>
         </div>
 
-        <dl className="space-y-2">
+        {/*
+          Rendered straight from `lib/keyboard.ts:SHORTCUTS`, which is the
+          dispatcher's own table, so a key that changes meaning changes here
+          too. `data-shortcut` names the action rather than the key text, so a
+          test can find the Escape row without matching on prose that is
+          allowed to be reworded.
+        */}
+        <dl className="space-y-2" data-testid="shortcut-rows">
           {SHORTCUTS.map((shortcut) => (
             <div
               key={`${shortcut.keys}-${shortcut.action}`}
+              data-shortcut={shortcut.action ?? "display-only"}
               className="flex items-baseline justify-between gap-4"
             >
               <dt>
