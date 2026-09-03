@@ -1,7 +1,12 @@
 /**
  * Nominatim reverse geocoding: cache, rate limit, debounce and fail-soft
- * behaviour. `fetch` is always mocked here -- this suite must never touch the
- * network, per the project rule that CI can never call a live geocoder.
+ * behaviour, plus `[V3-P6]`'s frozen kind-to-radius table. `fetch` is always
+ * mocked here -- this suite must never touch the network, per the project rule
+ * that CI can never call a live geocoder.
+ *
+ * The forward (type-ahead) half of this module moved to Photon in [V3-P9];
+ * `lib/photon.test.ts` carries its coverage, including the cache, the
+ * fail-soft matrix, the abort-on-timeout case and the debounce.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,28 +15,20 @@ import {
   GEOCODE_CACHE_TTL_MS,
   GEOCODE_DEBOUNCE_MS,
   GEOCODE_MIN_INTERVAL_MS,
-  GEOCODE_SEARCH_CACHE_TTL_MS,
-  GEOCODE_SEARCH_DEBOUNCE_MS,
   GEOCODE_TIMEOUT_MS,
   GEOCODE_USER_AGENT,
   extractGeocodeResult,
-  extractSearchResults,
-  fetchForwardGeocode,
   fetchReverseGeocode,
   geocodeCacheKey,
-  placeNameFromLabel,
   radiusForResultType,
   readCache,
-  readSearchCache,
   resetGeocodeSchedulerForTests,
-  resolveForwardGeocode,
   resolveReverseGeocode,
-  scheduleForwardGeocode,
   scheduleReverseGeocode,
+  suppressNextReverseGeocode,
+  suppressedReverseGeocodePin,
   writeCache,
-  writeSearchCache,
   type GeocodeResult,
-  type SearchResult,
 } from "./geocode";
 
 /** A localStorage stand-in, the same shape `lib/groups.test.ts` uses. */
@@ -361,19 +358,57 @@ describe("scheduleReverseGeocode", () => {
   });
 });
 
-// ===========================================================================
-// forward geocoding (search)
-// ===========================================================================
+describe("suppressNextReverseGeocode", () => {
+  beforeEach(() => {
+    withStorage(fakeStorage());
+    vi.useFakeTimers();
+  });
 
-const CHICAGO_SEARCH_RESPONSE = [
-  {
-    display_name: "Chicago, Cook County, Illinois, United States",
-    lat: "41.8827",
-    lon: "-87.6233",
-    type: "city",
-    addresstype: "city",
-  },
-];
+  it("skips the lookup for the pin it was armed for, and reports it", async () => {
+    // A pick already knows the name of what the user chose. Without this, the
+    // reverse lookup its own pin move triggers overwrites "Willis Tower" with
+    // "Chicago" 600 ms later, with no user action to explain it.
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(CHICAGO_RESPONSE));
+    const onResult = vi.fn();
+    suppressNextReverseGeocode(...CHICAGO);
+    expect(suppressedReverseGeocodePin()).not.toBeNull();
+
+    scheduleReverseGeocode(...CHICAGO, onResult, { fetchImpl });
+    await vi.advanceTimersByTimeAsync(GEOCODE_DEBOUNCE_MS + GEOCODE_MIN_INTERVAL_MS + 10);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(onResult).not.toHaveBeenCalled();
+    expect(suppressedReverseGeocodePin()).toBeNull();
+  });
+
+  it("does not skip a lookup for any other pin, and disarms itself", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(CHICAGO_RESPONSE));
+    const onResult = vi.fn();
+    suppressNextReverseGeocode(...CHICAGO);
+
+    scheduleReverseGeocode(48.8566, 2.3522, onResult, { fetchImpl });
+    await vi.advanceTimersByTimeAsync(GEOCODE_DEBOUNCE_MS + GEOCODE_MIN_INTERVAL_MS + 10);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    // Armed for one pin move only: a pin dragged back later resolves normally.
+    expect(suppressedReverseGeocodePin()).toBeNull();
+  });
+
+  it("is one shot: the pin picked, then dragged away and back, resolves normally", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(CHICAGO_RESPONSE));
+    const onResult = vi.fn();
+    suppressNextReverseGeocode(...CHICAGO);
+    scheduleReverseGeocode(...CHICAGO, onResult, { fetchImpl });
+    await vi.advanceTimersByTimeAsync(GEOCODE_DEBOUNCE_MS + 10);
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    scheduleReverseGeocode(...CHICAGO, onResult, { fetchImpl });
+    await vi.advanceTimersByTimeAsync(GEOCODE_DEBOUNCE_MS + GEOCODE_MIN_INTERVAL_MS + 10);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ===========================================================================
+// the kind-to-radius table, shared with lib/photon.ts
+// ===========================================================================
 
 describe("radiusForResultType", () => {
   it("gives a city or town 1500 m", () => {
@@ -401,260 +436,5 @@ describe("radiusForResultType", () => {
 
   it("prefers addresstype over type when both are present", () => {
     expect(radiusForResultType({ type: "administrative", addresstype: "city" })).toBe(1500);
-  });
-});
-
-describe("placeNameFromLabel", () => {
-  it("takes the leading part before the first comma", () => {
-    expect(placeNameFromLabel("Chicago, Cook County, Illinois, United States")).toBe("Chicago");
-  });
-
-  it("trims whitespace around the leading part", () => {
-    expect(placeNameFromLabel("  Bergen ,Norway")).toBe("Bergen");
-  });
-
-  it("falls back to the whole label when there is no comma", () => {
-    expect(placeNameFromLabel("Chicago")).toBe("Chicago");
-  });
-
-  it("falls back to the whole label when the leading part is empty", () => {
-    expect(placeNameFromLabel(", Illinois")).toBe(", Illinois");
-  });
-});
-
-describe("extractSearchResults", () => {
-  it("reads label, lat, lon, type and addresstype off each entry", () => {
-    expect(extractSearchResults(CHICAGO_SEARCH_RESPONSE)).toEqual([
-      {
-        label: "Chicago, Cook County, Illinois, United States",
-        lat: 41.8827,
-        lon: -87.6233,
-        type: "city",
-        addresstype: "city",
-      },
-    ]);
-  });
-
-  it("drops an entry missing a label or a coordinate rather than throwing", () => {
-    expect(
-      extractSearchResults([
-        { display_name: "No coords", lat: "not a number", lon: "-87.6" },
-        { lat: "41.8", lon: "-87.6" },
-        { display_name: "Fine", lat: "1", lon: "2" },
-      ]),
-    ).toEqual([{ label: "Fine", lat: 1, lon: 2, type: null, addresstype: null }]);
-  });
-
-  it("is empty, not throwing, for anything that is not an array", () => {
-    expect(extractSearchResults(null)).toEqual([]);
-    expect(extractSearchResults(undefined)).toEqual([]);
-    expect(extractSearchResults({})).toEqual([]);
-    expect(extractSearchResults("nope")).toEqual([]);
-  });
-});
-
-describe("fetchForwardGeocode", () => {
-  it("requests jsonv2 with a limit and the FrameCraft User-Agent", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(CHICAGO_SEARCH_RESPONSE));
-    const results = await fetchForwardGeocode("Chicago", fetchImpl);
-    expect(results).toEqual([
-      {
-        label: "Chicago, Cook County, Illinois, United States",
-        lat: 41.8827,
-        lon: -87.6233,
-        type: "city",
-        addresstype: "city",
-      },
-    ]);
-    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("nominatim.openstreetmap.org/search");
-    expect(url).toContain("format=jsonv2");
-    expect(url).toContain("q=Chicago");
-    expect(url).toContain("limit=6");
-    expect((init.headers as Record<string, string>)["User-Agent"]).toBe(GEOCODE_USER_AGENT);
-  });
-
-  it("answers [] for a blank query without a request", async () => {
-    const fetchImpl = vi.fn();
-    expect(await fetchForwardGeocode("   ", fetchImpl)).toEqual([]);
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
-
-  it("fails soft to null on a non-2xx response, a rejected fetch or bad json", async () => {
-    expect(
-      await fetchForwardGeocode("x", vi.fn().mockResolvedValue(jsonResponse([], false, 503))),
-    ).toBeNull();
-    expect(
-      await fetchForwardGeocode("x", vi.fn().mockRejectedValue(new TypeError("failed"))),
-    ).toBeNull();
-    expect(
-      await fetchForwardGeocode(
-        "x",
-        vi.fn().mockResolvedValue({
-          ok: true,
-          status: 200,
-          json: () => Promise.reject(new SyntaxError("bad json")),
-        } as unknown as Response),
-      ),
-    ).toBeNull();
-  });
-
-  it(`aborts and fails soft after ${GEOCODE_TIMEOUT_MS} ms`, async () => {
-    vi.useFakeTimers();
-    const fetchImpl = vi.fn().mockImplementation(
-      (_url: string, init?: RequestInit) =>
-        new Promise((_resolve, reject) => {
-          init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
-        }),
-    );
-    const promise = fetchForwardGeocode("Chicago", fetchImpl);
-    await vi.advanceTimersByTimeAsync(GEOCODE_TIMEOUT_MS);
-    expect(await promise).toBeNull();
-  });
-});
-
-describe("forward geocode cache", () => {
-  beforeEach(() => withStorage(fakeStorage()));
-
-  const RESULT: SearchResult = {
-    label: "Chicago",
-    lat: 41.8827,
-    lon: -87.6233,
-    type: "city",
-    addresstype: "city",
-  };
-
-  it("round-trips a result list keyed by the normalised query", () => {
-    writeSearchCache("  Chicago  ", [RESULT]);
-    expect(readSearchCache("chicago")).toEqual([RESULT]);
-    expect(readSearchCache("CHICAGO")).toEqual([RESULT]);
-  });
-
-  it("caches an empty ('no results') list too", () => {
-    writeSearchCache("nowhere at all", []);
-    expect(readSearchCache("nowhere at all")).toEqual([]);
-  });
-
-  it(`expires after the ${GEOCODE_SEARCH_CACHE_TTL_MS / 86_400_000} day TTL`, () => {
-    const stored = Date.parse("2026-01-01T00:00:00Z");
-    writeSearchCache("chicago", [RESULT], stored);
-    expect(readSearchCache("chicago", stored + GEOCODE_SEARCH_CACHE_TTL_MS - 1)).toEqual([RESULT]);
-    expect(readSearchCache("chicago", stored + GEOCODE_SEARCH_CACHE_TTL_MS + 1)).toBeNull();
-  });
-
-  it("fails soft when storage throws", () => {
-    withStorage({
-      getItem: () => {
-        throw new Error("private mode");
-      },
-      setItem: () => {
-        throw new Error("private mode");
-      },
-    });
-    expect(() => writeSearchCache("chicago", [RESULT])).not.toThrow();
-    expect(readSearchCache("chicago")).toBeNull();
-  });
-
-  it("resolveForwardGeocode answers from cache without touching fetchImpl", async () => {
-    writeSearchCache("chicago", [RESULT]);
-    const fetchImpl = vi.fn();
-    expect(await resolveForwardGeocode("chicago", fetchImpl)).toEqual([RESULT]);
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
-
-  it("resolveForwardGeocode fetches and caches on a miss", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(CHICAGO_SEARCH_RESPONSE));
-    const first = await resolveForwardGeocode("Chicago", fetchImpl);
-    expect(first?.length).toBe(1);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    const second = await resolveForwardGeocode("Chicago", fetchImpl);
-    expect(second).toEqual(first);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("scheduleForwardGeocode", () => {
-  beforeEach(() => {
-    withStorage(fakeStorage());
-    vi.useFakeTimers();
-  });
-
-  it(`waits ${GEOCODE_SEARCH_DEBOUNCE_MS} ms after typing stops before it searches`, async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(CHICAGO_SEARCH_RESPONSE));
-    const onResult = vi.fn();
-    scheduleForwardGeocode("Chicago", onResult, { fetchImpl });
-    await vi.advanceTimersByTimeAsync(GEOCODE_SEARCH_DEBOUNCE_MS - 1);
-    expect(fetchImpl).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(2);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(onResult).toHaveBeenCalledWith(
-      expect.arrayContaining([expect.objectContaining({ label: expect.stringContaining("Chicago") })]),
-      "Chicago",
-    );
-  });
-
-  it("a later keystroke before the debounce elapses supersedes the earlier query", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(CHICAGO_SEARCH_RESPONSE));
-    const onResult = vi.fn();
-    scheduleForwardGeocode("Chic", onResult, { fetchImpl });
-    await vi.advanceTimersByTimeAsync(200);
-    scheduleForwardGeocode("Chicago", onResult, { fetchImpl });
-    await vi.advanceTimersByTimeAsync(GEOCODE_SEARCH_DEBOUNCE_MS + 50);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    const [url] = fetchImpl.mock.calls[0] as [string];
-    expect(url).toContain("q=Chicago");
-  });
-
-  it("answers [] immediately for a blank query, without a debounce", () => {
-    const onResult = vi.fn();
-    scheduleForwardGeocode("   ", onResult);
-    expect(onResult).toHaveBeenCalledWith([], "   ");
-  });
-
-  it("a search result 'nothing found' (empty array) and a search failure (null) are told apart", async () => {
-    const empty = vi.fn();
-    scheduleForwardGeocode("nowhere", empty, {
-      fetchImpl: vi.fn().mockResolvedValue(jsonResponse([])),
-    });
-    await vi.advanceTimersByTimeAsync(GEOCODE_SEARCH_DEBOUNCE_MS + 1);
-    expect(empty).toHaveBeenCalledWith([], "nowhere");
-
-    const failed = vi.fn();
-    scheduleForwardGeocode("boom", failed, {
-      fetchImpl: vi.fn().mockRejectedValue(new TypeError("offline")),
-    });
-    // The shared 1 rps queue still holds "nowhere"'s slot; the min interval,
-    // not just the debounce, has to elapse before "boom" gets its turn.
-    await vi.advanceTimersByTimeAsync(GEOCODE_SEARCH_DEBOUNCE_MS + GEOCODE_MIN_INTERVAL_MS + 1);
-    expect(failed).toHaveBeenCalledWith(null, "boom");
-  });
-
-  it("shares the 1 rps queue with reverse geocoding", async () => {
-    const reverseFetch = vi.fn().mockResolvedValue(jsonResponse(CHICAGO_RESPONSE));
-    const searchFetch = vi.fn().mockResolvedValue(jsonResponse(CHICAGO_SEARCH_RESPONSE));
-    const onReverse = vi.fn();
-    const onSearch = vi.fn();
-
-    scheduleReverseGeocode(1, 1, onReverse, { fetchImpl: reverseFetch });
-    await vi.advanceTimersByTimeAsync(GEOCODE_DEBOUNCE_MS + 1);
-    expect(reverseFetch).toHaveBeenCalledTimes(1);
-
-    scheduleForwardGeocode("Chicago", onSearch, { fetchImpl: searchFetch });
-    await vi.advanceTimersByTimeAsync(GEOCODE_SEARCH_DEBOUNCE_MS + 1);
-    // The debounce elapsed but the shared 1 request/second floor has not.
-    expect(searchFetch).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(GEOCODE_MIN_INTERVAL_MS);
-    expect(searchFetch).toHaveBeenCalledTimes(1);
-  });
-
-  it("the returned canceller drops a still-pending debounce", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(CHICAGO_SEARCH_RESPONSE));
-    const onResult = vi.fn();
-    const cancel = scheduleForwardGeocode("Chicago", onResult, { fetchImpl });
-    cancel();
-    await vi.advanceTimersByTimeAsync(GEOCODE_SEARCH_DEBOUNCE_MS + GEOCODE_MIN_INTERVAL_MS + 10);
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(onResult).not.toHaveBeenCalled();
   });
 });

@@ -1,0 +1,55 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [-87.6233, 41.8827] },
+      "properties": {
+        "osm_id": 122604,
+        "osm_type": "R",
+        "osm_key": "place",
+        "osm_value": "city",
+        "type": "city",
+        "name": "Chicago",
+        "county": "Cook County",
+        "state": "Illinois",
+        "country": "United States",
+        "countrycode": "US"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [-87.6244, 41.8796] },
+      "properties": {
+        "osm_id": 4886235,
+        "osm_type": "W",
+        "osm_key": "highway",
+        "osm_value": "primary",
+        "type": "street",
+        "name": "South Michigan Avenue",
+        "city": "Chicago",
+        "state": "Illinois",
+        "country": "United States",
+        "countrycode": "US"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [-87.6359, 41.8789] },
+      "properties": {
+        "osm_id": 18378194,
+        "osm_type": "W",
+        "osm_key": "building",
+        "osm_value": "yes",
+        "type": "house",
+        "name": "Willis Tower",
+        "housenumber": "233",
+        "street": "South Wacker Drive",
+        "city": "Chicago",
+        "state": "Illinois",
+        "country": "United States",
+        "countrycode": "US"
+      }
+    }
+  ]
+}

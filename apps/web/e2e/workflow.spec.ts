@@ -1,9 +1,10 @@
 import os from "node:os";
 import path from "node:path";
 
-import { expect, test, type Page, type Route } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 import { mockChicagoOverpass, watchOverpass } from "./overpassMock";
+import { mockNominatimReverse, mockPhoton } from "./photonMock";
 
 /**
  * Phase 6: app and workflow features ([V3-P6]).
@@ -11,9 +12,11 @@ import { mockChicagoOverpass, watchOverpass } from "./overpassMock";
  * Search, undo/redo, the project file and the permalink, each exercised as a
  * real user would reach them rather than through the unit suites alone:
  *
- *  1. Search "Chicago" (Nominatim route-mocked) and pick a result -- the pin
+ *  1. Search "Chicago" (Photon route-mocked) and pick a result -- the pin
  *     moves and the place name fills in without a manual reverse-geocode
- *     round trip.
+ *     round trip, and Preview lights up instead of building by itself
+ *     ([V3-P9]). `e2e/search.spec.ts` covers the type-ahead's own request
+ *     policy; this test covers the workflow around a pick.
  *  2. Three settings changed, Ctrl+Z twice: the values revert in order and
  *     the history chip's count follows every step.
  *  3. Save the project, reload the page (a genuinely fresh editor), load the
@@ -45,51 +48,28 @@ async function openGroup(page: Page, id: string): Promise<void> {
   await expect(group).toHaveAttribute("data-collapsed", "false");
 }
 
-const CHICAGO_SEARCH_RESULT = {
-  display_name: "Chicago, Cook County, Illinois, United States",
-  lat: "41.8827",
-  lon: "-87.6233",
-  type: "city",
-  addresstype: "city",
-};
-
-/** Route both Nominatim endpoints this suite touches: `/search` (forward) and `/reverse`. */
-function mockNominatim(page: Page): void {
-  void page.route("**/nominatim.openstreetmap.org/search**", (route: Route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify([CHICAGO_SEARCH_RESULT]),
-    }),
-  );
-  void page.route("**/nominatim.openstreetmap.org/reverse**", (route: Route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        address: {
-          city: "Chicago",
-          state: "Illinois",
-          country: "United States",
-          neighbourhood: "The Loop",
-        },
-      }),
-    }),
-  );
+/**
+ * Route both geocoders this suite touches: Photon for the type-ahead and
+ * Nominatim for the reverse lookup that names a dropped pin ([V3-P9]). Neither
+ * is ever reached over the network; `e2e/photonMock.ts` holds the fixtures.
+ */
+async function mockGeocoders(page: Page): Promise<void> {
+  await mockPhoton(page);
+  await mockNominatimReverse(page);
 }
 
 test.describe.configure({ mode: "serial" });
 
 test("search picks a place, moves the pin and fills the place name", async ({ page }) => {
   const calls = watchOverpass(page);
-  mockNominatim(page);
+  await mockGeocoders(page);
   await mockChicagoOverpass(page);
   await page.goto("/");
 
   const search = page.getByTestId("location-search");
   await search.fill("Chicago");
   await expect(page.getByTestId("search-results")).toBeVisible();
-  await expect(page.getByTestId("search-result")).toHaveCount(1, { timeout: 5_000 });
+  await expect(page.getByTestId("search-result")).toHaveCount(3, { timeout: 5_000 });
   await expect(page.getByTestId("search-result").first()).toContainText("Chicago");
 
   await page.getByTestId("search-result").first().click();
@@ -101,6 +81,14 @@ test("search picks a place, moves the pin and fills the place name", async ({ pa
   await expect(page.locator("#city_label")).toHaveValue("Chicago");
   await expect(page.getByTestId("search-results")).toBeHidden();
 
+  // A pick does NOT build ([V3-P9]): it marks the scene stale and offers
+  // Preview, which is the user's own move. Anything else would spend an
+  // Overpass query on a keystroke.
+  expect(calls.filter((call) => call.method === "POST")).toEqual([]);
+  const preview = page.getByTestId("preview-button");
+  await expect(preview).toBeEnabled();
+
+  await preview.click();
   await expect(page.getByTestId("preview-stats")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
   expect(calls.filter((call) => call.method === "POST").length).toBeGreaterThan(0);
 });
@@ -162,7 +150,7 @@ test("changing three settings and pressing Ctrl+Z twice reverts them, and the hi
 });
 
 test("save project, reload, load project: every setting comes back", async ({ page }) => {
-  mockNominatim(page);
+  await mockGeocoders(page);
   await mockChicagoOverpass(page);
   await page.goto("/");
   await page.locator('[data-preset-id="chicago-loop"]').click();
@@ -213,7 +201,7 @@ test("save project, reload, load project: every setting comes back", async ({ pa
 
 test("a copied link restores in a fresh browser context", async ({ page, context, browser }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-  mockNominatim(page);
+  await mockGeocoders(page);
   await mockChicagoOverpass(page);
   await page.goto("/");
   await page.locator('[data-preset-id="chicago-loop"]').click();

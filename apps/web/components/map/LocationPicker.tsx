@@ -46,6 +46,11 @@ import SearchBox from "./SearchBox";
 
 const OSM_ATTRIBUTION = "© OpenStreetMap contributors";
 
+/** One pin position as a comparable string; 7 decimals is under a centimetre. */
+function pinKey(lat: number, lon: number): string {
+  return `${lat.toFixed(7)},${lon.toFixed(7)}`;
+}
+
 /**
  * maplibre-gl resolves its web worker with
  * `new URL("./maplibre-gl-worker.mjs", import.meta.url)`. Next's bundler
@@ -70,6 +75,15 @@ export function LocationPicker() {
   const handleRef = useRef<Marker | null>(null);
   const readyRef = useRef(false);
   const lastPresetRef = useRef<string | null>(null);
+  /**
+   * The pin position the camera is currently framed on, and the position the
+   * map's OWN click/drag handlers last wrote. Together they answer "did
+   * something other than this map move the pin?", which is the only question
+   * the camera-follow effect below needs. Clicking the map must not be
+   * answered with a 900 ms fly-back to where the user just clicked.
+   */
+  const framedRef = useRef<string | null>(null);
+  const selfMovedRef = useRef<string | null>(null);
 
   const lat = useEditorStore((state) => state.location.lat);
   const lon = useEditorStore((state) => state.location.lon);
@@ -181,15 +195,20 @@ export function LocationPicker() {
         state.radius_m,
       );
       handle.setLngLat([handlePoint.lon, handlePoint.lat]).addTo(map);
+      // The map opened framed on this pin, so the follow effect below has
+      // nothing to do until the pin moves away from it.
+      framedRef.current = pinKey(state.lat, state.lon);
       readyRef.current = true;
     });
 
     map.on("click", (event) => {
+      selfMovedRef.current = pinKey(event.lngLat.lat, event.lngLat.lng);
       useEditorStore.getState().setPin(event.lngLat.lat, event.lngLat.lng);
     });
 
     pin.on("dragend", () => {
       const position = pin.getLngLat();
+      selfMovedRef.current = pinKey(position.lat, position.lng);
       useEditorStore.getState().setPin(position.lat, position.lng);
     });
 
@@ -234,11 +253,37 @@ export function LocationPicker() {
     handleRef.current?.setLngLat([handlePoint.lon, handlePoint.lat]);
   }, [lat, lon, radiusM, rotationDeg]);
 
-  // --- fly to a newly selected preset --------------------------------------
+  // --- follow the pin whenever something other than this map moved it ------
+  /**
+   * Presets, search picks, coordinate entry, "use my location", a restored
+   * share link and undo all move the pin from outside the map, and every one
+   * of them can land beyond the current viewport. Until [V3-P9-fix] only the
+   * PRESET path flew, because the effect was gated on `presetId` and `setPin`
+   * writes `preset_id: null` (`store/editor.ts`) -- so searching for a place
+   * on another continent left the map exactly where it was, with the pin, the
+   * radius circle and the crop square all off screen, and only the radius chip
+   * and the place name to say anything had happened.
+   *
+   * The gate is now "the pin is somewhere the camera is not framed on, and
+   * this map did not put it there". A click or a pin drag records its own
+   * coordinates first, so the user is never fought by a fly-back to the point
+   * they just clicked. A radius or rotation change alone moves nothing and is
+   * ignored, which is what keeps the camera still while the radius handle is
+   * being dragged.
+   */
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !presetId || presetId === lastPresetRef.current) return;
+    if (!map || !readyRef.current) return;
+
+    const here = pinKey(lat, lon);
+    const presetChanged = presetId !== null && presetId !== lastPresetRef.current;
     lastPresetRef.current = presetId;
+
+    const moved = framedRef.current !== here;
+    if (!moved && !presetChanged) return;
+    framedRef.current = here;
+    if (!presetChanged && selfMovedRef.current === here) return;
+
     const ring = circleRing({ lat, lon }, radiusM, 16);
     const bounds = ring.reduce(
       (accumulator, position) => accumulator.extend(position),
