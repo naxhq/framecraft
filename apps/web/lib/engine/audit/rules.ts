@@ -229,7 +229,10 @@ function droppableFeature(
   if ((region === "roads" || region === "rail") && (stats.bridges ?? 0) > 0 && params.bridges?.enabled !== false) {
     return {
       label: "Turn off the raised bridge decks",
-      patch: { bridges: { ...(params.bridges ?? {}), enabled: false } },
+      // A fix patch is a DEEP partial (`fixes.ts:mergeInto`), so naming the one
+      // leaf that moves is the whole patch; spreading the group in would make
+      // this rule a reader of every `bridges.*` leaf for no reason.
+      patch: { bridges: { enabled: false } },
     };
   }
   if (region === "lettering") {
@@ -352,7 +355,7 @@ function profilePlateFinding(input: AuditInput, profile: PrinterProfile): AuditF
       label: `Split it into ${cols} x ${rows} tiles`,
       safe: false,
       patch: {
-        tiling: { ...(input.params.tiling ?? {}), enabled: true, cols, rows },
+        tiling: { enabled: true, cols, rows },
       },
     },
   };
@@ -384,7 +387,7 @@ function slotFindings(input: AuditInput, profile: PrinterProfile): AuditFinding[
       fix: {
         label: `Move ${names.length === 1 ? "it" : "them"} to slot ${profile.slots}`,
         safe: true,
-        patch: { colour: { ...(input.params.colour ?? {}), region_slots: table } },
+        patch: { colour: { region_slots: table } },
       },
     },
   ];
@@ -534,7 +537,7 @@ function tileFindings(input: AuditInput, profile: PrinterProfile): AuditFinding[
       fix: {
         label: `Split it into ${cols} x ${rows} tiles`,
         safe: false,
-        patch: { tiling: { ...(input.params.tiling ?? {}), enabled: true, cols, rows } },
+        patch: { tiling: { enabled: true, cols, rows } },
       },
     },
   ];

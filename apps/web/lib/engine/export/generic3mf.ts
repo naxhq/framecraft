@@ -27,6 +27,7 @@ import {
   orderedRegions,
   placeMerged,
   placeInBuildSpace,
+  paletteEntries,
   provenanceEntries,
   resolveOptions,
   type ExportOptions,
@@ -110,6 +111,8 @@ export function genericMetadata(result: EngineResult, resolved: ResolvedExportOp
     ...provenanceEntries(result, resolved).map(
       ([key, value]) => [`framecraft:${key}`, value] as [string, string],
     ),
+    // The colour preset the region colours came from (v3.1, `colour.palette`).
+    ...paletteEntries(resolved),
   ];
   if (resolved.source) {
     entries.push(["framecraft:lat", String(resolved.source.lat)]);
@@ -179,7 +182,7 @@ export function singleModelXml(positions: ArrayLike<number>, indices: ArrayLike<
 
 export function exportGeneric3mf(result: EngineResult, options: Generic3mfOptions = {}): ExportFile {
   const resolved = resolveOptions(result, options);
-  const mode = options.mode ?? (result.params.color_mode === "single" ? "single" : "parts");
+  const mode = options.mode ?? ((options.colorMode ?? result.params.color_mode) === "single" ? "single" : "parts");
   const placed = placeInBuildSpace(orderedRegions(result.regions));
   const metadata = genericMetadata(result, resolved);
   const model =

@@ -189,11 +189,18 @@ export function drapeSolid(
   drape: Drape | null,
   solid: Manifold | null,
   cellMm: number = TERRAIN_CELL_MM,
+  /**
+   * Whether the flat input is freed once it has been refined. The staged
+   * pipeline passes `false` when the input is another stage's cached output
+   * (a surface region's flat solid), which its owner frees when it is
+   * replaced; a stage draping its own temporary keeps the default.
+   */
+  consume = true,
 ): Manifold | null {
   if (drape === null || solid === null || solid.isEmpty()) return solid;
   const { arena } = ctx;
   const refined = arena.keep(solid.refineToLength(cellMm));
-  arena.drop(solid);
+  if (consume) arena.drop(solid);
   const warped = arena.keep(
     refined.warpBatch((verts: Float64Array, count: number) => {
       for (let i = 0; i < count; i += 1) {

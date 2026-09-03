@@ -1,129 +1,111 @@
 /**
- * `[V3-P3-U]`: a running build must never block an ingest request, however
- * long the build takes. `EngineClient` now runs ingest and build on two
- * entirely separate transports/workers (`client.ts`'s own module docstring
- * explains why); this file proves the CLIENT-LEVEL half of that guarantee --
- * that `EngineClient.ingest()` never waits on a build promise, running or
- * queued -- through the in-page fallback transport, using a "slow fake" build
- * handler (a real `await`ed delay, not a synchronous CPU spin, so a
- * single-threaded test runner can still observe the race).
+ * `[V3-P3-U]` restated for one worker: a running build must never make an
+ * ingest wait for it. Since v3.1 the two are runs of the same pipeline on the
+ * same worker, so the guarantee is no longer "a second worker" but "the build
+ * stops at its next stage boundary and the ingest goes first"; the build's
+ * promise rejects `cancelled`, its completed stages stay cached, and the
+ * build that follows the ingest reuses them.
  *
- * The WORKER-LEVEL half (a real `Worker` running manifold3d with no yield
- * points genuinely cannot process a second message until it returns) is not
- * reproducible in Node at all; that half is proven by `e2e/ui.spec.ts`'s
- * "the detail chip follows the plate, and names a radius that would fix it",
- * unmodified, against a real browser.
- *
- * A dedicated file, not added to `client.test.ts`: `vi.mock("./engine", ...)`
- * is file-scoped but still replaces `buildModel()` for every test in whichever file
- * calls it, and `client.test.ts`'s own "really runs a build end to end" tests
- * need the REAL engine.
+ * Real runs through the inline transport on the small synthetic scene, with
+ * Overpass stubbed to answer the committed Chicago Loop fixture: no mock of
+ * the engine, because the thing under test is where the engine yields.
  */
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { defaultPrintParams } from "../contracts";
-import { scene } from "./solid/fixture";
+import { createEngineClient, type ProgressEvent } from "./client";
+import { blockScene } from "./pipeline/testScenes";
+import { resetOverpassCacheForTest } from "./protocol";
 
-const buildModelMock = vi.fn();
-vi.mock("./engine", () => ({ buildModel: (input: unknown) => buildModelMock(input) }));
-
-/** Resolves after `ms`, so the fake build genuinely yields to the event loop instead of spinning the one JS thread the test itself runs on. */
-function delay<T>(ms: number, value: T): Promise<T> {
-  return new Promise((resolve) => setTimeout(() => resolve(value), ms));
-}
-
-function fakeBuildResult(regions: unknown[] = []): unknown {
-  return {
-    regions,
-    merged: null,
-    stats: {
-      scaleDenominator: 1,
-      minWallMm: 0.8,
-      measuredMinWallMm: null,
-      buildings: 0,
-      buildingsMerged: 0,
-      buildingsDilated: 0,
-      heightFallbacks: 0,
-      triangles: 0,
-      widthMm: 0,
-      depthMm: 0,
-      heightMm: 0,
-      elapsedMs: 1,
-    },
-    findings: [],
-    resolvedText: [],
-    params: defaultPrintParams(),
-  };
-}
-
+const here = dirname(fileURLToPath(import.meta.url));
+const RAW = JSON.parse(readFileSync(resolve(here, "../../../../tests/fixtures/overpass-tiny-loop.json"), "utf-8")) as unknown;
 const REQUEST = { lat: 41.8827, lon: -87.6233, radius_m: 900, rotation_deg: 0, preset_id: "chicago-loop" };
 
 describe("EngineClient: an in-flight build never blocks an ingest", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    buildModelMock.mockReset();
+    resetOverpassCacheForTest();
   });
 
-  it("ingest resolves before a slow build started earlier does", async () => {
-    const { createEngineClient } = await import("./client");
-    // A single successful attempt, not a thrown network error: `fetchOverpass`
-    // retries a THROWN error up to 4 times with real (setTimeout) backoff --
-    // 3.5 s minimum -- which would make this test's own timing assertion
-    // measure the retry loop instead of the thing it is testing for.
+  it("an ingest requested during a build resolves; the build stops at its next stage boundary and rejects cancelled", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ elements: [] }) })),
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => RAW })),
     );
-    // The build will not settle until well after the ingest below does.
-    buildModelMock.mockImplementation(() => delay(2_000, fakeBuildResult()));
-
     const client = createEngineClient();
     try {
       const order: string[] = [];
+      const states: string[] = [];
       const buildPending = client
-        .buildModel({ scene: scene(), params: defaultPrintParams() })
-        .then((result) => {
-          order.push("build");
-          return result;
-        });
-
-      // Started AFTER the build, still resolves first: nothing in the client
-      // makes it wait on the build's promise.
+        .buildModel({ scene: blockScene(), params: defaultPrintParams(), date: "2026-09-02" }, { onProgress: (m) => states.push(m) })
+        .then(
+          () => {
+            order.push("build");
+          },
+          (error: unknown) => {
+            order.push(`build:${(error as { code?: string }).code ?? "error"}`);
+          },
+        );
+      // Let the build get under way (its first stages reported) before the
+      // ingest arrives, so the ingest genuinely interrupts a running job.
+      await vi.waitFor(() => {
+        expect(states.length).toBeGreaterThan(3);
+      });
       const ingestPending = client.ingest(REQUEST).then((result) => {
         order.push("ingest");
         return result;
       });
 
-      await ingestPending;
-      expect(order).toEqual(["ingest"]);
-
+      const ingested = await ingestPending;
+      expect(ingested.ok).toBe(true);
       await buildPending;
-      expect(order).toEqual(["ingest", "build"]);
+      // The build never finished: it was superseded at a stage boundary, and
+      // the ingest came back first.
+      expect(order).toEqual(["build:cancelled", "ingest"]);
     } finally {
       client.dispose();
     }
-  });
+  }, 90_000);
 
-  it("a build superseded while another is still running does not delay a subsequent ingest either", async () => {
-    const { createEngineClient } = await import("./client");
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ elements: [] }) })));
-    buildModelMock.mockImplementation(() => delay(2_000, fakeBuildResult()));
-
+  it("the stages a superseded build completed are reused by the next build of the same scene", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, json: async () => RAW })));
     const client = createEngineClient();
     try {
-      const firstBuild = client.buildModel({ scene: scene(), params: defaultPrintParams() });
-      const secondBuild = client.buildModel({ scene: scene(), params: defaultPrintParams() });
-      await expect(firstBuild).rejects.toMatchObject({ code: "cancelled" });
-
-      const started = Date.now();
-      await client.ingest(REQUEST);
-      // Generous relative to the 2 s fake builds: this only fails if ingest
-      // was ever made to wait on either build settling.
-      expect(Date.now() - started).toBeLessThan(1_000);
-
-      await secondBuild;
+      const scene = blockScene();
+      const first = client.pipeline.run({ source: { kind: "scene", scene, key: "block" }, params: defaultPrintParams(), date: "2026-09-02", mode: "full" });
+      // Let it get as far as the repaired buildings, then supersede it:
+      // whatever it finished stays in the worker's cache.
+      await new Promise<void>((resolveProgress) => {
+        first.progress.subscribe((event) => {
+          if (event.kind === "stage" && event.stage === "repair-buildings" && event.state === "done") resolveProgress();
+        });
+      });
+      const cached: string[] = [];
+      const ran: string[] = [];
+      const handle = client.pipeline.run({
+        source: { kind: "scene", scene, key: "block" },
+        params: defaultPrintParams(),
+        date: "2026-09-02",
+        mode: "full",
+      });
+      handle.progress.subscribe((event: ProgressEvent) => {
+        if (event.kind !== "stage") return;
+        if (event.state === "cached") cached.push(event.stage);
+        if (event.state === "done") ran.push(event.stage);
+      });
+      await expect(first.done).rejects.toMatchObject({ code: "cancelled" });
+      const done = await handle.done;
+      expect(done.result).not.toBeNull();
+      // The second run served the first run's completed stages from the cache
+      // (the repair among them) and ran the rest; nothing was run twice.
+      expect(cached).toContain("repair-buildings");
+      expect(cached.filter((stage) => ran.includes(stage))).toEqual([]);
     } finally {
       client.dispose();
     }
-  });
+  }, 90_000);
 });

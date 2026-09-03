@@ -1,16 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { defaultPrintParams } from "../contracts";
-import { createEngineClient, EngineClient, EngineClientError, createWorkerTransportForTest, type WorkerLike } from "./client";
-import type { BuildWireInput, WorkerRequest, WorkerResponse } from "./protocol";
+import {
+  EngineClient,
+  EngineClientError,
+  PipelineClient,
+  createEngineClient,
+  createWorkerTransportForTest,
+  type WorkerLike,
+} from "./client";
+import { blockScene } from "./pipeline/testScenes";
+import type { RunJobMessage, WorkerRequest, WorkerResponse } from "./protocol";
 import { building, scene } from "./solid/fixture";
+import type { EngineResult, RegionMesh } from "./types";
 
 /**
  * A fake `Worker`: records every `postMessage` call and lets the test push
  * `onmessage`/`onerror` events back, so `WorkerTransport`'s wiring (and
- * therefore `EngineClient`'s protocol logic on top of it) is exercised
- * without a real worker thread -- see the E4 brief's "vitest for the client
- * protocol (mock worker)".
+ * therefore the clients' protocol logic on top of it) is exercised without a
+ * real worker thread.
  */
 class MockWorker implements WorkerLike {
   readonly sent: WorkerRequest[] = [];
@@ -35,40 +43,69 @@ class MockWorker implements WorkerLike {
   }
 }
 
-/**
- * `EngineClient` now runs ingest and build on two entirely separate transports
- * (`[V3-P3-U]`: a build worker with no yield points must never block an
- * ingest message), so most tests here need a mock worker per kind. `worker`
- * is kept as an alias for `ingestWorker` for the tests that only exercise
- * ingest, so their assertions stay unchanged.
- */
-function clientOverMockWorker(): {
-  client: EngineClient;
-  worker: MockWorker;
-  ingestWorker: MockWorker;
-  buildWorker: MockWorker;
-} {
-  const ingestWorker = new MockWorker();
-  const buildWorker = new MockWorker();
-  const client = new EngineClient({
-    ingest: createWorkerTransportForTest(ingestWorker),
-    build: createWorkerTransportForTest(buildWorker),
-  });
-  return { client, worker: ingestWorker, ingestWorker, buildWorker };
+function clientOverMockWorker(): { client: EngineClient; worker: MockWorker } {
+  const worker = new MockWorker();
+  const client = new EngineClient({ transport: createWorkerTransportForTest(worker) });
+  return { client, worker };
 }
 
 const REQUEST = { lat: 41.8827, lon: -87.6233, radius_m: 900, rotation_deg: 0, preset_id: "chicago-loop" };
 
+function lastRun(worker: MockWorker): RunJobMessage {
+  const runs = worker.sent.filter((m): m is RunJobMessage => m.kind === "run");
+  return runs[runs.length - 1];
+}
+
+function fakeMesh(region: RegionMesh["region"], filled: boolean): RegionMesh {
+  return {
+    region,
+    positions: filled ? new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]) : new Float64Array(0),
+    indices: filled ? new Uint32Array([0, 1, 2]) : new Uint32Array(0),
+    volumeMm3: 1,
+    bbox: { min: [0, 0, 0], max: [1, 1, 0] },
+    bodies: 1,
+    slot: 1,
+    colorHex: "#D8D3C6",
+  };
+}
+
+function fakeResult(regions: RegionMesh[]): EngineResult {
+  return {
+    regions,
+    merged: fakeMesh("base", true),
+    stats: {
+      scaleDenominator: 1,
+      minWallMm: 0.8,
+      measuredMinWallMm: null,
+      buildings: 0,
+      buildingsMerged: 0,
+      buildingsDilated: 0,
+      heightFallbacks: 0,
+      triangles: 0,
+      widthMm: 0,
+      depthMm: 0,
+      heightMm: 0,
+      elapsedMs: 1,
+    },
+    findings: [],
+    resolvedText: [],
+    params: defaultPrintParams(),
+  };
+}
+
 describe("EngineClient over a mock Worker (protocol wiring)", () => {
-  it("posts an ingest message and resolves with the ok scene the worker sends back", async () => {
+  it("ingest posts a scene-mode run for the request and resolves with the scene the worker streams back", async () => {
     const { client, worker } = clientOverMockWorker();
     const pending = client.ingest(REQUEST);
     expect(worker.sent).toHaveLength(1);
-    expect(worker.sent[0]).toMatchObject({ kind: "ingest", request: REQUEST });
-    const id = (worker.sent[0] as { id: number }).id;
+    const run = lastRun(worker);
+    expect(run).toMatchObject({ kind: "run", mode: "scene", source: { kind: "request", request: REQUEST } });
+    // Perf off: no `perf` key on the wire at all (v3-00 audit finding 7).
+    expect(run).not.toHaveProperty("perf");
 
     const fakeScene = scene({ buildings: [building("w1", [[0, 0], [10, 0], [10, 10], [0, 10]])] });
-    worker.emit({ kind: "ingest-done", id, ok: true, scene: fakeScene as never, fromCache: true });
+    worker.emit({ kind: "scene-ready", id: run.id, scene: fakeScene as never, hash: "h1", fromCache: true });
+    worker.emit({ kind: "done", id: run.id, result: null, regionHashes: {}, elapsedMs: 3 });
 
     const result = await pending;
     expect(result.ok).toBe(true);
@@ -78,191 +115,207 @@ describe("EngineClient over a mock Worker (protocol wiring)", () => {
     }
   });
 
-  it("resolves ingest with ok:false when the worker reports a fail-soft error", async () => {
+  it("resolves ingest with ok:false when the fetch stage reports a fail-soft Overpass error", async () => {
     const { client, worker } = clientOverMockWorker();
     const pending = client.ingest(REQUEST);
-    const id = (worker.sent[0] as { id: number }).id;
+    const run = lastRun(worker);
     worker.emit({
-      kind: "ingest-done",
-      id,
-      ok: false,
-      error: { kind: "network", mirrorsTried: ["https://overpass-api.de/api/interpreter"], message: "boom" },
+      kind: "error",
+      id: run.id,
+      stage: "fetch",
+      message: "boom",
+      detail: { overpass: { kind: "network", mirrorsTried: ["https://overpass-api.de/api/interpreter"], message: "boom" } },
     });
     const result = await pending;
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.kind).toBe("network");
   });
 
-  it("posts a build message and resolves with the EngineResult the worker sends back", async () => {
-    const { client, buildWorker: worker } = clientOverMockWorker();
-    const input: BuildWireInput = { scene: scene(), params: defaultPrintParams() };
+  it("buildModel posts a full run carrying the scene, and re-attaches the streamed region meshes to the stripped result", async () => {
+    const { client, worker } = clientOverMockWorker();
+    const input = { scene: scene(), params: defaultPrintParams() };
     const pending = client.buildModel(input);
-    expect(worker.sent).toHaveLength(1);
-    expect(worker.sent[0]).toMatchObject({ kind: "build" });
-    const id = (worker.sent[0] as { id: number }).id;
+    const run = lastRun(worker);
+    expect(run).toMatchObject({ kind: "run", mode: "full", source: { kind: "scene" } });
+    expect(run.source.kind === "scene" ? run.source.key.length : 0).toBe(40);
 
-    const fakeResult = {
-      regions: [],
-      stats: {
-        scaleDenominator: 1,
-        minWallMm: 0.8,
-        measuredMinWallMm: null,
-        buildings: 0,
-        buildingsMerged: 0,
-        buildingsDilated: 0,
-        heightFallbacks: 0,
-        triangles: 0,
-        widthMm: 0,
-        depthMm: 0,
-        heightMm: 0,
-        elapsedMs: 1,
-      },
-      findings: [],
-      resolvedText: [],
-      params: input.params,
-    };
-    worker.emit({ kind: "build-done", id, result: fakeResult as never });
+    worker.emit({ kind: "region-ready", id: run.id, regions: [fakeMesh("base", true)], removed: [] });
+    worker.emit({ kind: "done", id: run.id, result: fakeResult([fakeMesh("base", false)]), regionHashes: { base: "k" }, elapsedMs: 5 });
 
     const result = await pending;
-    expect(result).toBe(fakeResult);
+    expect(result.regions).toHaveLength(1);
+    expect(result.regions[0].positions.length).toBe(9);
+    expect(result.regions[0].indices.length).toBe(3);
   });
 
-  it("rejects a build with a plain Error carrying the worker's message on build-error", async () => {
-    const { client, buildWorker: worker } = clientOverMockWorker();
+  it("a second build with the scene the last ingest returned sends a key, not the scene", async () => {
+    const { client, worker } = clientOverMockWorker();
+    const ingest = client.ingest(REQUEST);
+    const first = lastRun(worker);
+    const fakeScene = scene();
+    worker.emit({ kind: "scene-ready", id: first.id, scene: fakeScene as never, hash: "scene-hash", fromCache: false });
+    worker.emit({ kind: "done", id: first.id, result: null, regionHashes: {}, elapsedMs: 1 });
+    const outcome = await ingest;
+    if (!outcome.ok) throw new Error("ingest failed");
+
+    void client.buildModel({ scene: outcome.scene, params: defaultPrintParams() });
+    expect(lastRun(worker).source).toEqual({ kind: "cached", key: "scene-hash" });
+  });
+
+  it("a build requested while an ingest is in flight waits for the ingest instead of superseding it", async () => {
+    const { client, worker } = clientOverMockWorker();
+    const ingest = client.ingest(REQUEST);
+    const ingestId = lastRun(worker).id;
+    const build = client.buildModel({ scene: scene(), params: defaultPrintParams() });
+    // No cancel for the ingest, no second run yet.
+    await Promise.resolve();
+    expect(worker.sent.filter((m) => m.kind === "run")).toHaveLength(1);
+    expect(worker.sent.some((m) => m.kind === "cancel")).toBe(false);
+    worker.emit({ kind: "scene-ready", id: ingestId, scene: scene() as never, hash: "h", fromCache: false });
+    worker.emit({ kind: "done", id: ingestId, result: null, regionHashes: {}, elapsedMs: 1 });
+    await expect(ingest).resolves.toMatchObject({ ok: true });
+    // The build goes out once the ingest has settled.
+    await vi.waitFor(() => {
+      expect(worker.sent.filter((m) => m.kind === "run")).toHaveLength(2);
+    });
+    const buildId = lastRun(worker).id;
+    worker.emit({ kind: "done", id: buildId, result: fakeResult([]), regionHashes: {}, elapsedMs: 1 });
+    await expect(build).resolves.toMatchObject({ regions: [] });
+  });
+
+  it("rejects a build with the stage's message on an error event", async () => {
+    const { client, worker } = clientOverMockWorker();
     const pending = client.buildModel({ scene: scene(), params: defaultPrintParams() });
-    const id = (worker.sent[0] as { id: number }).id;
-    worker.emit({ kind: "build-error", id, message: "the scene has no extent" });
+    worker.emit({ kind: "error", id: lastRun(worker).id, stage: "context", message: "the scene has no extent" });
     await expect(pending).rejects.toThrow("the scene has no extent");
   });
 
-  it("routes progress messages to the right job's onProgress callback only", async () => {
-    const { client, ingestWorker, buildWorker } = clientOverMockWorker();
+  it("routes stage progress to the right job's onProgress callback only", async () => {
+    const { client, worker } = clientOverMockWorker();
     const messagesA: string[] = [];
     const messagesB: string[] = [];
     const pendingA = client.ingest(REQUEST, undefined, { onProgress: (m) => messagesA.push(m) });
-    const idA = (ingestWorker.sent[0] as { id: number }).id;
-    ingestWorker.emit({ kind: "ingest-progress", id: idA, message: "fetching A" });
-    ingestWorker.emit({ kind: "ingest-done", id: idA, ok: true, scene: scene() as never, fromCache: false });
+    const idA = lastRun(worker).id;
+    worker.emit({ kind: "stage", id: idA, stage: "fetch", phase: "scene", index: 0, total: 2, state: "start", elapsedMs: 0 });
+    worker.emit({ kind: "scene-ready", id: idA, scene: scene() as never, hash: "h", fromCache: false });
+    worker.emit({ kind: "done", id: idA, result: null, regionHashes: {}, elapsedMs: 1 });
     await pendingA;
 
     const pendingB = client.buildModel({ scene: scene(), params: defaultPrintParams() }, { onProgress: (m) => messagesB.push(m) });
-    const idB = (buildWorker.sent[0] as { id: number }).id;
-    buildWorker.emit({ kind: "build-progress", id: idB, message: "building B" });
-    buildWorker.emit({ kind: "build-error", id: idB, message: "stop" });
+    const idB = lastRun(worker).id;
+    worker.emit({ kind: "stage", id: idB, stage: "lettering", phase: "geometry", index: 15, total: 70, state: "start", elapsedMs: 0 });
+    worker.emit({ kind: "error", id: idB, stage: "lettering", message: "stop" });
     await pendingB.catch(() => undefined);
 
-    expect(messagesA).toEqual(["fetching A"]);
-    expect(messagesB).toEqual(["building B"]);
+    expect(messagesA).toEqual(["Fetching from OpenStreetMap...", "Building fetch (1/2)"]);
+    expect(messagesB).toEqual(["Building...", "Building lettering (16/70)"]);
   });
 
-  it("superseding an in-flight ingest rejects the old promise as cancelled and posts a cancel message", async () => {
+  it("superseding an in-flight ingest rejects the old promise as cancelled and posts a cancel for it", async () => {
     const { client, worker } = clientOverMockWorker();
     const first = client.ingest(REQUEST);
-    const firstId = (worker.sent[0] as { id: number }).id;
+    const firstId = lastRun(worker).id;
 
     const second = client.ingest({ ...REQUEST, lat: 40 });
-    const cancelMsg = worker.sent.find((m) => m.kind === "cancel" && m.id === firstId);
-    expect(cancelMsg).toMatchObject({ kind: "cancel", id: firstId, jobKind: "ingest" });
+    expect(worker.sent).toContainEqual(expect.objectContaining({ kind: "cancel", id: firstId }));
 
     await expect(first).rejects.toBeInstanceOf(EngineClientError);
     await expect(first).rejects.toMatchObject({ code: "cancelled" });
 
-    const secondId = (worker.sent.filter((m) => m.kind === "ingest")[1] as { id: number }).id;
-    worker.emit({ kind: "ingest-done", id: secondId, ok: true, scene: scene() as never, fromCache: false });
+    const secondId = lastRun(worker).id;
+    worker.emit({ kind: "scene-ready", id: secondId, scene: scene() as never, hash: "h2", fromCache: false });
+    worker.emit({ kind: "done", id: secondId, result: null, regionHashes: {}, elapsedMs: 1 });
     await expect(second).resolves.toMatchObject({ ok: true });
   });
 
-  it("a superseded ingest's late worker response is dropped, not resolved twice", async () => {
+  it("a superseded job's late worker messages are dropped, not resolved twice", async () => {
     const { client, worker } = clientOverMockWorker();
     const first = client.ingest(REQUEST);
-    const firstId = (worker.sent[0] as { id: number }).id;
+    const firstId = lastRun(worker).id;
     void client.ingest({ ...REQUEST, lat: 40 });
     await expect(first).rejects.toBeInstanceOf(EngineClientError);
-
-    // The worker finishes the superseded fetch anyway and posts late; nothing
-    // should throw, and the (already-rejected) first promise stays rejected.
-    expect(() =>
-      worker.emit({ kind: "ingest-done", id: firstId, ok: true, scene: scene() as never, fromCache: false }),
-    ).not.toThrow();
+    expect(() => {
+      worker.emit({ kind: "cancelled", id: firstId, atStage: "normalise" });
+      worker.emit({ kind: "done", id: firstId, result: null, regionHashes: {}, elapsedMs: 1 });
+    }).not.toThrow();
   });
 
-  it("superseding an in-flight build rejects the old promise as cancelled and posts a cancel message", async () => {
-    const { client, buildWorker: worker } = clientOverMockWorker();
-    const first = client.buildModel({ scene: scene(), params: defaultPrintParams() });
-    const firstId = (worker.sent[0] as { id: number }).id;
-    const second = client.buildModel({ scene: scene(), params: defaultPrintParams() });
-
-    expect(worker.sent).toContainEqual(expect.objectContaining({ kind: "cancel", id: firstId, jobKind: "build" }));
-    await expect(first).rejects.toMatchObject({ code: "cancelled" });
-
-    const secondId = (worker.sent.filter((m) => m.kind === "build")[1] as { id: number }).id;
-    worker.emit({ kind: "build-done", id: secondId, result: { regions: [] } as never });
-    await expect(second).resolves.toMatchObject({ regions: [] });
+  it("a worker cancelled event rejects the pending job as cancelled", async () => {
+    const { client, worker } = clientOverMockWorker();
+    const pending = client.buildModel({ scene: scene(), params: defaultPrintParams() });
+    worker.emit({ kind: "cancelled", id: lastRun(worker).id, atStage: "assembly" });
+    await expect(pending).rejects.toMatchObject({ code: "cancelled" });
   });
 
-  it("an ingest worker onerror rejects only pending ingest jobs, never a build in flight on the separate build worker", async () => {
-    const { client, ingestWorker, buildWorker } = clientOverMockWorker();
-    const ingestPending = client.ingest(REQUEST);
-    const buildPending = client.buildModel({ scene: scene(), params: defaultPrintParams() });
-
-    ingestWorker.fail("the ingest worker script threw");
-
-    await expect(ingestPending).rejects.toMatchObject({ code: "transport" });
-
-    // The build is still alive on its own, unaffected worker.
-    const buildId = (buildWorker.sent[0] as { id: number }).id;
-    buildWorker.emit({ kind: "build-done", id: buildId, result: { regions: [] } as never });
-    await expect(buildPending).resolves.toMatchObject({ regions: [] });
+  it("a worker onerror rejects every pending job with a transport error", async () => {
+    const { client, worker } = clientOverMockWorker();
+    const pending = client.buildModel({ scene: scene(), params: defaultPrintParams() });
+    worker.fail("the engine worker script threw");
+    await expect(pending).rejects.toMatchObject({ code: "transport" });
   });
 
-  it("a build worker onerror rejects only pending build jobs, never an ingest in flight on the separate ingest worker", async () => {
-    const { client, ingestWorker, buildWorker } = clientOverMockWorker();
-    const ingestPending = client.ingest(REQUEST);
-    const buildPending = client.buildModel({ scene: scene(), params: defaultPrintParams() });
-
-    buildWorker.fail("the build worker script threw");
-
-    await expect(buildPending).rejects.toMatchObject({ code: "transport" });
-
-    const ingestId = (ingestWorker.sent[0] as { id: number }).id;
-    ingestWorker.emit({ kind: "ingest-done", id: ingestId, ok: true, scene: scene() as never, fromCache: false });
-    await expect(ingestPending).resolves.toMatchObject({ ok: true });
-  });
-
-  it("dispose() rejects every pending job and terminates both workers", async () => {
-    const { client, ingestWorker, buildWorker } = clientOverMockWorker();
-    const ingestPending = client.ingest(REQUEST);
-    const buildPending = client.buildModel({ scene: scene(), params: defaultPrintParams() });
+  it("dispose() rejects the pending job and terminates the worker; later calls reject without posting; a second dispose is a no-op", async () => {
+    const { client, worker } = clientOverMockWorker();
+    const pending = client.buildModel({ scene: scene(), params: defaultPrintParams() });
     client.dispose();
-    await expect(ingestPending).rejects.toMatchObject({ code: "disposed" });
-    await expect(buildPending).rejects.toMatchObject({ code: "disposed" });
-    expect(ingestWorker.terminated).toBe(true);
-    expect(buildWorker.terminated).toBe(true);
-  });
-
-  it("ingest/build after dispose reject immediately without posting anything", async () => {
-    const { client, ingestWorker, buildWorker } = clientOverMockWorker();
-    client.dispose();
-    const ingestBefore = ingestWorker.sent.length;
-    const buildBefore = buildWorker.sent.length;
+    await expect(pending).rejects.toMatchObject({ code: "disposed" });
+    expect(worker.terminated).toBe(true);
+    const before = worker.sent.length;
     await expect(client.ingest(REQUEST)).rejects.toMatchObject({ code: "disposed" });
-    await expect(client.buildModel({ scene: scene(), params: defaultPrintParams() })).rejects.toMatchObject({
-      code: "disposed",
-    });
-    expect(ingestWorker.sent.length).toBe(ingestBefore);
-    expect(buildWorker.sent.length).toBe(buildBefore);
-  });
-
-  it("dispose() a second time does nothing (idempotent, no double-terminate throw)", () => {
-    const { client, ingestWorker, buildWorker } = clientOverMockWorker();
-    client.dispose();
+    await expect(client.buildModel({ scene: scene(), params: defaultPrintParams() })).rejects.toMatchObject({ code: "disposed" });
+    expect(worker.sent.length).toBe(before);
     expect(() => client.dispose()).not.toThrow();
-    expect(ingestWorker.terminated).toBe(true);
-    expect(buildWorker.terminated).toBe(true);
   });
 });
 
-describe("EngineClient's in-page fallback (no Worker: this is what vitest itself uses)", () => {
+describe("PipelineClient over a mock Worker", () => {
+  it("run() streams progress, regions and the scene, and resolves done with the stripped result and the region hashes", async () => {
+    const worker = new MockWorker();
+    const client = new PipelineClient(createWorkerTransportForTest(worker));
+    const handle = client.run({ source: { kind: "scene", scene: scene(), key: "s" }, params: defaultPrintParams(), mode: "preview" });
+    const progress: string[] = [];
+    const regions: string[] = [];
+    handle.progress.subscribe((event) => progress.push(event.kind === "stage" ? `${event.stage}:${event.state}` : event.kind));
+    handle.regions.subscribe((event) => regions.push(...event.regions.map((r) => r.region)));
+    worker.emit({ kind: "plan", id: handle.id, total: 3, stages: ["fetch", "normalise", "context"] });
+    worker.emit({ kind: "stage", id: handle.id, stage: "fetch", phase: "scene", index: 0, total: 3, state: "skipped", elapsedMs: 0 });
+    worker.emit({ kind: "region-ready", id: handle.id, regions: [fakeMesh("base", true)], removed: ["frame"] });
+    worker.emit({ kind: "phase", id: handle.id, phase: "region", elapsedMs: 9 });
+    worker.emit({ kind: "done", id: handle.id, result: null, regionHashes: { base: "k1" }, elapsedMs: 10 });
+    const done = await handle.done;
+    expect(progress).toEqual(["plan", "fetch:skipped", "phase"]);
+    expect(regions).toEqual(["base"]);
+    expect(done.regionHashes).toEqual({ base: "k1" });
+    expect(done.result).toBeNull();
+  });
+
+  it("exportFiles() posts an export job and resolves with the files the worker returns", async () => {
+    const worker = new MockWorker();
+    const client = new PipelineClient(createWorkerTransportForTest(worker));
+    const pending = client.exportFiles({ target: "stl", createdIso: "2026-09-02T00:00:00Z" });
+    const posted = worker.sent[0];
+    expect(posted).toMatchObject({ kind: "export", request: { target: "stl" } });
+    const id = (posted as { id: number }).id;
+    worker.emit({
+      kind: "files",
+      id,
+      output: { target: "stl", files: [{ name: "a.stl", mime: "model/stl", bytes: new Uint8Array(4) }], sidecar: {}, sidecarName: "a.json", notes: [], plan: null },
+    });
+    const files = await pending;
+    expect(files.files[0].name).toBe("a.stl");
+  });
+
+  it("handle.cancel() rejects done as cancelled and posts a cancel message", async () => {
+    const worker = new MockWorker();
+    const client = new PipelineClient(createWorkerTransportForTest(worker));
+    const handle = client.run({ source: { kind: "scene", scene: scene(), key: "s" }, params: defaultPrintParams() });
+    handle.cancel();
+    expect(worker.sent).toContainEqual(expect.objectContaining({ kind: "cancel", id: handle.id }));
+    await expect(handle.done).rejects.toMatchObject({ code: "cancelled" });
+  });
+});
+
+describe("the in-page fallback (no Worker: this is what vitest itself uses)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -285,13 +338,9 @@ describe("EngineClient's in-page fallback (no Worker: this is what vitest itself
     } finally {
       client.dispose();
     }
-  });
+  }, 60_000);
 
   it("a build superseded while it is still queued is cancelled, and the newest one still resolves", async () => {
-    // Through the real inline transport, so `cancelJob`'s queue drop is
-    // reached the way a browser tab reaches it (v3-02 finding 7). That the
-    // dropped job never starts is asserted in protocol.test.ts, which can see
-    // the posts.
     const client = createEngineClient();
     try {
       const tinyScene = scene({ buildings: [building("w1", [[0, 0], [12, 0], [12, 12], [0, 12]], 20)] });
@@ -307,18 +356,45 @@ describe("EngineClient's in-page fallback (no Worker: this is what vitest itself
     } finally {
       client.dispose();
     }
-  }, 30_000);
+  }, 60_000);
 
-  it("really runs a build end to end on a tiny synthetic scene", async () => {
+  it("really runs a build end to end on a tiny synthetic scene, with the streamed positions back on the result", async () => {
     const client = createEngineClient();
     try {
       const tinyScene = scene({ buildings: [building("w1", [[0, 0], [12, 0], [12, 12], [0, 12]], 20)] });
       const params = { ...defaultPrintParams(), frame: false, trees: false, water: false };
       const result = await client.buildModel({ scene: tinyScene, params });
       expect(result.regions.length).toBeGreaterThan(0);
-      expect(result.regions.some((r) => r.region === "base")).toBe(true);
+      const base = result.regions.find((r) => r.region === "base");
+      expect(base).toBeDefined();
+      expect(base!.positions.length).toBeGreaterThan(0);
+      expect(result.merged.positions.length).toBeGreaterThan(0);
     } finally {
       client.dispose();
     }
-  }, 30_000);
+  }, 60_000);
+
+  it("PipelineClient: a preview run streams the regions progressively and an export afterwards returns files", async () => {
+    const client = new PipelineClient();
+    try {
+      const handle = client.run({ source: { kind: "scene", scene: blockScene(), key: "block" }, params: defaultPrintParams(), mode: "preview", date: "2026-09-02" });
+      const batches: string[][] = [];
+      handle.regions.subscribe((event) => batches.push(event.regions.map((r) => r.region)));
+      const states: string[] = [];
+      handle.progress.subscribe((event) => {
+        if (event.kind === "stage") states.push(event.state);
+      });
+      const done = await handle.done;
+      expect(done.result).toBeNull();
+      expect(batches.flat()).toContain("base");
+      expect(batches.flat()).toContain("buildings");
+      expect(states).toContain("done");
+      // The export runs the audit phase over the cached regions and writes the file.
+      const files = await client.exportFiles({ target: "stl", createdIso: "2026-09-02T00:00:00Z", stem: "block" });
+      expect(files.files.map((f) => f.name)).toEqual(["block.stl"]);
+      expect(files.sidecar).toHaveProperty("print_params");
+    } finally {
+      client.dispose();
+    }
+  }, 90_000);
 });

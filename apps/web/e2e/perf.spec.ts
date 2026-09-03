@@ -98,14 +98,18 @@ test("?perf=1 times the Overpass round trip, the normalise, the solid build and 
     expect(row?.scope, `${name} was not recorded in the worker`).toBe("worker");
   }
 
-  // At least one named step of the solid pipeline, not just the build total.
-  const solidRows = previewRows.filter((row) => row.name.startsWith("solid."));
-  expect(solidRows.length, "no solid pipeline steps were timed").toBeGreaterThan(0);
-  for (const row of solidRows) expect(row.ms).toBeGreaterThanOrEqual(0);
+  // Named stages of the pipeline (v3.1: one span per stage, named by its id,
+  // `lib/engine/pipeline/stages.ts`), not just the build total.
+  const STAGE_ROWS = ["context", "repair-buildings", "surface-roads", "buildings", "lettering", "base", "frame", "finish-base", "assembly", "merged", "audit"];
+  const stageRows = previewRows.filter((row) => STAGE_ROWS.includes(row.name));
+  expect(stageRows.length, "no pipeline stages were timed").toBeGreaterThanOrEqual(3);
+  for (const row of stageRows) expect(row.ms).toBeGreaterThanOrEqual(0);
   expect(
-    solidRows.reduce((total, row) => total + row.ms, 0),
-    "every solid step reported zero",
+    stageRows.reduce((total, row) => total + row.ms, 0),
+    "every stage reported zero",
   ).toBeGreaterThan(0);
+  const geometryPhase = rowNamed(previewRows, "phase.geometry");
+  expect(geometryPhase, "the geometry phase was not timed").toBeDefined();
 
   // The structured-clone hop back to the page: only the client can see it.
   const transfer = rowNamed(previewRows, "engine.transfer");

@@ -20,6 +20,7 @@ import type {
 } from "../types";
 import { bandIndexOf } from "../types";
 import type { Arena, ManifoldToplevel } from "./manifold";
+import { registerParamView } from "../pipeline/claims";
 
 /**
  * The smallest gap this engine ever leaves between two horizontal planes, mm.
@@ -185,6 +186,26 @@ export function makeContext(init: ContextInit): BuildContext {
     resolvedText: [],
     markBands: [],
   };
+}
+
+/**
+ * `params` with its `engravings` replaced, as a VIEW rather than a copy.
+ *
+ * Every other property reads straight through to the original object. That
+ * matters under the pipeline's strict-claims proxy (`pipeline/claims.ts`): a
+ * spread copy reads every leaf of the params and would make the caller a
+ * declared reader of all of them, while this view only reads what the layout
+ * behind it actually asks for.
+ */
+export function withEngravings(params: PrintParams, engravings: PrintParams["engravings"]): PrintParams {
+  const view = new Proxy(params, {
+    get(target, key, receiver) {
+      if (key === "engravings") return engravings;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  registerParamView(view);
+  return view;
 }
 
 /** Record a finding once; a repeat of the same id and detail is dropped. */

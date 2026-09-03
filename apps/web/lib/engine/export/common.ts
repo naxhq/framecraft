@@ -57,6 +57,18 @@ export interface ExportOptions {
   source?: SourceLocation;
   /** File stem without extension; defaults to "framecraft". */
   stem?: string;
+  /**
+   * `PrintParams.color_mode`, resolved by the caller. The pipeline's export
+   * stage reads it through its claim and passes it here so the decision is on
+   * record; a writer called directly falls back to `result.params.color_mode`.
+   */
+  colorMode?: "single" | "parts";
+  /**
+   * `PrintParams.colour.palette` (v3.1): written into every 3MF's metadata as
+   * `framecraft:palette` and into the sidecar, so the preset the colours came
+   * from is a fact of the file rather than a UI-only setting.
+   */
+  palette?: string | null;
 }
 
 export interface ResolvedExportOptions {
@@ -65,6 +77,7 @@ export interface ResolvedExportOptions {
   created: Date;
   source: SourceLocation | null;
   stem: string;
+  palette: string | null;
 }
 
 export function resolveOptions(result: EngineResult, options: ExportOptions): ResolvedExportOptions {
@@ -79,7 +92,13 @@ export function resolveOptions(result: EngineResult, options: ExportOptions): Re
     created: options.created ?? new Date(),
     source: options.source ?? null,
     stem: sanitizeStem(options.stem ?? "framecraft"),
+    palette: options.palette === undefined ? (result.params.colour?.palette ?? null) : options.palette,
   };
+}
+
+/** The `framecraft:palette` metadata entry, when the params name a palette. */
+export function paletteEntries(resolved: ResolvedExportOptions): Array<[string, string]> {
+  return resolved.palette === null || resolved.palette === "" ? [] : [["framecraft:palette", resolved.palette]];
 }
 
 export function sanitizeStem(stem: string): string {
@@ -206,8 +225,8 @@ export function placeMerged(result: EngineResult, placement: Placement): RegionM
 }
 
 /** True when this parameter set wants one object rather than one per region. */
-export function isSingleObject(result: EngineResult): boolean {
-  return (result.params.color_mode ?? "single") === "single";
+export function isSingleObject(result: EngineResult, options: Pick<ExportOptions, "colorMode"> = {}): boolean {
+  return (options.colorMode ?? result.params.color_mode ?? "single") === "single";
 }
 
 export interface MergedMesh {
@@ -370,6 +389,10 @@ export interface SidecarInput {
   elapsedS: number;
   created: Date;
   printerProfileId: string;
+  /** `colour.palette`, `colour.preview_theme` and `schema_version` as the export stage read them (v3.1); each is also inside `print_params`. */
+  palette?: string | null;
+  previewTheme?: string | null;
+  schemaVersion?: number;
 }
 
 function fileExtension(name: string): string {
@@ -392,6 +415,7 @@ export function buildSidecarJson(input: SidecarInput): Record<string, unknown> {
       created,
       source: input.source ?? null,
       stem: "",
+      palette: input.palette === undefined ? (result.params.colour?.palette ?? null) : input.palette,
     }),
     scene_request: null,
     print_params: result.params,
@@ -428,6 +452,12 @@ export function buildSidecarJson(input: SidecarInput): Record<string, unknown> {
     timings_s: { engine: result.stats.elapsedMs / 1000, total: elapsedS },
     export_target: target,
     printer_profile: printerProfileId,
+    // v3.1: the three fields the export stage reads for the file itself, at the
+    // top level so a reader (the matrix test, `make validate`) finds them
+    // without walking `print_params`.
+    schema_version: input.schemaVersion ?? result.params.schema_version ?? null,
+    colour_palette: input.palette === undefined ? (result.params.colour?.palette ?? null) : input.palette,
+    preview_theme: input.previewTheme === undefined ? (result.params.colour?.preview_theme ?? null) : input.previewTheme,
     /**
      * The Z ceiling this build was made against, mm.
      *

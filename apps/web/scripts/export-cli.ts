@@ -4,29 +4,32 @@
 //       --params ../../fixtures/print-params-default.json \
 //       --target bambu-3mf --out ../../artifacts/chicago-web.3mf
 //
-// Runs the TypeScript engine (lib/engine/engine.ts) on a SceneGraph JSON and
-// a PrintParams JSON, then writes the export for `--target` (any
-// PrintParams.export_target value; defaults to the params' own export_target)
-// plus a `<stem>.json` sidecar shaped like the Python service's, so
-// `make validate FILE=<abs path>` can judge the file against it. CREDITS.txt
-// is written beside the output. Relative paths resolve from the working
-// directory.
+// Runs the TypeScript engine (lib/engine/engine.ts, the staged pipeline over a
+// fresh cache) on a SceneGraph JSON and a PrintParams JSON, then writes the
+// export for `--target` (any PrintParams.export_target value; defaults to the
+// params' own export_target) plus a `<stem>.json` sidecar shaped like the
+// Python service's, so `make validate FILE=<abs path>` can judge the file
+// against it. CREDITS.txt is written beside the output. Relative paths resolve
+// from the working directory.
 //
-// The engine module is loaded dynamically: it is being built in parallel, and
-// this script must typecheck and give a clear error while it does not exist.
+// FRAMECRAFT_PERF=1 turns perf mode on for the run (`lib/perf.ts` cannot read
+// a query string here) and prints the per-stage table after the summary, so
+// the reference build can be profiled from the command line (v3-00 audit
+// finding 14).
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { defaultPrintParams, type PrintParams, type SceneGraph } from "../lib/contracts";
+import { buildModel } from "../lib/engine/engine";
 import { sceneFromOverpass } from "../lib/engine/osm/scene";
 import type { TerrainGrid } from "../lib/engine/types";
 import { buildSidecarJson, sanitizeStem } from "../lib/engine/export/common";
 import { EXPORT_TARGETS, exportForTarget, isExportTarget, resultForTile, tileStem, type ExportTarget } from "../lib/engine/export/index";
 import { CREDITS_TEXT } from "../lib/engine/export/stl";
 import { estimate } from "../lib/engine/estimate";
-import type { EngineInput, EngineResult } from "../lib/engine/types";
+import type { EngineResult } from "../lib/engine/types";
+import { perfEnabled, perfReport, perfText, setPerfEnabled } from "../lib/perf";
 import { resolveProfile } from "../lib/printers";
 
 interface Args {
@@ -94,7 +97,8 @@ const USAGE =
   "  --terrain  a TerrainGrid JSON, or `demo` / `demo:<relief_m>` for a synthetic\n" +
   "             west-to-east ramp over the crop (default 60 m of relief), so a DRAPED\n" +
   "             build can be put through `make validate` without a network fetch.\n" +
-  "  --radius   ground radius in metres for --overpass (default 900).";
+  "  --radius   ground radius in metres for --overpass (default 900).\n" +
+  "  FRAMECRAFT_PERF=1 in the environment prints the per-stage timing table.";
 
 function parseArgs(argv: string[]): Args {
   const values = new Map<string, string>();
@@ -194,45 +198,6 @@ function readJson<T>(path: string): T {
  */
 const DEMO_CENTER = { lat: 41.8827, lon: -87.6233 };
 
-/** The engine's entry point, whichever name lib/engine/engine.ts exports it under. */
-type EngineRunner = (input: EngineInput) => Promise<EngineResult> | EngineResult;
-
-interface EngineModule {
-  runEngine?: EngineRunner;
-  buildModel?: EngineRunner;
-  buildEngineResult?: EngineRunner;
-  default?: EngineRunner | { runEngine?: EngineRunner };
-}
-
-async function loadEngine(): Promise<EngineRunner> {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const candidates = ["engine.ts", "engine.js", "index.ts", "index.js"].map((name) => resolve(here, "..", "lib", "engine", name));
-  let lastError: unknown = null;
-  for (const candidate of candidates) {
-    let mod: EngineModule;
-    try {
-      mod = (await import(pathToFileURL(candidate).href)) as EngineModule;
-    } catch (error) {
-      // Keep the first (engine.ts) failure: it names the module that matters.
-      lastError = lastError ?? error;
-      continue;
-    }
-    const runner =
-      mod.runEngine ??
-      mod.buildModel ??
-      mod.buildEngineResult ??
-      (typeof mod.default === "function" ? mod.default : mod.default?.runEngine);
-    if (typeof runner === "function") {
-      return runner;
-    }
-    lastError = new Error(`${candidate} exports none of runEngine, buildModel, buildEngineResult or a default function`);
-  }
-  const reason = lastError instanceof Error ? lastError.message : String(lastError);
-  throw new Error(
-    "the browser engine (apps/web/lib/engine/engine.ts) is not available yet, so nothing can be built from the command line: " + reason,
-  );
-}
-
 function sidecar(args: Args, result: EngineResult, files: Array<{ name: string; bytes: Uint8Array }>, notes: string[], scene: SceneGraph, elapsedS: number, created: Date) {
   return buildSidecarJson({
     result,
@@ -255,6 +220,7 @@ function sidecar(args: Args, result: EngineResult, files: Array<{ name: string; 
 }
 
 async function main(): Promise<void> {
+  if (process.env.FRAMECRAFT_PERF === "1") setPerfEnabled(true);
   const started = Date.now();
   const args = parseArgs(process.argv.slice(2));
   const fromFile: PrintParams = { ...defaultPrintParams(), ...readJson<Partial<PrintParams>>(resolve(args.params)) };
@@ -278,8 +244,7 @@ async function main(): Promise<void> {
   const terrain = loadTerrain(args.terrain, args.radiusM);
   const target: ExportTarget = args.target ?? params.export_target ?? "bambu-3mf";
 
-  const run = await loadEngine();
-  const result = await run({ scene, params, terrain, rotationDeg: args.rotationDeg });
+  const result = await buildModel({ scene, params, terrain, rotationDeg: args.rotationDeg });
 
   const outPath = resolve(args.out);
   const outDir = dirname(outPath);
@@ -367,6 +332,12 @@ async function main(): Promise<void> {
   for (const note of output.notes) console.log(`note: ${note}`);
   for (const finding of result.findings) console.log(`${finding.severity}: ${finding.title} (${finding.detail})`);
   console.log(`engine ${(result.stats.elapsedMs / 1000).toFixed(2)} s, total ${((Date.now() - started) / 1000).toFixed(2)} s`);
+  if (perfEnabled()) {
+    // The per-stage table: every stage span the run recorded, folded by name,
+    // in the order it started. Same text the HUD's Copy button produces.
+    console.log("");
+    console.log(perfText(perfReport("export:cli")));
+  }
 }
 
 main().catch((error: unknown) => {

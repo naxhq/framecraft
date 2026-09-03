@@ -2383,7 +2383,14 @@ export function recommend_plate_mm(
   const steps = Math.round((PLATE_MAX_MM - PLATE_MIN_MM) / PLATE_GRID_MM);
   for (let i = 0; i <= steps; i += 1) {
     const candidate = PLATE_MIN_MM + i * PLATE_GRID_MM;
-    const view: ParamsLike = { ...params, plate_mm: candidate };
+    // A view rather than a spread copy: the pipeline's strict-claims proxy
+    // counts every leaf a copy touches as a dependency of the caller, and the
+    // recommendation reads only what the scale and the thresholds read.
+    const view = new Proxy(params, {
+      get(target, key, receiver) {
+        return key === "plate_mm" ? candidate : Reflect.get(target, key, receiver);
+      },
+    }) as ParamsLike;
     if (widened_fraction_at(footprints, view, radius_m) < max_widened_fraction) {
       return candidate;
     }

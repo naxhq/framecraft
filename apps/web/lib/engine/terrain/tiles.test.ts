@@ -410,7 +410,13 @@ describe("fetchTerrainGrid", () => {
     expect([...loud!.elevations]).toEqual([...plain!.elevations]);
   });
 
-  it("applies params.terrain.smoothing", async () => {
+  it("returns the RAW grid stamped `smoothing: 0`; params.terrain.smoothing is the pipeline's terrain stage's to apply, once", async () => {
+    // v3.1: the fetcher no longer smooths. `terrain.smoothing` is a parameter
+    // the worker's `terrain` stage claims and applies on top of the stamped
+    // pass count (`lib/engine/pipeline/stages.ts`), so a smoothing change is
+    // a stage re-run, not a refetch. Two fetches with different smoothing
+    // settings therefore return the same elevations, both stamped 0, and the
+    // stage's own operation on them is what softens the relief.
     const rough = (x: number, y: number): number => ((x + y) % 2 === 0 ? 0 : 60);
     const sharp = await fetchTerrainGrid(
       CHICAGO,
@@ -422,7 +428,14 @@ describe("fetchTerrainGrid", () => {
       terrainParams({ terrain: { enabled: true, smoothing: 5 } }),
       { fetch: planeServer(rough).fetch },
     );
-    expect(soft!.rangeM).toBeLessThan(sharp!.rangeM);
+    expect(sharp!.smoothing).toBe(0);
+    expect(soft!.smoothing).toBe(0);
+    expect([...soft!.elevations]).toEqual([...sharp!.elevations]);
+    expect(soft!.rangeM).toBe(sharp!.rangeM);
+    // What the stage does with `smoothing: 5` on that grid.
+    const softened = smoothGrid(sharp!, 5);
+    expect(softened.rangeM).toBeLessThan(sharp!.rangeM);
+    expect(smoothGrid(sharp!, 0)).toBe(sharp);
   });
 
   it("turns the rotation into scene metres through the shared LocalFrame", async () => {

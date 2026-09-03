@@ -38,6 +38,7 @@ import {
   PART_OVERLAP_MM,
   addFinding,
   finding,
+  withEngravings,
   type BuildContext,
 } from "./context";
 import { lipKeepSection, lipTopMm } from "./frame";
@@ -360,7 +361,7 @@ function edgeCutsAt(
   const resized = edges.map((item, index) =>
     index === entryIndex ? { ...item.engraving, size_mm: sizeMm } : item.engraving,
   );
-  const layout = T.lettering_layout({ ...params, engravings: resized }, tokens, rotationDeg);
+  const layout = T.lettering_layout(withEngravings(params, resized), tokens, rotationDeg);
   const entry = layout.engravings.find((item) => item.index === entryIndex);
   return entry !== undefined && !entry.fit.refused;
 }
@@ -503,7 +504,10 @@ export function buildLettering(
   const { edges, underside } = splitEngravings(params);
   // The shared layout only knows the four frame edges, so it is given exactly
   // those; the underside lines are laid out below with the mark's own rule.
-  const edgeParams: PrintParams = { ...params, engravings: edges.map((item) => item.engraving) };
+  // An override view rather than a spread copy: a copy reads every leaf of
+  // the params, which the pipeline's strict-claims check would count as a
+  // dependency of the lettering on all of them (`pipeline/claims.ts`).
+  const edgeParams = withEngravings(params, edges.map((item) => item.engraving));
   const layout = T.lettering_layout(edgeParams, tokens, rotationDeg);
   reportLayoutWarnings(ctx, layout.warnings);
 

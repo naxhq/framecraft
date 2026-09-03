@@ -67,10 +67,11 @@ export interface ExportOutput {
  * have to discover by opening it (`[V3-P4-E5]`).
  */
 export function exportForTarget(result: EngineResult, target: ExportTarget, options: ExportForTargetOptions = {}): ExportOutput {
-  // One perf row per exporter (`export.bambu-3mf`, `export.stl`, ...). A tiled
-  // build recurses through here once per tile, so the row's count is the number
-  // of files this export actually wrote. No-op with perf mode off
-  // (`lib/perf.ts`), which keeps `runExport` a pure function either way.
+  // One perf row per exporter (`export.bambu-3mf`, `export.stl`, ...), one span
+  // per call: a tiled build writes its tiles through `writeForTarget` below,
+  // not back through here, so the row's count is the number of times the
+  // target was exported and its time is never counted twice (v3-00 audit
+  // finding 3). No-op with perf mode off (`lib/perf.ts`).
   return perfSpan(`export.${target}`, () => writeForTarget(result, target, options));
 }
 
@@ -94,7 +95,7 @@ function writeForTarget(result: EngineResult, target: ExportTarget, options: Exp
       stem: options.stem ?? "framecraft",
       created,
       writeTile: (tileResult, tileOptions) =>
-        exportForTarget(tileResult, target, { ...options, ...tileOptions, profile }).files,
+        writeForTarget(tileResult, target, { ...options, ...tileOptions, profile }).files,
     });
     return {
       target,

@@ -69,10 +69,10 @@ export function exportObj(result: EngineResult, options: ExportOptions = {}): Ex
   // In single-colour mode the file describes ONE object, so it carries the
   // boolean union rather than the partition: a reader handed six touching
   // shells imports six objects (`common.placeMerged`).
-  const meshes: RegionMesh[] = isSingleObject(result)
+  const meshes: RegionMesh[] = isSingleObject(result, options)
     ? [{ ...placeMerged(result, placed), region: "base" }]
     : placed.regions;
-  const groups: ObjGroup[] = isSingleObject(result)
+  const groups: ObjGroup[] = isSingleObject(result, options)
     ? meshes.map(plainGroup)
     : withTints(meshes, result, placed.offset);
 

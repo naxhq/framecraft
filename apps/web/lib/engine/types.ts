@@ -291,6 +291,26 @@ export interface TerrainGrid {
   rangeM: number;
   /** Data source label for attribution and the hint UI. */
   source: string;
+  /**
+   * Box-blur passes already applied to `elevations` (v3.1). `fetchTerrainGrid`
+   * stamps 0 and the pipeline's `terrain` stage applies `terrain.smoothing` on
+   * top, once; a grid with no stamp (a test's synthetic hill, the CLI's demo
+   * ramp) is final as given and is never smoothed by the engine.
+   */
+  smoothing?: number;
+}
+
+/**
+ * One Z band a cut occupies in a region (v3.1): a lettering engrave or inlay
+ * pocket, an ornament, an underside pocket. Presentation data for the preview's
+ * recess shading, derived from the cutters' bounding boxes clipped to the face
+ * they cut into; the geometry itself is untouched.
+ */
+export interface RecessBand {
+  region: RegionName;
+  kind: "lettering" | "ornament" | "underside";
+  /** `[low, high]` engine millimetres. */
+  zMm: [number, number];
 }
 
 /** Terrain sampler in scene metres (ENU); returns elevation in metres above the tile minimum. */
@@ -410,6 +430,12 @@ export interface EngineResult {
    * a printed feature (`solid/attribution.ts`, DECISIONS `[V3-P7-A8]`).
    */
   attributionBands?: Array<[number, number]>;
+  /**
+   * Z bands of the lettering, ornament and underside cuts per region (v3.1),
+   * for the preview's recess shading. Absent from a result assembled before
+   * the pipeline existed; empty for a plate with no cuts.
+   */
+  recessBands?: RecessBand[];
 }
 
 /** Exporters take an EngineResult and return file bytes; they never touch manifold. */

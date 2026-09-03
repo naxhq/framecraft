@@ -35,7 +35,7 @@ import type {
 import type { Point } from "../../contracts";
 import { perfEnabled, perfRecord, perfSpan } from "../../perf";
 import type { Bbox3, RegionMesh, RegionName } from "../types";
-import { cleanMesh } from "./mesh";
+import { canonicalMesh, cleanMesh } from "./mesh";
 
 export type { CrossSection, Manifold, ManifoldToplevel, Vec2 };
 
@@ -86,49 +86,78 @@ export const MANIFOLD_WASM_PUBLIC_PATH = "/manifold/manifold.wasm";
  */
 export async function loadManifold(): Promise<ManifoldToplevel> {
   if (modulePromise === null) {
-    // `manifold-3d`'s own `.d.ts` declares `locateFile: () => string`, one
-    // parameter narrower than what it actually calls the function with
-    // (`Module["locateFile"](path, scriptDirectory)`); the optional parameter
-    // here keeps this assignable to that declared type while still reading
-    // the real `path` emscripten passes at runtime (TS types are erased, so
-    // the declared arity is compile-time only).
-    const modulePromiseSource = isNodeRuntime()
-      ? ManifoldModule()
-      : ManifoldModule({
-          locateFile: (path?: string): string =>
-            `${MANIFOLD_WASM_PUBLIC_PATH.replace(/[^/]*$/, "")}${path ?? "manifold.wasm"}`,
-        });
-    // Perf mode splits the one await into the three costs it actually hides:
-    // `wasm.instantiate` (emscripten's own fetch + compile + instantiate),
-    // `wasm.setup` (binding the classes), and `wasm.fetch`, read back out of
-    // Resource Timing so the report carries the transferred byte count the
-    // promise itself cannot report. All three are skipped when perf is off.
-    modulePromise = perfSpan("wasm.instantiate", () => modulePromiseSource).then((wasm) => {
-      perfSpan("wasm.setup", () => {
-        wasm.setup();
-      });
-      recordWasmFetch();
-      return wasm;
-    });
+    modulePromise = perfEnabled() ? loadMeasured() : loadPlain();
   }
   return modulePromise;
 }
 
-/** The `manifold.wasm` resource entry, as a span with its transferred bytes. */
-function recordWasmFetch(): void {
-  if (!perfEnabled() || typeof performance.getEntriesByType !== "function") return;
-  try {
-    const entries = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
-    for (const entry of entries) {
-      if (!/manifold\.wasm(?:\?|$)/.test(entry.name)) continue;
-      perfRecord("wasm.fetch", entry.startTime, entry.duration, {
-        bytes: entry.transferSize > 0 ? entry.transferSize : entry.decodedBodySize,
-      });
-      return;
-    }
-  } catch {
-    // No Resource Timing in this realm (Node): `wasm.instantiate` still stands.
+/** The ordinary load: emscripten fetches (streaming, where the browser allows) and instantiates on its own. */
+async function loadPlain(): Promise<ManifoldToplevel> {
+  // `manifold-3d`'s own `.d.ts` declares `locateFile: () => string`, one
+  // parameter narrower than what it actually calls the function with
+  // (`Module["locateFile"](path, scriptDirectory)`); the optional parameter
+  // here keeps this assignable to that declared type while still reading
+  // the real `path` emscripten passes at runtime (TS types are erased, so
+  // the declared arity is compile-time only).
+  const wasm = await (isNodeRuntime() ? ManifoldModule() : ManifoldModule({ locateFile: locateWasm }));
+  wasm.setup();
+  return wasm;
+}
+
+function locateWasm(path?: string): string {
+  return `${MANIFOLD_WASM_PUBLIC_PATH.replace(/[^/]*$/, "")}${path ?? "manifold.wasm"}`;
+}
+
+/**
+ * The perf-mode load: the same module, with the one await split into the
+ * costs it hides, each its own row and none of them a subset of another
+ * (v3-00 audit finding 4):
+ *
+ *  - `wasm.fetch`: reading the binary, with its byte count (a `fetch` of the
+ *    public path in a browser, `fs.readFile` of the package's own file in Node);
+ *  - `wasm.instantiate`: `WebAssembly.instantiate` of those bytes, and nothing
+ *    else, through emscripten's `instantiateWasm` hook;
+ *  - `wasm.setup`: binding the classes.
+ *
+ * The non-streaming path costs a little latency on a slow connection (the
+ * whole binary arrives before compilation starts), which is why it is the
+ * perf-mode path only: with perf off the ordinary load runs untouched.
+ */
+async function loadMeasured(): Promise<ManifoldToplevel> {
+  const bytes = await perfSpan("wasm.fetch", () => readWasmBytes());
+  perfRecord("wasm.bytes", performance.now(), 0, { bytes: bytes.byteLength });
+  const instantiateWasm = (
+    imports: WebAssembly.Imports,
+    receive: (instance: WebAssembly.Instance, module: WebAssembly.Module) => void,
+  ): Record<string, never> => {
+    void perfSpan("wasm.instantiate", () => WebAssembly.instantiate(bytes, imports)).then((result) => {
+      receive(result.instance, result.module);
+    });
+    return {};
+  };
+  // The binding's option type names `locateFile` only; `instantiateWasm` is
+  // emscripten's own documented hook, present on every generated module.
+  const options = (isNodeRuntime() ? { instantiateWasm } : { instantiateWasm, locateFile: locateWasm }) as unknown as Parameters<typeof ManifoldModule>[0];
+  const wasm = await ManifoldModule(options);
+  perfSpan("wasm.setup", () => {
+    wasm.setup();
+  });
+  return wasm;
+}
+
+/** The `manifold.wasm` bytes, from the public path in a browser or from the package in Node. */
+async function readWasmBytes(): Promise<Uint8Array<ArrayBuffer>> {
+  if (isNodeRuntime()) {
+    const { readFile } = await import("node:fs/promises");
+    const { createRequire } = await import("node:module");
+    // The package exports `./manifold.wasm` by name; `require.resolve` honours
+    // the exports map for a subpath (the bare name is ESM-only and refuses).
+    const require = createRequire(import.meta.url);
+    return new Uint8Array(await readFile(require.resolve("manifold-3d/manifold.wasm")));
   }
+  const response = await fetch(locateWasm("manifold.wasm"));
+  if (!response.ok) throw new Error(`manifold.wasm: HTTP ${response.status}`);
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +226,11 @@ export class Arena {
   release<T extends Deletable>(value: T): T {
     if (this.live.delete(value)) outstanding -= 1;
     return value;
+  }
+
+  /** Whether this arena is tracking `value`. The pipeline runner asks this to tell a stage's own handles from the upstream handles its output merely references. */
+  has(value: Deletable): boolean {
+    return this.live.has(value);
   }
 
   /** Free everything still registered. Idempotent. */
@@ -657,6 +691,61 @@ export function countBodies(
   };
 }
 
+/**
+ * `pruneDebris` and `countBodies` from ONE decomposition.
+ *
+ * The finish of a region needs both the debris-free solid and its body count,
+ * and each is a `decompose()`; on a buildings region that is hundreds of
+ * bodies twice. The counts reported are exactly `countBodies(pruned)`'s: when
+ * some bodies are pruned the survivors are all real, and when none are (all
+ * real, or all debris) the solid is unchanged and so is its count.
+ */
+export function pruneDebrisCounted(
+  wasm: ManifoldToplevel,
+  arena: Arena,
+  solid: Manifold,
+  minVolume: number = DEBRIS_MM3,
+): {
+  solid: Manifold;
+  dropped: number;
+  bodies: { real: number; debris: number; debrisVolume: number; smallestMm3: number };
+} {
+  const bodies = arena.keepAll(solid.decompose());
+  const volumes = bodies.map((body) => body.volume());
+  let real = 0;
+  let debris = 0;
+  let debrisVolume = 0;
+  let smallest = Infinity;
+  for (const volume of volumes) {
+    smallest = Math.min(smallest, volume);
+    if (volume < minVolume) {
+      debris += 1;
+      debrisVolume += volume;
+    } else {
+      real += 1;
+    }
+  }
+  const unchanged = {
+    solid,
+    dropped: 0,
+    bodies: { real, debris, debrisVolume, smallestMm3: Number.isFinite(smallest) ? smallest : 0 },
+  };
+  if (bodies.length <= 1 || real === 0 || debris === 0) {
+    arena.dropAll(bodies);
+    return unchanged;
+  }
+  const kept = bodies.filter((_body, index) => volumes[index] >= minVolume);
+  const merged = arena.keep(wasm.Manifold.union(kept));
+  let smallestKept = Infinity;
+  for (const volume of volumes) if (volume >= minVolume) smallestKept = Math.min(smallestKept, volume);
+  arena.dropAll(bodies);
+  return {
+    solid: merged,
+    dropped: debris,
+    bodies: { real, debris: 0, debrisVolume: 0, smallestMm3: smallestKept },
+  };
+}
+
 /** Drop zero-volume boolean debris left floating beside a region's real bodies. */
 export function pruneDebris(
   wasm: ManifoldToplevel,
@@ -725,18 +814,19 @@ export function toRegionMesh(
    */
   clean: { collapseNeedles?: boolean } = {},
 ): RegionMesh {
-  const mesh = solid.getMesh();
-  const cleaned = cleanMesh(
-    {
-      positions: doublePositions(solid, mesh.vertProperties, mesh.numProp),
-      indices: new Uint32Array(mesh.triVerts),
-    },
-    clean,
-  );
+  // Four perf rows under the finish and merged stages, because the split
+  // matters: `mesh.clean` is the repair ladder, which is the whole cost of a
+  // merged solid that carries degenerate seams and nothing on a clean region.
+  const mesh = perfSpan("mesh.get", () => solid.getMesh());
+  const positions = perfSpan("mesh.double", () => doublePositions(solid, mesh.vertProperties, mesh.numProp));
+  const cleaned = perfSpan("mesh.clean", () => cleanMesh({ positions, indices: new Uint32Array(mesh.triVerts) }, clean));
+  // History-free byte order (`mesh.canonicalMesh`): a warm incremental run and
+  // a cold run of the same parameters write the same file.
+  const ordered = perfSpan("mesh.order", () => canonicalMesh(cleaned.mesh));
   return {
     region,
-    positions: cleaned.mesh.positions,
-    indices: cleaned.mesh.indices,
+    positions: ordered.positions,
+    indices: ordered.indices,
     volumeMm3: solid.volume(),
     bbox: bboxOf(solid),
     bodies: bodies ?? bodyCount(solid),

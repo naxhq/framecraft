@@ -19,7 +19,15 @@ function rotl(x: number, n: number): number {
 
 /** SHA-1 digest of a UTF-8 string, returned as lowercase hex (40 chars). */
 export function sha1Hex(input: string): string {
-  const bytes = utf8Bytes(input);
+  return sha1HexBytes(utf8Bytes(input));
+}
+
+/**
+ * SHA-1 digest of raw bytes, lowercase hex. The pipeline's stage keys hash
+ * typed-array inputs (a terrain grid's elevations) through this without a
+ * string round trip (`lib/engine/pipeline/hash.ts`).
+ */
+export function sha1HexBytes(bytes: Uint8Array): string {
   const bitLen = bytes.length * 8;
 
   // Pad: 0x80, then zeros, then the 64-bit big-endian bit length, to a

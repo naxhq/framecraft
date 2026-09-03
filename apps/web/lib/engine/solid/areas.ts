@@ -422,18 +422,17 @@ function replaceSinkSection(
   next: CrossSection,
 ): void {
   const { arena } = ctx;
-  const previous = sink.section;
   sink.section = next;
   // The SOLID is the same footprint clipped to the printed plate; a recess is
   // clipped outside it, so this cannot be skipped.
   const plate = cropSection(ctx, ctx.plateHalfMm);
   const clipped = intersectSection(arena, next, plate);
   arena.drop(plate);
-  if (clipped !== null) {
-    if (sink.solidSection !== previous) arena.drop(sink.solidSection);
-    sink.solidSection = clipped;
-  }
-  if (previous !== sink.solidSection) arena.drop(previous);
+  if (clipped !== null) sink.solidSection = clipped;
+  // The pre-merge sections are NOT freed here. In the staged pipeline they are
+  // another stage's cached output (the layer's repaired footprint is what the
+  // layers after it were blocked by, and stays so), and that owner frees them
+  // when it is replaced; a temporary is freed by its stage arena instead.
 }
 
 /** Every surface region, in precedence order, each giving way to the last. */

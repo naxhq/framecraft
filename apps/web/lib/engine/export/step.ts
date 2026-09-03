@@ -240,7 +240,7 @@ export function exportStep(result: EngineResult, options: StepOptions = {}): Ste
   // One shell in single-colour mode: the boolean union, not the partition
   // (`common.placeMerged`). In parts mode every region keeps its own shell,
   // which is what a CAD reader needs to give them different materials.
-  const shells = isSingleObject(result) ? [placeMerged(result, placed)] : placed.regions;
+  const shells = isSingleObject(result, options) ? [placeMerged(result, placed)] : placed.regions;
   const doc = stepDocument(shells, {
     fileName,
     title: resolved.title,

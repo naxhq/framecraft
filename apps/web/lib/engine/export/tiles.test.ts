@@ -254,8 +254,17 @@ describe("an untiled build", () => {
     // the unzipped `3D/3dmodel.model` before this number was touched: nothing
     // outside the `<metadata>` list moved, and the mesh, the plate, the config
     // parts and the zip framing are byte for byte what they were.
+    //
+    // It moved a third time in v3.1 (Task 1, the staged pipeline), and again
+    // the writer changed on purpose: `bambuMetadata` gained ONE entry,
+    // `framecraft:palette` (`common.paletteEntries`, DECISIONS [V3.1-P1-2]:
+    // `colour.palette` has to have a file effect), appended after the
+    // provenance block. Checked the same way, entry by entry on the unzipped
+    // `3D/3dmodel.model`: nothing else in the metadata list, the mesh, the
+    // plate, the config parts or the zip framing moved.
     const digest = createHash("sha256").update(file.bytes).digest("hex");
-    expect(digest).toBe("ddc4a39f8d2364de89c799fb594167ba571326efa9734964aef2fb487e89f008");
+    expect(digest).toBe("42c5cd560cc98cb2bcfaa3e502dc900ac8e1fe3f346ebc0f27288d5493845064");
+    expect(unzipText(file.bytes, "3D/3dmodel.model")).toContain('<metadata name="framecraft:palette">default</metadata>');
     // The block is there, once each, so a future edit that drops it fails here
     // as well as on the hash.
     const model = unzipText(file.bytes, "3D/3dmodel.model");

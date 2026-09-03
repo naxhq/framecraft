@@ -1,120 +1,104 @@
 /**
- * `runOneBuild` (via `runBuildJob`) must hand `msg.input` to `buildModel()` verbatim,
- * including `terrain` -- phase 3's `EngineInput.terrain` is a
- * structured-clone-friendly `TerrainGrid`, not a `TerrainSampler`, so unlike
- * the pre-phase-3 code there is no longer a reason to null it out on the way
- * in. Mocks `./engine` so this is a fast plumbing check, not a real build:
- * `synthetic.test.ts`'s "the terrain hook" describe block is what actually
- * exercises a terrain grid through the real solid pipeline.
+ * A run's `terrain` reaches the `terrain` stage as the grid it was posted
+ * with: phase 3's `EngineInput.terrain` is a structured-clone-friendly
+ * `TerrainGrid`, and the session hands it to the pipeline verbatim. A real
+ * (small) build through the real session, not a mock: the assertion is on the
+ * printed relief the grid produces, which is the only proof the grid arrived.
  */
 import { describe, expect, it, vi } from "vitest";
 
 import { defaultPrintParams } from "../contracts";
-import type { TerrainGrid } from "./types";
+import { terrainScene } from "./pipeline/testScenes";
+import { PipelineSession, type RunJobMessage, type WorkerResponse } from "./protocol";
 
-const buildModelMock = vi.fn(async (input?: unknown) => {
-  void input;
-  return {
-    regions: [],
-    merged: {
-      region: "base" as const,
-      positions: new Float64Array(),
-      indices: new Uint32Array(),
-      volumeMm3: 0,
-      bbox: {
-        min: [0, 0, 0] as [number, number, number],
-        max: [0, 0, 0] as [number, number, number],
+async function runToDone(msg: RunJobMessage): Promise<WorkerResponse & { kind: "done" }> {
+  const session = new PipelineSession();
+  const posted: WorkerResponse[] = [];
+  try {
+    session.handle(msg, (message) => {
+      posted.push(message);
+    });
+    await vi.waitFor(
+      () => {
+        expect(posted.some((m) => m.kind === "done" || m.kind === "error")).toBe(true);
       },
-      bodies: 1,
-      slot: 1,
-      colorHex: "#000000",
-    },
-    stats: {
-      scaleDenominator: 1,
-      minWallMm: 0,
-      measuredMinWallMm: null,
-      buildings: 0,
-      buildingsMerged: 0,
-      buildingsDilated: 0,
-      heightFallbacks: 0,
-      triangles: 0,
-      widthMm: 0,
-      depthMm: 0,
-      heightMm: 0,
-      elapsedMs: 0,
-    },
-    findings: [],
-    resolvedText: [],
-    params: defaultPrintParams(),
-  };
-});
-
-vi.mock("./engine", () => ({ buildModel: (input: unknown) => buildModelMock(input) }));
-
-describe("runOneBuild: terrain passes through to buildModel() unmodified", () => {
-  it("does not null out a TerrainGrid on the way in", async () => {
-    const { runBuildJob, resetBuildQueueForTest } = await import("./protocol");
-    resetBuildQueueForTest();
-    const grid: TerrainGrid = {
-      originEastM: -100,
-      originNorthM: -100,
-      cellM: 10,
-      cols: 3,
-      rows: 3,
-      elevations: new Float32Array(9),
-      rangeM: 5,
-      source: "test",
-    };
-    const posted: unknown[] = [];
-    await runBuildJob(
-      {
-        kind: "build",
-        id: 1,
-        input: {
-          scene: {
-            bounds: { min_x: -100, min_y: -100, max_x: 100, max_y: 100 },
-            center: { lat: 0, lon: 0 },
-            buildings: [],
-            roads: [],
-            water: [],
-            green: [],
-            trees: [],
-            stats: { building_count: 0, coverage: "empty", height_tag_ratio: 0 },
-          },
-          params: defaultPrintParams(),
-          terrain: grid,
-        },
-      },
-      (message) => posted.push(message),
+      { timeout: 60_000, interval: 20 },
     );
-    expect(buildModelMock).toHaveBeenCalledTimes(1);
-    expect(buildModelMock.mock.calls[0][0]).toMatchObject({ terrain: grid });
-  });
+    const done = posted.find((m) => m.kind === "done");
+    const error = posted.find((m) => m.kind === "error");
+    if (done === undefined || done.kind !== "done") throw new Error(`the run failed: ${JSON.stringify(error)}`);
+    return done;
+  } finally {
+    session.dispose();
+  }
+}
 
-  it("builds fine with no terrain at all (terrain stays undefined, never forced to null)", async () => {
-    const { runBuildJob, resetBuildQueueForTest } = await import("./protocol");
-    resetBuildQueueForTest();
-    buildModelMock.mockClear();
-    await runBuildJob(
-      {
-        kind: "build",
-        id: 2,
-        input: {
-          scene: {
-            bounds: { min_x: -100, min_y: -100, max_x: 100, max_y: 100 },
-            center: { lat: 0, lon: 0 },
-            buildings: [],
-            roads: [],
-            water: [],
-            green: [],
-            trees: [],
-            stats: { building_count: 0, coverage: "empty", height_tag_ratio: 0 },
-          },
-          params: defaultPrintParams(),
-        },
-      },
-      () => undefined,
-    );
-    expect((buildModelMock.mock.calls[0][0] as { terrain?: unknown }).terrain).toBeUndefined();
-  });
+describe("PipelineSession: the terrain grid passes through to the terrain stage unmodified", () => {
+  const { scene, grid } = terrainScene();
+
+  it("a posted grid drapes the model: the result reports the relief the grid carries", async () => {
+    const done = await runToDone({
+      kind: "run",
+      id: 1,
+      source: { kind: "scene", scene, key: "terrain" },
+      params: defaultPrintParams(),
+      terrain: { grid, gate: "always" },
+      heroIds: null,
+      date: "2026-09-02",
+      rotationDeg: 0,
+      mode: "full",
+      known: {},
+      knownSceneHash: null,
+    });
+    expect(done.result?.stats.terrainReliefMm).toBeDefined();
+    expect(done.result?.stats.terrainReliefMm ?? 0).toBeGreaterThan(0);
+  }, 90_000);
+
+  it("no grid means a flat build (terrain stays null, never forced to a grid)", async () => {
+    const done = await runToDone({
+      kind: "run",
+      id: 2,
+      source: { kind: "scene", scene, key: "terrain" },
+      params: defaultPrintParams(),
+      terrain: null,
+      heroIds: null,
+      date: "2026-09-02",
+      rotationDeg: 0,
+      mode: "full",
+      known: {},
+      knownSceneHash: null,
+    });
+    expect(done.result?.stats.terrainReliefMm).toBeUndefined();
+  }, 90_000);
+
+  it("with `gate: \"param\"` the grid is used only when params.terrain.enabled says so", async () => {
+    const off = await runToDone({
+      kind: "run",
+      id: 3,
+      source: { kind: "scene", scene, key: "terrain" },
+      params: defaultPrintParams(),
+      terrain: { grid, gate: "param" },
+      heroIds: null,
+      date: "2026-09-02",
+      rotationDeg: 0,
+      mode: "full",
+      known: {},
+      knownSceneHash: null,
+    });
+    expect(off.result?.stats.terrainReliefMm).toBeUndefined();
+    const on = await runToDone({
+      kind: "run",
+      id: 4,
+      source: { kind: "scene", scene, key: "terrain" },
+      params: { ...defaultPrintParams(), terrain: { enabled: true, smoothing: 1 } },
+      terrain: { grid, gate: "param" },
+      heroIds: null,
+      date: "2026-09-02",
+      rotationDeg: 0,
+      mode: "full",
+      known: {},
+      knownSceneHash: null,
+    });
+    expect(on.result?.stats.terrainReliefMm ?? 0).toBeGreaterThan(0);
+  }, 120_000);
 });

@@ -26,8 +26,6 @@ import {
   decodeTerrariumTile,
   gridFromSampler,
   gridSamplesFor,
-  smoothGrid,
-  smoothingPasses,
   terrainEnabled,
 } from "./heightfield";
 import { decodePng } from "./png";
@@ -291,7 +289,10 @@ export async function fetchTerrainGrid(
       TERRARIUM_SOURCE,
     );
     if (raw === null) return null;
-    return smoothGrid(raw, smoothingPasses(params));
+    // Raw, stamped: `terrain.smoothing` is applied once, by the pipeline's
+    // `terrain` stage, which claims the parameter (v3.1). The stamp says how
+    // many passes the grid already carries, so the stage never smooths twice.
+    return { ...raw, smoothing: 0 };
   } catch {
     // Every failure is the same failure: no terrain, flat plate, no exception
     // out of a fetcher the UI calls on every parameter change.

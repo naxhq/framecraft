@@ -329,6 +329,46 @@ def range_literal(prop: dict) -> str:
     )
 
 
+def leaf_paths(schema: dict) -> list[str]:
+    """Every leaf of a PrintParams-shaped schema as a dotted path, in schema order.
+
+    The pipeline's stage registry (``apps/web/lib/engine/pipeline``) declares
+    which of these each stage reads, and its graph test compares the claims
+    against this list, so a schema addition without a stage claim fails CI
+    (DECISIONS [V3.1-P1-4]). Rules: a property that points at a ``$defs``
+    object recurses into it (``frame_style.shadow_gap.width_mm``); an array
+    whose items are a ``$defs`` object expands to ``name[].leaf``
+    (``engravings[].text``); an array of scalars is one leaf
+    (``hero_building_ids``, ``colour.gradient.slots``); everything else is a
+    leaf. Shared verbatim with ``gen_py.py``.
+    """
+    defs = schema.get("$defs", {})
+
+    def walk(props: dict, prefix: str, out: list[str]) -> None:
+        for name, prop in props.items():
+            path = f"{prefix}.{name}" if prefix else name
+            ref = prop.get("$ref")
+            if ref is not None:
+                target = defs[ref.split("/")[-1]]
+                if target.get("type") == "object":
+                    walk(target.get("properties", {}), path, out)
+                    continue
+                out.append(path)
+                continue
+            if prop.get("type") == "array":
+                item_ref = prop.get("items", {}).get("$ref")
+                if item_ref is not None:
+                    target = defs[item_ref.split("/")[-1]]
+                    if target.get("type") == "object":
+                        walk(target.get("properties", {}), f"{path}[]", out)
+                        continue
+            out.append(path)
+
+    out: list[str] = []
+    walk(schema.get("properties", {}), "", out)
+    return out
+
+
 def generate() -> str:
     out = [HEADER]
     print_params_schema = None
@@ -384,6 +424,26 @@ def generate() -> str:
         limit_lines.extend(render_limit_node(name, own, children, 2))
     limit_lines.append("} as const;\n")
     out.append("\n".join(limit_lines))
+    out.append("\n")
+
+    # PRINT_PARAM_LEAF_PATHS: every PrintParams leaf as a dotted path, so the
+    # pipeline's stage claims can be checked against the contract.
+    path_lines = [
+        "/**",
+        " * Every leaf of PrintParams as a dotted path, in schema order: nested objects",
+        " * expanded (`frame_style.shadow_gap.width_mm`), arrays of objects as",
+        " * `engravings[].text`, arrays of scalars as one leaf (`hero_building_ids`).",
+        " * The pipeline stage registry declares which of these each stage reads and",
+        " * `lib/engine/pipeline/graph.test.ts` checks every one is claimed, so a schema",
+        " * addition without a stage claim fails CI (DECISIONS [V3.1-P1-4]).",
+        " */",
+        "export const PRINT_PARAM_LEAF_PATHS = [",
+    ]
+    for path in leaf_paths(print_params_schema):
+        path_lines.append(f"  {json.dumps(path)},")
+    path_lines.append("] as const;\n")
+    path_lines.append("export type PrintParamPath = (typeof PRINT_PARAM_LEAF_PATHS)[number];\n")
+    out.append("\n".join(path_lines))
     out.append("\n")
 
     return "".join(out).rstrip() + "\n"

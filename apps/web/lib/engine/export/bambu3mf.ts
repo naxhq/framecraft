@@ -37,6 +37,7 @@ import {
   isoDate,
   orderedRegions,
   placeInBuildSpace,
+  paletteEntries,
   provenanceEntries,
   resolveOptions,
   slotColors,
@@ -267,6 +268,8 @@ export function bambuMetadata(result: EngineResult, resolved: ResolvedExportOpti
     ...provenanceEntries(result, resolved).map(
       ([key, value]) => [`framecraft:${key}`, value] as [string, string],
     ),
+    // The colour preset the region colours came from (v3.1, `colour.palette`).
+    ...paletteEntries(resolved),
   ];
 }
 

@@ -469,6 +469,86 @@ function splitNeedles(mesh: Mesh, threshold: number): { mesh: Mesh; split: numbe
  * default Chicago plate left the exporter as three bodies before this check was
  * here, while the solid it came from was one.
  */
+/**
+ * The same mesh with its vertices sorted by coordinate and its triangles
+ * rotated to start at their lowest vertex and sorted, so two meshes of the
+ * same geometry are the same bytes.
+ *
+ * manifold3d orders the triangles it hands back by the original ids of the
+ * meshes they came from, and those ids are allocated in construction order. Two
+ * builds of the same geometry through different histories (a warm incremental
+ * run and a cold full run, v3.1) therefore agree on every coordinate and every
+ * triangle but not on their order. This pass removes the history: an export
+ * of a given parameter set is one sequence of bytes however it was reached,
+ * which is what lets a region hash stand for its mesh. Ties between vertices
+ * at exactly the same coordinates keep their incoming order.
+ */
+export function canonicalMesh(mesh: Mesh): Mesh {
+  const p = mesh.positions;
+  const vertexCount = Math.floor(p.length / 3);
+  const order = new Uint32Array(vertexCount);
+  for (let i = 0; i < vertexCount; i += 1) order[i] = i;
+  order.sort((a, b) => {
+    const ax = a * 3;
+    const bx = b * 3;
+    if (p[ax] !== p[bx]) return p[ax] < p[bx] ? -1 : 1;
+    if (p[ax + 1] !== p[bx + 1]) return p[ax + 1] < p[bx + 1] ? -1 : 1;
+    if (p[ax + 2] !== p[bx + 2]) return p[ax + 2] < p[bx + 2] ? -1 : 1;
+    return a - b;
+  });
+  const rank = new Uint32Array(vertexCount);
+  const positions = new Float64Array(vertexCount * 3);
+  for (let i = 0; i < vertexCount; i += 1) {
+    const from = order[i];
+    rank[from] = i;
+    positions[i * 3] = p[from * 3];
+    positions[i * 3 + 1] = p[from * 3 + 1];
+    positions[i * 3 + 2] = p[from * 3 + 2];
+  }
+  const source = mesh.indices;
+  const triangleCount = Math.floor(source.length / 3);
+  const rotated = new Uint32Array(triangleCount * 3);
+  for (let t = 0; t < triangleCount; t += 1) {
+    let a = rank[source[t * 3]];
+    let b = rank[source[t * 3 + 1]];
+    let c = rank[source[t * 3 + 2]];
+    // Rotate, never reflect: the winding is the outward normal.
+    if (b < a && b <= c) {
+      const first = a;
+      a = b;
+      b = c;
+      c = first;
+    } else if (c < a && c < b) {
+      const first = a;
+      const second = b;
+      a = c;
+      b = first;
+      c = second;
+    }
+    rotated[t * 3] = a;
+    rotated[t * 3 + 1] = b;
+    rotated[t * 3 + 2] = c;
+  }
+  const triangleOrder = new Uint32Array(triangleCount);
+  for (let t = 0; t < triangleCount; t += 1) triangleOrder[t] = t;
+  triangleOrder.sort((s, t) => {
+    const sx = s * 3;
+    const tx = t * 3;
+    if (rotated[sx] !== rotated[tx]) return rotated[sx] - rotated[tx];
+    if (rotated[sx + 1] !== rotated[tx + 1]) return rotated[sx + 1] - rotated[tx + 1];
+    if (rotated[sx + 2] !== rotated[tx + 2]) return rotated[sx + 2] - rotated[tx + 2];
+    return s - t;
+  });
+  const indices = new Uint32Array(triangleCount * 3);
+  for (let k = 0; k < triangleCount; k += 1) {
+    const from = triangleOrder[k] * 3;
+    indices[k * 3] = rotated[from];
+    indices[k * 3 + 1] = rotated[from + 1];
+    indices[k * 3 + 2] = rotated[from + 2];
+  }
+  return { positions, indices };
+}
+
 export function componentCount(mesh: Mesh): number {
   const faces = Math.floor(mesh.indices.length / 3);
   if (faces === 0) return 0;
