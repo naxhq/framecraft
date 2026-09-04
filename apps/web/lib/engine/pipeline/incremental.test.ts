@@ -364,14 +364,16 @@ describe("incremental runs from an Overpass request", () => {
     }
     expect(storeyHeight(sixth.outcome)).toBe(3 * 9);
 
-    // Six normalise runs, one projection: the response was classified,
-    // projected, cleaned and cropped once, and only the heights were re-applied
-    // for the changes. A fetch that re-ran would project again.
+    // Five normalise runs (the override alone left it cached), one
+    // projection: the response was classified, projected, cleaned and cropped
+    // once, and only the heights were re-applied for the changes. A fetch
+    // that re-ran would project again.
+    expect(fifth.states.get("normalise")).toBe("cached");
     const rows = perfReport("heights").rows;
     const count = (name: string): number => rows.find((row) => row.name === name)?.count ?? 0;
-    expect(count("osm.normalize")).toBe(6);
+    expect(count("osm.normalize")).toBe(5);
     expect(count("osm.project")).toBe(1);
-    expect(count("osm.heights")).toBe(6);
+    expect(count("osm.heights")).toBe(5);
     setPerfEnabled(null);
     cache.dispose();
   }, 120_000);

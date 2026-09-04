@@ -320,7 +320,9 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       ],
       "extra": [],
       "digests": [
-        "socket"
+        "socket",
+        "overrideBands",
+        "ownerIds"
       ]
     },
     {
@@ -822,7 +824,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "inputs": [
         "region-buildings",
         "sit",
-        "buildings"
+        "buildings#ownerIds"
       ],
       "extra": [],
       "digests": []
@@ -853,7 +855,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "inputs": [
         "region-hero_building",
         "sit",
-        "buildings"
+        "buildings#ownerIds"
       ],
       "extra": [],
       "digests": []
@@ -1082,7 +1084,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "inputs": [
         "region-buildings_band_2",
         "sit",
-        "buildings"
+        "buildings#ownerIds"
       ],
       "extra": [],
       "digests": []
@@ -1110,7 +1112,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "inputs": [
         "region-buildings_band_3",
         "sit",
-        "buildings"
+        "buildings#ownerIds"
       ],
       "extra": [],
       "digests": []
@@ -1138,7 +1140,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "inputs": [
         "region-buildings_band_4",
         "sit",
-        "buildings"
+        "buildings#ownerIds"
       ],
       "extra": [],
       "digests": []
@@ -1166,7 +1168,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "inputs": [
         "region-buildings_band_5",
         "sit",
-        "buildings"
+        "buildings#ownerIds"
       ],
       "extra": [],
       "digests": []
@@ -1194,7 +1196,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "inputs": [
         "region-buildings_band_6",
         "sit",
-        "buildings"
+        "buildings#ownerIds"
       ],
       "extra": [],
       "digests": []
@@ -1222,7 +1224,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "inputs": [
         "region-buildings_band_7",
         "sit",
-        "buildings"
+        "buildings#ownerIds"
       ],
       "extra": [],
       "digests": []
@@ -1250,7 +1252,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "inputs": [
         "region-buildings_band_8",
         "sit",
-        "buildings"
+        "buildings#ownerIds"
       ],
       "extra": [],
       "digests": []
@@ -1263,7 +1265,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "context",
         "terrain",
         "surface-parks",
-        "buildings",
+        "buildings#overrideBands",
         "labels#roofs"
       ],
       "extra": [],
@@ -1291,7 +1293,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "inputs": [
         "region-override_1",
         "sit",
-        "buildings"
+        "buildings#ownerIds"
       ],
       "extra": [],
       "digests": []
@@ -1304,7 +1306,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "context",
         "terrain",
         "surface-parks",
-        "buildings",
+        "buildings#overrideBands",
         "labels#roofs"
       ],
       "extra": [],
@@ -1332,7 +1334,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "inputs": [
         "region-override_2",
         "sit",
-        "buildings"
+        "buildings#ownerIds"
       ],
       "extra": [],
       "digests": []
@@ -1345,7 +1347,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "context",
         "terrain",
         "surface-parks",
-        "buildings",
+        "buildings#overrideBands",
         "labels#roofs"
       ],
       "extra": [],
@@ -1373,7 +1375,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "inputs": [
         "region-override_3",
         "sit",
-        "buildings"
+        "buildings#ownerIds"
       ],
       "extra": [],
       "digests": []
@@ -1386,7 +1388,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "context",
         "terrain",
         "surface-parks",
-        "buildings",
+        "buildings#overrideBands",
         "labels#roofs"
       ],
       "extra": [],
@@ -1414,7 +1416,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "inputs": [
         "region-override_4",
         "sit",
-        "buildings"
+        "buildings#ownerIds"
       ],
       "extra": [],
       "digests": []
@@ -2026,7 +2028,12 @@ reconciliation has to know which buildings exist; its view exposes the
 buildings cut down to those two fields. And a stage keyed on a named part
 of any other input is served that part alone through `runner.inputPartView`
 and `stages.PART_EXPOSURE` (`repair-buildings#footprint` exposes
-`footprint`); a part with no exposure listed is served whole.
+`footprint`, `buildings#overrideBands` and `buildings#ownerIds` their own
+field); a part with no exposure listed is served whole. An override region
+is keyed on `buildings#overrideBands`, and the finish of every
+building-bearing region on `buildings#ownerIds`, which hashes the sorted
+owner ids and not the kernel's original ids (fresh per extrusion), so a
+warm and a cold build still agree on every region hash.
 
 **Canonical mesh order.** `toRegionMesh` now sorts vertices by coordinate and
 triangles by their lowest vertex (`mesh.canonicalMesh`). manifold3d orders

@@ -369,6 +369,25 @@ same table is appended to `docs/handoff/v3-01-matrix-audit.md` as section 7.
   byte-identical to the one-pass normaliser at every rule set checked.
   `heights.floor_height_m` on the Chicago Overpass path went from 2359 ms
   (2668 on this host today) to about 210 ms to the preview.
+- [V3.1-P7-16] `surface-overrides` is keyed on `normalise#overrides` (the
+  ground digest plus a hash of every building's `id` and `osm_id`) and on
+  `repair-buildings#footprint`, and its scene view exposes the buildings cut
+  down to those two fields; an override region is keyed on
+  `buildings#overrideBands` and the finish of every building-bearing region
+  on `buildings#ownerIds`, a hash of the sorted owner ids rather than of the
+  kernel's per-run original ids. With one coloured road,
+  `heights.floor_height_m` is 216 to 227 ms to the preview against 2674
+  before, the same 36 stages as without the override.
+- [V3.1-P7-17] A stage keyed on a named part of any input is served that
+  part alone (`runner.inputPartView`, `stages.PART_EXPOSURE`, the rest of
+  the record behind getters that throw), the way a scene part already was;
+  a part with no exposure listed is served whole and the table says so.
+  `digestOf` sizes a plain-data output with a bounded walk before it
+  serialises, so a scene or a raw response over the digest limit is never
+  serialised only to be discarded. The projection's five ground arrays are
+  frozen, shallow, so the one place they are shared by reference (every
+  scene built from one projection, and the page in the no-Worker transport)
+  cannot be edited through any of them.
 
 - [V3.1-P7-7] `cleanMesh` finds coincident vertices with one sort and a sweep
   (`mesh.vertexPairs`, built once per call at the ladder's coarsest rung and
@@ -534,12 +553,22 @@ a second scene part, `normalise#overrides`, is the ground digest plus a
 hash of every building's `id` and `osm_id`; the stage is keyed on it and on
 `repair-buildings#footprint`, and its view of the scene exposes the ground
 layers and the buildings cut down to those two fields (a height read on one
-throws, naming the stage and the part). Measured, same harness, this load:
-`floor_height_m` with one coloured road 257 to 271 ms and 40 stages, without
-257 to 290 and 40, the override surface and its region cached in both.
-`incremental.test.ts` drives it on the Overpass fixture with a park override:
-the override surface, its region, the plate and its seat stay cached under a
-storey change, and the `override_1` region is in the result.
+throws, naming the stage and the part). The override REGION needed two more
+parts of `buildings`: `buildings#overrideBands` (the recoloured buildings'
+band solids, the constant `none` when no group recoloured any) for the
+`region-override_N` stages, and `buildings#ownerIds` for the finish of
+every building-bearing region, a hash of WHICH buildings own a solid rather
+than of the map itself, whose keys are the kernel's original ids and fresh
+on every extrusion (keying on those broke the warm-equals-cold region hash,
+which `incremental.test.ts` pins). A finish whose region was served from
+the cache is then served too, with the attribution that matches that
+solid's ids. Measured, same harness, this load (10 node processes):
+`floor_height_m` with one coloured road 216 to 227 ms and 36 stages,
+without 211 to 215 and 36, the override surface, its region and its finish
+cached in both. `incremental.test.ts` drives it on the Overpass fixture with
+a park override: the override surface, its region and finish, the plate and
+its seat stay cached under a storey change, and the `override_1` region is
+in the result.
 
 **The other guard, `[V3.1-P7-17]`.** A stage keyed on
 `repair-buildings#footprint` was handed the whole repair record. Now

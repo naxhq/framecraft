@@ -1068,3 +1068,22 @@ Append-only. Format: `- [phase] decision, one line`.
   fails the day the count goes back up, which an alternation covering both could never do. The
   `synthetic.test.ts` upper bound of 1.002 is unchanged beside its new `1 - 1e-4` lower bound, so
   the volume is still pinned in both directions.
+
+- `[V3.1-P7-23]` **`[V3.1-P7-16]` is closed: the eighth target now holds with a surface override.**
+  `heights.floor_height_m` to the preview is 216-227 ms with one coloured road and 211-215 ms
+  without, 36 stages in both, against 2674 ms across 57 stages before. All eight Task 7 targets
+  are met without qualification, subject only to the quiet-host re-measurement `[V3.1-P7-14]`
+  still owes. Closing the `surface-overrides` hole exposed the next layer down, which is the
+  useful part of the finding: `region-override_N` read the buildings whole, so it is now keyed on
+  a digest of the recoloured bands, and every building-bearing finish on a hash of sorted owner
+  ids. The first attempt keyed on the owner map's keys, which are per-run kernel original ids,
+  and that broke warm-equals-cold region hashing. A cache key built from an identifier the kernel
+  regenerates each run is not a cache key, and only a warm-against-cold comparison catches it.
+- `[V3.1-P7-24]` **The part-exposure table is the mechanism, not a convention.** `ctx.input()`
+  serves a part-keyed input through `runner.inputPartView` using a declared `PART_EXPOSURE` map,
+  with everything outside a part's exposure throwing and naming the stage, and parts with no
+  exposure listed served whole so the table says plainly which are guarded. The registry check
+  asserts all seven footprint readers run clean through it. This is what `[V3.1-P7-17]` asked
+  for: the guard covers both part digests rather than whichever one an author remembered.
+  Separately, the projection's five ground arrays are now shallow-frozen at source, which
+  converts the latent aliasing the audit flagged into something the suite would fail on.

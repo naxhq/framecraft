@@ -112,7 +112,7 @@ import { buildTiles, tileGridSpec, type TileSource } from "../solid/tiling";
 import { buildTrees } from "../solid/trees";
 import { canonicalMesh } from "../solid/mesh";
 import { islandReport, validate, type BuiltRegion } from "../solid/validate";
-import { hashBytes, hashParts, hashString } from "./hash";
+import { hashBytes, hashParts, hashString, stableJson } from "./hash";
 import type { AuditFinding, EngineStats, RegionMesh, RegionName } from "../types";
 import { REGION_NAMES } from "../types";
 import {
@@ -269,6 +269,8 @@ export const SCENE_PARTS: Readonly<Record<"ground" | "overrides", ScenePartSpec>
  */
 export const PART_EXPOSURE: Readonly<Record<string, readonly string[]>> = {
   "repair-buildings#footprint": ["footprint"],
+  "buildings#overrideBands": ["overrideBands"],
+  "buildings#ownerIds": ["ownerIds"],
 };
 
 /**
@@ -879,7 +881,21 @@ const buildings = defineStage({
     "object_overrides[].tint",
   ],
   inputs: ["normalise", "context", "terrain", "repair-buildings"],
-  digests: { socket: (out) => solidsDigest(out.socket) },
+  // `socket` for the base; `overrideBands` for an override region, which
+  // holds buildings only when a group recoloured some (the constant `none`
+  // otherwise, so a green or road override's region does not re-run for a
+  // storey change); `ownerIds` for the finish of every building-bearing
+  // region. That last one hashes WHICH buildings own a solid, sorted, and
+  // not the map's keys: the keys are the kernel's original ids, fresh on
+  // every extrusion, so a warm and a cold build of the same model would key
+  // differently on them. A finish whose region was served from the cache
+  // (the geometry unchanged) is then served too, with the attribution that
+  // matches that solid's ids; a region that re-ran has a new key of its own.
+  digests: {
+    socket: (out) => solidsDigest(out.socket),
+    overrideBands: (out) => solidsDigest(out.overrideBands.map((band) => band.solid)),
+    ownerIds: (out) => hashString(stableJson(Object.values(out.ownerIds).sort())),
+  },
   run(ctx) {
     return buildBuildings(ctx.build, ctx.input("repair-buildings"), ctx.input("terrain").drape);
   },
@@ -1316,14 +1332,19 @@ function regionSolid(ctx: StageContext, region: RegionName): Manifold | null {
 
 function regionStage(region: RegionName): StageDef<RegionStageId> {
   const inputs = regionInputs(region);
+  // A region that carries labels is keyed on the label pieces it can hold,
+  // so a roof label leaves the roads cached and the other way round; an
+  // override region reads only the bands its group recoloured.
+  const inputDigests: Partial<Record<StageId, string>> = {
+    ...(inputs.includes("labels") ? { labels: labelDigestFor(region) } : {}),
+    ...(overrideIndexOf(region) === null ? {} : { buildings: "overrideBands" }),
+  };
   return defineStage({
     id: regionStageId(region),
     phase: "region",
     params: [],
     inputs,
-    // A region that carries labels is keyed on the label pieces it can hold,
-    // so a roof label leaves the roads cached and the other way round.
-    ...(inputs.includes("labels") ? { inputDigests: { labels: labelDigestFor(region) } } : {}),
+    ...(Object.keys(inputDigests).length === 0 ? {} : { inputDigests }),
     run(ctx) {
       return { solid: regionSolid(ctx, region) };
     },
@@ -1415,8 +1436,9 @@ function finishStage(region: RegionName): StageDef<FinishStageId> {
     phase: "region",
     params: finishClaims(region),
     // A building region reads the `buildings` stage's original-id map to name
-    // the owner of every triangle it ships.
+    // the owner of every triangle it ships, and is keyed on that map alone.
     inputs: owned ? [regionStageId(region), "sit", "buildings"] : [regionStageId(region), "sit"],
+    ...(owned ? { inputDigests: { buildings: "ownerIds" } } : {}),
     run(ctx) {
       const solid = ctx.input(regionStageId(region)).solid;
       if (solid === null || solid.isEmpty()) return null;

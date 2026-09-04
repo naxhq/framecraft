@@ -22,14 +22,16 @@ import { StageCache, runPipeline, stableJson, type PipelineJob, type RunOptions 
 import type { Snapshot } from "./matrix.assert";
 import { OSM_FIXTURE_REQUEST, overpassFetchImpl } from "./fixtures/overpassBlock";
 import type { ExportRequest } from "./stage";
-import { blockScene, bridgeScene, labelledScene, railScene, terrainScene } from "./testScenes";
+import { blockScene, bridgeScene, labelledScene, overrideScene, railScene, terrainScene } from "./testScenes";
 
 /**
  * The scenes a probe may ask for. `osm` is the Overpass-shaped fixture: only a
  * run that starts at `fetch` re-normalises, and `heights.*` is read by
- * `normalise` and nowhere else.
+ * `normalise` and nowhere else. `override` is the block with an OSM id on its
+ * pond and its park, which is what an `object_overrides` row on a water or
+ * green polygon needs to have anything to name (v3.1 Task 11).
  */
-export type MatrixScene = "block" | "rail" | "bridge" | "terrain" | "osm" | "labelled";
+export type MatrixScene = "block" | "rail" | "bridge" | "terrain" | "osm" | "labelled" | "override";
 
 /** Fixed so nothing in a written file moves because the clock did. */
 export const MATRIX_DATE = "2026-09-02";
@@ -77,6 +79,8 @@ function sceneSetup(scene: MatrixScene): SceneSetup {
     }
     case "labelled":
       return { job: { source: { kind: "scene", scene: labelledScene(), key: "labelled" }, terrain: null }, options: {} };
+    case "override":
+      return { job: { source: { kind: "scene", scene: overrideScene(), key: "override" }, terrain: null }, options: {} };
     case "osm":
       return {
         job: { source: { kind: "request", request: OSM_FIXTURE_REQUEST }, terrain: null },
