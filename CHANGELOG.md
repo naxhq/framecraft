@@ -116,6 +116,22 @@ keeps itself up to date, and a window you can arrange.
   and every tile solid is pruned of debris after the cut (a 0.000458 mm3
   splinter counted as a second body). All four tiles of a Chicago 2x2 pass
   ([V3.1-P7-2]).
+- Five of the six preset cities now pass the reference validator when the
+  browser engine builds them: Chicago, New York, Paris, London and San
+  Francisco all read ALL CHECKS PASS, where before only Chicago did. Four
+  distinct causes, each measured before it was touched: slits in the buildings
+  union where a tower clipped to its block shared an edge in plan but not in
+  the 3D union (Paris 55 degenerate faces, London and Tokyo 5), two float32
+  splits, the base-ridge merge leaving a thin rind at the crop edge, and the
+  wing widening the reference validator's mitre finds. No validator row, test
+  or threshold was weakened. Tokyo remains open, see Known issues.
+- The STEP writer no longer loses faces to its own coordinate grid. It wrote
+  six decimals, so at plate 256 the same needles that collapse on the float32
+  grid collapsed on the STEP grid with nothing reported; it now writes at the
+  3MF's twelve places, welds by the written text so the shell is closed on the
+  grid the reader sees, and counts a face the grid alone collapses separately
+  from one that was already zero-area. Chicago at plate 256: 273,066
+  triangles, zero lost to the grid.
 - A skeleton is shown only while a request is genuinely in flight and there is
   no previous value: every rebuild now keeps the previous figures on screen,
   dimmed and labelled, because a superseded number beats a grey bar. A
@@ -158,18 +174,17 @@ keeps itself up to date, and a window you can arrange.
 
 Open at this release, tracked with measurements in `docs/handoff/FAILURES.md`:
 
-- The browser engine fails the reference validator on five of the six preset
-  cities: New York, Tokyo, London and San Francisco on the minimum-wall row,
-  Paris on degenerate faces. Chicago passes, and the Python reference pipeline
-  builds all six cleanly. The gap became visible only when the browser-engine
-  CLI learned `--center`, which is what let the nightly preset matrix build
-  each city where it actually is instead of cropping around the Chicago Loop.
+- Tokyo is the one preset the browser engine does not build to the reference
+  validator's satisfaction: `min_wall` on two regions, narrowest 0.254 mm.
+  Chicago, New York, Paris, London and San Francisco all read ALL CHECKS PASS.
+  Diagnosed rather than open-ended: three acute building tips at z = 2.969 mm,
+  where a road ribbon stops 0.05 mm short of a building by OSM geometry and
+  leaves a rind of base beside it, which breaks the convex-corner pattern the
+  repair relies on. Two repairs were built, measured and backed out; both are
+  written up. It has an owner and ships as a stated limitation.
 - A 256 mm plate still carries a handful of degenerate faces on Chicago, and
   one thin lobe in frame-off parts mode. The default 180 mm plate is
   unaffected.
-- The STEP writer formats coordinates to six decimals and loses the same near
-  degenerate faces the STL writer now hardens against. STEP is a faceted B-rep
-  whose consumers re-mesh, and the reference validator does not read it.
 
 ## [3.0.0] - 2026-09-02
 

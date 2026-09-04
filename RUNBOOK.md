@@ -369,16 +369,14 @@ source edit and a miss there is the normal outcome on a real pull request.
 
 ## 9. Known limitations (v3.1)
 
-- The browser engine fails `make validate` on five of the six preset cities:
-  New York, Tokyo, London and San Francisco on `min_wall`, Paris on
-  `part_meshes` / degenerate faces. Chicago passes, and the Python reference
-  pipeline builds all six cleanly. The nightly preset matrix ships red on
-  arrival with the failing rows named in `nightly.yml`'s header, so it is not
-  read as a regression. Reproduction and per-city numbers:
-  `docs/handoff/v3-08-siteperf.md` section 7.5.
-- The STEP writer formats to six decimals and loses the same near-degenerate
-  faces the STL writer hardens against; STEP is a faceted B-rep and the
-  reference validator does not read it.
+- The browser engine fails `make validate` on ONE of the six preset cities:
+  tokyo-shinjuku, `min_wall` on two regions, narrowest 0.254 mm. The other
+  five (chicago-loop, new-york-midtown, paris-eiffel, london-city,
+  san-francisco-fidi) read ALL CHECKS PASS, as does the Python reference
+  pipeline on all six. The Tokyo sites are measured and diagnosed and the two
+  backed-out repairs are written up in `docs/handoff/FAILURES.md`.
+  Reproduction: `docs/handoff/v3-08-siteperf.md` section 7.5 with the Tokyo
+  fixture and `--center 35.6896,139.7006`.
 - Plate 256 mm carries residual geometry defects on the Chicago preset: 6 to 7 degenerate faces (both frame states) and one thin lobe in frame-off parts mode; analysed in docs/handoff/FAILURES.md, warned by the in-app audit, default plate 180 unaffected.
 
 - Steep terrain can drape base walls under the printable minimum; the in-app
