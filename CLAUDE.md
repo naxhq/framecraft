@@ -31,11 +31,17 @@ docker-compose.yml  Makefile  RUNBOOK.md
 
 ## Hard rules
 
-- `packages/contracts/` is FROZEN at **schema version 3** (re-frozen 2026-09-02;
-  v1/v2 fields unchanged, v3 fields optional with v2-identical defaults, pinned
-  by `tests/test_v1_compat.py` against `fixtures/v1-golden/`). No rename/removal
-  without a `DECISIONS.md` line. `make contracts` regenerates both outputs;
-  never hand-edit `contracts.ts` / `contracts.py`.
+- `packages/contracts/` is FROZEN at **schema version 4** (re-frozen 2026-09-03;
+  v1/v2/v3 fields unchanged, v4 fields optional with v3-identical defaults,
+  pinned by `tests/test_v1_compat.py` against `fixtures/v1-golden/`, which bakes
+  DEFAULT current params and asserts the v1 geometry digest, counts, volume,
+  min wall, bbox, warnings and byte-identical model XML). Schema 4 opened with
+  no field of its own, naming only the SceneGraph revision that carries the
+  optional per-entity identity the object popover reads, and has since gained
+  `object_overrides` and `labels`, each landing with the feature that claims it
+  per `[V3.1-O4]`. No rename/removal without a `DECISIONS.md` line.
+  `make contracts` regenerates both outputs; never hand-edit `contracts.ts` /
+  `contracts.py`.
 - Boolean engine is `manifold3d`, running as WASM in the browser engine
   (`apps/web/lib/engine`); the Python service uses the same kernel as the
   reference validator. Preview, mapper and exports read one EngineResult, and
@@ -64,7 +70,10 @@ docker-compose.yml  Makefile  RUNBOOK.md
 (Chicago preset -> `artifacts/chicago.3mf`; `bake-fixture` is a deprecation
 alias) · `make validate FILE=...`
 (CLI validator table) · `make refresh-fixtures` (re-fetch Overpass fixtures)
-· `make gate-v2` (G5 + G6 + G8: parts, text, v1 golden) · `make down` · `make clean`.
+· `make gate-v2` (G5 + G6 + G8: parts, text, v1 golden) · `make gate-fast`
+(what the REQUIRED CI path runs, locally) · `make gate-nightly` (gate +
+gate-v2 + every export target and all six preset cities) · `make down` ·
+`make clean`.
 
 ## Ports
 
