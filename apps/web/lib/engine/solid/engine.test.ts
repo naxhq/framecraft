@@ -458,7 +458,10 @@ describe("chicago on a hillside", () => {
     const thin = hilly.findings.find((f) => f.id === "wall-too-thin");
     expect(thin).toBeDefined();
     expect(thin!.detail).toContain("Terrain is on");
-    expect(thin!.detail).toContain("places are under it");
+    // Exactly ONE place: the wording follows the count (`validate.ts`), and
+    // the frame-on ridge merge took this hillside from several thin places to
+    // one, measured. If it ever goes back to several this line is what says so.
+    expect(thin!.detail).toContain("The narrowest wall measures");
     expect(thin!.fix?.safe).toBe(true);
     expect((thin!.fix?.patch as { terrain_exaggeration?: number }).terrain_exaggeration)
       .toBeLessThan(hilly.params.terrain_exaggeration);

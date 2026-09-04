@@ -438,9 +438,27 @@ export function residueParts(
   const eroded = offsetSection(arena, component, -radius, MITRE, 0, RESIDUE_MITRE_LIMIT);
   if (eroded === null) return null;
   const lean = arena.keep(eroded.simplify(RESIDUE_SIMPLIFY_FACTOR * radius));
-  arena.drop(eroded);
-  const opened = offsetSection(arena, lean, radius, MITRE, 0, RESIDUE_MITRE_LIMIT);
+  const fromLean = offsetSection(arena, lean, radius, MITRE, 0, RESIDUE_MITRE_LIMIT);
   arena.drop(lean);
+  if (fromLean === null) {
+    arena.drop(eroded);
+    return null;
+  }
+  // The opening is taken TWICE, from the simplified ring and from the raw
+  // one, and only where the two agree does the region count as reached: the
+  // residue is what EITHER dilation cannot cover. The simplify exists to make
+  // Clipper2 find the 0.17 mm wing GEOS finds on a Chicago block; on a Tokyo
+  // block it does the opposite, and the dilation of the simplified ring flows
+  // 0.1 mm further up a 0.26 mm wing than GEOS' does, which leaves the
+  // residue under the noise floor and the wing on the plate (the reference
+  // validator measured it at 0.257 mm). Neither ring alone answers what GEOS
+  // answers on both blocks; their intersection does, at the price of one more
+  // dilation.
+  const fromRaw = offsetSection(arena, eroded, radius, MITRE, 0, RESIDUE_MITRE_LIMIT);
+  arena.drop(eroded);
+  const opened = fromRaw === null ? fromLean : intersectSection(arena, fromLean, fromRaw);
+  if (fromRaw !== null && fromRaw !== opened) arena.drop(fromRaw);
+  if (fromLean !== opened) arena.drop(fromLean);
   if (opened === null) return null;
   const tolerated = offsetSection(
     arena,

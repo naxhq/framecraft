@@ -220,9 +220,23 @@ test("a camera drag suppresses the popover", async ({ page }) => {
 /** The distinctive filament a test picks, so it cannot be mistaken for a default. */
 const OVERRIDE_HEX = "#B00020";
 
-test("a filament chosen in the right-click menu reaches the preview and the exported file", async ({
-  page,
-}) => {
+/**
+ * Give the object under the menu its own filament, in the menu itself.
+ *
+ * The two halves are independent (`overrideRegionStyle`), so both are set: a
+ * slot the printer will load it from, and a colour nothing else on the plate
+ * uses, which is what makes the assertion on the exported bytes unambiguous.
+ */
+async function chooseItsOwnFilament(page: Page): Promise<void> {
+  await page.getByTestId("inspector-colour").click();
+  await page.getByTestId("override-slot").selectOption("3");
+  await page.getByTestId("override-color").fill(OVERRIDE_HEX);
+  await page.getByTestId("inspector-back").click();
+  await expect(page.getByTestId("object-inspector-summary")).toContainText(/slot 3, own colour/i);
+  await page.keyboard.press("Escape");
+}
+
+test("a filament chosen in the right-click menu reaches the preview", async ({ page }) => {
   // The full fixture, not the 30-building synthetic one: this test picks its
   // object with a real right-click, and the tiny scene's buildings are a few
   // pixels across on a plate that fills the viewport.
@@ -235,28 +249,41 @@ test("a filament chosen in the right-click menu reaches the preview and the expo
     "override_1",
   );
 
-  // The menu's own colour view, and the two halves of a filament in it.
-  await page.getByTestId("inspector-colour").click();
-  await page.getByTestId("override-slot").selectOption("3");
-  await page.getByTestId("override-color").fill(OVERRIDE_HEX);
-  await page.getByTestId("inspector-back").click();
-  await expect(page.getByTestId("object-inspector-summary")).toContainText(/slot 3, own colour/i);
-  await page.keyboard.press("Escape");
+  await chooseItsOwnFilament(page);
 
-  // 1. The preview. `data-region-versions` moves the moment a region's mesh is
-  //    replaced on screen, so an `override_1` entry in it IS the overridden
-  //    object drawn in its own filament rather than inside `buildings`.
+  // `data-region-versions` moves the moment a region's mesh is replaced on
+  // screen, so an `override_1` entry in it IS the overridden object drawn in
+  // its own filament rather than inside `buildings`. The buildings region is
+  // rebuilt too: the object left it.
+  await expect
+    .poll(() => regionVersions(page), { timeout: WARMUP_BUDGET_MS })
+    .toContain("override_1");
+  expect(await regionVersions(page)).not.toBe(before);
+});
+
+test("...and the same choice reaches the exported file", async ({ page }) => {
+  // The small scene and the keyboard route, so this test spends its budget on
+  // the EXPORT rather than on a second full-fixture build: what it is here to
+  // judge is the bytes.
+  await generateTinyLoop(page);
+
+  // No settings are touched at all: the default target is the Bambu project,
+  // which always writes one object per region whatever `color_mode` says, so
+  // the override's own part and the filament it asked for are both readable
+  // without moving a control this test is not about.
+  await page.getByTestId("preview-canvas").focus();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Shift+F10");
+  await expect(page.getByTestId("object-inspector")).toBeVisible();
+  await chooseItsOwnFilament(page);
   await expect
     .poll(() => regionVersions(page), { timeout: WARMUP_BUDGET_MS })
     .toContain("override_1");
 
-  // 2. The file. Parts mode writes one `<base>` per region with its own
-  //    colour, so the override's region and the exact colour picked above are
-  //    both readable in the model XML.
-  const colourGroup = page.getByTestId("group-colour-toggle");
-  if ((await colourGroup.getAttribute("aria-expanded")) !== "true") await colourGroup.click();
-  await page.locator("#color_mode").getByRole("radio", { name: "one per part" }).click();
-  await page.locator("#export_target").selectOption("generic-3mf");
+  // Export is offered only for a model that is current, which is the whole
+  // point of the staleness rule; a click before then would be a click on a
+  // disabled button.
+  await expect(page.getByTestId("export-button")).toBeEnabled({ timeout: WARMUP_BUDGET_MS });
   await page.getByTestId("export-button").click();
   await expect(page.getByTestId("download-links")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
 
@@ -268,14 +295,22 @@ test("a filament chosen in the right-click menu reaches the preview and the expo
   await download.saveAs(file);
 
   const archive = unzipSync(new Uint8Array(fs.readFileSync(file)));
-  const model = strFromU8(archive["3D/3dmodel.model"]);
-  expect(model, "the exported 3MF has no part for the override").toContain(
-    'name="override_1"',
+  // The part list: the override is a part of its own, on the extruder the menu
+  // chose. The three `<metadata>` lines are written together in that order, so
+  // matching across them is what ties THIS part to THAT extruder rather than
+  // finding the two facts separately somewhere in the file.
+  const settings = strFromU8(archive["Metadata/model_settings.config"]);
+  expect(settings, "the exported project has no part for the override").toMatch(
+    /key="name" value="override_1"\/>\s*<metadata key="matrix"[^>]*\/>\s*<metadata key="extruder" value="3"/,
   );
+  // ...and slot 3's filament is the colour the menu picked.
+  const project = JSON.parse(strFromU8(archive["Metadata/project_settings.config"])) as {
+    filament_colour: string[];
+  };
   expect(
-    model,
-    "the override's part is not in the filament the menu picked",
-  ).toContain(`displaycolor="${OVERRIDE_HEX}FF"`);
+    project.filament_colour[2],
+    `slot 3's filament is ${project.filament_colour[2]}, not the colour chosen in the menu`,
+  ).toBe(OVERRIDE_HEX);
   console.log(
     `[objects] override_1 exported in ${OVERRIDE_HEX}, ${Math.round(fs.statSync(file).size / 1024)} KiB`,
   );

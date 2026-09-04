@@ -72,7 +72,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "scene-request"
       ],
       "digests": [
-        "ground"
+        "ground",
+        "overrides"
       ]
     },
     {
@@ -178,9 +179,9 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "object_overrides[].raise_mm"
       ],
       "inputs": [
-        "normalise",
+        "normalise#overrides",
         "context",
-        "repair-buildings"
+        "repair-buildings#footprint"
       ],
       "extra": [],
       "digests": []
@@ -2019,6 +2020,13 @@ keyed on those two instead of the whole scene and the whole repair, because
 part is handed a view of the scene with every other layer behind a getter
 that throws (`runner.scenePartView`), so a ground stage that started reading
 a building would fail its run rather than be served stale ground.
+`surface-overrides` is keyed on a third part, `normalise#overrides`: the
+ground plus a hash of every building's `id` and `osm_id`, because its
+reconciliation has to know which buildings exist; its view exposes the
+buildings cut down to those two fields. And a stage keyed on a named part
+of any other input is served that part alone through `runner.inputPartView`
+and `stages.PART_EXPOSURE` (`repair-buildings#footprint` exposes
+`footprint`); a part with no exposure listed is served whole.
 
 **Canonical mesh order.** `toRegionMesh` now sorts vertices by coordinate and
 triangles by their lowest vertex (`mesh.canonicalMesh`). manifold3d orders

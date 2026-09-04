@@ -327,45 +327,181 @@ what it was.
 
 ---
 
-## Open: STEP writer's 6-decimal grid loses the same faces as float32 at plate 256 (v3-07 geometry audit finding 8, 2026-09-03)
+## Closed: STEP writer's 6-decimal grid loses the same faces as float32 at plate 256 (v3-07 geometry audit finding 8; closed 2026-09-03)
 
-`export/step.ts` formats coordinates to six decimals; at plate 256 the same 6
-to 12 needles that collapse on the float32 grid collapse on that grid, and the
-STEP writer gets neither the hardening nor the `float32-degenerate` report.
-Closing it needs a second quantiser in `cleanMesh` keyed by the writer's grid
-plus a change in `export/step.ts`, over the wave's thirty-line bar. STEP is a
-faceted B-rep whose consumers re-mesh anyway; the reference validator does not
-read STEP. Status: OPEN, queued for the Task 7 geometry wave.
+`export/step.ts` wrote coordinates at six decimals, so at plate 256 the same
+needles that collapse on the float32 grid collapsed on the STEP grid, with no
+report. It now writes at `common.VERTEX_DECIMALS` (twelve places, the 3MF's
+grid, which the reference validator judges clean), welds vertices by the
+WRITTEN text rather than the double so the shell is closed on the grid the
+reader sees, computes the plane normals and the degenerate test on that grid,
+and counts a face the grid alone collapses apart from one that was already
+zero-area (`StepExportFile.gridLostTriangles`, named in `notes`). No second
+quantiser in `cleanMesh` was needed: twelve places is the grid the engine
+already repairs to (`mesh.REPAIR_AREA_MM2` is two decades above the gate for
+exactly this reason).
+
+Measured: Chicago, parts profile, plate 256, `--target step`: 273,066
+triangles, 4,641,047 entities, one zero-area triangle left out (a face the
+double mesh itself carries under 1e-9 mm^2, the known plate-256 residual
+above), zero lost to the grid. `step.test.ts` unchanged and green.
+
+Status: CLOSED.
 
 ---
 
-## Open: the browser engine fails the validator on five of the six preset cities (2026-09-03)
+## Mostly closed: the browser engine fails the validator on five of the six preset cities (found 2026-09-03; five closed the same day, Tokyo open)
 
 Found by the nightly preset matrix's new browser-engine half ([V3.1-P7-4]),
 which became possible only when `export-cli.ts` gained a `--center lat,lon`
 flag: a raw Overpass response carries no centre, so every previous
 browser-engine run cropped around the Chicago Loop whatever city it was given.
-Chicago is therefore the only city the engine has ever really built, and it is
-the only one that passes. The gap was invisible, not absent.
+Chicago was the only city the engine had ever really built, and it was the
+only one that passed. Reproduction commands and the original per-city numbers:
+`docs/handoff/v3-08-siteperf.md` section 7.5.
 
-Measured on the dev host, browser engine through `export:cli`, then
-`make validate` on each 3MF. The Python reference pipeline builds all six from
-the same committed fixtures and passes every one, so the fixture, the request
-and the parameter set are ruled out; rebuilding Paris and New York with
-`print-params-default.json` instead of the parts profile fails too.
+Browser engine through `export:cli`, `fixtures/print-params-parts.json`, then
+`make validate`, before and after the geometry fix:
 
-| preset | verdict |
-|---|---|
-| chicago-loop | ALL CHECKS PASS |
-| new-york-midtown | FAIL `min_wall`, 7 of 340 sampled regions under 0.720 mm, narrowest 0.134 mm |
-| paris-eiffel | FAIL `part_meshes` (buildings), 55 degenerate faces; 58 at the top level in single mode |
-| tokyo-shinjuku | FAIL `min_wall`, 10 of 465, narrowest 0.169 mm |
-| london-city | FAIL `min_wall` 2 of 136, narrowest 0.206 mm, and `part_meshes` |
-| san-francisco-fidi | FAIL `min_wall`, 7 of 268, narrowest 0.205 mm |
+| preset | before | after |
+|---|---|---|
+| chicago-loop | ALL CHECKS PASS | ALL CHECKS PASS (`min_wall` 0.938) |
+| new-york-midtown | FAIL `min_wall`, 7 of 340 under 0.720, narrowest 0.134 | ALL CHECKS PASS (`min_wall` 0.887) |
+| paris-eiffel | FAIL `part_meshes`, buildings 55 degenerate faces | ALL CHECKS PASS |
+| tokyo-shinjuku | FAIL `min_wall`, 10 of 465, narrowest 0.169, and `part_meshes` 5 | FAIL `min_wall`, 2 regions, narrowest 0.254 (below) |
+| london-city | FAIL `min_wall` 2 of 136, narrowest 0.206, and `part_meshes` | ALL CHECKS PASS (`min_wall` 0.817) |
+| san-francisco-fidi | FAIL `min_wall`, 7 of 268, narrowest 0.205 | ALL CHECKS PASS (`min_wall` 1.14) |
 
-The nightly job ships red on arrival with the failing checks named in
-`nightly.yml`'s header so nobody reads it as a regression from this wave. No
-check was weakened and no expected-failure ledger was added. Reproduction
-commands and per-city numbers: `docs/handoff/v3-08-siteperf.md` section 7.5.
+No validator row, test or threshold was weakened. Four distinct causes, each
+measured before it was touched:
 
-Status: OPEN, assigned to a geometry fixer this run.
+**1. `part_meshes` degenerate faces (Paris 55, London, Tokyo 5): slits in the
+buildings union.** A tower clipped to its block, and two parts of one
+building meeting along an edge, only share that edge in the 3D union if their
+outlines carry the same coordinates there, and two separate Clipper2
+operations round the same point differently at the 1e-8 mm level. manifold3d's
+union is exact, so the difference is a wall 4e-9 mm wide with triangles in it:
+180 faces under 1e-7 mm^2 on the Paris buildings region, 143 across an edge
+under 1e-4 mm. `mesh.cleanMesh` cannot close them - the two sheets are joined
+through their neighbours, and welding the pair opens six edges and splits
+306 bodies into 308, so every rung of the ladder is rightly rejected. Fix:
+every building footprint is put on one XY grid before it is extruded
+(`manifold.snapSection`, 1/1024 mm, a binary fraction so the snapped
+coordinate is exact; the reference snaps to its 0.01 mm print grid for the
+same reason, `thicken.snap`), AFTER the deburr, because the opening moves
+boundary points off the grid again (snap-then-clean measured 106 faces,
+clean-then-snap 0). Second line: `manifold.sweepSlivers`, the kernel's own
+`simplify` at 1e-6 mm (the reference's `assemble.SIMPLIFY_TOL_MM`), accepted
+only as `NoError`, same volume to 1e-6 relative, no more bodies, fewer faces
+under the repair threshold, and run only when the mesh repair leaves a face
+under its own 1e-7 threshold - not the gate's 1e-9, because the reference
+validator unions the parts itself and a face between the two can land under
+1e-9 in that union (measured: Paris, `degenerate_faces` 1 when the sweep
+waited for a sub-1e-9 face). It is about a second over the Chicago plate's
+seven meshes when run unconditionally, and 0 ms when nothing needs it. Paris
+buildings 180 -> 0 faces under 1e-7; merged mesh 58 -> 0 under 1e-9.
+`toRegionMesh` reports the KERNEL's volume, not the swept solid's, so a
+tile's volume still adds up against the whole plate exactly
+(`tiling.test.ts`).
+
+**2. `min_wall` on stacked towers (New York, 7 regions between z = 5 and
+20 mm, narrowest 0.134): no slice-profile repair.** What prints at height z
+is the union of every solid that reaches that high, and two preserved towers
+meeting along an edge make a neck neither footprint has. The reference has
+`thicken.repair_slice_profiles` for exactly this; the engine had never ported
+it. `repair.repairSliceProfiles` walks the prefixes of each block group's
+solids sorted by printed top, widens every neck by 04's rule and hands the
+patch to the shortest solid of the prefix - unioned into that solid's
+FOOTPRINT rather than extruded beside it, because a second prism with a roof
+coplanar to its solid's left a T-junction needle the mesh repair could not
+split (one on New York, five on Tokyo, all under 2e-4 mm across). New York:
+7 failing regions -> 0, `min_wall` 0.887.
+
+**3. `min_wall` on base ridges (Tokyo 0.169, London): the ridge merge was
+frame-off only.** `areas.mergeRecessRidges` returned at once with the frame
+on (`[V3-P7-fix]`, a scoping decision recorded as a follow-up). The frame
+hides a rind at the crop edge and nothing in the middle of the plate; Tokyo's
+0.169 was a wedge of base between the flat end of a road groove and the
+building it stops short of. It now runs frame on and off, as the reference
+does. A layer the merge grows is re-subtracted from every layer after it in
+precedence order, which the reference also does (`road_union = roads.union`
+after the merge cuts the green layer). `[V3-P7-fix]`'s "moves the default
+golden" concern: no committed number pins the Chicago geometry byte for byte,
+`engine.test.ts` passes, and the frame-on hillside build now reports ONE thin
+place instead of several (the test's wording assertion follows the count).
+
+**4. `min_wall` at a river bank (London 0.206): the seam overlap standing
+into a deeper recess.** `areas.fittedSolid` grows every surface solid by
+`PART_OVERLAP_MM` (0.2 mm) so it fills its pocket; along a river that rim is
+a ledge of road 0.3 mm proud of the water, and at the flat end of a ribbon
+that stops at a building corner it is a 0.2 mm spur in the water pocket. The
+reference truncates every inlay by the deeper recesses' cutters ("never stand
+proud of the model", `assemble.py`); `fittedSolid` now takes the footprints
+of the layers whose floor is lower and cuts the rim back over them, held
+`LAYER_SEPARATION_MM` (0.02 mm) clear rather than flush - cut flush, the
+wall sits two micrometres from the base's pocket wall and the reference
+validator's own union of the parts retriangulates the shared top plane into
+a 6e-11 mm^2 needle (Paris, `degenerate_faces` 1, measured and fixed). Both
+call sites: `areas.buildSurfaceRegions` and the `surface-parks` stage, one
+line in `pipeline/stages.ts`. The trim applies to RECESSED layers only: a
+raised rail keeps its whole rim whether it crosses a groove or not
+(`matrix.probes.ts` pins `regions.rail.proud_mm`, volume unchanged to three
+decimals; trimming the raised case cost it 11.5 mm^3 and was the one matrix
+probe this work broke, now green). London 0.206 -> 0.817, ALL CHECKS PASS.
+
+**Also:** `repair.residueParts` takes the opening from BOTH the simplified and
+the raw eroded ring and counts as reached only what both cover. The simplify
+made Clipper2 find a Chicago wing GEOS finds; on a Tokyo block it did the
+opposite and covered a 0.257 mm wing whole. The intersection answers both.
+
+### Open: Tokyo, `min_wall` 0.254 on two regions
+
+Two remaining sites, both measured, neither closed:
+
+* **Three acute building tips at z = 2.969 mm** (the base slice just under
+  the base top): residues of 0.091, 0.098 and 0.144 mm^2, widths 0.254, 0.267
+  and 0.331, at (123.83, 7.20), (7.36, 57.56) and (92.81, 16.08) in build
+  space. Each is a block corner of about 30 degrees. GEOS finds NO residue on
+  the buildings part alone (the mitre dilation regrows a convex tip, and the
+  reference's `widen_thin_parts` therefore leaves such tips alone too); it
+  finds one on the UNION because a 0.05 mm rind of base stands between the
+  road groove and the building's west wall above the tip - the road ribbon
+  stops 0.05 mm (about 0.5 m of ground) short of the building by OSM geometry
+  - and that step breaks the convex-corner pattern. The ridge merge finds and
+  bridges the tip-plus-rind wedge into the road (verified with an
+  instrumented build: 35 bad parts on pass 0, including all three, 0 on pass
+  1), and the base under it is carved, but the tip is the BUILDING's own
+  material and stays. The engine's probe and GEOS agree on the union polygon
+  (`residueParts` finds the same 0.0913 mm^2), so this is not a probe gap;
+  it needs either the rind removed (widen the groove to the wall where it
+  runs within a wall of it - a rule the reference does not have and that
+  changes every road/building seam) or the block's tip blunted (widening a
+  convex corner the reference leaves alone). Not done: both move geometry the
+  reference does not move, and the choice belongs to the team lead.
+* **A 0.499 mm "corridor" at z = 4.911 mm** between two slits in a group of
+  stacked towers at (93.43-94.33, 32.64-33.65): residue 0.43 mm^2. This one is
+  a MITRE ARTEFACT of the reference probe, not a thin wall: the true
+  (round-join) opening at 0.36 mm leaves no residue there, and 0.067 mm^2 of
+  the reported residue lies INSIDE the true erosion, i.e. a 0.72 mm disc fits
+  in it. GEOS erodes with mitre joins truncated at ten radii (3.6 mm), so
+  every slit tip casts a spike through the eroded region; Clipper2 squares
+  the same join at about one radius. Two repairs were built and backed out:
+  the round-join opening as a third voice in `residueParts` (finds every
+  acute convex corner on the plate as a wing - 45 on Tokyo's base slice
+  against GEOS's 3 - and bridging them left 40 hairline regions and five
+  0.01 mm^3 islands, export refused by the engine's own gate), and fusing
+  slits between towers by a closing at `min_gap / 2` in the slice-profile
+  repair (hairline patch slivers; `tiling.test.ts` B1 at z 19.10, a 0.09 mm
+  region). The honest fix is for the reference probe to erode with round
+  joins, which is the true morphological opening and what the docstring
+  claims it measures; that is a validator change and is out of scope here.
+
+Reproduction: the commands in `v3-08-siteperf.md` 7.5 with the Tokyo fixture,
+`--center 35.6896,139.7006`; the probe in `checks._min_wall_probe` at
+z = 2.969 and 4.911 names the regions above.
+
+Status: OPEN for Tokyo only (owner: the geometry fixer of the next wave,
+starting from the two backed-out repairs above and the validator's mitre
+question; team lead's ruling 2026-09-03: ships as a stated limitation), written
+up with the measurements; the other five presets pass the reference validator
+from the browser engine.

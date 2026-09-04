@@ -1159,6 +1159,13 @@ export function projectOverpass(raw: OverpassResponse, request: SceneRequest): P
     trees.push({ x: Math.round(x * 1000) / 1000, y: Math.round(y * 1000) / 1000, radius_m: Math.round(radiusM * 1000) / 1000 });
   }
 
+  // The ground arrays are handed to every scene built from this projection
+  // by reference (`sceneFromProjected`), and from there to the page in the
+  // no-Worker transport, so they are frozen: a push or a sort anywhere
+  // downstream throws instead of editing every scene that shares them.
+  // Shallow, because a deep freeze would walk a megabyte per projection
+  // to guard against a mutator nothing in the engine has.
+  for (const shared of [roads, rail, areas.water, areas.green, trees]) Object.freeze(shared);
   return {
     request,
     buildings,

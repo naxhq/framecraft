@@ -24,6 +24,7 @@
 import { perfSpan } from "../../perf";
 import type { BuildContext, Placement } from "./context";
 import {
+  LAYER_SEPARATION_MM,
   PART_OVERLAP_MM,
   POCKET_GROW_MM,
   SIMPLIFY_EPS_MM,
@@ -413,7 +414,22 @@ export function grownPocket(ctx: BuildContext, section: CrossSection): CrossSect
  * transversal. Both extras lie inside material the merged solid already has,
  * so the union of the regions is still exactly that solid.
  */
-export function fittedSolid(ctx: BuildContext, section: CrossSection): CrossSection {
+export function fittedSolid(
+  ctx: BuildContext,
+  section: CrossSection,
+  /**
+   * Footprints of the layers whose floor is LOWER than this one's. The seam
+   * overlap is taken back out of the solid wherever it would reach over one
+   * of them: a rim of road standing 0.2 mm into a river pocket is a ledge
+   * 0.3 mm proud of the water along the bank, and at the flat end of a
+   * ribbon that stops at a building corner it is a 0.2 mm spur the reference
+   * validator fails as a wall (London, `min_wall` 0.206 mm). The reference
+   * truncates every inlay by the deeper recesses' cutters for the same reason
+   * (`assemble.py`, "never stand proud of the model"). The overlap with the
+   * BASE, and with layers no deeper than this one, is kept: that is the seam.
+   */
+  deeper: readonly CrossSection[] = [],
+): CrossSection {
   const grown = offsetSection(ctx.arena, section, PART_OVERLAP_MM);
   if (grown === null || grown === section) return section;
   // Never past the printed edge, whatever the crop allowed.
@@ -421,7 +437,43 @@ export function fittedSolid(ctx: BuildContext, section: CrossSection): CrossSect
   const clipped = intersectSection(ctx.arena, grown, plate);
   ctx.arena.drop(plate);
   if (clipped !== grown) ctx.arena.drop(grown);
-  return clipped ?? section;
+  if (clipped === null) return section;
+  if (deeper.length === 0) return clipped;
+  const below = unionSections(ctx.wasm, ctx.arena, deeper);
+  if (below === null) return clipped;
+  // Held `LAYER_SEPARATION_MM` clear of the deeper footprint, not cut flush:
+  // the base's pocket for that layer is the footprint grown by two
+  // micrometres, and a solid cut on the footprint itself puts a wall two
+  // micrometres from the pocket's, which on the shared top plane at the base
+  // top is a needle the reference validator's own union of the parts
+  // retriangulates into a 6e-11 mm^2 face (Paris, `degenerate_faces` 1, at a
+  // park's edge along a road groove). Twenty micrometres is the engine's own
+  // seam distance everywhere else (`[V3-P2-E2]`).
+  const held = offsetSection(ctx.arena, below, LAYER_SEPARATION_MM) ?? below;
+  if (!deeper.includes(below) && held !== below) ctx.arena.drop(below);
+  const trimmed = subtractSection(ctx.arena, clipped, held);
+  if (!deeper.includes(held)) ctx.arena.drop(held);
+  if (trimmed === null) return section;
+  if (trimmed !== clipped) ctx.arena.drop(clipped);
+  return trimmed;
+}
+
+/**
+ * The footprints of the RECESSED layers in `layers` whose floor is lower than
+ * `layer`'s, for a `layer` that is itself recessed; empty otherwise.
+ *
+ * The reference's rule is about inlays: an inlay is truncated where a deeper
+ * recess cuts under it. A RAISED layer keeps its whole rim - a rail ribbon
+ * standing 0.3 mm proud is the same ribbon whether it crosses a groove or
+ * not, which `matrix.probes.ts` pins (`regions.rail.proud_mm`, the volume
+ * must not move), and a flush layer's rim over a pocket is the seam overlap
+ * every region has.
+ */
+export function deeperLayers(ctx: BuildContext, layer: RepairedSurface, layers: readonly RepairedSurface[]): CrossSection[] {
+  if (!(layer.placement.topMm < ctx.baseTopMm)) return [];
+  return layers
+    .filter((other) => other !== layer && other.placement.topMm < layer.placement.topMm && other.placement.topMm < ctx.baseTopMm)
+    .map((other) => other.section);
 }
 
 /** Z a region solid starts at: `PART_OVERLAP_MM` into the base, never below it. */
@@ -478,6 +530,7 @@ export function mergeRecessRidges(
 ): void {
   const recessed = layers.filter((l) => l.placement.topMm < ctx.baseTopMm);
   if (recessed.length === 0) return;
+  const before = layers.map((l) => l.section);
   // The sink is the last recessed layer in precedence order - roads at the
   // contract defaults, which is the reference's own choice: the road network is
   // what every base island is bounded by, so a bridge lands in the layer that
@@ -486,6 +539,31 @@ export function mergeRecessRidges(
   mergeInto(ctx, sink, recessed, buildingFootprint);
   for (const layer of recessed) {
     if (layer !== sink) mergeInto(ctx, layer, [layer], buildingFootprint);
+  }
+  // A layer that grew here was a BLOCKER of every layer after it in precedence
+  // order, and those were cut by the footprint it had before. What it swallowed
+  // has to come out of them too, or the bridge is a hole in the base with the
+  // later layer's material still standing in it: London's river pocket grew by
+  // the 0.2 mm tip of a road ribbon that ends at a building corner, and the
+  // ribbon (cut by the old river) kept the tip as a fin 0.3 mm proud of the
+  // water. The reference cuts green with the MERGED road union for the same
+  // reason (`thicken.repair_scene`, `road_union = roads.union` after the merge).
+  for (let i = 0; i < layers.length; i += 1) {
+    const grown = layers[i];
+    if (grown.section === before[i]) continue;
+    for (let j = i + 1; j < layers.length; j += 1) {
+      const later = layers[j];
+      const cutSection = subtractSection(ctx.arena, later.section, grown.section);
+      const cutSolid =
+        later.solidSection === later.section
+          ? cutSection
+          : subtractSection(ctx.arena, later.solidSection, grown.section);
+      // A layer the growth swallowed whole keeps its footprint: it is inside
+      // the grown pocket and prints nothing the pocket does not already own.
+      if (cutSection === null || cutSolid === null) continue;
+      later.section = cutSection;
+      later.solidSection = cutSolid;
+    }
   }
 }
 
@@ -650,7 +728,7 @@ export function buildSurfaceRegions(
   for (let i = 0; i < repaired.length; i += 1) {
     const layer = repaired[i];
     const pocket = grownPocket(ctx, layer.section);
-    const fitted = fittedSolid(ctx, layer.solidSection);
+    const fitted = fittedSolid(ctx, layer.solidSection, deeperLayers(ctx, layer, repaired));
     const solid = extrudeSection(
       ctx.wasm,
       ctx.arena,

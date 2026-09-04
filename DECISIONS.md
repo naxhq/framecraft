@@ -1010,3 +1010,61 @@ Append-only. Format: `- [phase] decision, one line`.
   control landing in that bucket becomes searchable without anyone noticing a second time, and
   the help copy stays true by construction rather than by maintenance. The two tests encoding the
   old premise were re-pointed to the new rule rather than relaxed.
+
+- `[V3.1-P7-16]` **`[V3.1-P7-13]`'s "all eight targets met" is amended: it holds only when no
+  surface-bearing override exists.** The T7 audit found that a single road override
+  (`layer: "road"` with a colour) puts `heights.floor_height_m` back to 2674 ms across 57
+  stages, because `surface-overrides` is still keyed on the whole scene and its surface output
+  carries handles, so every ground stage's key moves with it. That is the same over-invalidation
+  the close-out fixed for the ordinary path, surviving on the path a user reaches the moment
+  they colour one road. The claim is therefore conditional until `surface-overrides` is part-keyed
+  like the six ground stages, and this is a fix rather than a caveat: a latency target that only
+  holds for users who have not touched a feature we shipped in this same run is not met.
+  `[V3.1-P7-14]` already withholds two readings pending a quiet host, so the honest present
+  statement is seven targets met unconditionally, the eighth met only without a surface override,
+  and two rows unmeasured.
+- `[V3.1-P7-17]` **The part-digest guard is added to `repair-buildings#footprint` for symmetry.**
+  The six ground stages get a scene view whose other layers throw on read, which is what stops a
+  part digest going stale in silence, but the `repair-buildings` part digest has no equivalent
+  guard: stages receive the whole repair record. All six read `.footprint` only today, so nothing
+  is stale, which is exactly when the guard is cheap to add. A safety mechanism that covers one
+  of two part digests protects whichever one the next author does not touch.
+
+- `[V3.1-P7-18]` **`mergeRecessRidges` now runs frame-on, closing the `[V3-P7-fix]` follow-up.**
+  It was gated to the frame-off path, so a frame-on model kept the ridges between grown recess
+  layers and the thin walls they leave. It now runs in both, with grown layers re-cut from the
+  later layers that overlap them. This is what took the hillside scene from several places under
+  the minimum wall to one, and the test asserts the singular wording rather than accepting either.
+- `[V3.1-P7-19]` **Five of the six preset cities now pass the reference validator, and Tokyo
+  ships as a stated limitation.** Chicago, New York, Paris, London and San Francisco all read
+  ALL CHECKS PASS from the browser engine. Four causes were fixed: Clipper2 rounding of shared
+  points left slits in the buildings union (a 1/1024 mm snap after deburr plus a transactional
+  sliver sweep took Paris from 180 faces under 1e-7 to none); no slice-profile repair existed in
+  the browser engine (a port of the reference's took New York from seven thin regions to none);
+  `mergeRecessRidges` was frame-off gated; and `fittedSolid`'s 0.2 mm seam rim stood into deeper
+  recesses (London 0.206 to 0.817 mm). Tokyo remains at `min_wall` 0.254 and is OPEN with an
+  owner. Two candidate repairs were built and backed out because each caused a worse defect, a
+  round-join opening producing 45 false wings and a refused export, and slit fusing producing
+  hairline slivers in the tiling test. A defect we have measured, diagnosed and declined to
+  paper over is an acceptable ship; an unexplained one is not. README and CHANGELOG say five of
+  six.
+- `[V3.1-P7-20]` **The STEP writer's grid is closed.** It writes 12 decimals, welds on written
+  text and counts `gridLostTriangles`; Chicago at plate 256 now loses no faces to the grid, and
+  `residueParts` intersects the simplified and raw openings.
+
+- `[V3.1-P7-21]` **The rail probe caught a real geometry defect, and it was fixed by rule rather
+  than by re-pinning the golden.** `regions.rail.proud_mm = -0.5` measured 265.65 mm3 against an
+  expected 254.09, and the first reading was that a contract default had moved. It had not:
+  `fittedSolid`'s seam trim was removing the RAISED rail's 0.2 mm rim wherever it crossed the
+  road and water pockets, worth the whole 11.55 mm3, confirmed by switching the trim off and
+  watching the probe pass. The trim now applies to recessed layers only, trimmed by deeper
+  recessed layers, which is the reference implementation's own inlay rule, so a raised ribbon
+  keeps its rim whether or not it crosses a groove. This is the case the 132-probe matrix exists
+  for: a probe that is re-pinned when its number moves would have shipped a rail missing its rim
+  on every model, silently. Rail probes are 5 of 5, Paris and London still read ALL CHECKS PASS.
+- `[V3.1-P7-22]` **The hillside assertion is pinned to the singular wording.** The frame-on ridge
+  merge took that scene from several places under the minimum wall to one, so the test asserts
+  `The narrowest wall measures` exactly rather than accepting either wording. It passes today and
+  fails the day the count goes back up, which an alternation covering both could never do. The
+  `synthetic.test.ts` upper bound of 1.002 is unchanged beside its new `1 - 1e-4` lower bound, so
+  the volume is still pinned in both directions.

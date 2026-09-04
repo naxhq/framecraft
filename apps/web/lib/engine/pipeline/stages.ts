@@ -44,6 +44,7 @@ import {
   SURFACE_ORDER,
   buildOverrideSurfaces,
   buildSurfaceRegion,
+  deeperLayers,
   fittedSolid,
   grownPocket,
   mergeRecessRidges,
@@ -238,24 +239,66 @@ function solidsDigest(solids: readonly (Manifold | null)[]): string | null {
  */
 export const SCENE_GROUND_LAYERS = ["bounds", "center", "roads", "rail", "water", "green", "trees"] as const;
 
-/** Every named part of the scene a stage may key on, each as the layers it exposes. */
-export const SCENE_PARTS: Readonly<Record<"ground", readonly (keyof EngineSceneGraph)[]>> = {
-  ground: SCENE_GROUND_LAYERS,
+/** The building fields an override reconciliation reads: which objects exist, never how tall they are. */
+export const SCENE_BUILDING_IDENTITY = ["id", "osm_id"] as const;
+
+/** What one named part of the scene exposes: whole layers, and optionally the buildings cut down to a few fields. */
+export interface ScenePartSpec {
+  layers: readonly (keyof EngineSceneGraph)[];
+  /** When set, `buildings` is exposed too, each building restricted to these fields. */
+  buildingFields?: readonly (keyof EngineSceneGraph["buildings"][number])[];
+}
+
+/**
+ * Every named part of the scene a stage may key on. `ground` is the six
+ * ground stages'; `overrides` is `surface-overrides`', which also has to
+ * know which buildings EXIST (`reconcileOverrides` says which override rows
+ * name an object outside the crop) and reads nothing else of them.
+ */
+export const SCENE_PARTS: Readonly<Record<"ground" | "overrides", ScenePartSpec>> = {
+  ground: { layers: SCENE_GROUND_LAYERS },
+  overrides: { layers: SCENE_GROUND_LAYERS, buildingFields: SCENE_BUILDING_IDENTITY },
 };
 
 /**
- * A content digest of the ground layers. `JSON.stringify`, not `stableJson`:
- * the normaliser emits every entity with its keys in one fixed order and only
- * finite numbers, strings and booleans in them (an absent optional is
- * `undefined`, which both serialisers treat as absent), and the native
- * serialiser is an order of magnitude faster on a megabyte of coordinates.
+ * What a reader keyed on a named part of another stage's output is handed:
+ * the listed keys, every other key a getter that throws (`runner.inputPartView`).
+ * Declared beside the digests so the two cannot drift. A part not listed here
+ * is served whole; its digest still stands for what its readers use, but the
+ * runner cannot check that they use nothing more.
  */
+export const PART_EXPOSURE: Readonly<Record<string, readonly string[]>> = {
+  "repair-buildings#footprint": ["footprint"],
+};
+
+/**
+ * A content digest of the ground layers, once per scene object. `JSON.stringify`,
+ * not `stableJson`: the normaliser emits every entity with its keys in one
+ * fixed order and only finite numbers, strings and booleans in them (an
+ * absent optional is `undefined`, which both serialisers treat as absent),
+ * and the native serialiser is an order of magnitude faster on a megabyte of
+ * coordinates.
+ */
+const GROUND_DIGESTS = new WeakMap<EngineSceneGraph, string>();
+
 function groundDigest(scene: EngineSceneGraph): string {
-  return perfSpan("digest.ground", () => {
+  const known = GROUND_DIGESTS.get(scene);
+  if (known !== undefined) return known;
+  const digest = perfSpan("digest.ground", () => {
     const picked: Partial<Record<(typeof SCENE_GROUND_LAYERS)[number], unknown>> = {};
     for (const layer of SCENE_GROUND_LAYERS) picked[layer] = scene[layer];
     return hashString(JSON.stringify(picked));
   });
+  GROUND_DIGESTS.set(scene, digest);
+  return digest;
+}
+
+/** The ground plus which buildings exist: what `surface-overrides` depends on. */
+function overridesDigest(scene: EngineSceneGraph): string {
+  const identity = perfSpan("digest.identity", () =>
+    hashString(JSON.stringify(scene.buildings.map((building) => SCENE_BUILDING_IDENTITY.map((field) => building[field] ?? null)))),
+  );
+  return hashParts([groundDigest(scene), identity]);
 }
 
 /**
@@ -481,8 +524,9 @@ const normalise = defineStage({
   params: ["heights.*"],
   inputs: ["fetch"],
   extra: ["scene-request"],
-  // The ground layers, for the stages that never look at a building.
-  digests: { ground: (out) => groundDigest(out.scene) },
+  // The ground layers, for the stages that never look at a building; the
+  // ground plus the buildings' identity for the override reconciliation.
+  digests: { ground: (out) => groundDigest(out.scene), overrides: (out) => overridesDigest(out.scene) },
   run(ctx) {
     const request = ctx.extra("scene-request");
     if (request === null) throw new Error("normalise: the job carries a finished scene, so the runner should have seeded this stage");
@@ -675,6 +719,12 @@ const surfaceOverrides = defineStage({
     "water",
   ],
   inputs: ["normalise", "context", "repair-buildings"],
+  // The override layers are ground layers too (a road, a pond, a park lifted
+  // out), and the reconciliation reads which buildings exist: keyed on that
+  // part, so a storey-height change leaves them, and everything under them,
+  // cached. Its output carries handles when a group is built, so without this
+  // one coloured road put every ground stage back on the whole scene's key.
+  inputDigests: { normalise: "overrides", "repair-buildings": "footprint" },
   run(ctx) {
     const grouping = overrideGroups(ctx.params);
     if (grouping.groups.length === 0) {
@@ -792,7 +842,7 @@ const surfaceParks = defineStage({
     const regions: SurfaceRegion[] = [];
     for (const layer of repaired) {
       const pocket = grownPocket(build, layer.section);
-      const fitted = fittedSolid(build, layer.solidSection);
+      const fitted = fittedSolid(build, layer.solidSection, deeperLayers(build, layer, repaired));
       const solid = extrudeSection(ctx.wasm, ctx.arena, fitted, solidBottomMm(build, layer.placement), layer.placement.topMm);
       const cutter = extrudeSection(ctx.wasm, ctx.arena, pocket, layer.placement.bottomMm, cutterTopMm(build));
       if (solid === null || cutter === null) continue;

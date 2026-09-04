@@ -50,7 +50,7 @@ import {
   type TerrainOut,
 } from "./stage";
 import { ExportBlockedError } from "../export/gate";
-import { OverpassStageError, SCENE_PARTS, STAGES } from "./stages";
+import { OverpassStageError, PART_EXPOSURE, SCENE_PARTS, STAGES, type ScenePartSpec } from "./stages";
 
 // ---------------------------------------------------------------------------
 // Job and events
@@ -322,18 +322,44 @@ export function keyPartsFor(stage: StageDef, job: PipelineJob, cache: StageCache
 /** Largest plain-data output that gets a content digest; a scene graph is bigger and always new when it re-runs. */
 const DIGEST_LIMIT_CHARS = 256_000;
 
-/** True for numbers, strings, booleans, null, arrays, typed arrays and plain objects of the same: nothing a JSON digest could mistake. */
-function isPlainData(value: unknown, depth = 0): boolean {
-  if (depth > 12) return false;
-  if (value === null || value === undefined) return true;
+/**
+ * Walks `value` and returns how many characters its JSON would take, at
+ * least, or -1 when it holds anything a JSON digest could mistake (a class
+ * instance, a function, a WASM handle). Stops counting as soon as `limit`
+ * is passed, so a 9 MB Overpass response or a 1.4 MB scene costs a few
+ * thousand steps here rather than a full sorted serialisation that
+ * `digestOf` would only throw away (116 ms per cold fetch, 20 ms per
+ * normalise before this walk existed). The count is a lower bound; the
+ * exact length is checked again on the text that is actually hashed.
+ */
+function plainDataSize(value: unknown, limit: number, depth = 0): number {
+  if (depth > 12) return -1;
+  if (value === null || value === undefined) return 4;
   const kind = typeof value;
-  if (kind === "number" || kind === "string" || kind === "boolean") return true;
-  if (kind !== "object") return false;
-  if (ArrayBuffer.isView(value)) return true;
-  if (Array.isArray(value)) return value.every((item) => isPlainData(item, depth + 1));
+  if (kind === "number") return 1;
+  if (kind === "boolean") return 4;
+  if (kind === "string") return (value as string).length + 2;
+  if (kind !== "object") return -1;
+  if (ArrayBuffer.isView(value)) return 48;
+  let total = 2;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const size = plainDataSize(item, limit, depth + 1);
+      if (size < 0) return -1;
+      total += size + 1;
+      if (total > limit) return total;
+    }
+    return total;
+  }
   const proto = Object.getPrototypeOf(value) as unknown;
-  if (proto !== Object.prototype && proto !== null) return false;
-  return Object.values(value as Record<string, unknown>).every((item) => isPlainData(item, depth + 1));
+  if (proto !== Object.prototype && proto !== null) return -1;
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    const size = plainDataSize(item, limit, depth + 1);
+    if (size < 0) return -1;
+    total += key.length + 4 + size;
+    if (total > limit) return total;
+  }
+  return total;
 }
 
 /**
@@ -344,7 +370,9 @@ function isPlainData(value: unknown, depth = 0): boolean {
  * text and a different finding, and `audit` and `export` must re-run for it.
  */
 function digestOf(key: string, output: unknown, channels: StageChannels, owned: readonly Deletable[]): string {
-  if (owned.length > 0 || !isPlainData(output)) return key;
+  if (owned.length > 0) return key;
+  const size = plainDataSize(output, DIGEST_LIMIT_CHARS);
+  if (size < 0 || size > DIGEST_LIMIT_CHARS) return key;
   const text = stableJson({ output, channels });
   if (text === undefined || text.length > DIGEST_LIMIT_CHARS) return key;
   return hashString(text);
@@ -438,31 +466,65 @@ function aborted(signal: AbortSignal | undefined): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * The scene as a stage keyed on `normalise#<part>` is allowed to see it: the
- * part's layers as they are, every other layer a getter that throws and names
- * the stage. A part digest is only honest if the stage reads nothing outside
- * the part, and this is what makes that a broken build rather than a stale
- * cache: a ground stage that started reading `buildings` would be served the
- * old ground after a `heights.*` change, silently, without it.
+ * `source` with only `allowed` keys readable: the rest are non-enumerable
+ * getters that throw with `refused(key)`. What a stage keyed on a named part
+ * of an input is handed, so a read outside the part fails the run instead of
+ * being served stale after the next change to what the part left out.
  */
-export function scenePartView(scene: EngineSceneGraph, stageId: StageId, part: string): EngineSceneGraph {
-  const layers = (SCENE_PARTS as Readonly<Record<string, readonly string[] | undefined>>)[part];
-  if (layers === undefined) throw new Error(`pipeline: stage ${stageId} keys on normalise#${part}, which names no scene part`);
-  const allowed = new Set<string>(layers);
+function restrictedView<T extends object>(source: T, allowed: ReadonlySet<string>, refused: (key: string) => string): T {
   const view: Record<string, unknown> = {};
-  for (const key of Object.keys(scene)) {
+  for (const key of Object.keys(source)) {
     if (allowed.has(key)) {
-      view[key] = (scene as unknown as Record<string, unknown>)[key];
+      view[key] = (source as Record<string, unknown>)[key];
       continue;
     }
     Object.defineProperty(view, key, {
       enumerable: false,
       get() {
-        throw new Error(`pipeline: stage ${stageId} reads scene.${key}, which normalise#${part} does not cover`);
+        throw new Error(refused(key));
       },
     });
   }
-  return view as unknown as EngineSceneGraph;
+  return view as T;
+}
+
+/**
+ * The scene as a stage keyed on `normalise#<part>` is allowed to see it: the
+ * part's layers as they are, every other layer a getter that throws and names
+ * the stage. A part digest is only honest if the stage reads nothing outside
+ * the part, and this is what makes that a broken build rather than a stale
+ * cache: a ground stage that started reading `buildings` would be served the
+ * old ground after a `heights.*` change, silently, without it. A part that
+ * exposes the buildings' identity hands out each building cut down to those
+ * fields the same way.
+ */
+export function scenePartView(scene: EngineSceneGraph, stageId: StageId, part: string): EngineSceneGraph {
+  const spec = (SCENE_PARTS as Readonly<Record<string, ScenePartSpec | undefined>>)[part];
+  if (spec === undefined) throw new Error(`pipeline: stage ${stageId} keys on normalise#${part}, which names no scene part`);
+  const refused = (key: string): string => `pipeline: stage ${stageId} reads scene.${key}, which normalise#${part} does not cover`;
+  const allowed = new Set<string>(spec.layers);
+  if (spec.buildingFields !== undefined) allowed.add("buildings");
+  const view = restrictedView(scene, allowed, refused);
+  if (spec.buildingFields !== undefined) {
+    const fields = new Set<string>(spec.buildingFields);
+    view.buildings = scene.buildings.map((building) =>
+      restrictedView(building, fields, (key) => `pipeline: stage ${stageId} reads scene.buildings[].${key}, which normalise#${part} does not cover`),
+    );
+  }
+  return view;
+}
+
+/**
+ * An upstream output as a stage keyed on `<input>#<part>` is allowed to see
+ * it (`stages.PART_EXPOSURE`): the part's keys, the rest throwing. The scene
+ * goes through `scenePartView`; a part with no exposure listed is served
+ * whole, which the registry says so of.
+ */
+export function inputPartView<Out>(output: Out, stageId: StageId, input: StageId, part: string): Out {
+  if (input === "normalise") return { scene: scenePartView((output as NormaliseOut).scene, stageId, part) } as Out;
+  const exposed = PART_EXPOSURE[`${input}#${part}`];
+  if (exposed === undefined || output === null || typeof output !== "object") return output;
+  return restrictedView(output, new Set(exposed), (key) => `pipeline: stage ${stageId} reads ${input}.${key}, which ${input}#${part} does not cover`);
 }
 
 interface ContextParts {
@@ -512,6 +574,8 @@ function makeStageContext(parts: ContextParts): StageContext {
   const scenePart = stage.inputDigests?.normalise;
   let build: BuildContext | null = null;
   let sceneView: EngineSceneGraph | null = null;
+  // One view per part-keyed input, built on first read.
+  const partViews = new Map<StageId, unknown>();
 
   const readScene = (): EngineSceneGraph => {
     if (!canReadScene) throw new Error(`pipeline: stage ${stage.id} reads the scene without declaring normalise as an input`);
@@ -567,7 +631,14 @@ function makeStageContext(parts: ContextParts): StageContext {
       if (!inputs.has(id)) throw new Error(`pipeline: stage ${stage.id} reads ${id}, which it does not declare as an input`);
       const entry = cache.get<OutputOf<S>>(id);
       if (entry === undefined) throw new Error(`pipeline: ${stage.id} needs ${id}, which has not run`);
-      return entry.output;
+      const part = stage.inputDigests?.[id];
+      if (part === undefined) return entry.output;
+      let views = partViews.get(id);
+      if (views === undefined) {
+        views = inputPartView(entry.output, stage.id, id, part);
+        partViews.set(id, views);
+      }
+      return views as OutputOf<S>;
     },
     get wasm() {
       return kernel();

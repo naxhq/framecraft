@@ -11,7 +11,7 @@ import { outstandingWasmObjects } from "../solid/manifold";
 import type { TerrainGrid } from "../types";
 import { buildModel } from "../engine";
 import { StageCache, runPipeline, stageIds, stagesInvalidatedBy, type ParamPath, type PipelineEvent, type PipelineJob, type RunOutcome, type StageId, type StageState } from "./index";
-import { scenePartView } from "./runner";
+import { inputPartView, scenePartView } from "./runner";
 import { SCENE_GROUND_LAYERS, stageById } from "./stages";
 import { canonical, diffCanonical } from "./testCompare";
 import { blockScene, bridgeScene, railScene, terrainScene } from "./testScenes";
@@ -246,6 +246,9 @@ function overpassWithUntaggedHeights(): unknown {
           { lat: 41.8827, lon: -87.6221 },
         ],
       },
+      // A park well north of both buildings (the road between them is under
+      // their footprints and builds nothing): what a green override can colour.
+      { type: "way", id: 4, tags: { landuse: "grass" }, geometry: square(41.884, -87.6233, 0.0003) },
     ],
   };
 }
@@ -339,14 +342,36 @@ describe("incremental runs from an Overpass request", () => {
     expect(fourth.states.get("repair-buildings")).toBe("cached");
     expect(fourth.states.get("audit")).toBe("cached");
 
-    // Four normalise runs, one projection: the response was classified,
+    // One coloured park: a surface-bearing override, whose stage output now
+    // carries handles. Keyed on `normalise#overrides` (the ground plus which
+    // buildings exist) and the footprint, it survives a storey-height change
+    // too, and so does everything under it: without that key one coloured
+    // surface put every ground stage back on the whole scene's key.
+    const coloured: PrintParams = { ...idle, object_overrides: [{ osm_id: "w4", layer: "green", color: "#ff0000" }] };
+    const fifth = await runWith(coloured);
+    expect(fifth.outcome.status, fifth.outcome.error?.message).toBe("done");
+    expect(fifth.states.get("surface-overrides")).toBe("done");
+    expect(fifth.states.get("finish-override_1")).toBe("done");
+    expect(fifth.outcome.result?.regions.some((region) => region.region === "override_1")).toBe(true);
+    const colouredTaller: PrintParams = { ...coloured, heights: { ...coloured.heights, floor_height_m: 9 } };
+    const sixth = await runWith(colouredTaller);
+    expect(sixth.outcome.status, sixth.outcome.error?.message).toBe("done");
+    expect(sixth.states.get("normalise")).toBe("done");
+    expect(sixth.states.get("repair-buildings")).toBe("done");
+    expect(sixth.states.get("finish-buildings")).toBe("done");
+    for (const stage of ["surface-overrides", "surface-roads", "surface-parks", "base", "region-base", "sit", "region-override_1", "finish-override_1", "region-roads", "finish-roads"] as const) {
+      expect(sixth.states.get(stage), stage).toBe("cached");
+    }
+    expect(storeyHeight(sixth.outcome)).toBe(3 * 9);
+
+    // Six normalise runs, one projection: the response was classified,
     // projected, cleaned and cropped once, and only the heights were re-applied
-    // for the three changes. A fetch that re-ran would project again.
+    // for the changes. A fetch that re-ran would project again.
     const rows = perfReport("heights").rows;
     const count = (name: string): number => rows.find((row) => row.name === name)?.count ?? 0;
-    expect(count("osm.normalize")).toBe(4);
+    expect(count("osm.normalize")).toBe(6);
     expect(count("osm.project")).toBe(1);
-    expect(count("osm.heights")).toBe(4);
+    expect(count("osm.heights")).toBe(6);
     setPerfEnabled(null);
     cache.dispose();
   }, 120_000);
@@ -376,6 +401,27 @@ describe("the scene view a ground stage is handed", () => {
     expect(() => scenePartView(scene, "surface-roads", "roofs")).toThrow("names no scene part");
   });
 
+  it("the overrides part adds the buildings cut down to their identity: id and osm_id readable, a height a refusal", () => {
+    const view = scenePartView(scene, "surface-overrides", "overrides");
+    expect(view.roads).toBe(scene.roads);
+    expect(view.buildings).toHaveLength(scene.buildings.length);
+    expect(view.buildings.map((b) => b.id)).toEqual(scene.buildings.map((b) => b.id));
+    expect(view.buildings.map((b) => b.osm_id)).toEqual(scene.buildings.map((b) => b.osm_id));
+    expect(() => view.buildings[0].height_m).toThrow("stage surface-overrides reads scene.buildings[].height_m, which normalise#overrides does not cover");
+    expect(() => view.buildings[0].ring).toThrow("normalise#overrides does not cover");
+    expect(() => view.stats).toThrow("normalise#overrides does not cover");
+  });
+
+  it("an input keyed on a named part is served that part and nothing else; a part with no exposure listed is served whole", () => {
+    const repair = { footprint: null, solids: [{ id: "x" }], dilated: 1, merged: 2 };
+    const view = inputPartView(repair, "surface-roads", "repair-buildings", "footprint");
+    expect(view.footprint).toBeNull();
+    expect(() => view.solids).toThrow("stage surface-roads reads repair-buildings.solids, which repair-buildings#footprint does not cover");
+    expect(() => view.merged).toThrow("repair-buildings#footprint does not cover");
+    const buildings = { socket: [], bands: [] };
+    expect(inputPartView(buildings, "base", "buildings", "socket")).toBe(buildings);
+  });
+
   it("is what every stage keyed on normalise#ground reads: a stage that reaches past the part fails its run, not its cache", async () => {
     // The registry's own ground stages, driven through the runner on a scene
     // with every layer: if any of them read a building through the view, the
@@ -387,6 +433,12 @@ describe("the scene view a ground stage is handed", () => {
       const keyed = stageIds().filter((id) => stageById(id).inputDigests?.normalise === "ground");
       expect(keyed).toEqual(["surface-water", "surface-rail", "surface-roads", "surface-parks", "bridges", "trees"]);
       for (const id of keyed) expect(outcome.states.get(id), id).toBe("done");
+      // The seventh ground reader, keyed on the overrides part, and every
+      // footprint reader served the footprint alone.
+      expect(stageById("surface-overrides").inputDigests?.normalise).toBe("overrides");
+      const footprintReaders = stageIds().filter((id) => stageById(id).inputDigests?.["repair-buildings"] === "footprint");
+      expect(footprintReaders).toEqual(["surface-overrides", ...keyed]);
+      for (const id of footprintReaders) expect(outcome.states.get(id), id).toBe("done");
     } finally {
       cache.dispose();
     }

@@ -147,10 +147,12 @@ describe("a building with a hole", () => {
     const height =
       T.building_top_mm_for({ height_m: 30, is_tall: false }, result.params, scale, false) -
       (T.base_top_mm(result.params) - skirt);
-    // Within a fifth of a per cent: the footprint a region is extruded from is
-    // grown by `POCKET_GROW_MM` so it fills the pocket carved for it exactly
-    // (`areas.fittedSolid`), which adds two micrometres all the way round.
-    expect(buildings?.volumeMm3 ?? 0).toBeGreaterThan(ringArea * height);
+    // Within a fifth of a per cent above and a fiftieth of that below: the
+    // footprint is put on the engine's XY grid before it is extruded
+    // (`manifold.snapSection`, a step of 1/1024 mm), which can move every
+    // corner of this ring inward by under half a micrometre; the printed
+    // building is still the ring to a part in ten thousand.
+    expect(buildings?.volumeMm3 ?? 0).toBeGreaterThan(ringArea * height * (1 - 1e-4));
     expect((buildings?.volumeMm3 ?? 0) / (ringArea * height)).toBeLessThan(1.002);
     expect(outstandingWasmObjects()).toBe(0);
   }, 60_000);

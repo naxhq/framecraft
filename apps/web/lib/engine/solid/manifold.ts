@@ -1035,22 +1035,38 @@ export function toRegionMesh(
     positions: perfSpan("mesh.double", () => doublePositions(solid, raw.vertProperties, raw.numProp)),
     indices: new Uint32Array(raw.triVerts),
   };
-  // The kernel's own sweep first (`sweepSlivers`), for the slits the mesh
-  // repair below cannot close; then the mesh repair for what is left.
-  const swept = perfSpan("mesh.sweep", () => sweepSlivers(solid, read));
-  const source = swept === null ? solid : swept.solid;
+  // The mesh repair first; the kernel's own sweep (`sweepSlivers`) only when
+  // that leaves a face under the REPAIR threshold, which is the slit case the
+  // mesh repair cannot close. The margin matters: the reference validator
+  // unions the parts itself, and a face between 1e-9 and 1e-7 mm^2 that this
+  // region carries can land under 1e-9 in that union (Paris: one face on the
+  // `degenerate_faces` row when the sweep waited for a sub-1e-9 face). The
+  // sweep is a `simplify` of the whole solid and costs about a second over
+  // the Chicago plate's seven meshes when run unconditionally, so it is not
+  // run on a mesh the cheap repair already cleared.
+  let cleaned = perfSpan("mesh.clean", () => cleanMesh(read, clean));
+  let swept: SweptSolid | null = null;
   try {
-    const cleaned = perfSpan("mesh.clean", () => cleanMesh(swept === null ? read : swept.mesh, clean));
+    if (cleaned.report.degenerate > 0) {
+      const sweep = perfSpan("mesh.sweep", () => sweepSlivers(solid, read));
+      swept = sweep;
+      if (sweep !== null) cleaned = perfSpan("mesh.clean", () => cleanMesh(sweep.mesh, clean));
+    }
     // History-free byte order (`mesh.canonicalMesh`): a warm incremental run and
     // a cold run of the same parameters write the same file.
     const ordered = perfSpan("mesh.order", () => canonicalMesh(cleaned.mesh));
+    // The volume, bounds and body count are the KERNEL's, from the solid the
+    // booleans produced: the sweep may move a vertex a micrometre and the
+    // volume with it (a relative 1e-6 at most, `SWEEP_VOLUME_TOLERANCE`), and
+    // a tile's volume has to add up against the whole plate's exactly, not to
+    // within whatever its own sweep happened to move.
     return {
       region,
       positions: ordered.positions,
       indices: ordered.indices,
-      volumeMm3: source.volume(),
-      bbox: bboxOf(source),
-      bodies: bodies ?? bodyCount(source),
+      volumeMm3: solid.volume(),
+      bbox: bboxOf(solid),
+      bodies: bodies ?? bodyCount(solid),
       slot,
       colorHex,
     };

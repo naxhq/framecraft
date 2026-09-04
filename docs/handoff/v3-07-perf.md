@@ -523,5 +523,90 @@ moved", the shared ground arrays. `graph.test.ts`'s note pin required the
 mostly stages and leaves other waves had added since the block was written,
 plus the two parts here.
 
+**The audit's hole: a surface-bearing override.** The 206 ms above held
+only with `object_overrides` empty. `surface-overrides` was still keyed on
+the whole scene (its reconciliation walks the buildings' ids to say which
+override rows name an object outside the crop), and once a group is built
+its output carries handles, so its digest is its key: one coloured road put
+`heights.floor_height_m` back to 2674 ms across 57 stages, because every
+ground stage lists `surface-overrides` as an input. Closed the same way:
+a second scene part, `normalise#overrides`, is the ground digest plus a
+hash of every building's `id` and `osm_id`; the stage is keyed on it and on
+`repair-buildings#footprint`, and its view of the scene exposes the ground
+layers and the buildings cut down to those two fields (a height read on one
+throws, naming the stage and the part). Measured, same harness, this load:
+`floor_height_m` with one coloured road 257 to 271 ms and 40 stages, without
+257 to 290 and 40, the override surface and its region cached in both.
+`incremental.test.ts` drives it on the Overpass fixture with a park override:
+the override surface, its region, the plate and its seat stay cached under a
+storey change, and the `override_1` region is in the result.
+
+**The other guard, `[V3.1-P7-17]`.** A stage keyed on
+`repair-buildings#footprint` was handed the whole repair record. Now
+`ctx.input()` serves a part-keyed input through `runner.inputPartView`: the
+keys `stages.PART_EXPOSURE` lists for that part (`footprint`), the rest
+throwing; the exposure table sits beside the digest so the two cannot
+drift, and a part with no exposure listed (the cutter parts `base` reads,
+`labels#roofs`, `buildings#socket`) is served whole, which the table says.
+Pinned by a unit test on the view and by the registry check that every
+footprint reader (`surface-overrides` and the six) runs clean through it.
+
+**`digestOf` no longer serialises what it will throw away.** It walked a
+1.4 MB scene with `stableJson`'s sorted-key replacer and discarded the text
+for exceeding the digest limit, 20 ms per normalise and 116 ms per cold
+fetch on the 9 MB response. `plainDataSize` now walks the value counting a
+lower bound of its JSON length and stops the moment the limit is passed, so
+both cost a few thousand steps; the exact length is still checked on the
+text that is hashed. `normalise`'s stage time went from 31 to 37 ms to 19
+to 24 on the runs above.
+
+**The aliasing the audit noted, decided.** The projection's five ground
+arrays are shared by reference into every scene built from it and, in the
+no-Worker transport, into the page. No mutator exists, and one would now
+throw: `projectOverpass` freezes the five arrays (shallow, since a deep
+freeze would walk a megabyte per projection against a mutator nothing has).
+`normalize.test.ts` asserts the freeze; the full suite ran clean through it,
+which is also the proof that nothing in the tree mutates them today.
+
+**An undeclared read, fixed by declaring it.** The strict-claims run on the
+Chicago fixture caught `repair-buildings` reading `height_exaggeration`,
+which another wave's `T.building_top_mm_for` now applies before comparing a
+tower's printed top with its block's (the stacking decision). Not the same
+bug as the miss above (that was over-invalidation; this is a key that did
+not cover a read), but the same invariant: measured before the claim, a
+`height_exaggeration.multiplier` change reached the preview in 95 to 107 ms
+with 35 stages run and `repair-buildings` served STALE from the cache, its
+stacking decided at the old exaggeration. With `height_exaggeration.*`
+declared on the stage it is 225 to 536 ms and 37 stages (the repair, 128 to
+337 ms under a concurrent vitest run, and the building regions), and the
+ground stays cached because `repair-buildings#footprint` reads no height.
+The slower number is the correct one.
+
 **Also in this close-out:** `next.config.test.ts`, the build-level test the
 v3-08 note lacked for its webpack hook (section 3 and 10.5 of that note).
+
+## 9. The geometry fix wave (2026-09-03): what it costs
+
+Measured on the dev host with `FRAMECRAFT_PERF=1`, Chicago fixture, parts
+profile, plate 180, `--target generic-3mf`, from the preset matrix run:
+engine 4.8 to 6.0 s over four matrix runs (5.3 s in section 3's table; the
+matrix run has `uv` and the validator competing for the machine, so the
+spread is the machine's, not the code's). The new rows:
+
+| span | calls | ms | what |
+|---|---:|---:|---|
+| `mesh.sweep` | 0-7 | 0 (was 1122 unconditional) | `sweepSlivers`, the kernel `simplify` at 1e-6; now only when `cleanMesh` leaves a face under its 1e-7 mm^2 repair threshold, which no Chicago region does |
+| `buildings.slices` | 1 | 20 | `repairSliceProfiles`, the slice-profile neck repair over every block group |
+| `surface.printable` | 4 | 57 | unchanged rows; `residueParts` now dilates twice (simplified and raw eroded ring) |
+| `mesh.clean` | 7 | 1231 | unchanged; its `check` row is 770 of it |
+
+`mergeRecessRidges` now runs frame-on and has no span of its own; it is inside
+the `surface-parks` stage, whose wall clock moved by under 0.2 s on this
+plate. `snapSection` is a `toPolygons` round trip per building solid and does
+not register.
+
+Plate 256, `--target step`: engine 19.6 s, `export.step` 4.4 s for 273,066
+triangles and 4.6 million entities; the writer's twelve-decimal grid lost
+zero faces (`gridLostTriangles` 0), against the six to twelve the six-decimal
+grid lost.
+

@@ -156,11 +156,15 @@ CI. `docs/ARCHITECTURE.md` has the long version.
 Known and open, rather than quietly omitted. The full ledger, with
 measurements, is `docs/handoff/FAILURES.md`.
 
-- The browser engine currently fails the reference validator on five of the six
-  preset cities: New York, Tokyo, London and San Francisco on the minimum-wall
-  row, Paris on degenerate faces. Chicago passes. The nightly job reports it,
-  and it is being worked on. The Python reference pipeline builds all six
-  cleanly.
+- **Tokyo** is the one preset the browser engine does not yet build to the
+  reference validator's satisfaction: it fails the minimum-wall row on two
+  regions, narrowest 0.254 mm. Chicago, New York, Paris, London and San
+  Francisco all read ALL CHECKS PASS. The Tokyo case is measured and
+  diagnosed, not a mystery: three acute building tips in the slice just under
+  the base top, where a road ribbon stops half a metre of ground short of a
+  building and leaves a rind of base beside it. It has an owner and it ships as
+  a stated limitation rather than as a surprise; the numbers and the two
+  repairs that were tried and backed out are in `docs/handoff/FAILURES.md`.
 - A 256 mm plate carries residual defects on Chicago (a handful of degenerate
   faces, and one thin lobe in frame-off parts mode). The default 180 mm plate
   is unaffected and the in-app audit warns either way.
@@ -170,8 +174,6 @@ measurements, is `docs/handoff/FAILURES.md`.
   formats colour by region.
 - STEP output is a faceted B-rep (triangle faces), not smooth CAD surfaces; a
   mesh model has no others to offer, and the app says so above 50k triangles.
-  Its coordinate grid can also drop the same near-degenerate faces the STL
-  writer now hardens against; STEP is not judged by the validator.
 - Single-nozzle colour change only recolours regions whose Z bands are
   exclusive to their slot. The rest are reported as inseparable.
 - Share links cap at 8000 characters, and past that the app offers a project

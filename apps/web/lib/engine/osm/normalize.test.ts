@@ -55,6 +55,10 @@ describe("projectOverpass + sceneFromProjected: the height rules reach the build
     expect(storeys.water).toBe(frozen.water);
     expect(storeys.green).toBe(frozen.green);
     expect(storeys.trees).toBe(frozen.trees);
+    // Shared by reference all the way to the page in the no-Worker transport,
+    // so a push or a sort anywhere downstream throws rather than editing
+    // every scene that shares them.
+    for (const layer of [frozen.roads, frozen.rail, frozen.water, frozen.green, frozen.trees]) expect(Object.isFrozen(layer)).toBe(true);
     expect(storeys.bounds).toEqual(frozen.bounds);
     expect(storeys.center).toEqual(frozen.center);
     expect(storeys.stats.building_count).toBe(frozen.stats.building_count);
