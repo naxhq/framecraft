@@ -1250,3 +1250,27 @@ Append-only. Format: `- [phase] decision, one line`.
   geometry wave's own share is about 240 ms, and a full rollback would still read about 2100. So
   the release must not say the geometry work broke this target; it contributed to a row that was
   already close, and the row is reported as missed with both figures.
+
+- `[V3.1-P8-8]` **`?sw-off` did not actually kill the worker, and that is a user-facing defect.**
+  `registration.unregister()` does not evict a worker that is already CONTROLLING open pages, so
+  the retired worker kept serving the `?sw-off` navigation itself and re-created
+  `framecraft-immutable-v1` within two seconds of every sweep, measured on the production build
+  as gone at t+0 and back at t+2 across three runs. A kill switch that does not kill is worse
+  than none: the user who reaches for it has a stale cache they now believe they have cleared.
+  Fixed with a handshake rather than a longer sweep: the page posts `framecraft:kill` and waits
+  up to two seconds for the ack, the worker raises a one-way inert flag, stops intercepting,
+  refuses every cache write so an in-flight response cannot refill a swept cache, deletes its own
+  `framecraft-` caches and unregisters, and only then does the page sweep. Removing the handshake
+  reproduces the original failure exactly.
+- `[V3.1-P8-9]` **The desktop-shell test never reached the gate it defends, and a missing global
+  takes the whole editor down.** The spec injected `__TAURI_INTERNALS__` alone, but
+  `tauri.conf.json` sets `withGlobalTauri`, so the real shell also carries `window.__TAURI__`.
+  `DesktopProjectOpener`, mounted from the root layout, calls `__TAURI__.core.invoke`; that threw
+  out of an effect, React unmounted the tree, `data-fc-ready` was never set, and the test spent
+  its full 300 seconds on the app's boot without ever testing the refusal. With both globals
+  injected it now fails correctly when the Tauri clause is removed from `registrationDecision`,
+  so `[V3.1-P8-3]` is defended for the first time. The deeper finding is the fragility: a single
+  absent global unmounting the entire editor is a crash path, and `lib/platform.ts`'s
+  `onProjectFileOpened` throws synchronously the same way. It is unreachable while
+  `withGlobalTauri` stays on, which makes it exactly the kind of latent defect that surfaces one
+  config change later, so it is hardened now rather than logged.

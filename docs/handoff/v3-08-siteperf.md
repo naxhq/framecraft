@@ -876,3 +876,77 @@ load. It is the right way round, and it is why the step is in `release.yml` and
 in neither `pages.yml` (Pages ignores the siblings) nor `npm run build` (the
 desktop bundle would carry 3 MB of siblings for a shell that reads its files
 off local disk and has no wire to negotiate on).
+
+### 10.7 Two gate failures, and what each of them turned out to be
+
+A third pass, from `e2e/siteperf.spec.ts` failing twice identically in the
+v3.1 gate. One was the spec's fault and one was the product's, and it is worth
+saying which was which because they look the same from the report.
+
+**The kill switch did not kill: a real defect, in the product.**
+`?sw-off` unregistered every worker and deleted every `framecraft-` cache, and
+then the caches came back. Measured on the real app, prod build, three runs:
+`framecraft-immutable-v1` was present again within two seconds of the
+teardown, every time.
+
+The cause is one line of the service worker lifecycle that the switch was
+written without. `registration.unregister()` stops a worker claiming FUTURE
+clients; it does not evict the worker already CONTROLLING open pages, which
+goes on handling every fetch of every open tab until the last one unloads. So
+the `?sw-off` navigation was still being served by the very worker it had just
+retired, and each subresource that load asked for went through `cacheFirst`
+and re-created the cache the page had swept a moment earlier. The visitor who
+reached for the switch was left with a live worker and a fresh cache, which is
+the exact state the switch exists to escape -- and worse than no switch,
+because it reports success.
+
+The fix is a handshake, and the order in it is the whole of it.
+`silenceController` (`lib/serviceWorker.ts`) posts `framecraft:kill` to the
+controller and waits, bounded at 2 s, for `framecraft:killed`;
+`selfDestruct` (`public/sw.js`) raises a one-way `disabled` flag, deletes the
+`framecraft-` caches, unregisters, and answers. While `disabled` the fetch
+handler returns without `respondWith`, so the page goes straight to the
+network, and `putAndTrim` -- the one place every write goes through -- refuses,
+so a handler already in flight when the kill arrived cannot re-create a swept
+cache either. Only then does the page's own sweep run. The 2 s bound is not a
+requirement: a worker that never answers is exactly the worker this switch is
+for, so past it the page does what it did before, which is no worse than the
+old behaviour.
+
+Measured after, same probe, same build: the `framecraft-` caches stay gone for
+the full 15 s while `somebody-elses-cache` is untouched, with
+`navigator.serviceWorker.controller` still non-null -- inert, not evicted,
+which is all the browser allows until the page unloads.
+
+Nine new tests: five page-side (`serviceWorker.test.ts`, including that the
+kill is sent BEFORE the sweep, which is the ordering the whole fix is) and four
+worker-side in the vm sandbox (`serviceWorkerScript.test.ts`, including the
+in-flight response that must not land).
+
+**The desktop-shell refusal: the spec's fault, and it never reached the
+assertion it was written for.** The test injected `__TAURI_INTERNALS__` and
+nothing else, on the reasoning that `isTauri()` reads that global and nothing
+else. True of the one function that DECIDES, and false of the app around it:
+`tauri.conf.json` sets `withGlobalTauri`, so the real shell also has
+`window.__TAURI__`, and everything else gated on `isTauri()` -- here
+`DesktopProjectOpener`, mounted from the root layout -- calls
+`__TAURI__.core.invoke`. Under the half-injected global `tauriApi()` threw out
+of an effect, React unmounted the tree, `data-fc-ready` was never set and the
+test spent its 300 s timeout on the app's boot, several layers from the
+registration gate. So the fixture modelled a shell that has never shipped. It
+now injects both globals, with `invoke` resolving null, which is the honest
+answer for the two commands the opener sends.
+
+**Both were mutation-probed after they went green**, since a test that passes
+is worth what it costs to make it fail:
+
+| mutation | result |
+|---|---|
+| the Tauri clause removed from `registrationDecision` | red: `Expected "off:tauri", Received "on"` |
+| `silenceController` removed from the teardown | red: `Expected 0, Received 1` after the 15 s poll -- the original failure, exactly |
+| the `disabled` guard removed from `putAndTrim` | red: the in-flight sandbox test only |
+
+The spec passes 6/6 against both servers the gate can be pointed at: the
+production export (`serve-static.mjs`, where the app really does register a
+worker and the defect reproduced) and `next dev` (where it deliberately does
+not).

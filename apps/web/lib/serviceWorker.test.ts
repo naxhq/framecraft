@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CACHE_PREFIX,
   DECISION_ATTRIBUTE,
+  KILLED_MESSAGE,
+  KILL_MESSAGE,
   KILL_SWITCH_STORAGE_KEY,
   MAX_WARM_URLS,
   SKIP_WAITING_MESSAGE,
@@ -16,6 +18,7 @@ import {
   serviceWorkerUrl,
   shouldRegister,
   showUpdateToast,
+  silenceController,
   unregisterServiceWorkers,
   warmUrlsFrom,
   type ContainerLike,
@@ -603,8 +606,10 @@ describe("unregisterServiceWorkers", () => {
   });
 
   it("survives a container that refuses to enumerate, and still clears the caches", async () => {
-    const container: Pick<ContainerLike, "getRegistrations"> = {
+    const container = {
       getRegistrations: () => Promise.reject(new Error("denied")),
+      controller: null,
+      addEventListener: () => {},
     };
     const caches = new FakeCaches([`${CACHE_PREFIX}static-v1`]);
     const outcome = await unregisterServiceWorkers(container, caches);
@@ -644,5 +649,94 @@ describe("registerServiceWorker fails soft", () => {
     ).resolves.toBeNull();
     expect(container.registered).toHaveLength(1);
     expect(doc.toast()).toBeNull();
+  });
+});
+
+describe("silenceController: the half of the kill switch that reaches the CURRENT page", () => {
+  /*
+   * `registration.unregister()` stops a worker claiming future clients. It
+   * does not evict the worker already controlling open pages, which goes on
+   * answering every fetch until the last tab holding it is unloaded. Without
+   * this handshake the teardown deleted the caches and the still-live worker
+   * refilled them from the page's own subresource loads; measured on the real
+   * app, `framecraft-immutable-v1` was back within two seconds, every run.
+   */
+
+  /** A container whose controller answers the kill the way `public/sw.js` does. */
+  function controlled(options: { ack?: boolean; throwOnPost?: boolean } = {}): {
+    container: ContainerLike;
+    posts: unknown[];
+  } {
+    const posts: unknown[] = [];
+    const listeners: Array<(event: { data?: unknown }) => void> = [];
+    const container: ContainerLike = {
+      controller: {
+        postMessage(message: unknown): void {
+          if (options.throwOnPost === true) throw new Error("gone");
+          posts.push(message);
+          if (options.ack === false) return;
+          // The real worker sweeps and unregisters before it answers.
+          queueMicrotask(() => {
+            for (const listener of listeners) listener({ data: { type: KILLED_MESSAGE } });
+          });
+        },
+      },
+      register: () => Promise.resolve(undefined),
+      addEventListener: (_type, listener) => listeners.push(listener),
+      getRegistrations: () => Promise.resolve([]),
+    };
+    return { container, posts };
+  }
+
+  it("asks the controlling worker to stand down, and waits for it to say it has", async () => {
+    const { container, posts } = controlled();
+    await expect(silenceController(container)).resolves.toBe(true);
+    expect(posts).toEqual([{ type: KILL_MESSAGE }]);
+  });
+
+  it("gives up on a worker that never answers, because that is the worker this exists for", async () => {
+    const { container, posts } = controlled({ ack: false });
+    await expect(silenceController(container, 10)).resolves.toBe(false);
+    expect(posts, "it still asked; it just did not wait forever").toEqual([{ type: KILL_MESSAGE }]);
+  });
+
+  it("has nothing to silence when no worker controls the page", async () => {
+    const container = new FakeContainer();
+    await expect(silenceController(container)).resolves.toBe(false);
+  });
+
+  it("survives a controller that throws on the way out", async () => {
+    const { container } = controlled({ throwOnPost: true });
+    await expect(silenceController(container, 10)).resolves.toBe(false);
+  });
+
+  it("silences BEFORE it sweeps, which is the whole of the ordering", async () => {
+    const timeline: string[] = [];
+    const listeners: Array<(event: { data?: unknown }) => void> = [];
+    const container: ContainerLike = {
+      controller: {
+        postMessage(): void {
+          timeline.push("kill");
+          queueMicrotask(() => {
+            for (const listener of listeners) listener({ data: { type: KILLED_MESSAGE } });
+          });
+        },
+      },
+      register: () => Promise.resolve(undefined),
+      addEventListener: (_type, listener) => listeners.push(listener),
+      getRegistrations: () => Promise.resolve([]),
+    };
+    const cacheStorage = {
+      keys: () => Promise.resolve([`${CACHE_PREFIX}immutable-v1`]),
+      delete: (name: string) => {
+        timeline.push(`delete:${name}`);
+        return Promise.resolve(true);
+      },
+    };
+
+    await unregisterServiceWorkers(container, cacheStorage);
+
+    // A sweep that ran first would be undone by the worker it did not stop.
+    expect(timeline).toEqual(["kill", `delete:${CACHE_PREFIX}immutable-v1`]);
   });
 });

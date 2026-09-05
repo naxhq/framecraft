@@ -124,8 +124,11 @@ interface WorkerOptions {
   /** The worker's own script URL. Its `?v=` is the build id the worker reports. */
   href?: string;
   scope?: string;
-  /** What the network answers. Throw from here to model an offline origin. */
-  respond?: (url: string) => Response;
+  /**
+   * What the network answers. Throw from here to model an offline origin, or
+   * return a Promise to hold a response open across another event.
+   */
+  respond?: (url: string) => Response | Promise<Response>;
 }
 
 interface Worker {
@@ -136,6 +139,8 @@ interface Worker {
   toClients: unknown[];
   claims: number;
   skipWaitings: number;
+  /** How many times the worker retired its own registration. */
+  unregisters: number;
   install(): Promise<void>;
   activate(): Promise<void>;
   message(data: unknown): Promise<void>;
@@ -155,12 +160,19 @@ function loadWorker(options: WorkerOptions = {}): Worker {
   const listeners = new Map<string, EventListener[]>();
   let claims = 0;
   let skipWaitings = 0;
+  let unregisters = 0;
 
   const self = {
     // A real `WorkerLocation` carries both, and `sw.js` reads both: `href` for
     // the build id on its own script URL, `origin` for the same-origin gate.
     location: { href, origin: new URL(href).origin },
-    registration: { scope },
+    registration: {
+      scope,
+      unregister(): Promise<boolean> {
+        unregisters += 1;
+        return Promise.resolve(true);
+      },
+    },
     addEventListener(type: string, listener: EventListener): void {
       const list = listeners.get(type) ?? [];
       list.push(listener);
@@ -245,6 +257,9 @@ function loadWorker(options: WorkerOptions = {}): Worker {
     },
     get skipWaitings() {
       return skipWaitings;
+    },
+    get unregisters() {
+      return unregisters;
     },
     install: () => lifecycle("install"),
     activate: () => lifecycle("activate"),
@@ -573,5 +588,69 @@ describe("a sub-path deployment", () => {
     expect(worker.caches.keysIn(staticCache("build-1"))).toEqual([
       `${base}/maplibre/maplibre-gl-csp-worker.js`,
     ]);
+  });
+});
+
+describe("`?sw-off`: the worker's half of the kill switch", () => {
+  /*
+   * WHY THE WORKER HAS A HALF AT ALL. `registration.unregister()` stops a
+   * worker claiming FUTURE clients. It does not evict the worker already
+   * controlling open pages, which goes on handling every fetch until the last
+   * tab holding it is unloaded. So the page-side teardown deleted the caches
+   * and this worker refilled them from the page's own subresource loads --
+   * measured on the real app, `framecraft-immutable-v1` was back within two
+   * seconds of every teardown, which is what `e2e/siteperf.spec.ts` caught.
+   */
+  const KILL = { type: "framecraft:kill" };
+
+  it("deletes the caches it owns, leaves another app's alone, unregisters, and says it has", async () => {
+    const worker = loadWorker();
+    await worker.serve(req(CHUNK));
+    await worker.serve(req(`${ORIGIN}/icon.svg`, { destination: "image" }));
+    await worker.caches.open("somebody-elses-cache");
+
+    await worker.message(KILL);
+
+    expect(await worker.caches.keys(), "a Pages user site can host more than one app").toEqual([
+      "somebody-elses-cache",
+    ]);
+    expect(worker.unregisters).toBe(1);
+    expect(worker.toClients).toContainEqual({ type: "framecraft:killed" });
+  });
+
+  it("stops intercepting, so the page it was retired from goes to the network itself", async () => {
+    const worker = loadWorker();
+    await worker.serve(req(CHUNK));
+    await worker.message(KILL);
+
+    // Not `serve`: the point is that nothing is answered at all.
+    expect(worker.fetchEvent(req(CHUNK)).responded, "a retired worker answers nothing").toBeNull();
+    expect(worker.fetchEvent(navigation(`${ORIGIN}/`)).responded).toBeNull();
+  });
+
+  it("cannot refill a swept cache from a response that was already in flight", async () => {
+    let release!: (response: Response) => void;
+    const held = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    const worker = loadWorker({ respond: (url) => (url === CHUNK ? held : new Response("payload")) });
+
+    // A cache-first miss, with the network still open when the kill arrives.
+    const inFlight = worker.fetchEvent(req(CHUNK));
+    await worker.message(KILL);
+    release(new Response("payload", { status: 200 }));
+    await inFlight.responded;
+    await Promise.all(inFlight.waited);
+
+    expect(await worker.caches.keys(), "the write found the flag up and wrote nothing").toEqual([]);
+  });
+
+  it("ignores a warm-up that arrives after it was retired", async () => {
+    const worker = loadWorker();
+    await worker.message(KILL);
+    await worker.message({ type: "framecraft:warm", urls: [CHUNK] });
+
+    expect(worker.fetched).toEqual([]);
+    expect(await worker.caches.keys()).toEqual([]);
   });
 });

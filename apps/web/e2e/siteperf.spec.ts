@@ -392,17 +392,39 @@ test.describe("the app's own registration", () => {
    * The desktop-shell refusal, from the outside.
    *
    * `lib/platform.ts`'s `isTauri()` is `"__TAURI_INTERNALS__" in window` and
-   * nothing else, so injecting that global before any bundle runs makes this
-   * page indistinguishable from the shell to the one function that decides.
-   * The assertion is on the REASON rather than on the absence of a worker,
-   * because under `next dev` there would be no worker either way and a test
-   * that only checked for one would pass without the gate existing at all.
-   * `registrationDecision` asks about Tauri before it asks about the
-   * environment, which is what makes the two distinguishable here.
+   * nothing else, so that global is what makes this page the shell to the one
+   * function that DECIDES. The assertion is on the REASON rather than on the
+   * absence of a worker, because under `next dev` there would be no worker
+   * either way and a test that only checked for one would pass without the
+   * gate existing at all. `registrationDecision` asks about Tauri before it
+   * asks about the environment, which is what makes the two distinguishable
+   * here.
+   *
+   * BOTH globals are injected, because both are what the shell has.
+   * `apps/desktop/src-tauri/tauri.conf.json` sets `app.withGlobalTauri`, so
+   * inside the real shell `window.__TAURI__` carries the IPC surface beside
+   * `__TAURI_INTERNALS__`, and `lib/platform.ts` reads the first through the
+   * second's answer: everything gated on `isTauri()` -- here
+   * `DesktopProjectOpener`, mounted from the root layout -- then calls
+   * `__TAURI__.core.invoke` / `.event.listen`. Injecting the marker alone
+   * builds a shell that has never shipped, and the app dies in it: `tauriApi()`
+   * throws "Tauri global API is not available" out of an effect, React unmounts
+   * the tree, and `data-fc-ready` is never set, which is precisely how this
+   * test used to fail -- on the app's boot, several layers away from the
+   * registration gate it exists to defend. `invoke` resolving null is the
+   * honest answer for both commands the opener sends (`take_pending_project`
+   * with no file parked, and a listen that never fires).
    */
   test("the desktop shell is refused, and refused for being the desktop shell", async ({ page }) => {
     await page.addInitScript(() => {
       Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
+      Object.defineProperty(window, "__TAURI__", {
+        value: {
+          core: { invoke: () => Promise.resolve(null) },
+          event: { listen: () => Promise.resolve(() => {}) },
+        },
+        configurable: true,
+      });
     });
     await page.goto("/");
     await page.waitForFunction(() => document.documentElement.dataset.fcReady === "1");

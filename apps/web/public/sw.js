@@ -48,7 +48,11 @@
  * without waiting for a cache lifetime. `?sw-on` puts it back. The switch
  * lives in `lib/serviceWorker.ts` because it has to work when THIS file is
  * the broken part; RUNBOOK.md section 8 is where it is written down for
- * whoever is looking at a broken deploy.
+ * whoever is looking at a broken deploy. This file's half of it is
+ * `selfDestruct` and the `disabled` flag: unregistering does not stop a worker
+ * that is already CONTROLLING a page, so without being told to stand down the
+ * worker being retired went on serving that page and refilling the caches the
+ * teardown had just emptied.
  *
  * This file is served verbatim from `public/`; it is not bundled, not
  * TypeScript, and eslint ignores `public/**`. Its behaviour is pinned by
@@ -101,6 +105,29 @@ const MAX_DOCUMENT_ENTRIES = 4;
 const UPDATE_MESSAGE = "framecraft:update-ready";
 const SKIP_WAITING_MESSAGE = "framecraft:skip-waiting";
 const WARM_MESSAGE = "framecraft:warm";
+/** `?sw-off` asking the worker that is CONTROLLING the page to stand down, and its acknowledgement. */
+const KILL_MESSAGE = "framecraft:kill";
+const KILLED_MESSAGE = "framecraft:killed";
+
+/** Every cache this app owns starts with this. Mirrors `CACHE_PREFIX` in `lib/serviceWorker.ts`. */
+const CACHE_PREFIX = "framecraft-";
+
+/*
+ * Set by `?sw-off`, and one-way: this worker never comes back to life.
+ *
+ * Unregistering does NOT stop a worker that is already controlling a page.
+ * `registration.unregister()` only stops it claiming FUTURE clients; the
+ * active worker keeps handling every fetch of every open tab until the last
+ * one is unloaded. So `?sw-off` on its own left the broken worker still
+ * serving the very page the visitor opened to escape it, and still writing
+ * fresh entries into the caches the page had just deleted -- measured: the
+ * chunk cache reappeared within two seconds of the teardown, every time.
+ *
+ * With this flag the worker goes inert the moment it is asked to: every fetch
+ * falls through to the network untouched and nothing is written to any cache,
+ * so the page's own sweep is the last word rather than the first.
+ */
+let disabled = false;
 
 /** The path this worker is scoped to, always with a trailing slash ("/" or "/framecraft/"). */
 const SCOPE_PATH = new URL(self.registration.scope).pathname;
@@ -140,6 +167,10 @@ async function trim(cache, max) {
 }
 
 async function putAndTrim(cacheName, request, response, max) {
+  // The one place every write goes through, which is why the kill switch is
+  // enforced here: a handler already in flight when `?sw-off` arrived cannot
+  // re-create a cache the teardown has just deleted.
+  if (disabled) return;
   const cache = await caches.open(cacheName);
   await cache.put(request, response);
   await trim(cache, max);
@@ -258,6 +289,32 @@ async function warm(urls) {
   );
 }
 
+/**
+ * Stand down, for good: the worker half of `?sw-off`.
+ *
+ * The order is the whole of it. The flag goes up FIRST, so no handler already
+ * running can write anything after this point; then the caches go, so the
+ * sweep cannot race a `cache.put` that started before it; then the
+ * registration, so no future navigation is claimed. The page half
+ * (`lib/serviceWorker.ts`) waits for the acknowledgement before its own sweep,
+ * which is what makes the two halves ordered rather than merely simultaneous.
+ *
+ * Unregistering from in here is deliberate belt-and-braces: the page does it
+ * too, and either alone is enough, but a worker that has been told to die
+ * should not depend on a page it may have broken to finish the job.
+ */
+async function selfDestruct() {
+  disabled = true;
+  const names = await caches.keys();
+  await Promise.all(names.filter((name) => name.startsWith(CACHE_PREFIX)).map((name) => caches.delete(name)));
+  try {
+    await self.registration.unregister();
+  } catch {
+    // Already gone, or a browser that refuses: the page unregisters as well.
+  }
+  await tellClients({ type: KILLED_MESSAGE });
+}
+
 self.addEventListener("install", (event) => {
   /*
    * Nothing is precached, and `skipWaiting` is NOT called here. Two reasons,
@@ -287,6 +344,11 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("message", (event) => {
   const data = event.data;
   if (!data || typeof data.type !== "string") return;
+  if (data.type === KILL_MESSAGE) {
+    event.waitUntil(selfDestruct());
+    return;
+  }
+  if (disabled) return;
   if (data.type === SKIP_WAITING_MESSAGE) {
     self.skipWaiting();
     return;
@@ -297,6 +359,11 @@ self.addEventListener("message", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
+  // Retired by `?sw-off`: hand everything back to the browser untouched. This
+  // is what makes the switch reach the page that is asking for it, rather than
+  // only the next one.
+  if (disabled) return;
+
   const request = event.request;
   if (request.method !== "GET") return;
 

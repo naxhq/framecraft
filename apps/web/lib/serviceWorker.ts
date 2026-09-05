@@ -24,6 +24,18 @@ export const BUILD_ID: string = process.env.NEXT_PUBLIC_BUILD_ID ?? "";
 export const UPDATE_READY_MESSAGE = "framecraft:update-ready";
 export const SKIP_WAITING_MESSAGE = "framecraft:skip-waiting";
 export const WARM_MESSAGE = "framecraft:warm";
+/** `?sw-off` telling the controlling worker to stand down, and the worker saying it has. */
+export const KILL_MESSAGE = "framecraft:kill";
+export const KILLED_MESSAGE = "framecraft:killed";
+
+/**
+ * How long the teardown waits for that acknowledgement before sweeping anyway.
+ *
+ * A worker that never answers is exactly the worker `?sw-off` exists for, so
+ * this can only ever be a bound, never a requirement: past it the page carries
+ * on and does what it did before this handshake existed.
+ */
+export const KILL_ACK_TIMEOUT_MS = 2_000;
 
 /** The most Resource Timing entries one warm message will carry. A cold load has 33. */
 export const MAX_WARM_URLS = 120;
@@ -260,8 +272,64 @@ export function killSwitchState(href: string, storage: StorageLike | null): Kill
   }
 }
 
+/** The half of the container `silenceController` needs: who is in charge, and a way to hear back. */
+export type ControllerChannel = Pick<ContainerLike, "controller" | "addEventListener">;
+
+/**
+ * Tell the worker CONTROLLING this page to stand down, and wait until it says
+ * it has.
+ *
+ * This is the step without which the kill switch does not kill.
+ * `registration.unregister()` stops a worker claiming future clients; it does
+ * NOT evict the worker already controlling open pages, which keeps handling
+ * every fetch of this very page until the last tab holding it is unloaded. So
+ * the old teardown deleted the caches and the still-live worker refilled them
+ * from the page's own subresource loads -- measured on the real app, the chunk
+ * cache was back within two seconds, every run.
+ *
+ * `sw.js` answers by going inert (no interception, no writes), deleting the
+ * `framecraft-` caches itself and unregistering, then posting
+ * `framecraft:killed`. Waiting for that is what orders the two halves: the
+ * page's own sweep below then runs against a worker that can no longer write.
+ *
+ * Resolves false when there is nothing to silence, when the worker does not
+ * answer inside `timeoutMs`, or when posting throws -- all of which leave the
+ * caller doing exactly what it did before, which is the honest fallback for a
+ * switch whose whole purpose is broken workers.
+ */
+export async function silenceController(
+  container: ControllerChannel,
+  timeoutMs: number = KILL_ACK_TIMEOUT_MS,
+): Promise<boolean> {
+  const controller = container.controller;
+  if (controller === null) return false;
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    const done = (): void => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    try {
+      container.addEventListener("message", (event) => {
+        const data = event.data;
+        if (typeof data === "object" && data !== null && "type" in data && data.type === KILLED_MESSAGE) {
+          done();
+        }
+      });
+      controller.postMessage({ type: KILL_MESSAGE });
+    } catch {
+      clearTimeout(timer);
+      resolve(false);
+    }
+  });
+}
+
 /**
  * Retire every worker this origin has, and every cache this app owns.
+ *
+ * The controlling worker is silenced FIRST (`silenceController`), because
+ * unregistering does not stop it and a live worker refills a swept cache from
+ * the page's own loads.
  *
  * Deliberately NOT `caches.keys()` wholesale: only names starting with
  * `framecraft-` are deleted, so a worker from something else sharing the
@@ -270,9 +338,10 @@ export function killSwitchState(href: string, storage: StorageLike | null): Kill
  * Returns what it removed, so the caller can say so and a test can assert it.
  */
 export async function unregisterServiceWorkers(
-  container: Pick<ContainerLike, "getRegistrations">,
+  container: Pick<ContainerLike, "getRegistrations"> & ControllerChannel,
   cacheStorage: CacheStorageLike | null,
 ): Promise<{ workers: number; caches: string[] }> {
+  await silenceController(container);
   let workers = 0;
   try {
     const registrations = await container.getRegistrations();
