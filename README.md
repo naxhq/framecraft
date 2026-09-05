@@ -157,14 +157,21 @@ Known and open, rather than quietly omitted. The full ledger, with
 measurements, is `docs/handoff/FAILURES.md`.
 
 - **Tokyo** is the one preset the browser engine does not yet build to the
-  reference validator's satisfaction: it fails the minimum-wall row on two
-  regions, narrowest 0.254 mm. Chicago, New York, Paris, London and San
-  Francisco all read ALL CHECKS PASS. The Tokyo case is measured and
-  diagnosed, not a mystery: three acute building tips in the slice just under
-  the base top, where a road ribbon stops half a metre of ground short of a
-  building and leaves a rind of base beside it. It has an owner and it ships as
-  a stated limitation rather than as a surprise; the numbers and the two
-  repairs that were tried and backed out are in `docs/handoff/FAILURES.md`.
+  reference validator's satisfaction: it fails the minimum-wall row on **four
+  of 468 sampled regions, narrowest 0.204 mm** (measured 2026-09-05). Chicago,
+  New York, Paris, London and San Francisco all read ALL CHECKS PASS.
+  **Tokyo got worse over the v3.1 work, not better.** It was published at two
+  regions and 0.254 mm; the work that took the other five cities from failing
+  to passing left the sixth thinner and failing in two more places. Two of the
+  four are the sites diagnosed before: three acute building tips in the slice
+  just under the base top, where a road ribbon stops half a metre of ground
+  short of a building and leaves a rind of base beside it. The two new ones sit
+  in the water and road recess bands and read 0.204 mm, and the prime suspect
+  is this release's own base-ridge merge, which moved onto the frame-on path.
+  It has an owner and it ships as a stated limitation rather than as a
+  surprise. This is where it stands today, not a permanent verdict; the
+  numbers, the sites and the repairs tried and backed out are in
+  `docs/handoff/FAILURES.md`.
 - A 256 mm plate carries residual defects on Chicago (a handful of degenerate
   faces, and one thin lobe in frame-off parts mode). The default 180 mm plate
   is unaffected and the in-app audit warns either way.

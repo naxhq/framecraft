@@ -505,3 +505,50 @@ starting from the two backed-out repairs above and the validator's mitre
 question; team lead's ruling 2026-09-03: ships as a stated limitation), written
 up with the measurements; the other five presets pass the reference validator
 from the browser engine.
+
+### Re-measured at HEAD (`5128a7f`, code identical at `1b806f4`; 2026-09-05)
+
+The numbers above were taken on 2026-09-03, before the geometry, label and
+export work of the later tasks landed. All six presets were rebuilt through
+the browser engine on the tree as it stands (`npm run export:cli --overpass
+fixtures/<sha1>.json --center <lat,lon> --radius 900 --rotation <deg> --params
+fixtures/print-params-parts.json --target generic-3mf`) and judged by `make
+validate`. Nothing was changed to obtain them.
+
+| preset | verdict | `min_wall` |
+|---|---|---:|
+| chicago-loop | ALL CHECKS PASS | 0.874 |
+| new-york-midtown | ALL CHECKS PASS | 0.8873 |
+| paris-eiffel | ALL CHECKS PASS | 1.0 |
+| tokyo-shinjuku | **FAIL `min_wall`** | 0.204 (4 of 468) |
+| london-city | ALL CHECKS PASS | 0.8174 |
+| san-francisco-fidi | ALL CHECKS PASS | 1.14 |
+
+No city that was passing has started failing. Two readings moved:
+
+* **Chicago 0.938 -> 0.874**, still comfortably over the 0.720 floor. Same
+  verdict, and no other row changed.
+* **Tokyo got worse, not better: 2 regions at 0.254 -> 4 regions at 0.204.**
+  The two sites written up above are unchanged to four decimals - 0.2539 at
+  z = 2.9692 (the acute building tips) and 0.4989 at z = 4.9107 (the mitre
+  artefact). The two NEW ones are a different site and a different class:
+
+  ```
+  z=2.5750  width=0.2040  region area 32266.07 mm2 (the whole ground slice)
+  z=2.6250  width=0.2040  region area 32266.07 mm2
+  ```
+
+  Both are `recess_probe_zs` heights, not random slices - the deterministic
+  probes inside the water band and the road band (`checks.recess_probe_zs`),
+  which run every time - so they were sampled by the 2026-09-03 run too and
+  read clean then. The identical width at both heights says one ridge of base
+  standing through both bands, which is the class
+  `areas.mergeRecessRidges` exists to close and which cause 3 above extended
+  to the frame-on case. Locating it inside the ground region needs the residue
+  probe, which this note did not run. Reproduce with the Tokyo command above;
+  it is not flaky - two independent builds gave the same four regions, the
+  same widths and the same verdict.
+
+  Owner: unchanged - the geometry fixer of the next wave. This does not change
+  the shipping ruling (Tokyo ships as a stated limitation), but the limitation
+  is now 0.204 mm on four regions and the write-up above under-states it.

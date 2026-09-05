@@ -59,6 +59,11 @@ CONVERGENCE_TOLERANCE_DEG = 2.0
 #: the rotation is observable - which is the whole point.
 ROTATION_DEG = 29.0
 
+#: Arrow size for the direction test, mm.  Under the cap the DEFAULT frame's
+#: lip imposes (3.42997 mm, pinned below), so the direction test measures a
+#: glyph that was cut at the size it asked for.
+ARROW_SIZE_MM = 3.0
+
 
 # --------------------------------------------------------------------------
 # Helpers
@@ -254,19 +259,28 @@ def test_v2_north_arrow_in_a_real_bake_points_where_project_py_puts_north(tmp_pa
     nominal arrow glyph by rotational alignment, and the expectation comes from
     ``project.LocalFrame``.  The shipped bug turned the arrow by
     ``-rotation_deg``, i.e. 58 deg out here, which this fails on by 56 deg.
+
+    ``ARROW_SIZE_MM`` is 3 mm, not the contract's 4 mm default, because
+    ``[V3.1-P2-2]``'s sight-edge rebate took the lip's flat top face from 6 mm
+    to 5 mm and a 4 mm arrow no longer fits it.  That cap is pinned, with the
+    4 mm ask, by the test below; here the point is only that the size asked for
+    is the size cut, so the recess this reads really is the whole glyph.
     """
     scene_request = presets.PRESETS_BY_ID["chicago-loop"].request()
     raw = overpass.load_raw(scene_request, allow_network=False)
     scene = normalize.build_scene(raw, scene_request)
     rotated = scene_request.model_copy(update={"rotation_deg": ROTATION_DEG})
 
-    params = PrintParams(north_arrow={"enabled": True, "corner": "ne", "size_mm": 4.0})
+    params = PrintParams(
+        north_arrow={"enabled": True, "corner": "ne", "size_mm": ARROW_SIZE_MM}
+    )
     out = bake_pipeline.run_pipeline(
         scene, rotated, params, job_id="arrow29", out_dir=tmp_path, stem="arrow29"
     )
     assert out.result.status == "done", out.result.error
     assert not any("north arrow was reduced" in w for w in out.result.warnings), (
-        "4 mm is under the lip's cap, so the size used is the size asked for"
+        f"{ARROW_SIZE_MM:g} mm is under the lip's cap, so the size used is the "
+        "size asked for"
     )
 
     mesh = trimesh.load(tmp_path / "arrow29.3mf", force="mesh", process=False)
@@ -275,8 +289,10 @@ def test_v2_north_arrow_in_a_real_bake_points_where_project_py_puts_north(tmp_pa
     section = checks.section_polygons(mesh, lip_top - T.ENGRAVE_MAX_MM / 2.0)
     recess = _arrow_recess_from_section(section, plate)
 
-    offset = plate / 2.0 - T.FRAME_WIDTH_MM / 2.0  # the "ne" corner of the band
-    measured = _best_fit_bearing_deg(recess, 4.0, offset, offset)
+    # The "ne" corner of the band: the corner square is the flat top FACE's own
+    # width on both axes, which the rebate narrows ([V3.1-P2-2]).
+    offset = plate / 2.0 - T.lip_face_width_mm(params) / 2.0
+    measured = _best_fit_bearing_deg(recess, ARROW_SIZE_MM, offset, offset)
     expected = true_north_bearing_deg(
         scene.center.lat, scene.center.lon, ROTATION_DEG
     )
@@ -294,6 +310,81 @@ def test_v2_north_arrow_in_a_real_bake_points_where_project_py_puts_north(tmp_pa
     assert wrong > 10.0 * CONVERGENCE_TOLERANCE_DEG, (
         "rotation 29 must distinguish +rotation from -rotation"
     )
+
+
+def test_v3_the_lip_rebate_caps_the_north_arrow_to_the_narrowed_flat_face(tmp_path):
+    """The 6.0 -> 5.0 mm narrowing of ``[V3.1-P2-2]``, measured out of the solid.
+
+    The sight-edge rebate is cut ``FRAME_SIGHT_EDGE_MM`` wide into the lip's
+    inner top edge, and everything the layout places is sized and centred on
+    the flat face that remains, so nothing lands on the step.  The consequence
+    is that the contract's own 4 mm default arrow no longer fits the DEFAULT
+    frame - it is reduced, and the user is told so.  Both halves are read off
+    the exported ``.3mf``, not off ``lettering_layout``:
+
+    * with the rebate the recess is smaller than the 4 mm asked for and stays
+      clear of the millimetre the step occupies;
+    * with a flat lip (``lip_depth_mm`` 0) the SAME 4 mm ask is cut at 4 mm, so
+      the reduction is the narrowing and nothing else.
+
+    The cap is arithmetic on named dimensions, spelled out here rather than
+    read back from ``transform.py`` (as the hanger minima below are): the ink
+    keeps ``LIP_TEXT_MARGIN_MM`` off each long edge of the flat face, and the
+    glyph is bounded by its circumradius - the base corner at
+    ``(0.3, -0.5) * size`` - because the scene rotation turns it.
+    """
+    asked = 4.0  # the contract's default `north_arrow.size_mm`
+    arrow = {"enabled": True, "corner": "ne", "size_mm": asked}
+    rebated = PrintParams(north_arrow=arrow)
+    flat = PrintParams(north_arrow=arrow, frame_style={"lip_depth_mm": 0.0})
+    assert rebated.frame_style.lip_depth_mm > 0.0, "the default lip IS rebated"
+
+    band_mm = 6.0 - 1.0 - 2.0 * 0.5  # FRAME_WIDTH - FRAME_SIGHT_EDGE - 2 margins
+    cap_mm = band_mm / (2.0 * math.hypot(0.6 / 2.0, 0.5))
+    assert 3.4299 < cap_mm < 3.4300, cap_mm
+
+    def recess_of(params: PrintParams, stem: str):
+        out = bake_synthetic(params, tmp_path, stem)
+        assert out.result.status == "done", out.result.error
+        mesh = trimesh.load(tmp_path / f"{stem}.3mf", force="mesh", process=False)
+        lip_top = T.base_top_mm(params) + T.FRAME_LIP_MM
+        section = checks.section_polygons(mesh, lip_top - T.ENGRAVE_MAX_MM / 2.0)
+        return out.result.warnings, _arrow_recess_from_section(
+            section, float(params.plate_mm)
+        )
+
+    rebated_warnings, rebated_recess = recess_of(rebated, "arrowcap")
+    flat_warnings, flat_recess = recess_of(flat, "arrowflat")
+
+    # 1. The reduction is announced once, with both numbers and the band it
+    #    had to fit.  A silent shrink would be worse than a refusal.
+    reduced = [w for w in rebated_warnings if "north arrow was reduced" in w]
+    assert len(reduced) == 1, rebated_warnings
+    assert f"from {asked:g} mm to {cap_mm:g} mm" in reduced[0], reduced[0]
+    assert "5 mm lip band" in reduced[0], reduced[0]
+    assert not [w for w in flat_warnings if "north arrow" in w], flat_warnings
+
+    # 2. The cut stays off the step.  The lip band runs from x = 84 to the
+    #    plate edge at 90, and the rebate takes 84 to 85.
+    plate = float(rebated.plate_mm)
+    face_inner_edge = plate / 2.0 - (6.0 - 1.0)
+    minx, miny, _, _ = rebated_recess.bounds
+    assert min(minx, miny) >= face_inner_edge, rebated_recess.bounds
+
+    # 3. The size actually cut.  The synthetic scene bakes at rotation 0, so
+    #    the glyph points +y and its along-y extent IS its size, plus the
+    #    printable-stroke dilation each side.  The flat lip cuts the 4 mm it
+    #    was asked for, which measures that dilation; the rebated lip cuts the
+    #    cap.  If the rebate stopped narrowing the face this reads 4 mm.
+    def extent_y(recess) -> float:
+        _, lo, _, hi = recess.bounds
+        return hi - lo
+
+    dilation = (extent_y(flat_recess) - asked) / 2.0
+    assert 0.0 <= dilation < 0.1, dilation
+    cut_mm = extent_y(rebated_recess) - 2.0 * dilation
+    assert abs(cut_mm - cap_mm) < 0.05, (cut_mm, cap_mm)
+    assert cut_mm < asked - 0.5, cut_mm
 
 
 # --------------------------------------------------------------------------

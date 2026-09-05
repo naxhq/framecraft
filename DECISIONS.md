@@ -1101,3 +1101,24 @@ Append-only. Format: `- [phase] decision, one line`.
   true again by asking for a size the narrowed face can hold, and a new assertion pins the cap
   itself so the narrowing is covered rather than merely tolerated. The reference validator's
   verdict on direction, which is what this test exists for, is untouched.
+
+- `[V3.1-P7-25]` **Fixing five preset cities made Tokyo worse, and that is reported as a
+  regression rather than folded into the existing limitation.** Tokyo was FAIL `min_wall` 0.254
+  on two regions; at HEAD it is FAIL `min_wall` 0.204 on four, deterministic across two builds.
+  The two documented sites are unchanged; the two new ones sit at z 2.5750 and 2.6250 with an
+  identical 0.2040 width across the whole ground slice, and both are `recess_probe_zs` heights
+  that ran and were clean before, which points at one base ridge standing through both bands.
+  The prime suspect is this run's own `[V3.1-P7-18]`, `mergeRecessRidges` moving to the frame-on
+  path. A defect that gets worse while its neighbours are fixed is not an acceptable silent
+  trade: it is assigned, and if it cannot be fixed the stated limitation carries the measured
+  0.204 on four regions, never the friendlier 0.254 on two. Chicago's `min_wall` also moved,
+  0.938 to 0.874, with the same verdict, and that is recorded so the next reader does not
+  mistake it for drift.
+- `[V3.1-P2-4]` **The north arrow's corner anchor was measuring against the wrong point.** Fixing
+  the stale premise in the arrow test exposed a real defect rather than only a test problem: the
+  corner square was anchored at `FRAME_WIDTH_MM / 2` while the rebate had moved the flat face's
+  centre, putting the anchor 0.5 mm outward of where the square actually sits. It now anchors on
+  `lip_face_width_mm / 2`. The direction proof is intact at 330.55 degrees against
+  `project.LocalFrame`'s 331.42, and still fails by 57.03 degrees when the engine is reverted to
+  the `-rotation_deg` bug it was written against. The cap has its own test now, which fails when
+  `FRAME_SIGHT_EDGE_MM` is set to zero.
