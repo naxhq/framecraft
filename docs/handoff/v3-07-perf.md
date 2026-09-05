@@ -634,6 +634,18 @@ the `surface-parks` stage, whose wall clock moved by under 0.2 s on this
 plate. `snapSection` is a `toPolygons` round trip per building solid and does
 not register.
 
+**Addendum, 2026-09-05 (Tokyo re-cut fix, `FAILURES.md` "Closed: the 0.204
+regression").** A layer the merge re-cuts now goes back through its own
+printability pass (`repair.printableSection`, the factored tail of
+`repairFlatLayer`), so `surface.decompose` / `surface.printable` /
+`surface.reunion` / `surface.clean` gain one call per re-cut additive layer -
+parks on the default plate, at most rail and parks - each over the components
+that layer has left. No new span name. The verification timings taken for
+that fix (`vitest run lib/engine/solid`, 58.8 s, Chicago build 4629 ms) were
+measured while the preset matrix and the validator were running on the same
+host; they are not quiet-host numbers and must not be read against the tables
+above.
+
 Plate 256, `--target step`: engine 19.6 s, `export.step` 4.4 s for 273,066
 triangles and 4.6 million entities; the writer's twelve-decimal grid lost
 zero faces (`gridLostTriangles` 0), against the six to twelve the six-decimal

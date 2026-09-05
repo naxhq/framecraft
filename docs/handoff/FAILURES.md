@@ -520,9 +520,17 @@ validate`. Nothing was changed to obtain them.
 | chicago-loop | ALL CHECKS PASS | 0.874 |
 | new-york-midtown | ALL CHECKS PASS | 0.8873 |
 | paris-eiffel | ALL CHECKS PASS | 1.0 |
-| tokyo-shinjuku | **FAIL `min_wall`** | 0.204 (4 of 468) |
+| tokyo-shinjuku | **FAIL `min_wall`** | 0.204 (4 of 468) SUPERSEDED, see below |
 | london-city | ALL CHECKS PASS | 0.8174 |
 | san-francisco-fidi | ALL CHECKS PASS | 1.14 |
+
+> **Superseded 2026-09-05.** The Tokyo row in the table above, and the
+> second bullet below it, record a regression that has since been fixed:
+> see "Closed: the 0.204 regression was the ridge merge's re-cut, not the
+> merge" further down. Tokyo is back to its two original documented
+> regions at 0.2539. Both are left in place rather than edited away,
+> because the seven-region measurement recorded there is what stops a
+> future reader from attempting the revert that looks obvious.
 
 No city that was passing has started failing. Two readings moved:
 
@@ -541,14 +549,83 @@ No city that was passing has started failing. Two readings moved:
   Both are `recess_probe_zs` heights, not random slices - the deterministic
   probes inside the water band and the road band (`checks.recess_probe_zs`),
   which run every time - so they were sampled by the 2026-09-03 run too and
-  read clean then. The identical width at both heights says one ridge of base
-  standing through both bands, which is the class
-  `areas.mergeRecessRidges` exists to close and which cause 3 above extended
-  to the frame-on case. Locating it inside the ground region needs the residue
-  probe, which this note did not run. Reproduce with the Tokyo command above;
-  it is not flaky - two independent builds gave the same four regions, the
-  same widths and the same verdict.
+  read clean then. It was not flaky: two independent builds gave the same four
+  regions, the same widths and the same verdict. The guess at the time was one
+  ridge of BASE standing through both bands; the residue probe below says it
+  was park material, which is why the regression is written up separately.
 
-  Owner: unchanged - the geometry fixer of the next wave. This does not change
-  the shipping ruling (Tokyo ships as a stated limitation), but the limitation
-  is now 0.204 mm on four regions and the write-up above under-states it.
+### Closed: the 0.204 regression was the ridge merge's re-cut, not the merge (2026-09-05)
+
+**Located.** `thicken._residue` on the reference validator's own union of the
+parts, at both probe heights: one residue of 0.0848 mm^2 and width 0.2040 at
+build (171.25, 26.79), and the PARKS part alone covers the whole of it (base
+covers none). A 0.2 x 0.45 mm fin of park standing in a pocket from z = 2.4
+to 3.0 - the flush parks solid's full height including its seam overlap - not
+a ridge of base.
+
+**The suspect, split and measured** (`[V3.1-P7-18]` made two changes to
+`areas.mergeRecessRidges`: the frame-on gate came out, and a layer the merge
+grows is re-subtracted from every layer after it). Same Tokyo command, same
+validator:
+
+| tree | `min_wall` | regions | the z 2.5750 / 2.6250 sites |
+|---|---:|---:|---|
+| HEAD `1b806f4` | 0.2040 | 4 of 468 | present |
+| merge gated off frame-on (the naive revert) | **0.0133** | **7 of 468** | gone, and five worse ones instead |
+| merge on, re-cut loop off (the 2026-09-03 code) | 0.2539 | 2 of 468 | gone; exactly the two sites above |
+| merge on, re-cut on, re-cut layer re-filtered (the fix) | 0.2539 | 2 of 468 | gone; exactly the two sites above |
+
+**Do not revert the merge.** With it off, the recess probes find base ridges
+at (137.62, 65.34) 0.2005 mm and (152.99, 41.74) 0.2600 mm, a 0.0133 mm
+sliver at (160.55, 40.15), and the z 2.9692 slice grows from two residues to
+six (narrowest 0.1684 at (98.15, 17.52)). That is the 0.168 Tokyo of the
+"before" column, as it should be. The merge is a net win of five regions; the
+re-cut loop alone is what added two.
+
+**Mechanism.** Without the re-cut, the parks slice at z = 2.7 is a 0.40 mm^2
+rhombus at the site that overlaps the merged road by about 0.2 mm - marginal,
+but attached and wide enough to pass. The re-cut subtracts the grown road
+from the parks footprint EXACTLY, and exact is the problem: where the bridge
+crosses the park at an angle it leaves a sliver of park footprint about 0.1 mm
+across outside the road. The parks layer's own repair would never have kept
+such a component (under `min_detail^2`, no minimum-wall disc in it), but
+nothing judged the footprint again after the cut, and `fittedSolid`'s 0.2 mm
+seam rim - kept whole on a flush layer by design, `[V3.1-P7-21]` - turned the
+sliver into the fin. The reference has no such fragment because it never
+re-cuts a repaired footprint: `thicken.repair_scene` runs `repair_areas` for
+green AGAINST the merged `road_union`, minimum-feature drops included.
+
+**Fix** (`apps/web/lib/engine/solid/repair.ts`, `areas.ts`): the tail of
+`repairFlatLayer` (decompose, `keepPrintable`, re-union, clean) is factored
+into `repair.printableSection`, and `areas.recutPrintable` puts a layer the
+merge has just re-cut back through it in `strip` mode - the layer's own rule,
+applied again to the footprint it now has. Only a layer that prints as
+MATERIAL (flush or raised) is re-filtered; a recessed later layer is left as
+cut, because its fragment prints as a dimple in the base with the layer's own
+solid welded into it, not as a wall, and dropping it would open a nub of base
+beside the grown recess after the merge has run and can no longer judge it.
+No validator, test or threshold touched.
+
+**All six, rebuilt on the fixed tree and judged by `make validate`:**
+
+| preset | verdict | `min_wall` |
+|---|---|---:|
+| chicago-loop | ALL CHECKS PASS | 0.874 (unmoved by this fix) |
+| new-york-midtown | ALL CHECKS PASS | 0.8873 |
+| paris-eiffel | ALL CHECKS PASS | 1.0 |
+| tokyo-shinjuku | **FAIL `min_wall`** | 0.2539 (2 of 468) |
+| london-city | ALL CHECKS PASS | 0.8174 |
+| san-francisco-fidi | ALL CHECKS PASS | 1.14 |
+
+Tokyo's `bodies`, `part_meshes` and `degenerate_faces` rows all PASS. Its two
+regions are the two sites written up above, to four decimals: 0.2539 at
+z = 2.9692 and 0.4989 at z = 4.9107. (The 0.2669 base residue at (7.52, 57.87)
+that used to share the z 2.9692 slice with the building tips is gone too; the
+count is per region, so it does not show in the number.) `tsc --noEmit` and
+`eslint --max-warnings 0` clean; `vitest run lib/engine/solid` 12 files, 173
+tests passed, on a busy host.
+
+Status: Tokyo stays OPEN on its two original sites, numbers unchanged, and
+ships as the stated limitation the team lead ruled on 2026-09-03; the write-up
+above is accurate again. The four-region reading was a regression of this
+run and is closed.

@@ -124,9 +124,17 @@ keeps itself up to date, and a window you can arrange.
   the 3D union (Paris 55 degenerate faces, London and Tokyo 5), two float32
   splits, the base-ridge merge leaving a thin rind at the crop edge, and the
   wing widening the reference validator's mitre finds. No validator row, test
-  or threshold was weakened. Tokyo remains open and went the other way: it
-  fails on more regions and at a thinner wall than before this work, 0.204 mm
-  on four regions against 0.254 mm on two. See Known issues.
+  or threshold was weakened. Tokyo remains open, see Known issues.
+- Fixed inside this release, after it was introduced by it: moving the
+  base-ridge merge onto the frame-on path added two new `min_wall` failures on
+  Tokyo, taking it from two regions at 0.2539 mm to four at 0.204 mm. The
+  merge itself was not the culprit (turning it off made Tokyo far worse, seven
+  regions at 0.013 mm); its re-cut loop was, subtracting the grown road from
+  the parks footprint exactly and leaving a 0.1 mm sliver of park outside the
+  bridge that the 0.2 mm seam rim printed as a 0.204 by 0.45 mm fin from
+  z 2.4 to 3.0. Green is now re-repaired against the merged road union, as the
+  Python reference always did, and Tokyo is back to the two originally
+  documented regions.
 - The STEP writer no longer loses faces to its own coordinate grid. It wrote
   six decimals, so at plate 256 the same needles that collapse on the float32
   grid collapsed on the STEP grid with nothing reported; it now writes at the
@@ -177,22 +185,19 @@ keeps itself up to date, and a window you can arrange.
 Open at this release, tracked with measurements in `docs/handoff/FAILURES.md`:
 
 - Tokyo is the one preset the browser engine does not build to the reference
-  validator's satisfaction: `min_wall` on four of 468 sampled regions,
-  narrowest 0.204 mm (measured 2026-09-05 at this release's tree). Chicago,
-  New York, Paris, London and San Francisco all read ALL CHECKS PASS.
-  **Tokyo is worse than it was, not merely different.** It was two regions at
-  0.254 mm; this release fixed five cities and left the sixth thinner and
-  failing in two more places. Two of the four are the sites diagnosed before:
-  three acute building tips at z = 2.969 mm, where a road ribbon stops 0.05 mm
-  short of a building by OSM geometry and leaves a rind of base beside it,
-  which breaks the convex-corner pattern the repair relies on. The two new
-  ones are at z = 2.575 and 2.625 mm, the deterministic probes inside the
-  water and road recess bands, both reading 0.204 mm on the ground slice, and
-  the prime suspect is this release's own `mergeRecessRidges` move onto the
-  frame-on path. Two earlier repairs were built, measured and backed out; all
-  of it is written up. It has an owner and ships as a stated limitation, and
-  the regression is tracked as `[V3.1-P7-25]`, so these numbers are the
-  current state rather than a settled verdict.
+  validator's satisfaction: `min_wall` on two of 468 sampled regions,
+  narrowest 0.2539 mm. Every other row passes, `bodies`, `part_meshes` and
+  `degenerate_faces` included, and Chicago (0.874), New York (0.8873), Paris
+  (1.0), London (0.8174) and San Francisco (1.14) all read ALL CHECKS PASS.
+  Diagnosed rather than open-ended: three acute building tips at z = 2.969 mm,
+  where a road ribbon stops 0.05 mm short of a building by OSM geometry and
+  leaves a rind of base beside it, which breaks the convex-corner pattern the
+  repair relies on, plus a 0.4989 mm reading at z = 4.911 mm that is a mitre
+  artefact of the validator's own erosion rather than a thin wall. Two repairs
+  were built, measured and backed out; both are written up. It has an owner
+  and ships as a stated limitation. The regression that briefly took this to
+  four regions at 0.204 mm was found and fixed inside this release, see Fixed
+  above.
 - A 256 mm plate still carries a handful of degenerate faces on Chicago, and
   one thin lobe in frame-off parts mode. The default 180 mm plate is
   unaffected.

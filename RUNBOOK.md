@@ -370,26 +370,23 @@ source edit and a miss there is the normal outcome on a real pull request.
 ## 9. Known limitations (v3.1)
 
 - The browser engine fails `make validate` on ONE of the six preset cities:
-  tokyo-shinjuku, `min_wall` on four of 468 sampled regions, narrowest
-  0.204 mm (re-measured 2026-09-05 on the current tree). The other five
-  (chicago-loop, new-york-midtown, paris-eiffel, london-city,
-  san-francisco-fidi) read ALL CHECKS PASS, as does the Python reference
-  pipeline on all six.
-
-  **This is worse than the two regions at 0.254 mm published earlier, not a
-  restatement of it.** The v3.1 geometry work took five cities from failing to
-  passing and left the sixth thinner and failing in two more places. Two of
-  the four sites are the ones already diagnosed (z = 2.969 mm, 0.2539 mm, and
-  z = 4.911 mm, 0.4989 mm, both unchanged to four decimals); the two new ones
-  are at z = 2.575 and 2.625 mm, the deterministic recess probes inside the
-  water and road bands, both 0.204 mm on the ground slice. Prime suspect:
-  `mergeRecessRidges` moving onto the frame-on path in this same work.
-  Tracked as `[V3.1-P7-25]` with an owner, so treat these numbers as the
-  current state; if the fix lands they change again. The sites and the
-  backed-out repairs are in `docs/handoff/FAILURES.md`. Reproduction:
+  tokyo-shinjuku, `min_wall` on two of 468 sampled regions, narrowest
+  0.2539 mm. Every other row passes, `bodies`, `part_meshes` and
+  `degenerate_faces` included. The other five read ALL CHECKS PASS
+  (chicago-loop 0.874, new-york-midtown 0.8873, paris-eiffel 1.0, london-city
+  0.8174, san-francisco-fidi 1.14), as does the Python reference pipeline on
+  all six. The two Tokyo sites are the acute building tips at z = 2.9692 mm
+  (0.2539 mm) and the mitre artefact at z = 4.9107 mm (0.4989 mm), both
+  measured and diagnosed, with the two backed-out repairs written up in
+  `docs/handoff/FAILURES.md`. Reproduction:
   `docs/handoff/v3-08-siteperf.md` section 7.5 with the Tokyo fixture and
-  `--center 35.6896,139.7006`; the build is deterministic, two runs gave the
-  same four regions and the same widths.
+  `--center 35.6896,139.7006`.
+
+  Note for anyone reading an older build log: a regression inside the v3.1
+  work briefly took Tokyo to four regions at 0.204 mm, from a park sliver the
+  base-ridge merge's re-cut loop left outside the bridge. It was found and
+  fixed in the same release; four regions at 0.204 mm is not the shipped
+  state.
 - Plate 256 mm carries residual geometry defects on the Chicago preset: 6 to 7 degenerate faces (both frame states) and one thin lobe in frame-off parts mode; analysed in docs/handoff/FAILURES.md, warned by the in-app audit, default plate 180 unaffected.
 
 - Steep terrain can drape base walls under the printable minimum; the in-app
