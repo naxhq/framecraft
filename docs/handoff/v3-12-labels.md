@@ -218,3 +218,40 @@ drag).
   for (`addLabel(target, at)`) but has no control; the inspector row places
   at the centre. Tier B: multi-line text, a label on a bridge deck, a label
   that spans two tiles.
+
+## 9. Follow-up (v3.1 gate): which roof `e2e/labels.spec.ts` may label
+
+The e2e swept the viewport for the first NAMED building whose popover reported
+a footprint of 6 000 m2 or more, and then waited 90 s for a handle that never
+came. In the Chicago Loop fixture exactly one building clears that bar, and it
+is the worst possible one: The Art Institute of Chicago, 25 980 m2 of wings
+around courtyards and a railway, which refuses the label -- correctly, and with
+the reason in the card: `"IT" does not fit inside the roof of The Art Institute
+of Chicago with a wall's clearance even at 1.50 mm`.
+
+That is section 4 working as written. The cut takes the highest repaired
+building solid **under the anchor**, eroded by one minimum wall, so what has to
+be roomy is the single solid the centre lands on -- not the sum of the
+footprint. Total area is a necessary condition and not a sufficient one, and
+for a multi-building complex it is actively misleading. Measured over the
+99-point sweep: 26 named buildings, 25 of them towers between 811 and 5 327 m2,
+and the one 25 980 m2 complex. Tribune Tower (5 327 m2) and Chase Tower
+(5 296 m2) both cut "IT"; the complex does not, at any size.
+
+The spec now takes a footprint BAND, 5 000 to 10 000 m2: the floor is the fit
+(a 5 000 m2 roof is 6.6 mm across at 1:10,714), the ceiling steps over the
+complex, and the sweep lands on Chase Tower. It also asserts the card's verdict
+BEFORE the handle, polling status-with-reason as one string, because a refused
+label has no band and therefore no handle, and "element not found" is a worse
+report than the engine's own sentence. The poll tolerates the transient "not
+cut" from the build for the label as placed, whose text is still the building's
+own name ("Chase Tower" does not fit either) until the test types "IT".
+
+Verified both directions on an isolated static build and port: green in 45 s;
+with the old 6 000 m2 floor and no ceiling restored, red in 2.9 min with
+`Received: "skipped: Not cut: \"IT\" does not fit inside the roof of The Art
+Institute of Chicago ..."`.
+
+Worth a Tier B line: the refusal advises "shorten the text or move it", but
+a refused label has no gizmo, so only the first half of that advice can be
+taken from the viewport.

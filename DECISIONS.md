@@ -1274,3 +1274,26 @@ Append-only. Format: `- [phase] decision, one line`.
   `onProjectFileOpened` throws synchronously the same way. It is unreachable while
   `withGlobalTauri` stays on, which makes it exactly the kind of latent defect that surfaces one
   config change later, so it is hardened now rather than logged.
+
+- `[V3.1-O19]` **Both remaining e2e failures were the spec's side, and the labels one was the
+  engine being right.** `smoke.spec.ts` reached past the Surface group, which Task 5 collapses
+  and unmounts, to click a `road_mode` radio that was therefore not in the DOM; one `openGroup`
+  call fixes it with no assertion touched, and removing that line reproduces the identical
+  5.1 minute symptom. `labels.spec.ts` filtered for a footprint of 6000 m2 or more, which in the
+  Chicago fixture matches exactly one building, the Art Institute at 25980 m2, a multi-wing
+  complex whose roof genuinely refuses a label at any size. That refusal is correct per
+  `v3-12-labels.md` section 4: the cut takes the highest solid UNDER the anchor, eroded by one
+  minimum wall, so total footprint area is necessary but not sufficient. The spec now selects a
+  5000 to 10000 m2 band and asserts the card's verdict BEFORE the handle, polling status with
+  reason, so a refusal reports the engine's own sentence instead of "element not found". The
+  engine was never wrong here; the test was asking the wrong building and then hiding the answer.
+- `[V3.1-P7-33]` **OPEN, marginal: the lettering interaction budget has no headroom.** "A
+  lettering change reaches the model inside the interaction budget" measured 401.3 ms against its
+  400 ms budget on the loaded host, and 380 ms on the next run. It passes, and the budget is not
+  being moved, but at factor 1 it is one slow machine from a red that means nothing. Recorded
+  next to `[V3.1-P7-28]`'s margins so a future failure there is read as the marginal budget it is
+  rather than investigated as a regression.
+- `[V3.1-O20]` **Playwright clears `outputDir` on every run, so failure traces are single-use.**
+  The first re-run wiped `artifacts/e2e/test-results/` and the original traces for the four gate
+  failures are gone. They had been read first, so nothing was lost this time. Worth knowing:
+  evidence for a failure must be read or copied out before the next run starts.

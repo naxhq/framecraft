@@ -408,3 +408,36 @@ Mutations, each reintroduced on its own:
 | the click test's round-trip search back to first-pick-wins | red |
 
 Not touched, and still failing for their owners: nothing -- all six are green.
+
+## Follow-up 3 (v3.1): the smoke happy path wanted two `openGroup`s, not one
+
+`e2e/smoke.spec.ts`'s "happy path" burned its whole 300 s test timeout waiting
+for `getByRole("radio", { name: "emboss" })`, and took the other seven tests in
+the file down with it -- the file is `test.describe.configure({ mode: "serial" })`,
+so a failure in the first test leaves the rest reported as "did not run". That
+is the whole of the "7 did not run" line in a `--project=chromium` run.
+
+The table above records this file as having got "one `openGroup` (Buildings)".
+It needed two. Step 5 drives four PrintParams controls in a row, and they are
+not all in one group: `plate_mm` and `base_thickness_mm` are in Scale and size
+(open by default), `large_scale` is in Buildings, and `road_mode` -- the
+segmented control whose stops are named `engrave` / `emboss` / `off` -- is in
+**Surface**, which is collapsed and therefore unmounted. The test opened
+Buildings and then reached straight past Surface for a control that was not in
+the DOM. Nothing about the `min-h-[45%]` / `min-h-0` layout work was involved:
+the page snapshot from the failing run shows the Surface toggle present and
+unexpanded, with Location, Scale, Buildings and Output expanded around it.
+
+Corrected with `openGroup(page, "surface")` before the two `road_mode` clicks,
+which is what a user does to reach that control. No assertion changed.
+
+Verified both directions on an isolated static build and port: `smoke.spec.ts`
+8/8 green (1.5 min); with the one line removed again, red at exactly the
+original symptom -- 5.1 min, "waiting for getByRole('radio', { name:
+'emboss' })", 1 failed and 7 did not run.
+
+One unrelated near-miss seen once in those runs and not reproduced: "a
+lettering change reaches the model inside the interaction budget" measured
+401.3 ms against its 400 ms budget on a loaded host, then 380 ms on the next
+run. It is a 0.3 % overrun on a busy machine, not a regression from this fix,
+but the budget has no headroom left at `E2E_BUDGET_FACTOR=1`.

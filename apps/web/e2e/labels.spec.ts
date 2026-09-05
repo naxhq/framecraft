@@ -30,14 +30,31 @@ const REBUILD_BUDGET_MS = 90_000 * BUDGET_FACTOR;
 const SETTLE_MS = 180;
 
 /**
- * A roof this big, in square metres, holds a two-letter counterless label at
- * the 4 mm default with a wall's clearance on every side at the Chicago Loop's
- * print scale (about 0.09 mm per metre: 6 000 m2 is a 77 m square, 7 mm
- * across on the plate), or is shrunk to a size that still cuts. A smaller
+ * The footprint band, in square metres, a roof has to be in to be worth
+ * labelling here. Both bounds matter, and the upper one is the surprising one.
+ *
+ * The floor is the fit: at the Chicago Loop's print scale (about 0.093 mm per
+ * metre, 1:10,714) a 5 000 m2 roof is a 71 m square, 6.6 mm across on the
+ * plate, which holds two counterless letters at the 4 mm default with a wall's
+ * clearance on every side, or is shrunk to a size that still cuts. A smaller
  * named building would be labelled too, but the label might be refused, and
  * this test is about the manipulation, not the fit.
+ *
+ * The ceiling is the SHAPE. A roof label is cut into the highest repaired
+ * building solid under the anchor, eroded by one minimum wall
+ * (docs/handoff/v3-12-labels.md section 4), so what has to be roomy is the one
+ * solid the centre lands on, not the sum of the footprint. Area is therefore a
+ * necessary condition and not a sufficient one, and a footprint several times
+ * larger than any tower in the crop is the signature of a multi-building
+ * complex whose centre lands on a wing. The Chicago Loop fixture has exactly
+ * one: The Art Institute of Chicago, 25 980 m2 of wings around courtyards and
+ * a railway, which refuses "IT" even at the 1.50 mm minimum -- while every
+ * tower in the same sweep is between 800 and 5 400 m2 and takes it. This band
+ * picks the roomiest plain block (Chase Tower, 5 296 m2) and steps over the
+ * complex.
  */
-const MIN_FOOTPRINT_M2 = 6_000;
+const MIN_FOOTPRINT_M2 = 5_000;
+const MAX_FOOTPRINT_M2 = 10_000;
 
 async function generateChicago(page: Page): Promise<void> {
   await mockChicagoOverpass(page);
@@ -69,7 +86,7 @@ async function footprintM2(popover: Locator): Promise<number> {
 
 /**
  * Sweep the middle of the viewport until the pointer lands on a NAMED building
- * with a roof big enough to hold the label (see `MIN_FOOTPRINT_M2`). A grid
+ * with a roof that holds the label (see the footprint band above). A grid
  * rather than one fixed point, for the reason `objects.spec.ts` gives: where a
  * building sits on screen depends on the camera, the plate and the fixture.
  */
@@ -91,14 +108,19 @@ async function hoverUntilLabellableBuilding(
       const named = (await popover.getAttribute("data-object-named")) ?? "";
       const area = await footprintM2(popover);
       seen.push(`${layer}/${named}/${area}`);
-      if (layer === "building" && named === "true" && area >= MIN_FOOTPRINT_M2) {
+      if (
+        layer === "building" &&
+        named === "true" &&
+        area >= MIN_FOOTPRINT_M2 &&
+        area <= MAX_FOOTPRINT_M2
+      ) {
         const title = (await page.getByTestId("object-popover-title").textContent()) ?? "";
         return { at: { x, y }, title };
       }
     }
   }
   throw new Error(
-    `no named building of ${MIN_FOOTPRINT_M2} m2 or more under a 99-point sweep; seen: ${
+    `no named building between ${MIN_FOOTPRINT_M2} and ${MAX_FOOTPRINT_M2} m2 under a 99-point sweep; seen: ${
       seen.join(", ") || "nothing at all"
     }`,
   );
@@ -142,10 +164,32 @@ test("a right-click labels a roof; the label is cut, exported, dragged, turned, 
   await expect(item).toHaveAttribute("data-label-size", "4");
 
   // ---- cut: the pipeline reports the band, the handle sits on it ---------
+  // The card's verdict first, and the engine's own words with it. A refused
+  // label has no band and therefore no handle (`LabelGizmo` draws pipeline
+  // output only), so waiting on the handle first reports a missing element
+  // where the real news is the refusal -- and the refusal names the roof and
+  // the size it gave up at. Polled rather than asserted once, because the
+  // build for the label as PLACED (its text still the building's own name, too
+  // long for most roofs) may land between the placement and this line and
+  // report "not cut" for a label the "IT" build then cuts.
+  const reason = page.getByTestId("label-item-0-reason");
+  await expect
+    .poll(
+      async () => {
+        const status = await item.getAttribute("data-label-status");
+        if (status === "cut") return "cut";
+        // `count()` rather than `textContent()`: the reason row is there only
+        // while the card says "not cut", and a locator read of an absent
+        // element waits out the whole test, not the poll's interval.
+        const words = (await reason.count()) > 0 ? ((await reason.textContent()) ?? "") : "";
+        return words === "" ? `${status}` : `${status}: ${words}`;
+      },
+      { timeout: REBUILD_BUDGET_MS, intervals: [100] },
+    )
+    .toBe("cut");
   const handle = page.getByTestId("label-handle-0");
   await expect(handle).toBeVisible({ timeout: REBUILD_BUDGET_MS });
   await expect(handle).toHaveAttribute("data-selected", "true");
-  await expect(item).toHaveAttribute("data-label-status", "cut", { timeout: REBUILD_BUDGET_MS });
   await openGroup(page, "output");
   const resolvedRow = page.getByTestId("resolved-output-row-label-0");
   await expect(resolvedRow).toBeVisible();

@@ -256,6 +256,10 @@ test("happy path: Chicago preset previews, sliders stay local, export downloads 
   await openGroup(page, "buildings");
   await setSlider(page, "large_scale", 120);
   await expect(page.getByTestId("large_scale-value")).toHaveText("120 %");
+  // Road mode lives in the Surface group, which is collapsed -- and therefore
+  // unmounted -- like every group but Location and Scale. A user opens it to
+  // reach the segmented control; so does this test.
+  await openGroup(page, "surface");
   await page.getByRole("radio", { name: "emboss" }).click();
   await page.getByRole("radio", { name: "engrave" }).click();
   await setSlider(page, "base_thickness_mm", 4);
