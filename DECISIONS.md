@@ -1087,3 +1087,17 @@ Append-only. Format: `- [phase] decision, one line`.
   for: the guard covers both part digests rather than whichever one an author remembered.
   Separately, the projection's five ground arrays are now shallow-frozen at source, which
   converts the latent aliasing the audit flagged into something the suite would fail on.
+
+- `[V3.1-P2-3]` **The lip rebate caps the north arrow, and that is correct behaviour with an
+  outdated test premise.** `test_v2_north_arrow_in_a_real_bake_points_where_project_py_puts_north`
+  fails on its own premise line, "4 mm is under the lip's cap, so the size used is the size asked
+  for": with `frame_style.lip_depth_mm` at its 0.4 mm default the sight-edge rebate takes the
+  lip's flat top face from 6.0 mm to 5.0 mm (`FRAME_SIGHT_EDGE_MM`), so a 4 mm arrow is now
+  shrunk and warns. The narrowing is deliberate and `[V3.1-P2-2]` chose it: everything laid on
+  the lip, the text band, the ornaments and the arrow's corner square, is sized and centred on
+  the flat face so nothing the layout places can land on the step, because a mark straddling the
+  rebate prints badly. So the engine is right and the test's premise is stale. The fix is NOT to
+  drop the premise assertion: the test keeps proving the arrow points north, its premise is made
+  true again by asking for a size the narrowed face can hold, and a new assertion pins the cap
+  itself so the narrowing is covered rather than merely tolerated. The reference validator's
+  verdict on direction, which is what this test exists for, is untouched.
