@@ -661,6 +661,44 @@ function keepPrintable(
 }
 
 /**
+ * A whole section put through {@link keepPrintable}, component by component,
+ * and reassembled: the tail of {@link repairFlatLayer}, on its own so a layer
+ * whose footprint is cut AGAIN after its repair can be judged again by the
+ * rule that let it in.
+ *
+ * `areas.mergeRecessRidges` is the caller: a recess it grows is re-subtracted
+ * from every layer after it, and the cut can leave a fragment the layer's own
+ * repair would never have kept - on Tokyo's plate a 0.1 mm sliver of park
+ * between a road bridge and the river, which the 0.2 mm seam rim then printed
+ * as a 0.204 mm fin 0.45 mm long, failed by the reference validator at both
+ * recess-band probes (2026-09-05). The reference re-repairs green against the
+ * MERGED road union, drops included (`thicken.repair_scene`); this is the
+ * same step for a footprint that already exists.
+ *
+ * The caller keeps ownership of `section`; what comes back is new, or null when
+ * nothing printable is left.
+ */
+export function printableSection(
+  ctx: BuildContext,
+  section: CrossSection,
+  mode: "strip" | "widen" | "keep",
+): RepairedLayer {
+  const { arena, wasm } = ctx;
+  // Perf rows per step (no-ops with perf mode off), the same four whichever
+  // caller this runs for.
+  const components = perfSpan("surface.decompose", () => arena.keepAll(section.decompose()));
+  const { kept, dropped } = perfSpan("surface.printable", () => keepPrintable(ctx, components, mode));
+  const merged = perfSpan("surface.reunion", () => unionSections(wasm, arena, kept));
+  for (const component of kept) {
+    if (component !== merged) arena.drop(component);
+  }
+  if (merged === null) return { section: null, dropped };
+  const clean = perfSpan("surface.clean", () => cleanSection(arena, merged));
+  if (clean !== merged) arena.drop(merged);
+  return { section: clean, dropped };
+}
+
+/**
  * Is a full minimum wall wide disc anywhere inside this section?
  *
  * The reference implementation asks GEOS for the maximum inscribed circle;
@@ -777,17 +815,9 @@ export function repairFlatLayer(
   arena.keep(simplified);
   arena.drop(clipped);
 
-  const components = perfSpan("surface.decompose", () => arena.keepAll(simplified.decompose()));
+  const printable = printableSection(ctx, simplified, options.thinMode ?? "strip");
   arena.drop(simplified);
-  const { kept, dropped } = perfSpan("surface.printable", () => keepPrintable(ctx, components, options.thinMode ?? "strip"));
-  const merged = perfSpan("surface.reunion", () => unionSections(wasm, arena, kept));
-  for (const component of kept) {
-    if (component !== merged) arena.drop(component);
-  }
-  if (merged === null) return { section: null, dropped };
-  const clean = perfSpan("surface.clean", () => cleanSection(arena, merged));
-  if (clean !== merged) arena.drop(merged);
-  return { section: clean, dropped };
+  return printable;
 }
 
 // ---------------------------------------------------------------------------

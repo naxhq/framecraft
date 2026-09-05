@@ -44,6 +44,7 @@ import {
   areaContours,
   repairFlatLayer,
   cropSection,
+  printableSection,
   survivesMinWall,
   thinParts,
   type Blocker,
@@ -563,8 +564,45 @@ export function mergeRecessRidges(
       if (cutSection === null || cutSolid === null) continue;
       later.section = cutSection;
       later.solidSection = cutSolid;
+      recutPrintable(ctx, later);
     }
   }
+}
+
+/**
+ * Put a layer the ridge merge has just re-cut back through its own
+ * minimum-feature rules, when it prints as MATERIAL.
+ *
+ * The cut is exact - the later layer loses precisely what the grown recess
+ * took - and exact is the problem: where a bridge crosses a park at an angle
+ * it leaves a sliver of park outside the road, far under anything the layer's
+ * repair would have kept, and the 0.2 mm seam rim (`fittedSolid`) turns that
+ * sliver into a fin standing in the pocket. Tokyo, measured 2026-09-05: a
+ * 0.1 mm sliver at build (171.25, 26.79) printed 0.204 mm wide and 0.45 mm
+ * long from z 2.4 to 3.0, the reference validator's `min_wall` failing it at
+ * both recess-band probes; with the merge on and this cut off the site is
+ * clean, and the whole plate reads exactly the two regions written up in
+ * FAILURES.md. The reference has no such fragment because it re-repairs green
+ * against the MERGED road union, drops and all (`thicken.repair_scene`).
+ *
+ * A RECESSED later layer is left as cut. Its fragment prints as a dimple in
+ * the base with the layer's own solid welded into it, not as a wall, and
+ * dropping it would open a nub of base beside the grown recess after the
+ * merge has run and can no longer judge it. A layer nothing survives of keeps
+ * the cut footprint, which is what it had before this function existed.
+ */
+function recutPrintable(ctx: BuildContext, layer: RepairedSurface): void {
+  if (layer.placement.topMm < ctx.baseTopMm) return;
+  const printable = printableSection(ctx, layer.section, "strip");
+  if (printable.section === null) return;
+  layer.dropped += printable.dropped;
+  if (printable.section === layer.section) return;
+  const solid =
+    layer.solidSection === layer.section
+      ? printable.section
+      : (intersectSection(ctx.arena, printable.section, layer.solidSection) ?? printable.section);
+  layer.section = printable.section;
+  layer.solidSection = solid;
 }
 
 /** One `merge_recess_ridges` call: bridge `recesses`' bad complement into `sink`. */

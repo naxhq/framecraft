@@ -1185,3 +1185,18 @@ Append-only. Format: `- [phase] decision, one line`.
   default, the other clicked into a viewport whose canvas was on screen while the solid was still
   building. Picking a hero does rebuild the model, and a boundary pixel can then belong to the
   neighbour, so the search now requires a point that round-trips, which is the stronger claim.
+
+- `[V3.1-P7-26]` **The Tokyo regression is fixed, and the obvious revert would have been a
+  disaster.** `[V3.1-P7-25]` named `mergeRecessRidges` moving to the frame-on path as the prime
+  suspect. Measured, the suspect was half right and the naive fix was badly wrong: turning the
+  merge off entirely removed the two new sites but took Tokyo to seven regions with the narrowest
+  at 0.013 mm. The cause is the re-cut loop inside `[V3.1-P7-18]`, not the merge. Mechanism,
+  measured at build coordinate (171.25, 26.79): the re-cut subtracts the grown road from the
+  parks footprint exactly, leaving a 0.1 mm sliver of park outside the bridge, which the 0.2 mm
+  seam rim prints as a 0.204 by 0.45 mm fin from z 2.4 to 3.0. The reference implementation never
+  produces it because it re-repairs green against the merged road union. A layer that prints as
+  material now goes back through the factored `printableSection` in strip mode after a re-cut;
+  recessed layers are left as cut. Tokyo returns to exactly its two original documented regions
+  at 0.2539, and all five passing cities are unmoved: Chicago 0.874, New York 0.8873, Paris 1.0,
+  London 0.8174, San Francisco 1.14. The seven-region measurement is kept in FAILURES.md
+  precisely so a future reader does not try the revert that looks obvious.
