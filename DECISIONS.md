@@ -1297,3 +1297,19 @@ Append-only. Format: `- [phase] decision, one line`.
   The first re-run wiped `artifacts/e2e/test-results/` and the original traces for the four gate
   failures are gone. They had been read first, so nothing was lost this time. Worth knowing:
   evidence for a failure must be read or copied out before the next run starts.
+
+- `[V3.1-O21]` **The gate ran against a stale build, and the harness allowed it silently.** I
+  started a production server at 06:58, landed the service worker and platform fixes at 07:58,
+  and then ran the full Playwright suite without rebuilding. `playwright.config.ts` sets
+  `reuseExistingServer: true` unconditionally, so the run drove the 06:58 `out/` and two of the
+  fixes appeared not to hold. The diagnosis that settles it is structural rather than
+  circumstantial: of the three changes, the one living in the SPEC passed, because specs are read
+  from disk each run, and the two living in the BUILT BUNDLE failed. Only a stale build explains
+  that split, and running the two tests alone against the same server reproduced both failures
+  with no neighbours, which exonerates the shared-origin theory I had offered by experiment
+  instead of by argument. With `out/` rebuilt, the suite is 104 passed in 9.8 minutes.
+  The error was mine, and it is recorded because the harness made it easy: a gate that can pass
+  or fail on a build nobody asked for is not a gate, and nothing today detects the case. Reusing
+  a running server becomes an explicit opt-in, or the run verifies the served bundle against the
+  tree and refuses loudly. A comment telling the next person to rebuild is what we effectively
+  had already.
