@@ -26,9 +26,12 @@ apps/web/lib/engine/pipeline/
                                  square per height rule at a known plan position
 ```
 
-`testScenes.ts` was not changed: `block`, `rail`, `bridge` and `terrain` carry
-everything the matrix needs except an untagged building, and that belongs in an
-Overpass response rather than a finished `SceneGraph` (section 4).
+`testScenes.ts` was not changed at first: `block`, `rail`, `bridge` and
+`terrain` carried everything the matrix needed except an untagged building, and
+that belongs in an Overpass response rather than a finished `SceneGraph`
+(section 4). Two later waves added one scene each — `labelled` for the surface
+labels of Task 12, whose probes live in `matrix.labels.ts`, and `override` for
+the per-object overrides of Task 11 (section 2, "Per-object overrides").
 
 **How a probe runs.** `before` is the default parameters plus the probe's
 `base`; `after` is the same with one leaf written. Both go through
@@ -307,6 +310,62 @@ unchanged entry list. That is the weakest file assertion in the table: the tile
 files are nested 3MFs inside a zip, and unpacking a tile's own model to count
 its dovetails would duplicate `solid/tiling.test.ts`, which already does it.
 
+### Per-object overrides
+
+The eleven `object_overrides[].*` leaves, all on the `override` scene: the
+`block` with an `osm_id` on its pond and its park. That scene exists because a
+row is keyed by the BASE OSM element id and an `AreaFeature` carries no `id` at
+all — `solid/overrides.ts:baseOsmIdOfArea` reads `osm_id` outright, and
+`fixture.ts:area()` omitted it, so before this wave no synthetic water or green
+polygon could be named by a row and `raise_mm` had nothing to act on.
+`area()` now takes an optional third argument and `overrideScene()` is the only
+caller that passes one, so every scene built before it is byte-identical.
+
+The objects are the block's own: the 72 m tower `b-tall` (10430.27 mm3 printed,
+roof 33.24 mm, the tallest), the 18 m block `b-low` (west edge -32.76 mm), the
+courtyard block `b-court` (roof 15.60 mm, west edge -29.40 mm — the tallest and
+the westmost thing left when the other two go), the road `r-main` (14 m wide)
+and the pond `w-pond`.
+
+| leaf | base | value | preview | file |
+|---|---|---|---|---|
+| `osm_id` | `OVR_TOWER_HIDDEN` | `"b-low"` | still 2 bodies, but the roof rises 15.60 to 33.24 mm and the west edge retreats -32.76 to -29.40: the hide moved from the tower to the low block | the same roof and the same west edge in the file's own vertices |
+| `layer` | `OVR_TOWER_HIDDEN` | `"road"` | 2 bodies to 3, buildings +10430.27 mm3, the west edge does NOT move, `overridesUnresolved` absent to 1, the roads region untouched | buildings part +10430.27 mm3 and roof 33.24, sidecar bodies 2 to 3, roads part unchanged |
+| `hidden` | `OVR_TOWER` | true | buildings 3 bodies to 2, -10430.27 mm3 exactly, roof 33.24 to 15.60, and NO new region (a hide, not a move) | buildings part the same way, the part list unchanged, sidecar bodies 3 to 2 |
+| `height_scale` | `OVR_TOWER` | 0.5 | the tower's roof ABOVE THE PLATE is multiplied by exactly 0.5 (30.24 to 15.12 mm) at 3 bodies and an unchanged plan | the same halving read from the part bbox over the base part's top |
+| `hero` | `OVR_TOWER` | `"on"` | `hero_building` appears with 1 body carrying exactly 10430.27 mm3, buildings loses exactly that, `hero_building_ids` empty on both sides | a `hero_building` part appears at the same volume, sidecar gains the row |
+| `tint` | `OVR_TOWER_OBJ` | `#B08D57` | `buildingTints` none to one entry, `b-tall`, at an unchanged buildings volume and triangle count | the MTL loses `buildings` and gains `buildings_tint_1`, whose `Kd` row IS that hex; the OBJ splits `buildings` into per-body groups |
+| `slot` | `OVR_TOWER` | 3 | an `override_1` region appears on slot 3 carrying 10430.27 mm3, its colour falling back to the buildings layer's per `[V3.1-P11-1]` | an `override_1` part on extruder 3 at the same volume, buildings' extruder unchanged, sidecar slot 3 |
+| `color` | `OVR_TOWER_OWN_SLOT` | `#B00020` | `override_1` colour moves off the layer's fallback to the row's own, at the same slot, volume and triangle count | sidecar `override_1` colour follows and `filament_colour[2]` moves to it |
+| `road_mode` | `OVR_ROAD` | `"emboss"` | the roads region is gone and the SAME ribbon (same triangles, same volume, same plan) is in `override_1` with its top face as far ABOVE the plate as it was below it; the base keeps the groove's material | the same mirror about the base part's top, `roads` part gone, `override_1` part in its place |
+| `width_scale` | `OVR_ROAD` | 2 | the ribbon widens by exactly `14 m * mmPerM` = 5.88 mm (6.28 to 12.16), same length, same triangle count, base volume falls | the same 5.88 mm in the part's own y span, sidecar roads volume rises |
+| `raise_mm` | `OVR_POND` | 1 | the water region is gone and the same slab is in `override_1` with BOTH faces exactly 1.00 mm higher at an unchanged volume, slot and colour falling back to the water layer's | the same 1.00 mm on both faces of the part, `water` part gone, sidecar colour carried over |
+
+Two notes on the bases.
+
+`OVR_TOWER_OWN_SLOT` moves the water region to slot 2 as well as putting the
+tower on slot 3. The project loads one filament colour per slot from the FIRST
+built region on it (`export/common.ts:slotColors`, and `COLOURABLE_REGION_NAMES`
+puts `water` ahead of every `override_N`), so with water left on its default
+slot 3 the override's colour reaches the sidecar and never
+`filament_colour`. That was measured, not assumed: the same probe on the plain
+base leaves `filament_colour[2]` at the water blue `#2F7FC1` on both sides.
+
+`osm_id` and `layer` are the KEY the row is matched by, and a key on a row that
+asks for nothing moves nothing, so both start from a hidden tower and read
+where the hide went. They are told apart by what does NOT move: `osm_id` keeps
+two bodies and shifts the west edge (the hide moved to another object), `layer`
+returns the third body and leaves the west edge alone (the hide left the layer,
+and `overridesUnresolved` counts the row that now names a road called
+`b-tall`).
+
+**Measured while probing, not a probe.** Raising a GREEN polygon takes its trees
+with it: `raise_mm: 1` on `w-park` moves the park slab into `override_1` and
+`stats.trees` goes 3 to 0, the region 204 triangles to 12. The water polygon has
+no such passengers, which is why the `raise_mm` probe is the pond. Whether the
+trees should follow the slab, stay on the plate or block the raise is a ruling
+this file cannot make; it is recorded here for whoever takes it.
+
 ### Frame style and frame magnets
 
 | leaf | base | value | preview | file |
@@ -348,8 +407,12 @@ it is written up here so the next contract pass can fix the sentence.
 
 ## 3. Coverage and run time
 
-`PRINT_PARAM_LEAF_PATHS` has 134 leaves. 124 are probed, 10 are exempt (the four
-rulings, with `part_colors.*` expanded to its seven leaves). The coverage test
+`PRINT_PARAM_LEAF_PATHS` has 157 leaves. 147 are probed — 135 in
+`matrix.probes.ts` and the 12 `labels[].*` in `matrix.labels.ts` — and 10 are
+exempt (the four rulings, with `part_colors.*` expanded to its seven leaves).
+The count grew from the 134 this file first measured as schema 4 landed: 12
+`labels[].*` leaves (Task 12) and 11 `object_overrides[].*` (Task 11). The
+coverage test
 walks the generated list and fails on any leaf that is neither, so a schema
 addition without a probe fails CI the same way a schema addition without a stage
 claim already fails `graph.test.ts`. It also fails a probe whose path is not a
@@ -364,6 +427,14 @@ holds, and a `why` string that says "hash" or "bytes moved".
 | before the audit fixes, other agents building | 124 | 167.0 s | the 2 defects |
 | after the audit fixes, other agents building | 124 | 131.7 s | the 2 defects |
 | after the audit fixes, other agents building | 124 | 138.3 s | the 2 defects |
+| with the labels and the 11 override probes | 147 | 125.0 s | none |
+| with the labels and the 11 override probes | 147 | 167.1 s | none |
+
+The two defects are gone: both were ruled and implemented in the Task 7
+geometry wave, and `KNOWN_DEFECTS` is empty. The eleven override probes cost
+six more `before` builds (their six bases) and eleven more `after` runs; the
+two runs above bracket the same spread as before, so the shape of the cost has
+not changed.
 
 Budget three minutes. Six measured runs came in between 100 and 175 seconds, and
 the spread is host load rather than variance in the file: every run did the same
@@ -374,8 +445,9 @@ and removed two cold builds (`F18`), which roughly cancel. The file prints its
 own measured time (`matrix: 124 probes in NNN s`) on every run, so the number in
 a CI log is never a guess.
 
-The shape of the cost is 124 `after` runs plus 32 `before` builds on the small
-synthetic scenes, about 700 ms each. Keeping it in ONE file is deliberate: the
+The shape of the cost is one `after` run per probe plus one `before` build per
+group — 147 and 40 as this was written — on the small synthetic scenes, about
+700 ms each. Keeping it in ONE file is deliberate: the
 warm cache per group is what makes an `after` run partial, and splitting the
 table across files would cost a fresh cold build per group.
 

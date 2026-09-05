@@ -1122,3 +1122,22 @@ Append-only. Format: `- [phase] decision, one line`.
   `project.LocalFrame`'s 331.42, and still fails by 57.03 degrees when the engine is reverted to
   the `-rotation_deg` bug it was written against. The cap has its own test now, which fails when
   `FRAME_SIGHT_EDGE_MM` is set to zero.
+
+- `[V3.1-P11-3]` **The matrix now covers all eleven `object_overrides` leaves, with nothing
+  exempted and every probe pinning a measured quantity.** 155 of 155 in `matrix.test.ts`;
+  `EXEMPT` is unchanged at ten leaves and `KNOWN_DEFECTS` is still empty. The probes pin
+  quantities rather than directions: the tower's own 10430.27 mm3 moving whole for `hidden`,
+  `hero` and `slot`, an exact halving of the roof above the plate for `height_scale`, the ribbon
+  mirrored about the plate top for `road_mode`, 14 m times `mmPerM` at 5.88 mm for `width_scale`,
+  both faces exactly plus 1.00 mm for `raise_mm`, and the `Kd` row equal to the tint hex. Every
+  figure the reach audit measured reproduced exactly on the current tree despite the geometry
+  work in between, which is a useful independent confirmation that the snap grid and the repair
+  changes moved nothing they should not have. `osm_id` and `layer` are the match key, so they are
+  probed against an already-hidden tower and told apart by what does NOT move.
+- `[V3.1-P11-4]` **OPEN defect: raising a green polygon takes its trees with it.** Measured while
+  writing the `raise_mm` probe: `raise_mm` on a green area drops `stats.trees` from 3 to 0 and the
+  region from 204 triangles to 12. A pond has no such passengers, which is why the probe uses
+  water. A user raising a park and silently losing its trees is a real defect, not a quirk, and it
+  is recorded rather than probed so the probe pins the raise instead of pinning the bug. It is OPEN
+  with no owner this run, on one agent's measurement rather than an independent reproduction, and
+  it must be reproduced before it is fixed.

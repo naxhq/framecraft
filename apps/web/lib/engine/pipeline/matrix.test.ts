@@ -126,7 +126,7 @@ describe("the matrix covers every PrintParams leaf", () => {
 
   it("names a scene and a sentence for every probe", () => {
     for (const probe of PROBES) {
-      expect(["block", "rail", "bridge", "terrain", "osm", "labelled"], probe.path).toContain(probe.scene);
+      expect(["block", "rail", "bridge", "terrain", "osm", "labelled", "override"], probe.path).toContain(probe.scene);
       expect(probe.why.length, probe.path).toBeGreaterThan(20);
       expect(probe.why, probe.path).not.toMatch(/hash|bytes moved|differs/i);
     }

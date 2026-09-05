@@ -17,7 +17,7 @@
 
 import { expect } from "vitest";
 
-import type { PrintParams } from "../../contracts";
+import type { ObjectOverride, PrintParams } from "../../contracts";
 import * as T from "../../transform";
 import type { Bbox3, RegionMesh, RegionName } from "../types";
 import {
@@ -34,6 +34,7 @@ import {
   mtlNames,
   mustPart,
   mustRegion,
+  objGroups,
   partExtentAtZ,
   recessBandsOf,
   regionNames,
@@ -98,6 +99,28 @@ function buildOffset(snapshot: Snapshot): [number, number] {
   const region = R(snapshot, "base");
   const part = P(snapshot, "base");
   return [part.bbox.min[0] - region.bbox.min[0], part.bbox.min[1] - region.bbox.min[1]];
+}
+
+/** `#RRGGBB` as the three 0-to-1 components an MTL `Kd` row carries. */
+function unitRgb(hex: string): [number, number, number] {
+  const value = Number.parseInt(hex.slice(1), 16);
+  return [((value >> 16) & 0xff) / 255, ((value >> 8) & 0xff) / 255, (value & 0xff) / 255];
+}
+
+/** The `Kd` row of one named material of the MTL beside an OBJ. */
+function mtlKd(files: Snapshot["files"], material: string): [number, number, number] {
+  const mtl = files.find((file) => file.name.endsWith(".mtl"));
+  if (mtl === undefined) throw new Error("this build wrote no MTL");
+  const lines = new TextDecoder().decode(mtl.bytes).split("\n");
+  const at = lines.findIndex((line) => line.trim() === `newmtl ${material}`);
+  if (at === -1) throw new Error(`the MTL has no ${material} material (it has ${mtlNames(files).join(", ")})`);
+  const kd = lines.slice(at + 1).find((line) => line.startsWith("Kd "));
+  if (kd === undefined) throw new Error(`the MTL's ${material} carries no Kd row`);
+  const parts = kd.slice(3).trim().split(/\s+/).map(Number);
+  if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) {
+    throw new Error(`the MTL's ${material} Kd row is ${JSON.stringify(kd)}`);
+  }
+  return [parts[0], parts[1], parts[2]];
 }
 
 /**
@@ -481,6 +504,83 @@ const TINT_OBJ: Partial<PrintParams> = {
   color_mode: "parts",
   colour: { tint: { enabled: true, hue_range_deg: 12, lightness_range: 0.12, seed: 1 } },
 };
+// --- per-object overrides (v3.1 Task 11) -----------------------------------
+
+/**
+ * The objects the override probes name, in the `override` scene.
+ *
+ * All four are the `testScenes.ts` block's own: the 72 m tower east of the
+ * centre, the 18 m block in the west, the road across the middle and the pond
+ * in the south-west, which `overrideScene()` gives an `osm_id` so a row can
+ * name it at all.
+ */
+const OVERRIDE_TOWER_ID = "b-tall";
+const OVERRIDE_LOW_ID = "b-low";
+const OVERRIDE_ROAD_ID = "r-main";
+const OVERRIDE_POND_ID = "w-pond";
+
+/** One override row, spelled out so the probe's own leaf is the only thing moving. */
+const overrideRow = (row: ObjectOverride): Partial<PrintParams> => ({ object_overrides: [row] });
+
+/** A bare row on the tower: it names an object and asks for nothing yet. */
+const OVR_TOWER = overrideRow({ osm_id: OVERRIDE_TOWER_ID, layer: "building" });
+
+/**
+ * The same row with the tower already hidden, for the two IDENTITY leaves.
+ *
+ * `osm_id` and `layer` are the key the row is matched by, and a key on a row
+ * that asks for nothing moves nothing; both probes therefore start from a hide
+ * and read where the hide went.
+ */
+const OVR_TOWER_HIDDEN = overrideRow({ osm_id: OVERRIDE_TOWER_ID, layer: "building", hidden: true });
+
+/**
+ * The tower already on a slot of its own, so `color` has an override region to
+ * colour, plus the water region moved off slot 3.
+ *
+ * The project loads ONE filament colour per slot, from the first BUILT region
+ * on it (`export/common.ts:slotColors`, and `COLOURABLE_REGION_NAMES` puts
+ * `water` ahead of every `override_N`). With water left on its default slot 3
+ * the override's colour never reaches `filament_colour`, and the probe would
+ * have the sidecar row alone. Moving water to the buildings' slot leaves the
+ * override the only region on slot 3, which is the case the field is for.
+ */
+const OVR_TOWER_OWN_SLOT: Partial<PrintParams> = {
+  object_overrides: [{ osm_id: OVERRIDE_TOWER_ID, layer: "building", slot: 3 }],
+  colour: { region_slots: { water: 2 } },
+};
+
+/** A tint is preview-and-OBJ only, exactly as `colour.tint` is. */
+const OVR_TOWER_OBJ: Partial<PrintParams> = {
+  ...OVR_TOWER,
+  export_target: "obj",
+  color_mode: "parts",
+};
+
+const OVR_ROAD = overrideRow({ osm_id: OVERRIDE_ROAD_ID, layer: "road" });
+const OVR_POND = overrideRow({ osm_id: OVERRIDE_POND_ID, layer: "water" });
+
+const OVERRIDE_TINT_HEX = "#B08D57";
+const OVERRIDE_COLOR_HEX = "#B00020";
+
+/**
+ * What the `override` scene prints, measured on this tree, mm and mm3.
+ *
+ * The tower's own printed solid, the roof of the tower and of the courtyard
+ * block (the tallest thing left when the tower goes), and the west edge of the
+ * low block and of the courtyard block (the westmost thing left when the low
+ * block goes). A probe that moves ONE object names the number that object owns,
+ * so a change that removed a different building fails.
+ */
+const TOWER_VOLUME_MM3 = 10430.27;
+const TOWER_ROOF_MM = 33.24;
+const COURT_ROOF_MM = 15.6;
+const LOW_WEST_EDGE_MM = -32.76;
+const COURT_WEST_EDGE_MM = -29.4;
+
+/** The ground width `testScenes.ts` gives `r-main`, which `width_scale` multiplies. */
+const ROAD_WAY_WIDTH_M = 14;
+
 const GENERIC: Partial<PrintParams> = { export_target: "generic-3mf" };
 const COLORCHANGE: Partial<PrintParams> = { export_target: "color-change-3mf" };
 const TERRAIN_ON: Partial<PrintParams> = { terrain: { enabled: true, smoothing: 0 } };
@@ -2187,6 +2287,317 @@ export const PROBES: readonly Probe[] = [
     assertExport: (before, after) => {
       expect(P(after, "frame").triangles).toBeGreaterThan(P(before, "frame").triangles * 1.8);
       expect(P(after, "base").triangles).toBeGreaterThan(P(before, "base").triangles);
+    },
+  },
+
+  // --- per-object overrides (v3.1 Task 11) ---------------------------------
+  //
+  // Every probe here runs on the `override` scene, which is the block with an
+  // OSM id on its pond and its park: an `object_overrides` row is keyed by the
+  // BASE OSM id, and an `AreaFeature` that carries none is a polygon no
+  // override can name (`solid/overrides.ts:baseOsmIdOfArea`).
+  //
+  // The two identity leaves need a base that already DOES something, or moving
+  // them moves nothing: both are probed against a hidden tower, so the probe
+  // reads where the hide went. Everything else is probed against a bare row.
+  {
+    path: "object_overrides[].osm_id",
+    value: OVERRIDE_LOW_ID,
+    base: OVR_TOWER_HIDDEN,
+    scene: "override",
+    why: "which object in the layer the row acts on, so moving the id carries the hide from the tower to the low block and back",
+    assertPreview: (before, after) => {
+      // Two bodies on both sides: one building is hidden either way, and the
+      // question is which. The roof says the tower came back; the west edge
+      // says the low block went in its place.
+      expect(R(before, "buildings").bodies).toBe(2);
+      expect(R(after, "buildings").bodies).toBe(2);
+      expect(R(before, "buildings").bbox.max[2]).toBeCloseTo(COURT_ROOF_MM, 2);
+      expect(R(after, "buildings").bbox.max[2]).toBeCloseTo(TOWER_ROOF_MM, 2);
+      expect(R(before, "buildings").bbox.min[0]).toBeCloseTo(LOW_WEST_EDGE_MM, 2);
+      expect(R(after, "buildings").bbox.min[0]).toBeCloseTo(COURT_WEST_EDGE_MM, 2);
+      // `b-low` is a building too, so the row still resolves.
+      expect(after.result.stats.overridesUnresolved).toBeUndefined();
+    },
+    assertExport: (before, after) => {
+      expect(P(before, "buildings").bbox.max[2]).toBeCloseTo(COURT_ROOF_MM, 2);
+      expect(P(after, "buildings").bbox.max[2]).toBeCloseTo(TOWER_ROOF_MM, 2);
+      expect(P(before, "buildings").bbox.min[0] - buildOffset(before)[0]).toBeCloseTo(LOW_WEST_EDGE_MM, 2);
+      expect(P(after, "buildings").bbox.min[0] - buildOffset(after)[0]).toBeCloseTo(COURT_WEST_EDGE_MM, 2);
+      expect(sidecarRegions(before.sidecar).get("buildings")?.bodies).toBe(2);
+      expect(sidecarRegions(after.sidecar).get("buildings")?.bodies).toBe(2);
+    },
+  },
+  {
+    path: "object_overrides[].layer",
+    value: "road",
+    base: OVR_TOWER_HIDDEN,
+    scene: "override",
+    why: "which layer's objects the row is keyed against, so the same id and the same hide reach the buildings or nothing at all",
+    assertPreview: (before, after) => {
+      expect(R(before, "buildings").bodies).toBe(2);
+      expect(R(after, "buildings").bodies).toBe(3);
+      expect(R(after, "buildings").volumeMm3 - R(before, "buildings").volumeMm3).toBeCloseTo(TOWER_VOLUME_MM3, 2);
+      // The low block never moved: this is the hide leaving the layer, not the
+      // hide moving to another object, which is what `osm_id` does.
+      expect(R(after, "buildings").bbox.min[0]).toBeCloseTo(LOW_WEST_EDGE_MM, 2);
+      expect(before.result.stats.overridesUnresolved).toBeUndefined();
+      expect(after.result.stats.overridesUnresolved).toBe(1);
+      // No ROAD is called `b-tall`, so the roads layer is untouched.
+      expect(N(after)).toEqual(N(before));
+      expect(R(after, "roads").volumeMm3).toBeCloseTo(R(before, "roads").volumeMm3, 6);
+    },
+    assertExport: (before, after) => {
+      expect(P(after, "buildings").volumeMm3 - P(before, "buildings").volumeMm3).toBeCloseTo(TOWER_VOLUME_MM3, 2);
+      expect(P(after, "buildings").bbox.max[2]).toBeCloseTo(TOWER_ROOF_MM, 2);
+      expect(sidecarRegions(before.sidecar).get("buildings")?.bodies).toBe(2);
+      expect(sidecarRegions(after.sidecar).get("buildings")?.bodies).toBe(3);
+      expect(P(after, "roads").volumeMm3).toBeCloseTo(P(before, "roads").volumeMm3, 6);
+    },
+  },
+  {
+    path: "object_overrides[].hidden",
+    value: true,
+    base: OVR_TOWER,
+    scene: "override",
+    why: "takes one object out of the model, so the buildings region loses exactly that one solid and nothing takes its place",
+    assertPreview: (before, after) => {
+      expect(R(before, "buildings").bodies).toBe(3);
+      expect(R(after, "buildings").bodies).toBe(2);
+      expect(R(before, "buildings").volumeMm3 - R(after, "buildings").volumeMm3).toBeCloseTo(TOWER_VOLUME_MM3, 2);
+      expect(R(after, "buildings").bbox.max[2]).toBeCloseTo(COURT_ROOF_MM, 2);
+      // A hide, not a move: no override region caught it.
+      expect(N(after)).toEqual(N(before));
+    },
+    assertExport: (before, after) => {
+      expect(P(before, "buildings").volumeMm3 - P(after, "buildings").volumeMm3).toBeCloseTo(TOWER_VOLUME_MM3, 2);
+      expect(P(after, "buildings").bbox.max[2]).toBeCloseTo(COURT_ROOF_MM, 2);
+      expect([...bambuParts(after.files).keys()]).toEqual([...bambuParts(before.files).keys()]);
+      expect(sidecarRegions(before.sidecar).get("buildings")?.bodies).toBe(3);
+      expect(sidecarRegions(after.sidecar).get("buildings")?.bodies).toBe(2);
+    },
+  },
+  {
+    path: "object_overrides[].height_scale",
+    value: 0.5,
+    base: OVR_TOWER,
+    scene: "override",
+    why: "multiplies one building's OSM height, so the tower's printed roof above the plate is scaled by exactly that factor and its footprint is not",
+    assertPreview: (before, after) => {
+      const plate = R(before, "base").bbox.max[2];
+      const roofBefore = R(before, "buildings").bbox.max[2] - plate;
+      const roofAfter = R(after, "buildings").bbox.max[2] - plate;
+      expect(roofAfter).toBeCloseTo(roofBefore * 0.5, 2);
+      // Still three bodies over the same plan: a height, not a hide.
+      expect(R(after, "buildings").bodies).toBe(3);
+      expect(R(after, "buildings").bbox.min[0]).toBeCloseTo(R(before, "buildings").bbox.min[0], 6);
+      expect(R(after, "buildings").bbox.max[0]).toBeCloseTo(R(before, "buildings").bbox.max[0], 6);
+      expect(R(after, "buildings").volumeMm3).toBeLessThan(R(before, "buildings").volumeMm3);
+    },
+    assertExport: (before, after) => {
+      const roofBefore = P(before, "buildings").bbox.max[2] - P(before, "base").bbox.max[2];
+      const roofAfter = P(after, "buildings").bbox.max[2] - P(after, "base").bbox.max[2];
+      expect(roofAfter).toBeCloseTo(roofBefore * 0.5, 2);
+      expect(sidecarRegions(after.sidecar).get("buildings")?.bodies).toBe(3);
+      expect(P(after, "buildings").volumeMm3).toBeLessThan(P(before, "buildings").volumeMm3);
+    },
+  },
+  {
+    path: "object_overrides[].hero",
+    value: "on",
+    base: OVR_TOWER,
+    scene: "override",
+    why: "marks one building a hero from the right-click menu rather than from hero_building_ids, so its solid moves into the hero region whole",
+    assertPreview: (before, after) => {
+      // `hero_building_ids` is empty on both sides: the marking came from the
+      // override row and from nothing else.
+      expect(before.result.params.hero_building_ids ?? []).toEqual([]);
+      expect(after.result.params.hero_building_ids ?? []).toEqual([]);
+      expect(N(before)).not.toContain("hero_building");
+      expect(R(after, "hero_building").bodies).toBe(1);
+      expect(R(after, "hero_building").volumeMm3).toBeCloseTo(TOWER_VOLUME_MM3, 2);
+      expect(R(after, "hero_building").bbox.max[2]).toBeCloseTo(TOWER_ROOF_MM, 2);
+      // Moved, not added: the buildings region lost exactly the same solid.
+      expect(R(before, "buildings").volumeMm3 - R(after, "buildings").volumeMm3).toBeCloseTo(TOWER_VOLUME_MM3, 2);
+      expect(R(after, "buildings").bodies).toBe(2);
+    },
+    assertExport: (before, after) => {
+      expect(bambuParts(before.files).has("hero_building")).toBe(false);
+      expect(P(after, "hero_building").volumeMm3).toBeCloseTo(TOWER_VOLUME_MM3, 2);
+      expect(P(after, "hero_building").bbox.max[2]).toBeCloseTo(TOWER_ROOF_MM, 2);
+      expect(sidecarRegions(before.sidecar).has("hero_building")).toBe(false);
+      expect(sidecarRegions(after.sidecar).get("hero_building")?.bodies).toBe(1);
+    },
+  },
+  {
+    path: "object_overrides[].tint",
+    value: OVERRIDE_TINT_HEX,
+    base: OVR_TOWER_OBJ,
+    scene: "override",
+    why: "a shade of one building's own filament, which the print path ignores by design and the parts-mode OBJ writes as that body's material",
+    assertPreview: (before, after) => {
+      expect(before.result.buildingTints ?? []).toHaveLength(0);
+      const tints = after.result.buildingTints ?? [];
+      expect(tints).toHaveLength(1);
+      expect(tints[0].id).toBe(OVERRIDE_TOWER_ID);
+      expect(tints[0].colorHex).toBe(OVERRIDE_TINT_HEX);
+      // A shade, not a solid: the region it shades did not move at all.
+      expect(R(after, "buildings").volumeMm3).toBeCloseTo(R(before, "buildings").volumeMm3, 6);
+      expect(triangleCount(R(after, "buildings"))).toBe(triangleCount(R(before, "buildings")));
+    },
+    assertExport: (before, after) => {
+      expect(mtlNames(before.files)).toContain("buildings");
+      expect(mtlNames(before.files)).not.toContain("buildings_tint_1");
+      expect(mtlNames(after.files)).toContain("buildings_tint_1");
+      // The Kd row IS the hex the row asked for, not merely a different one.
+      const kd = mtlKd(after.files, "buildings_tint_1");
+      const want = unitRgb(OVERRIDE_TINT_HEX);
+      expect(kd[0]).toBeCloseTo(want[0], 3);
+      expect(kd[1]).toBeCloseTo(want[1], 3);
+      expect(kd[2]).toBeCloseTo(want[2], 3);
+      // The buildings group is split per body so the shade can land on one.
+      expect(objGroups(before.files)).toContain("buildings");
+      expect(objGroups(after.files)).toContain("buildings_1");
+    },
+  },
+  {
+    path: "object_overrides[].slot",
+    value: 3,
+    base: OVR_TOWER,
+    scene: "override",
+    why: "puts one object on a filament slot of its own, which a region carries one of, so the solid moves whole into override_1 on that extruder",
+    assertPreview: (before, after) => {
+      expect(N(before)).not.toContain("override_1");
+      const own = R(after, "override_1");
+      expect(own.slot).toBe(3);
+      // `[V3.1-P11-1]`: the colour half was not asked for, so it falls back to
+      // the parent layer's rather than to anything of the override's own.
+      expect(own.colorHex).toBe(R(before, "buildings").colorHex);
+      expect(own.bodies).toBe(1);
+      expect(own.volumeMm3).toBeCloseTo(TOWER_VOLUME_MM3, 2);
+      expect(R(before, "buildings").volumeMm3 - R(after, "buildings").volumeMm3).toBeCloseTo(TOWER_VOLUME_MM3, 2);
+    },
+    assertExport: (before, after) => {
+      expect(bambuParts(before.files).has("override_1")).toBe(false);
+      expect(P(after, "override_1").extruder).toBe(3);
+      expect(P(after, "override_1").volumeMm3).toBeCloseTo(TOWER_VOLUME_MM3, 2);
+      expect(P(after, "buildings").extruder).toBe(P(before, "buildings").extruder);
+      expect(sidecarRegions(after.sidecar).get("override_1")?.slot).toBe(3);
+    },
+  },
+  {
+    path: "object_overrides[].color",
+    value: OVERRIDE_COLOR_HEX,
+    base: OVR_TOWER_OWN_SLOT,
+    scene: "override",
+    why: "the filament colour one object prints in, which the project loads into that object's own slot",
+    assertPreview: (before, after) => {
+      // Before, the colour half is unasked and falls back to the buildings
+      // layer's (`[V3.1-P11-1]`); after, it is the row's own.
+      expect(R(before, "override_1").colorHex).toBe(R(before, "buildings").colorHex);
+      expect(R(after, "override_1").colorHex).toBe(OVERRIDE_COLOR_HEX);
+      // A colour, not a shape: same slot, same solid.
+      expect(R(after, "override_1").slot).toBe(3);
+      expect(R(after, "override_1").volumeMm3).toBeCloseTo(R(before, "override_1").volumeMm3, 6);
+      expect(triangleCount(R(after, "override_1"))).toBe(triangleCount(R(before, "override_1")));
+    },
+    assertExport: (before, after) => {
+      expect(sidecarRegions(before.sidecar).get("override_1")?.color).not.toBe(OVERRIDE_COLOR_HEX);
+      expect(sidecarRegions(after.sidecar).get("override_1")?.color).toBe(OVERRIDE_COLOR_HEX);
+      expect(bambuProject(before.files).filament_colour[2]).not.toBe(OVERRIDE_COLOR_HEX);
+      expect(bambuProject(after.files).filament_colour[2]).toBe(OVERRIDE_COLOR_HEX);
+      expect(P(after, "override_1").triangles).toBe(P(before, "override_1").triangles);
+    },
+  },
+  {
+    path: "object_overrides[].road_mode",
+    value: "emboss",
+    base: OVR_ROAD,
+    scene: "override",
+    why: "whether one road is a groove in the plate or a ridge on it, so the same ribbon crosses the plate top to the other side",
+    assertPreview: (before, after) => {
+      const plate = R(before, "base").bbox.max[2];
+      expect(N(before)).toContain("roads");
+      expect(N(after)).not.toContain("roads");
+      const ridge = R(after, "override_1");
+      // The same ribbon: same triangles, same volume, same plan.
+      expect(triangleCount(ridge)).toBe(triangleCount(R(before, "roads")));
+      expect(ridge.volumeMm3).toBeCloseTo(R(before, "roads").volumeMm3, 6);
+      expect(ridge.bbox.min[1]).toBeCloseTo(R(before, "roads").bbox.min[1], 6);
+      expect(ridge.bbox.max[1]).toBeCloseTo(R(before, "roads").bbox.max[1], 6);
+      // Engraved, its top face sits under the plate; embossed, exactly as far
+      // over it. A mirror about the plate top, not merely a lift.
+      expect(plate - R(before, "roads").bbox.max[2]).toBeGreaterThan(0);
+      expect(ridge.bbox.max[2] - plate).toBeCloseTo(plate - R(before, "roads").bbox.max[2], 3);
+      // And the plate keeps the material the groove used to take out.
+      expect(R(after, "base").volumeMm3).toBeGreaterThan(R(before, "base").volumeMm3);
+    },
+    assertExport: (before, after) => {
+      expect(bambuParts(before.files).has("override_1")).toBe(false);
+      expect(bambuParts(after.files).has("roads")).toBe(false);
+      const plate = P(after, "base").bbox.max[2];
+      const ridge = P(after, "override_1");
+      expect(ridge.triangles).toBe(P(before, "roads").triangles);
+      expect(ridge.volumeMm3).toBeCloseTo(P(before, "roads").volumeMm3, 6);
+      expect(ridge.bbox.max[2] - plate).toBeCloseTo(plate - P(before, "roads").bbox.max[2], 3);
+      expect(sidecarRegions(before.sidecar).has("override_1")).toBe(false);
+      expect(sidecarRegions(after.sidecar).has("roads")).toBe(false);
+    },
+  },
+  {
+    path: "object_overrides[].width_scale",
+    value: 2,
+    base: OVR_ROAD,
+    scene: "override",
+    why: "multiplies one road's ground width where road_scale itself applies, so the printed ribbon widens by that road's own tagged width",
+    assertPreview: (before, after) => {
+      const widened = spanOf(R(after, "roads").bbox, 1) - spanOf(R(before, "roads").bbox, 1);
+      // Doubling a 14 m way adds exactly 14 more ground metres of ribbon.
+      expect(widened).toBeCloseTo(ROAD_WAY_WIDTH_M * mmPerM(before), 2);
+      // Wider, not longer, and still one ribbon.
+      expect(R(after, "roads").bbox.max[0]).toBeCloseTo(R(before, "roads").bbox.max[0], 6);
+      expect(triangleCount(R(after, "roads"))).toBe(triangleCount(R(before, "roads")));
+      expect(R(after, "base").volumeMm3).toBeLessThan(R(before, "base").volumeMm3);
+    },
+    assertExport: (before, after) => {
+      const widened = spanOf(P(after, "roads").bbox, 1) - spanOf(P(before, "roads").bbox, 1);
+      expect(widened).toBeCloseTo(ROAD_WAY_WIDTH_M * mmPerM(before), 2);
+      expect(P(after, "roads").triangles).toBe(P(before, "roads").triangles);
+      expect(sidecarRegions(after.sidecar).get("roads")?.volume_mm3).toBeGreaterThan(
+        sidecarRegions(before.sidecar).get("roads")?.volume_mm3 ?? 0,
+      );
+    },
+  },
+  {
+    path: "object_overrides[].raise_mm",
+    value: 1,
+    base: OVR_POND,
+    scene: "override",
+    why: "offsets one water or green polygon from its layer's own proud_mm, so the whole slab moves that far up the z axis",
+    assertPreview: (before, after) => {
+      expect(N(before)).toContain("water");
+      expect(N(after)).not.toContain("water");
+      const lifted = R(after, "override_1");
+      // The same slab, moved: both faces up by exactly the millimetre asked
+      // for, at an unchanged volume and triangle count.
+      expect(triangleCount(lifted)).toBe(triangleCount(R(before, "water")));
+      expect(lifted.volumeMm3).toBeCloseTo(R(before, "water").volumeMm3, 6);
+      expect(lifted.bbox.min[2] - R(before, "water").bbox.min[2]).toBeCloseTo(1.0, 3);
+      expect(lifted.bbox.max[2] - R(before, "water").bbox.max[2]).toBeCloseTo(1.0, 3);
+      // Slot and colour were not asked for, so both fall back to the layer's.
+      expect(lifted.slot).toBe(R(before, "water").slot);
+      expect(lifted.colorHex).toBe(R(before, "water").colorHex);
+    },
+    assertExport: (before, after) => {
+      expect(bambuParts(after.files).has("water")).toBe(false);
+      const lifted = P(after, "override_1");
+      expect(lifted.triangles).toBe(P(before, "water").triangles);
+      expect(lifted.volumeMm3).toBeCloseTo(P(before, "water").volumeMm3, 6);
+      expect(lifted.bbox.min[2] - P(before, "water").bbox.min[2]).toBeCloseTo(1.0, 3);
+      expect(lifted.bbox.max[2] - P(before, "water").bbox.max[2]).toBeCloseTo(1.0, 3);
+      expect(sidecarRegions(after.sidecar).get("override_1")?.color).toBe(
+        sidecarRegions(before.sidecar).get("water")?.color,
+      );
     },
   },
 ];
