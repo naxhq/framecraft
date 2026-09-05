@@ -753,6 +753,18 @@ perf mode on). The host was busier than in 8.1 all session: overall CPU 22 to
 absolute numbers here read above 8.1's, and the comparison that counts is
 the interleaved one in 10.4, where both trees see the same noise.
 
+Host census, taken when a quiet retake of the two rows was asked for at the
+end of the run: overall CPU 44, 49 and 49 per cent over three samples with
+nothing of ours running, from the user's own session (a game at about 0.8 of
+a core, two msedge processes and two of their webviews, Discord, iCUE, Bambu
+Studio), plus 18 node processes, most of them finished agents' orphans; a
+retake attempted anyway ran into a Playwright headless Chrome from the gate
+and is discarded. No truly idle measurement was obtainable on this host
+during this run, and 8.1's table, labelled the quiet-host table, was itself
+taken at 17 to 20 per cent: the quietest observed, not idle. Its
+conclusions stand (the `heights` row read its lowest ever in it); the label
+should be read that way.
+
 ### 10.1 Where `plate_mm` spends its 2.3 to 2.5 s to the preview
 
 New spans (no-ops with perf mode off) name what the stage wall clocks hid.
