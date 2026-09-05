@@ -1141,3 +1141,47 @@ Append-only. Format: `- [phase] decision, one line`.
   is recorded rather than probed so the probe pins the raise instead of pinning the bug. It is OPEN
   with no owner this run, on one agent's measurement rather than an independent reproduction, and
   it must be reproduced before it is fixed.
+
+- `[V3.1-P5-6]` **The settings panel's unreachable toggles were a flex-sizing bug, not an
+  overlay.** `param-groups` is `flex: 1 1 0%` with no floor, so the Output section, which was
+  `shrink-0`, took the 254 px the column had left and squeezed the group list to zero height with
+  a scroll height of 8134. `[V3-P4-U]`'s `max-h-[45vh]` cap could never bind, because 45vh is
+  324 px at a 720 px viewport, more than the column ever had: the cap was measured against the
+  viewport when the constraint was the column. The list now has a `min-h-[45%]` floor measured
+  against the panel, and the Output section shrinks and scrolls in place. One deliberate visible
+  change came with it: the search hint's three printed lines repeated the placeholder and the
+  slash badge for 51 px on every screen, and are now screen-reader only with the same copy and
+  the same `aria-describedby`. At 1280x720 the group list is 180 px and scrolling, Output is
+  124 px and scrolling, and all six toggles are hit-testable. Confirmed in both directions:
+  restoring the old flex properties while keeping the hint change fails the tab walk again.
+- `[V3.1-O16]` **`e2e/shell.spec.ts` was written during Task 4 and never run, and it is wrong.**
+  It waits on a `region-settings` test id that `ResizableRegions` does not render, so four of its
+  assertions have never held. An unrun spec is not coverage, and this run has three times found a
+  feature absent while its tests passed, so the spec is corrected or the component is, and neither
+  the assertion nor the spec is deleted. Two hero-picking failures in `ui.spec.ts` are assigned
+  with it: picking moved to per-triangle identity when `BuildingPickProxies` was deleted, so a
+  spec still driving the old proxy path is the likely cause, but if picking is genuinely broken
+  that is a user-facing defect and outranks everything else left in the run.
+
+- `[V3.1-O17]` **Running the never-run spec immediately found a real product defect, which is the
+  whole argument for `[V3.1-O16]`.** `ActionBar` memoised the share URL on `[href, location,
+  params]` and subscribed to nothing in the layout store, so dragging a divider or collapsing a
+  column left `data-share-url` byte-for-byte unchanged. `[V3.1-O6]` promised that a shared design
+  opens the way its author framed it, and it was broken through the single button that makes the
+  link. Save project was never affected because it builds its payload at click time, which is
+  exactly why only a permalink test could catch it. Fixed by subscribing to `sizes`, `collapsed`
+  and `maximized` and taking the payload from the same pure `lib/layout.ts:layoutPayload` that
+  `currentLayoutPayload` uses, so the two cannot drift.
+- `[V3.1-O18]` **A spec that never ran is not just uncovering, it is wrong in its own right.**
+  `shell.spec.ts` asked for a `region-settings` test id that has never existed; the column is
+  `param-sheet`. Four assertions threw on a null box instead of measuring, and two tests burned
+  300 seconds each doing it. Once corrected to the real id, the first thing those newly live
+  assertions said was that one of them contradicted both its own comment and `lib/layout.test.ts`:
+  after dragging settings 60 px and double-clicking the MAP divider it expected settings back at
+  default. And its scroll test was measuring its own scrolling, setting `scrollTop` and then
+  filling a control below the fold so Playwright scrolled the port and the test blamed the run.
+  Both are corrected against what the code actually promises. The two `ui.spec.ts` failures were
+  not picking defects: one asserted on a `hero-item` inside a group that Task 5 collapses by
+  default, the other clicked into a viewport whose canvas was on screen while the solid was still
+  building. Picking a hero does rebuild the model, and a boundary pixel can then belong to the
+  neighbour, so the search now requires a point that round-trips, which is the stronger claim.

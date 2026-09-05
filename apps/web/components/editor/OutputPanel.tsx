@@ -97,15 +97,20 @@ export function OutputPanel({
   }, [exportState]);
 
   /*
-    `max-h` + `overflow-y-auto`, not `space-y-3` alone: `group-output` is a
-    `shrink-0` sibling of the scrollable group list in `ParamPanel.tsx` (never
-    itself scrollable), so unbounded content here -- the estimate card, a
-    finished export's status and links, and the stats card, all at once --
-    pushed the whole Output section past the sidebar's own height and squeezed
-    that group list to zero visible height, making every group above it
-    unreachable by click (found by running `e2e/print.spec.ts` against a real
-    browser: `group-output intercepts pointer events` on a click aimed at the
-    Printer group's toggle, two groups above it).
+    The results take what the Output section has left and scroll inside it --
+    `flex-1 min-h-0`, against the flex column `group-output` now is.
+
+    This replaces a `max-h-[45vh]` cap that measured the wrong thing. Unbounded
+    content here -- the estimate card, a finished export's status and links,
+    the stats card, all at once -- used to push the whole Output section past
+    the sidebar's height and squeeze the group list to zero, making every group
+    above it unreachable by click (`group-output intercepts pointer events`).
+    The cap was meant to stop that, but the VIEWPORT is not the column: at
+    1280x720, 45vh is 324 px and the column had 254 px left after the action
+    bar and the panel header, so the cap never bound and the list was still
+    crushed to zero -- reproduced on the shipped build, `e2e/a11y.spec.ts`'s
+    tab walk. Sizing against the flex parent instead means the bound is always
+    the space actually available.
 
     `tabIndex={0}`, same discipline as `AdjustmentsChip`'s drawer: this is an
     `overflow-y-auto` region with no focusable child guaranteed, so without it
@@ -114,7 +119,7 @@ export function OutputPanel({
     `e2e/a11y.spec.ts`'s Issues-drawer state.
   */
   return (
-    <div id={resultsId} tabIndex={0} className="max-h-[45vh] space-y-3 overflow-y-auto">
+    <div id={resultsId} tabIndex={0} className="min-h-0 flex-1 space-y-3 overflow-y-auto">
       <div data-testid="result-slot-estimate">{showResults ? <EstimateCard /> : null}</div>
 
       <div data-testid="result-slot-export">

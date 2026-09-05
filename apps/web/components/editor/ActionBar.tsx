@@ -8,6 +8,7 @@ import { hashString, planFor, stableJson } from "@/lib/engine/pipeline";
 import type { AuditFinding, EngineResult } from "@/lib/engine/types";
 import { exportStatusLabel } from "@/lib/exportFlow";
 import { stageLabel } from "@/lib/hud";
+import { layoutPayload } from "@/lib/layout";
 import { isTauri, saveFileWithDialog } from "@/lib/platform";
 import {
   LEGACY_PROJECT_FILE_EXTENSION,
@@ -25,6 +26,7 @@ import { SHARE_LINK_LENGTH_LIMIT, encodeShare, shareUrl } from "@/lib/share";
 import { exportBlockReason, heightCeilingMm, predictedTopMm, warningDeps } from "@/lib/warnings";
 import type { PipelineFailure, PipelineProgress } from "@/store/editor";
 import { locationToRequest, useEditorStore } from "@/store/editor";
+import { useLayoutStore } from "@/store/layout";
 import { Note } from "./Controls";
 import ExportErrorDetail, { type ErrorDetailModel, type ErrorDetailTone } from "./ExportErrorDetail";
 import ExportMenu, { ExportTargetNotes } from "./ExportMenu";
@@ -319,9 +321,43 @@ export function ActionBar() {
   const [href, setHref] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "manual" | "too-large">("idle");
   useEffect(() => setHref(window.location.href), []);
+  /*
+    The layout the link carries, SUBSCRIBED to rather than read imperatively.
+
+    `shareUrl` defaults this argument to `currentLayoutPayload()`, which reads
+    the layout store at call time. That default is right for a caller that is
+    not a React component and wrong for this one: `ActionBar` reads neither the
+    layout store nor any prop of `ResizableRegions`, so a divider drag or a
+    collapsed column never re-rendered it, the memo below never re-ran, and
+    `data-share-url` kept the layout captured on the very first render.
+    Measured on the shipped build: dragging the map divider from 400 px to
+    500 px and then hiding the settings column left the copied URL byte for
+    byte unchanged, so `[V3.1-O6]`'s promise that a shared design opens the way
+    its author framed it was broken through the one button that makes the link.
+    `e2e/shell.spec.ts`'s permalink test says exactly that, and had never run.
+
+    `layoutPayload` is the same pure function `currentLayoutPayload` calls, so
+    there is still one definition of what a layout payload is; only where the
+    state comes from differs. The three slices are stable references between
+    unrelated store updates, so this recomputes when the layout moves and not
+    otherwise -- and a drag re-encoding the link per pointer move is the cost a
+    slider drag has always paid through `params`.
+  */
+  const layoutSizes = useLayoutStore((state) => state.sizes);
+  const layoutCollapsed = useLayoutStore((state) => state.collapsed);
+  const layoutMaximized = useLayoutStore((state) => state.maximized);
+  const layout = useMemo(
+    () =>
+      layoutPayload({
+        sizes: layoutSizes,
+        collapsed: layoutCollapsed,
+        maximized: layoutMaximized,
+      }),
+    [layoutSizes, layoutCollapsed, layoutMaximized],
+  );
   const link = useMemo(
-    () => (href === null ? null : shareUrl(href, locationToRequest(location), params)),
-    [href, location, params],
+    () => (href === null ? null : shareUrl(href, locationToRequest(location), params, layout)),
+    [href, layout, location, params],
   );
   // A link that no longer describes what is on screen must not still say "Copied".
   useEffect(() => setCopyState("idle"), [link]);

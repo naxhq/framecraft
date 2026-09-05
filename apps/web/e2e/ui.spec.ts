@@ -769,6 +769,12 @@ test("Escape closes the adjustments drawer from anywhere, and hands focus back",
 test("a hero building can be picked with the keyboard alone", async ({ page }) => {
   const calls = watchOverpass(page);
   await generateChicago(page);
+  // The hero list lives in the Buildings group, which has started collapsed
+  // since Task 5. Without this the pick still HAPPENS -- the cursor reads
+  // "Building 2 of 992 - 303 m - hero" and the viewport chip says "1 hero
+  // building" -- but `hero-item` is unmounted, so the assertion below was
+  // measuring the group's collapse state and calling it a picking failure.
+  await openGroup(page, "buildings");
   await page.waitForTimeout(1_000);
 
   const viewport = page.getByTestId("preview-canvas");
@@ -806,10 +812,33 @@ test("a hero building can be picked with the keyboard alone", async ({ page }) =
 test("clicking a building in the preview picks it as a hero, and clicking it again drops it", async ({
   page,
 }) => {
+  // Each pick and each drop rebuilds the 992-building Chicago model, and the
+  // search below may spend a few of those before it finds a point that is not
+  // on a silhouette edge. The default 300 s test budget covers one pick and one
+  // drop, which is what this test used to do; it does not cover a search. Same
+  // convention as `a11y.spec.ts`: the BUDGET is raised, no assertion is.
+  test.setTimeout(600_000);
   const calls = watchOverpass(page);
   await generateChicago(page);
   // The hero list is in the Buildings group, which starts collapsed.
   await openGroup(page, "buildings");
+  /*
+    Wait for the MODEL, not just for the canvas and the stats card.
+
+    `generateChicago` returns as soon as `preview-canvas` and `preview-stats`
+    are visible, and both are on screen while the solid engine is still running
+    -- the stats card reads "992 buildings - Building the model...". A flat
+    1500 ms after that was enough on an idle machine and was not enough under
+    Playwright's tracing: the failure screenshot for this test showed an EMPTY
+    viewport with "Building the model: attribution - 20 of 80 - 4.0 s elapsed"
+    still in the action bar, so all nine clicks below landed on nothing and the
+    test reported "no click hit a building" about a scene that had none yet.
+    The stage overlay is on screen for exactly as long as a run is, which is the
+    same wait `a11y.spec.ts` and `shell.spec.ts` use for the same reason.
+  */
+  await expect(page.getByTestId("pipeline-stage-overlay")).toHaveCount(0, {
+    timeout: WARMUP_BUDGET_MS,
+  });
   // The camera settles after the fit; a click mid-animation can miss.
   await page.waitForTimeout(1_500);
 
@@ -837,29 +866,95 @@ test("clicking a building in the preview picks it as a hero, and clicking it aga
     [0.05, 0.14],
     [0, -0.08],
   ];
+  /*
+    A point has to land INSIDE a building, not on its silhouette edge.
+
+    Picking a hero rebuilds the model, and a pixel that sat on the boundary
+    between two roofs can belong to the neighbour in the new mesh -- so a second
+    click there adds a second hero instead of dropping the first, and the test
+    reads as "clicking it again does not drop it" when what actually happened is
+    that the pixel stopped being that building. Measured on the shipped build:
+    the same two clicks on Aon Center (340 m, a large target) pick it and drop
+    it cleanly, while on Parkline (78 m) the second click adds an unnamed 15 m
+    neighbour. The camera does not move and the silhouette does not change --
+    the grid below is simply coarse against 992 buildings in a 900 m crop.
+
+    So the search is for a point that ROUND TRIPS, which is the whole claim
+    under test rather than a weaker one: click picks exactly one hero, and a
+    click on the same point drops it again. A point that fails either half is
+    an edge pixel, not a verdict on picking, and the search moves on after
+    clearing whatever it picked. Both halves are asserted below on the point
+    that satisfied them.
+  */
+  /*
+    Re-queried every time, one row at a time. A snapshot of the Remove buttons
+    goes stale the moment the first click re-renders the list, and clicking a
+    detached handle removes nothing -- which left the list non-empty and the
+    wait for it to empty running to the test's whole budget.
+  */
+  const clearHeroes = async (): Promise<void> => {
+    for (let guard = 0; guard < 8; guard += 1) {
+      const count = await heroes.count();
+      if (count === 0) return;
+      await heroes.first().locator("button").first().click();
+      await expect(heroes).toHaveCount(count - 1);
+    }
+    await expect(heroes, "the hero list would not empty").toHaveCount(0);
+  };
+  const settleRun = async (): Promise<void> => {
+    // A moment for the run to START before waiting for it to end: the overlay
+    // mounts a frame or two after the click, and checking "no overlay" too
+    // early passes against a run that has not begun and lets the next click
+    // land mid-rebuild.
+    await page.waitForTimeout(500);
+    await expect(page.getByTestId("pipeline-stage-overlay")).toHaveCount(0, {
+      timeout: WARMUP_BUDGET_MS,
+    });
+  };
+
   let hit: { x: number; y: number } | null = null;
+  let picked = "";
+  let hint = "";
+  let summary = "";
+  /** Picks evaluated, capped: each one rebuilds 992 buildings twice over. */
+  let tried = 0;
   for (const [dx, dy] of offsets) {
+    if (tried >= 3) break;
     const point = {
       x: frame.width / 2 + dx * frame.width,
       y: frame.height / 2 + dy * frame.height,
     };
     await canvas.click({ position: point });
-    if ((await heroes.count()) > 0) {
+    if ((await heroes.count()) !== 1) {
+      await clearHeroes();
+      continue;
+    }
+    tried += 1;
+    // Everything that describes a picked hero, read while one is picked. Read
+    // rather than asserted HERE because this is still a search: an edge pixel
+    // must move the search on, not fail the test. The assertions are below, on
+    // the readings from the point that went on to satisfy both halves.
+    picked = (await heroes.first().textContent()) ?? "";
+    hint = (await page.getByTestId("hero-hint").textContent()) ?? "";
+    summary = (await page.getByTestId("group-buildings-toggle").textContent()) ?? "";
+    await settleRun();
+    // The second half of the claim, on the same point.
+    await canvas.click({ position: point });
+    if ((await heroes.count()) === 0) {
       hit = point;
       break;
     }
+    await clearHeroes();
   }
-  expect(hit, "no click in the middle of a 900 m Chicago crop hit a building").not.toBeNull();
-
-  await expect(heroes).toHaveCount(1);
-  const picked = (await heroes.first().textContent()) ?? "";
-  log(`hero picked: ${picked.trim()}`);
-  await expect(page.getByTestId("hero-hint")).toContainText("1 hero building");
-  await expect(page.getByTestId("group-buildings-toggle")).toContainText("1/12 heroes");
-
-  // Clicking the same building again drops it.
-  await canvas.click({ position: hit as { x: number; y: number } });
+  expect(
+    hit,
+    "no click in the middle of a 900 m Chicago crop picked a building and dropped it again",
+  ).not.toBeNull();
+  log(`hero picked and dropped at ${JSON.stringify(hit)}: ${picked.trim()}`);
   await expect(heroes).toHaveCount(0);
+  expect(picked.trim(), "the hero list named nothing while a hero was picked").not.toBe("");
+  expect(hint).toContain("1 hero building");
+  expect(summary).toContain("1/12 heroes");
 
   // ...and none of that triggered a fetch.
   await page.waitForTimeout(500);

@@ -63,10 +63,27 @@ async function previewChicago(page: Page): Promise<void> {
   await expect(page.getByTestId("preview-stats")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
 }
 
-/** A region's width on screen, to the nearest pixel. */
+/**
+ * A region's width on screen, to the nearest pixel.
+ *
+ * The settings region is `param-sheet`, not `region-settings`: it is the third
+ * column at `lg` and the bottom sheet below it, and `ResizableRegions` names it
+ * after the sheet. This helper asked for `region-settings`, which has never
+ * existed in the markup -- so every settings-width assertion in this file threw
+ * on a null box rather than measuring anything, and the file had never been run
+ * to notice. The two ids are the same element; four assertions that were dead
+ * are now live.
+ */
+const REGION_TEST_ID = {
+  map: "region-map",
+  viewport: "region-viewport",
+  settings: "param-sheet",
+} as const;
+
 async function widthOf(page: Page, region: "map" | "viewport" | "settings"): Promise<number> {
-  const box = await page.getByTestId(`region-${region}`).boundingBox();
-  expect(box, `region-${region} has no box`).not.toBeNull();
+  const testId = REGION_TEST_ID[region];
+  const box = await page.getByTestId(testId).boundingBox();
+  expect(box, `${testId} has no box`).not.toBeNull();
   return Math.round(box?.width ?? 0);
 }
 
@@ -128,9 +145,15 @@ test("the columns resize by drag, keep the size per device, and reset from the d
   expect(await widthOf(page, "map")).toBe(DEFAULT_SIZES.map + 120);
 
   // Double-click puts ONE divider back and leaves the other where it was.
+  // "Where it was" is the 60 px the settings divider was just dragged, not the
+  // default: `resetBoundary` resets the boundary it is given and nothing else,
+  // which `lib/layout.test.ts` pins directly ("map back to default, settings
+  // still 500"). This line asked for the default and so contradicted both that
+  // unit test and the sentence above it -- the first thing this file's
+  // settings-width assertions said once they could run at all.
   await page.getByTestId("layout-handle-map").dblclick();
   await expect.poll(() => widthOf(page, "map"), { timeout: 5_000 }).toBe(DEFAULT_SIZES.map);
-  expect(await widthOf(page, "settings")).toBe(DEFAULT_SIZES.settings);
+  expect(await widthOf(page, "settings")).toBe(DEFAULT_SIZES.settings + 60);
 });
 
 test("a divider is a keyboard control with a name, a percentage and its own limits", async ({
@@ -354,15 +377,34 @@ test("results, progress and a refusal never move the settings column or the acti
   await openEditor(page);
   await previewChicago(page);
 
-  // Somewhere in the middle of the group list, deliberately not at either end:
-  // a scroller pinned to its own maximum can be clamped by a change in height
-  // and would report "unmoved" for the wrong reason.
-  await page.getByTestId("param-groups").evaluate((element) => {
-    element.scrollTop = 120;
-  });
+  /*
+    Scroll to where the control that STARTS the run already is, and take the
+    baseline there.
+
+    This used to set `scrollTop = 120` and then drive the run by filling
+    `#plate_mm`, which sits at y ~= 985 in a 180 px scroll port: Playwright
+    scrolls a control into view before it types, so the fill itself moved the
+    list from 120 to 653 and the next assertion blamed the run for it (measured
+    on the shipped build -- the reading was identical before the overlay
+    appeared, while it was up, and after it cleared, so the run moved nothing
+    and never had). Scrolling first means the fill has nothing left to scroll
+    and every reading after it belongs to the run.
+
+    Still deliberately not at either end, for the original reason: a scroller
+    pinned to its own maximum can be clamped by a change in height and would
+    report "unmoved" for the wrong reason. That is asserted rather than assumed.
+  */
+  await page.locator("#plate_mm").scrollIntoViewIfNeeded();
   const baseline = await shellFrame(page);
   expect(baseline.actions, "the action row has no box").not.toBeNull();
-  expect(baseline.scrollTop).toBeGreaterThan(0);
+  expect(baseline.scrollTop, "the group list did not scroll at all").toBeGreaterThan(0);
+  const scrollRoom = await page
+    .getByTestId("param-groups")
+    .evaluate((element) => element.scrollHeight - element.clientHeight);
+  expect(
+    baseline.scrollTop,
+    "the group list is pinned to its maximum, where a height change would clamp it",
+  ).toBeLessThan(scrollRoom);
   log(`baseline actions ${JSON.stringify(baseline.actions)} scrollTop ${baseline.scrollTop}`);
 
   // --- during a run -------------------------------------------------------

@@ -63,10 +63,16 @@ import TerrainGroup from "./groups/TerrainGroup";
  *    `localStorage`, never in `PrintParams`, so neither can reach the changes
  *    counter, a share link or a file.
  *
- * Output is pinned to the bottom rather than scrolling away with the rest:
- * Export is the primary action once a scene exists, and a primary action that
- * has to be scrolled to is not primary. Its collapse toggle folds the results
- * (status, downloads, stats) and never the action row.
+ * Output is pinned to the bottom rather than scrolling away with the rest
+ * (DECISIONS `[V2-P4]`); its collapse toggle folds the results (status,
+ * downloads, stats). The action row that pin was originally for now lives in
+ * `ActionBar`, pinned at the TOP of this column and outside anything that
+ * scrolls, so what stays pinned here is results.
+ *
+ * Pinned is not the same as unbounded, and the difference is what the layout
+ * below spells out: the group list carries a floor and the Output section
+ * shrinks and scrolls inside the column, so neither can take the other's
+ * height. Both comments sit on the elements themselves.
  */
 const BODIES: Record<Exclude<GroupId, "output">, () => ReactNode> = {
   location: LocationGroup,
@@ -231,7 +237,27 @@ export function ParamPanel() {
 
       {changesOpen && changed > 0 ? <ChangesList params={params} onRevert={revert} /> : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto" data-testid="param-groups">
+      {/*
+        `min-h-[45%]`, not `min-h-0`: this is the floor that stops the pinned
+        Output section below from squeezing the whole group list to a visible
+        height of ZERO. `flex-1` is `flex: 1 1 0%`, so with no floor it absorbs
+        every pixel of negative free space and every group toggle becomes
+        unclickable -- measured at 1280x720, the default Playwright viewport:
+        group list 0 px tall with an 8134 px scroll height, Output 381 px and
+        127 px of it clipped off the bottom of the column.
+
+        A PERCENTAGE, resolved against this panel (which has a definite height
+        the whole way up: `h-full` inside `settings-panel-slot`'s `flex-1`), is
+        what `45vh` in `OutputPanel.tsx` should always have been. The viewport
+        is not the column: at 720 px, 45vh is 324 px, which is MORE than the
+        254 px the column had left after the action bar and this panel's own
+        header -- so that cap never bound where it mattered. This one is
+        measured in the space actually being divided, so it binds when the
+        column is short and gets out of the way when it is tall (on a screen
+        with room, Output's natural height is under the remainder and the list
+        keeps everything above it).
+      */}
+      <div className="min-h-[45%] flex-1 overflow-y-auto" data-testid="param-groups">
         {searching && visibleGroups.length === 0 ? (
           <SearchEmpty query={query.trim()} onClear={() => setQuery("")} />
         ) : null}
@@ -269,9 +295,17 @@ export function ParamPanel() {
       <section
         data-testid="group-output"
         data-collapsed={collapsed.output ? "true" : "false"}
-        className="fc-scored shrink-0 bg-plate px-4 pb-4 pt-2"
+        // Pinned, and now also SHRINKABLE. `shrink-0` really did mean shrink-0:
+        // content taller than the column did not compress, it overflowed the
+        // bottom edge (clipped by the sheet's `overflow-hidden`, so the last
+        // results were unreachable by anything) and took the group list's
+        // height with it. Shrinking instead, with `min-h-0` to allow it and a
+        // flex column so `OutputPanel`'s results block can own the leftover and
+        // scroll inside it, keeps the section pinned without letting it spend
+        // height the column does not have.
+        className="fc-scored flex min-h-0 flex-col bg-plate px-4 pb-4 pt-2"
       >
-        <h3>
+        <h3 className="shrink-0">
           <button
             type="button"
             data-testid="group-output-toggle"

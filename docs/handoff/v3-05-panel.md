@@ -246,3 +246,165 @@ has not been executed.
    label hook for a composite write in `store/history.ts`, and
    `regions`/`bridges` in `NestedParamKey` plus an `applyParamsPatch` setter in
    `store/editor.ts`.
+
+---
+
+## Follow-up (v3.1): the pinned Output section starved the group list
+
+`e2e/a11y.spec.ts`'s tab walk failed on `group-buildings-toggle` with
+`<section data-testid="group-output"> intercepts pointer events`. It was not a
+z-index overlay. Measured on a production build at 1280x720, the settings
+column spent its 599 px like this:
+
+| region | height |
+| --- | --- |
+| `action-bar` (`shrink-0`) | 199 px |
+| `ParamPanel` header | 43 px |
+| search box + its printed hint | 103 px |
+| **`param-groups`** | **0 px** (scroll height 8134 px) |
+| `group-output` (`shrink-0`) | 381 px, 127 px of it clipped off the bottom |
+
+`flex-1` is `flex: 1 1 0%` with no floor, so the group list absorbed all the
+negative free space and collapsed to zero visible height. Every group toggle
+was then unclickable, and the last 127 px of the Output section — the bottom of
+the stats and recent-designs cards — was clipped away by the sheet's
+`overflow-hidden` and reachable by nothing.
+
+`[V3-P4-U]`'s `max-h-[45vh]` cap was meant to prevent exactly this and could
+not: **the viewport is not the column.** 45vh is 324 px at this height, and the
+column had 254 px left after the action bar and the panel header, so the cap
+never bound. Three changes, all in the space actually being divided:
+
+- `param-groups` carries `min-h-[45%]` instead of `min-h-0` — a floor measured
+  against the panel, which has a definite height the whole way up. It binds
+  when the column is short and gets out of the way when it is tall.
+- `group-output` drops `shrink-0` and becomes a `min-h-0` flex column, so it
+  shrinks and scrolls inside the column instead of overflowing it. It stays
+  pinned (`[V2-P4]`); the action row that pin was written for has since moved
+  to `ActionBar` at the top of the column, so what is pinned here is results.
+- `OutputPanel`'s results block is `flex-1 min-h-0` rather than `max-h-[45vh]`.
+
+**Visible change:** the search box's three-line printed hint is now `SrHint`
+(the component whose whole purpose is "a control with no room for a visible
+line"). The copy, the `aria-describedby` wiring and the id the hit rows and the
+clear button reference are unchanged, and it is also on the box's `title`; it
+was costing the group list 51 px on every screen forever to repeat what the
+placeholder and the `/` badge already say. Search block: 103 px -> 53 px.
+
+After: group list 180 px and scrolling, Output 124 px and scrolling, nothing
+clipped (the sheet's scroll height equals its own height again), all six
+toggles reachable.
+
+**Verified both directions** on a real `next build` served as static files, in
+an isolated tree on its own port:
+
+- `e2e/a11y.spec.ts` 4/4 pass, tab walk included (115 distinct controls over
+  120 presses); `e2e/print.spec.ts` 4/4 pass.
+- Mutation probe: the pre-fix `shrink-0` / `min-h-0` / `max-h-[45vh]`
+  construction restored (keeping the search-hint change, so the flex fix is
+  shown to be the load-bearing one) -> the tab walk fails again with the same
+  `group-output ... intercepts pointer events` and the search box subtree
+  intercepting. The test would catch this coming back.
+
+Pre-existing and NOT caused by this change, confirmed by building HEAD in the
+same isolated tree and re-running: `e2e/shell.spec.ts` 4 failures (it waits on
+`getByTestId("region-settings")`, a test id `ResizableRegions` does not render)
+and `e2e/ui.spec.ts`'s two hero-picking tests.
+
+---
+
+## Follow-up 2 (v3.1): six e2e failures that were never anyone's
+
+Six tests were failing before this task and were verified against HEAD in an
+isolated tree first, so none of them came from the panel fix above. Four are
+`shell.spec.ts`, written during Task 4 and, on the evidence below, **never
+run**; two are `ui.spec.ts` hero tests. One of the six was hiding a real
+product defect.
+
+### The real defect: Copy link did not carry the layout
+
+`ActionBar` computes the share URL in a `useMemo` keyed on `[href, location,
+params]`, and `shareUrl` defaults its layout argument to
+`currentLayoutPayload()`, which reads the layout store imperatively. But
+`ActionBar` subscribed to nothing in that store and takes no prop from
+`ResizableRegions`, so a divider drag or a hidden column never re-rendered it
+and the memo never re-ran. Measured on the shipped build: dragging the map
+divider 400 px -> 500 px and then collapsing the settings column left
+`data-share-url` **byte for byte unchanged**. `[V3.1-O6]`'s promise that a
+shared design opens the way its author framed it was broken through the one
+button that makes the link.
+
+Fixed by subscribing to `sizes`, `collapsed` and `maximized` and passing the
+payload explicitly, built by `lib/layout.ts:layoutPayload` -- the same pure
+function `currentLayoutPayload` calls, so there is still one definition of what
+a payload is. Save project was never affected: it builds its payload at click
+time rather than from a memo, which is why only the permalink test caught this.
+
+### The four `shell.spec.ts` failures
+
+1. **`widthOf(page, "settings")` asked for `region-settings`,** a test id that
+   has never existed -- the settings column is `param-sheet` (`ResizableRegions`
+   names it after the bottom sheet it becomes below `lg`). Every settings-width
+   assertion in the file threw on a null box instead of measuring, and two tests
+   burned a 300 s timeout each. Corrected to the real id; four dead assertions
+   are now live.
+2. **The first thing those live assertions said was that one of them was wrong.**
+   After dragging the settings divider 60 px and double-clicking the *map*
+   divider, the file expected the settings column back at its default -- while
+   the sentence directly above it said "puts ONE divider back and leaves the
+   other where it was", and `lib/layout.test.ts` pins exactly that ("map back to
+   default, settings still 500"). Corrected to `DEFAULT_SIZES.settings + 60`.
+3. **The scroll test measured its own scrolling.** It set `param-groups`
+   `scrollTop = 120`, then started a run by filling `#plate_mm` -- which sits at
+   y ~= 985 in a 180 px port, so Playwright scrolled it into view and the list
+   moved to 653, and the next assertion reported "a run in flight moved the
+   settings column". The run moves nothing: measured 653 before the overlay
+   appeared, while it was up, and after it cleared. It now scrolls the control
+   into view first and takes the baseline there, and asserts the baseline is
+   neither 0 nor pinned to the maximum, which is what the original comment
+   claimed and never checked.
+4. The permalink test, which was the real defect above.
+
+### The two `ui.spec.ts` hero tests
+
+Neither was a picking defect; both screenshots said so.
+
+5. **Keyboard:** the pick worked -- the cursor read "Building 2 of 992 - 303 m -
+   hero" and the viewport chip read "1 hero building" -- but the hero LIST lives
+   in the Buildings group, collapsed by default since Task 5, so `hero-item` was
+   unmounted. The test was measuring a collapse state. It opens the group now,
+   the same one-line correction `smoke`, `share` and `workflow` already got.
+6. **Click:** it waited for `preview-canvas` and `preview-stats`, both of which
+   are on screen while the solid engine is still running, then clicked into an
+   empty viewport -- the failure screenshot shows "Building the model:
+   attribution - 20 of 80 - 4.0 s elapsed" with nothing rendered. It waits for
+   the stage overlay to clear now.
+
+   With that fixed it failed differently, and the second failure is worth
+   recording: picking a hero rebuilds the model, and a pixel on the boundary
+   between two roofs can belong to the neighbour afterwards, so a second click
+   there ADDS a hero instead of dropping the first. Measured: Aon Center (340 m)
+   picks and drops cleanly from the same point; Parkline (78 m) picks, then the
+   same point adds an unnamed 15 m neighbour. The camera does not move and the
+   silhouette does not change (screenshots before and after are the same
+   framing) -- the offsets grid is simply coarse against 992 buildings in a
+   900 m crop. So the search is now for a point that ROUND TRIPS: click picks
+   exactly one hero, and a click on the same point drops it. That is the whole
+   claim under test rather than a weaker one, and a point that fails either half
+   is an edge pixel, not a verdict on picking.
+
+### Verified both directions, isolated build and port
+
+Green: `shell.spec.ts` 8/8, `ui.spec.ts` 25/25, `a11y.spec.ts` 4/4 -- 37 tests,
+4.1 min, from six failures and two 300 s timeouts.
+
+Mutations, each reintroduced on its own:
+
+| reintroduced | result |
+| --- | --- |
+| `ActionBar` back to HEAD (no layout subscription) | permalink test red, the other seven green |
+| `widthOf` back to `region-settings` | both settings-width tests red, one at the original 5-minute timeout |
+| the keyboard test's `openGroup("buildings")` removed | red |
+| the click test's round-trip search back to first-pick-wins | red |
+
+Not touched, and still failing for their owners: nothing -- all six are green.

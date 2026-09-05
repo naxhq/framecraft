@@ -4,7 +4,7 @@ import { type RefObject } from "react";
 
 import { labelled } from "@/lib/controlCatalog";
 import { highlight, type SearchHit } from "@/lib/settingsSearch";
-import { Hint } from "./Controls";
+import { SrHint } from "./Controls";
 
 /**
  * The settings search box and the hit lists it puts at the top of each group.
@@ -65,6 +65,7 @@ export function SettingsSearch({
           value={query}
           placeholder="Search settings"
           aria-describedby="settings-search-hint"
+          title={spec.hint}
           onChange={(event) => onQuery(event.target.value)}
           onKeyDown={onKeyDown}
           className="w-full rounded-milled border border-control bg-plate-raised py-1.5 pl-2 pr-16 text-sm text-ink placeholder:text-ink-faint"
@@ -104,14 +105,19 @@ export function SettingsSearch({
             ? "Nothing matches"
             : `${hitCount} ${hitCount === 1 ? "match" : "matches"}`}
         </p>
-      ) : (
-        <Hint id="settings-search-hint">{spec.hint}</Hint>
-      )}
-      {searching ? (
-        <span id="settings-search-hint" className="sr-only">
-          {spec.hint}
-        </span>
       ) : null}
+      {/*
+        `SrHint`, not the visible `Hint` this used to print: exactly the case
+        that component exists for, "a control with no room for a visible line".
+        The box sits ABOVE the scrolling group list, so its three printed lines
+        cost the list 51 measured pixels on every screen forever -- a third of
+        what the column had left over for settings at 1280x720 -- to repeat
+        what the placeholder and the `/` key badge inside the box already say.
+        The help string is unchanged, still the catalog's, still announced
+        through `aria-describedby` (the hit rows and the clear button reference
+        this same id) and still offered to a mouse as the box's `title`.
+      */}
+      <SrHint id="settings-search-hint">{spec.hint}</SrHint>
     </div>
   );
 }
