@@ -485,6 +485,10 @@ handles, so `base`, `region-base`, `sit` and every ground region followed.
    `min_height_m`, `is_tall` and `height_source` and no other field, and
    that the ground arrays are shared, not copied.
 
+> Superseded by the quiet-host table in 8.1: the figures in the next two
+> tables were taken with other agents' suites running and are kept as the
+> record of that session, not as what ships.
+
 **Measured**, same harness as section 3 (Node, one `StageCache`, the Chicago
 Overpass fixture through `fetchImpl`, `regionBatchMs: 0`, defaults plus one
 frame-edge `{city}` line, every change from a warm default, ms to the end of
@@ -541,6 +545,9 @@ moved", the shared ground arrays. `graph.test.ts`'s note pin required the
 `describeGraph` block in `v3-01-pipeline.md` to be regenerated; the diff is
 mostly stages and leaves other waves had added since the block was written,
 plus the two parts here.
+
+> The measurements quoted in the four paragraphs below were also taken
+> under load; 8.1 carries the quiet-host readings for the override row.
 
 **The audit's hole: a surface-bearing override.** The 206 ms above held
 only with `object_overrides` empty. `surface-overrides` was still keyed on
@@ -613,6 +620,85 @@ The slower number is the correct one.
 
 **Also in this close-out:** `next.config.test.ts`, the build-level test the
 v3-08 note lacked for its webpack hook (section 3 and 10.5 of that note).
+
+### 8.1 The quiet-host table (2026-09-05): what ships
+
+Every figure above in this section was taken with 10 to 16 node processes
+alive and other agents' vitest runs competing for the cores, and is
+superseded by this table. This one was taken 05:38 to 05:41 on 2026-09-05
+with every other agent stopped. The host was not idle, and the note says
+what it was doing: overall CPU 17 to 20 per cent over three samples before
+the run, from an unrelated Vite plus Tauri dev session of the user's
+(started 05:35, other project), an Adobe helper and a `next dev` server an
+earlier wave left on :3010; 18 node processes existed, 13 of them idle
+orphans of finished agents (four stale `serve-static`, two hung Playwright
+processes, a `next dev`) at 0.1 to 1 s of CPU each over two days. No build
+was running. Same harness as section 3 (Node through `vite-node`, one
+`StageCache`, the Chicago Overpass fixture through `fetchImpl`,
+`regionBatchMs: 0`, the defaults plus one frame-edge `{city}` line, every
+change from a warm default), three runs per row, taken back to back in one
+process; the three readings are given, not averaged. Cold: 2937 ms to the
+last region, 5198 to done.
+
+| change | to preview, 3 runs | to done, 3 runs | stages run | target | v3-07 section 3 |
+|---|---|---|---:|---|---:|
+| `engravings[0].text` | 88, 84, 97 | 2423, 2257, 2210 | 14 | 400, met | 74 |
+| `north_arrow.enabled` | 59, 57, 70 | 2154, 2144, 2302 | 14 | 400, met | 63 |
+| `frame_style.profile` | 185, 149, 151 | 2355, 2225, 2239 | 14 | 400, met | 159 |
+| `colour.region_colors.buildings` | 78, 74, 72 | 2236, 2155, 2171 | 30 | 400, met | 102 |
+| `hanger` | 162, 146, 150 | 2486, 2279, 2251 | 14 | 400, met | 163 |
+| `road_mode` | 1979, 1949, 1898 | 4014, 3927, 4012 | 29 | 2000, met by 21 to 102 ms | 1133 |
+| `plate_mm` | 2389, 2469, 2412 | 4218, 4423, 4423 | 66 | 2000, **missed** | 1574 |
+| `heights.floor_height_m` | 194, 189, 189 | 2309, 2287, 2330 | 36 | 2000, met | 2359 (missed) |
+| `heights.floor_height_m`, one coloured road | 262, 236, 195 | 2901, 2767, 2452 | 36 | 2000, met | not measured |
+| `height_exaggeration.multiplier` | 175, 220, 230 | 2324, 2817, 2776 | 20 | (none) | not measured |
+
+**Two rows regressed against v3-07, and it is not noise.** `road_mode` and
+`plate_mm` are 1898 to 1979 and 2389 to 2469 against 1133 and 1574, three
+runs each inside 80 ms of one another, on a host quieter than any earlier
+reading in this section was taken on (the `heights` row here, 189 to 194,
+is the lowest it has ever read, which is the check that this host is not
+inflating the others). `plate_mm` misses its target by about 400 ms. Neither
+row re-runs anything this close-out touched: the stages they run are the
+same before and after every change in section 8, and the digests this
+section added cost 12 to 16 ms in total on the rows that compute them.
+Where the time went, stage by stage, `plate_mm` today against the same
+stages in section 3's split:
+
+| stage | v3-07 (section 3) | today, `plate_mm`, 3 runs | moved |
+|---|---:|---|---:|
+| `surface-parks` | 158 | 405, 424, 409 | +250 |
+| `finish-roads` | 350 | 400, 429, 407 | +60 |
+| `sit` | 285 | 342, 343, 344 | +60 |
+| `surface-roads` | 475 | 496, 494, 496 | +20 |
+| `merged` (audit phase, "to done" only) | 314 | 689, 792, 828 | +400 to +500 |
+
+`surface-parks` is where the geometry wave's frame-on `mergeRecessRidges`
+and `fittedSolid` seam trim run (section 9), and `merged` now carries a
+`mesh.sweep` row of 342 ms (`sweepSlivers`) plus 346 ms of
+`mesh.clean.check` across the finishes, none of which existed when section
+3 was measured. That is the finding: the two rows regressed in `solid/**`,
+by the geometry work of 2026-09-03, and `plate_mm` is over its target by
+the size of the `surface-parks` growth plus a little. The "to done" column
+is 700 to 900 ms above section 3 on every row for the same reason
+(`merged`). Nothing here averages that away, and nothing in this close-out
+can fix it: it is a `solid/**` cost, and whoever owns section 9 owns it.
+
+**The wall-clock budgets, on this host.** Asked whether the six timing
+failures in a loaded full run are marginal on a quiet machine. Measured
+here, same window: `sceneFromOverpass` on the Chicago fixture 514 to 576 ms
+in isolation against `normalize.test.ts`'s 1500 ms budget, so the budget
+is 2.6x the cost when the test has a core to itself, and the 1519 ms
+reading was the parallel suite on a loaded host, not the normaliser; the
+hillside drape 11 254 ms alone and 11 978 ms inside the full suite against
+15 000, a 20 to 25 per cent margin, which is the tightest of the explicit
+budgets. Inside the full suite (`npm test`, every worker busy, 124 s wall,
+2331 passed, 0 failed, 0 skipped on this tree) the tests nearest a 5 s
+default timeout were the in-page fallback ingest at 3.55 s and two
+`store/editor` failure-state tests at 3.50 and 3.53 s: about 1.5 s of
+margin each under full parallel load, which is where they fail on a host
+with another suite running. None of the four timeouts reproduced. No
+budget was changed.
 
 ## 9. The geometry fix wave (2026-09-03): what it costs
 

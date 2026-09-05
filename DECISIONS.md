@@ -1200,3 +1200,29 @@ Append-only. Format: `- [phase] decision, one line`.
   at 0.2539, and all five passing cities are unmoved: Chicago 0.874, New York 0.8873, Paris 1.0,
   London 0.8174, San Francisco 1.14. The seven-region measurement is kept in FAILURES.md
   precisely so a future reader does not try the revert that looks obvious.
+
+- `[V3.1-P7-27]` **The quiet-host table retires `[V3.1-P7-14]` and finds a real regression:
+  `plate_mm` misses its target.** Measured 05:38-05:41, three runs a row, on the quietest this
+  host has been; `heights.floor_height_m` read its lowest ever at 189-194 ms, which is the check
+  that the other rows are not inflated. Met: text 84-97, north_arrow 57-70, profile 149-185,
+  colour 72-78, hanger 146-162, heights 189-194, heights with a coloured road 195-262,
+  height_exaggeration 175-230. Marginal: `road_mode` 1898-1979 against 2000, met by 21 to 102 ms.
+  **Missed: `plate_mm` 2389-2469 against 2000.** So the honest statement is seven of eight met,
+  one marginal, one missed, and `[V3.1-P7-13]`'s unqualified claim does not survive contact with
+  a quiet machine.
+  The cause is not this close-out and not noise: three runs land within 80 ms, the stage list is
+  identical before and after, and the cost is in `solid/**` from the 2026-09-03 geometry wave.
+  Stage by stage against section 3, `surface-parks` 158 to 405-424 where the frame-on
+  `mergeRecessRidges` and the `fittedSolid` seam trim run, `merged` 314 to 689-828 carrying a new
+  342 ms `mesh.sweep` row for `sweepSlivers`, plus 346 ms of `mesh.clean.check` across the
+  finishes. `plate_mm` is over its target by roughly the `surface-parks` growth. This is the
+  price of the five preset cities, and it is stated as a price rather than absorbed.
+- `[V3.1-P7-28]` **The six wall-clock failures were contention, confirmed, and the budgets are
+  not being touched.** The full suite on an idle host is 2331 passed, 0 failed, 0 skipped in
+  124 s; none of the six reproduced. Measured alone, `sceneFromOverpass` is 514-576 ms against
+  its 1500 ms budget, a 2.6x margin, and the earlier 1519 ms was the parallel suite on a loaded
+  machine. The tightest explicit budget is the hillside drape at 11254 ms alone and 11978 ms
+  inside the full suite against 15000, a 20 to 25 per cent margin. Nearest the 5 s default
+  timeout under full parallel load are the in-page fallback ingest at 3.55 s and two
+  `store/editor` failure-state tests at 3.50 and 3.53 s, about 1.5 s of margin. Recorded so a
+  future red on those is read as a machine before it is read as a defect.
