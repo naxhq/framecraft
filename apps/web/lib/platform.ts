@@ -37,6 +37,60 @@ function tauriApi(): TauriGlobal {
   return api;
 }
 
+/** What a half-initialised global looks like before it has been checked. */
+interface PartialTauriGlobal {
+  core?: { invoke?: unknown };
+  event?: { listen?: unknown };
+}
+
+const MISSING_API_MESSAGE =
+  "FrameCraft: running inside the desktop shell, but its IPC global (window.__TAURI__) is missing or " +
+  "incomplete -- withGlobalTauri is off, or the shell is only partly initialised. The desktop-only " +
+  "features (open-with, the native save dialog, the cache directory) are unavailable for this session; " +
+  "everything else works.";
+
+/** Said once per realm. A per-call warning would be one line per file the OS opens. */
+let warnedAboutMissingApi = false;
+
+/**
+ * The IPC surface, or null when this shell has not got one.
+ *
+ * WHY THIS EXISTS ALONGSIDE `tauriApi`. `isTauri()` reads
+ * `__TAURI_INTERNALS__`, which Tauri always sets, while the API this module
+ * calls is `__TAURI__`, which only `app.withGlobalTauri` exposes
+ * (`apps/desktop/src-tauri/tauri.conf.json` sets it, so the two travel
+ * together today). One config flag apart, every `isTauri()` branch here was
+ * calling into a global that was not there -- and `onProjectFileOpened` is
+ * called from an effect in `components/editor/DesktopProjectOpener`, mounted
+ * by the root layout, so the throw unmounted the entire editor. A white page,
+ * two layers from a line nobody would connect to it. That is not a Tauri
+ * detail; a single absent global must not be able to take the app down.
+ *
+ * So the PASSIVE callers -- the ones the app runs on its own, whose whole
+ * result is a feature quietly not being there -- go through here and degrade.
+ * `saveFileWithDialog` deliberately does NOT: it answers a click, and
+ * `lib/exportFlow.ts` turns its failure into a "failed" the user is shown.
+ * Degrading is for a feature that cannot appear, never for one that appears
+ * and does nothing.
+ *
+ * The shape is checked, not just the presence, because a partly-built global
+ * fails in exactly the same way as an absent one. Nothing is masked: this
+ * says so on the console, `isTauri()` still reports the shell honestly, and
+ * the save dialog still throws.
+ */
+function optionalTauriApi(): TauriGlobal | null {
+  const raw =
+    typeof window === "undefined" ? undefined : (window as unknown as { __TAURI__?: PartialTauriGlobal }).__TAURI__;
+  if (raw === undefined || typeof raw.core?.invoke !== "function" || typeof raw.event?.listen !== "function") {
+    if (!warnedAboutMissingApi) {
+      warnedAboutMissingApi = true;
+      console.warn(MISSING_API_MESSAGE);
+    }
+    return null;
+  }
+  return raw as unknown as TauriGlobal;
+}
+
 /** Uint8Array -> base64, chunked so a multi-MB 3MF never blows the argument-spread limit. */
 function toBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -67,7 +121,9 @@ export async function saveFileWithDialog(filename: string, bytes: Uint8Array): P
  */
 export async function platformCacheDir(): Promise<string | null> {
   if (!isTauri()) return null;
-  return (await tauriApi().core.invoke("cache_dir")) as string;
+  const api = optionalTauriApi();
+  if (api === null) return null;
+  return (await api.core.invoke("cache_dir")) as string;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +171,9 @@ export function asOpenedProjectFile(value: unknown): OpenedProjectFile | null {
  */
 export async function takePendingProjectFile(): Promise<OpenedProjectFile | null> {
   if (!isTauri()) return null;
-  return asOpenedProjectFile(await tauriApi().core.invoke("take_pending_project"));
+  const api = optionalTauriApi();
+  if (api === null) return null;
+  return asOpenedProjectFile(await api.core.invoke("take_pending_project"));
 }
 
 /**
@@ -124,15 +182,22 @@ export async function takePendingProjectFile(): Promise<OpenedProjectFile | null
  * than starting a second copy, and macOS's open-documents event.
  *
  * Returns a function that stops listening. Outside Tauri it is a no-op that
- * still returns one, so a caller's cleanup path needs no platform branch.
+ * still returns one, so a caller's cleanup path needs no platform branch --
+ * and so does a shell with no IPC global, which is the same answer for the
+ * same reason: there is no listener to stop. This one is load bearing, not
+ * tidiness. The caller is an effect in `components/editor/DesktopProjectOpener`
+ * mounted by the root layout, so a throw from here unmounts the editor and
+ * leaves a blank page (see `optionalTauriApi`).
  */
 export function onProjectFileOpened(
   handler: (file: OpenedProjectFile) => void,
 ): () => void {
   if (!isTauri()) return () => {};
+  const api = optionalTauriApi();
+  if (api === null) return () => {};
   let unlisten: (() => void) | null = null;
   let cancelled = false;
-  void tauriApi()
+  void api
     .event.listen(OPEN_PROJECT_EVENT, (message) => {
       const file = asOpenedProjectFile(message.payload);
       if (file !== null) handler(file);

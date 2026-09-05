@@ -950,3 +950,38 @@ The spec passes 6/6 against both servers the gate can be pointed at: the
 production export (`serve-static.mjs`, where the app really does register a
 worker and the defect reproduced) and `next dev` (where it deliberately does
 not).
+
+### 10.8 The crash path behind 10.7, closed rather than logged
+
+The desktop-shell finding above was a spec defect, but it stood on a real one
+in `lib/platform.ts`, and that half is now fixed too.
+
+`isTauri()` reads `__TAURI_INTERNALS__`, which Tauri always sets. Every helper
+behind it called `window.__TAURI__`, which only `app.withGlobalTauri` exposes.
+The two travel together in `tauri.conf.json` today, which is exactly what made
+this worth fixing rather than filing: it is one config flag from
+white-screening the desktop app, through a line nobody would connect to it.
+`onProjectFileOpened` threw SYNCHRONOUSLY out of an effect in
+`DesktopProjectOpener`, which the ROOT LAYOUT mounts above every route, so
+React unmounted the whole tree.
+
+`optionalTauriApi` is the fix, and the line it draws is the point. The PASSIVE
+callers -- `onProjectFileOpened`, `takePendingProjectFile`, `platformCacheDir`,
+the ones the app runs on its own, whose whole failure is a feature not being
+there -- degrade to a no-op or null. `saveFileWithDialog` deliberately does
+not: it answers a click, and `lib/exportFlow.ts` already turns its throw into
+a "failed" the user sees. Degrading is for a feature that cannot appear, never
+for one that appears and does nothing. The shape is checked and not just the
+presence, because a half-built global fails identically. And nothing is
+masked: it says so once on the console, and `isTauri()` still reports the
+shell honestly, so the worker's `off:tauri` refusal and the About dialog's
+"Desktop app" go on telling the truth.
+
+Nine unit tests (`lib/platform.test.ts`, a new file) and one e2e beside the
+desktop-shell test, which injects the MARKER ALONE on purpose -- the
+combination that used to be fatal -- and asserts the editor mounts, the preset
+row is on screen, no page error was raised and the warning was. Mutation: the
+two guards reverted to `tauriApi()`, the four hardening unit tests go red and
+the e2e times out on `data-fc-ready` exactly as the original failure did; the
+five unit tests that must NOT move (the honest `isTauri()`, the loud save, the
+complete shell) stay green, which is what says the fix degraded the right half.

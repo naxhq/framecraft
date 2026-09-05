@@ -437,6 +437,49 @@ test.describe("the app's own registration", () => {
   });
 
   /**
+   * The shell whose IPC global never arrived, which must still be an editor.
+   *
+   * The test above injects both globals because that is what the shell ships.
+   * This one injects the MARKER ALONE on purpose, because that combination is
+   * one `withGlobalTauri` away and used to be fatal: everything gated on
+   * `isTauri()` called `window.__TAURI__`, so `DesktopProjectOpener` -- an
+   * effect mounted by the ROOT LAYOUT, above every route -- threw during
+   * commit, React unmounted the tree, and the desktop app was a blank page.
+   * `lib/platform.ts` now degrades the passive callers instead: the file
+   * association is simply not there, and it says so on the console rather than
+   * going quiet. The save dialog still throws, because that one answers a
+   * click and `lib/exportFlow.ts` shows the failure.
+   *
+   * A page error is asserted to be absent rather than a symptom of it, because
+   * the symptom moves: with a different root layout the same throw might take
+   * out a pane instead of the page, and it would still be the same defect.
+   */
+  test("a desktop shell with no IPC global gets the editor, not a blank page", async ({ page }) => {
+    const crashes: string[] = [];
+    page.on("pageerror", (error) => crashes.push(error.message));
+    const warnings: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "warning") warnings.push(message.text());
+    });
+
+    await page.addInitScript(() => {
+      Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
+    });
+    await page.goto("/");
+
+    await page.waitForFunction(() => document.documentElement.dataset.fcReady === "1");
+    await expect(page.locator('[data-preset-id="chicago-loop"]')).toBeVisible();
+    expect(crashes, "one absent global must not unmount the editor").toEqual([]);
+    // Still the shell, still refused a worker for being it: degrading must not
+    // rewrite what the app believes it is running in.
+    expect(await page.evaluate(() => document.documentElement.dataset.fcSw)).toBe("off:tauri");
+    expect(
+      warnings.filter((line) => line.includes("withGlobalTauri")),
+      "the missing feature is reported, not swallowed",
+    ).not.toEqual([]);
+  });
+
+  /**
    * The kill switch, from the outside, on the real app.
    *
    * The state it exists to rescue is built by hand first, because `next dev`
