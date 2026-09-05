@@ -537,9 +537,9 @@ export function mergeRecessRidges(
   // what every base island is bounded by, so a bridge lands in the layer that
   // already touches both sides of it.
   const sink = recessed[recessed.length - 1];
-  mergeInto(ctx, sink, recessed, buildingFootprint);
+  perfSpan("ridges.merge", () => mergeInto(ctx, sink, recessed, buildingFootprint));
   for (const layer of recessed) {
-    if (layer !== sink) mergeInto(ctx, layer, [layer], buildingFootprint);
+    if (layer !== sink) perfSpan("ridges.merge", () => mergeInto(ctx, layer, [layer], buildingFootprint));
   }
   // A layer that grew here was a BLOCKER of every layer after it in precedence
   // order, and those were cut by the footprint it had before. What it swallowed
@@ -564,7 +564,7 @@ export function mergeRecessRidges(
       if (cutSection === null || cutSolid === null) continue;
       later.section = cutSection;
       later.solidSection = cutSolid;
-      recutPrintable(ctx, later);
+      perfSpan("ridges.recut", () => recutPrintable(ctx, later));
     }
   }
 }
@@ -620,6 +620,15 @@ function mergeInto(
   // to where a recess is allowed to reach.
   const field = cropSection(ctx, ctx.plateHalfMm);
   const clip = cropSection(ctx, ctx.recessClipHalfMm);
+  // Islands an earlier pass of THIS call judged and left standing, by their
+  // exact polygon. A bridge changes the complement only where it lands, so the
+  // next pass decomposes mostly the same islands again, and every one of them
+  // was costing the erosion probe and the appendage search a second time
+  // (measured: the second pass of the Chicago sink merge, which bridges
+  // nothing, was 40 of the merge's 100 ms of judging). An island that comes
+  // back vertex for vertex identical gets the verdict it already has; one the
+  // bridge touched is a different polygon and is judged afresh.
+  const cleared = new Map<string, Float64Array>();
   try {
     for (let pass = 0; pass < RIDGE_MERGE_PASSES; pass += 1) {
       // The POCKETS, not the footprints: the base is carved with the footprint
@@ -631,8 +640,8 @@ function mergeInto(
       // the plate is actually built with (`[V3-P7-fix]`).
       const pockets = recesses.map((l) => grownPocket(ctx, l.section));
       const sections = recesses.map((l) => l.section);
-      const recess = unionSections(wasm, arena, pockets);
-      const complement = recess === null ? null : subtractSection(arena, field, recess);
+      const recess = perfSpan("ridges.complement", () => unionSections(wasm, arena, pockets));
+      const complement = recess === null ? null : perfSpan("ridges.complement", () => subtractSection(arena, field, recess));
       // `unionSections` and `grownPocket` both hand a single input straight
       // back, and that input can be a layer's own live footprint: only what
       // this pass allocated may be dropped.
@@ -643,35 +652,44 @@ function mergeInto(
         if (!sections.includes(pocket)) arena.drop(pocket);
       }
       if (complement === null || complement === field) return;
-      const islands = arena.keepAll(complement.decompose());
+      const islands = perfSpan("ridges.islands", () => arena.keepAll(complement.decompose()));
       arena.drop(complement);
       const bad: CrossSection[] = [];
-      for (const island of islands) {
-        if (!survivesMinWall(ctx, island)) {
-          // A WHOLE island is absorbed only when nothing stands on it. A recess
-          // cutter reaches from its own floor up past the base top and a
-          // building only reaches `building_skirt_mm` down into the plate, so
-          // absorbing the island a block stands on carves the ground out from
-          // under it: measured on frame-off Chicago at plate 256, that took
-          // `bodies` from 1 to 2, a block floating 0.3 mm over the groove
-          // floor. Such an island is not a thin wall in the printed object
-          // either - the block sitting on it is what the slice measures. A
-          // WEDGE is different and is always taken: it is a fraction of a
-          // square millimetre off the edge of a block that keeps all its other
-          // ground (`[V3-P7-fix]`).
-          if (!carriesBuilding(ctx, island, buildingFootprint)) {
-            bad.push(island);
+      perfSpan("ridges.judge", () => {
+        for (const island of islands) {
+          const shape = islandShape(island);
+          if (sameShape(cleared.get(shape.key), shape.coords)) {
+            arena.drop(island);
             continue;
           }
+          if (!survivesMinWall(ctx, island)) {
+            // A WHOLE island is absorbed only when nothing stands on it. A recess
+            // cutter reaches from its own floor up past the base top and a
+            // building only reaches `building_skirt_mm` down into the plate, so
+            // absorbing the island a block stands on carves the ground out from
+            // under it: measured on frame-off Chicago at plate 256, that took
+            // `bodies` from 1 to 2, a block floating 0.3 mm over the groove
+            // floor. Such an island is not a thin wall in the printed object
+            // either - the block sitting on it is what the slice measures. A
+            // WEDGE is different and is always taken: it is a fraction of a
+            // square millimetre off the edge of a block that keeps all its other
+            // ground (`[V3-P7-fix]`).
+            if (!carriesBuilding(ctx, island, buildingFootprint)) {
+              bad.push(island);
+              continue;
+            }
+            cleared.set(shape.key, shape.coords);
+            arena.drop(island);
+            continue;
+          }
+          const wedges = thinParts(ctx, island);
+          if (wedges !== null && wedges.length > 0) bad.push(...wedges);
+          else cleared.set(shape.key, shape.coords);
           arena.drop(island);
-          continue;
         }
-        const wedges = thinParts(ctx, island);
-        if (wedges !== null) bad.push(...wedges);
-        arena.drop(island);
-      }
+      });
       if (bad.length === 0) return;
-      const merged = bridgeInto(ctx, sink, bad, clip);
+      const merged = perfSpan("ridges.bridge", () => bridgeInto(ctx, sink, bad, clip));
       for (const part of bad) arena.drop(part);
       if (!merged) return;
     }
@@ -679,6 +697,69 @@ function mergeInto(
     arena.drop(field);
     arena.drop(clip);
   }
+}
+
+/**
+ * An island's polygon as a comparable value: every ring rotated to start at
+ * its lexicographically smallest vertex, the rings sorted, the coordinates
+ * flattened, plus a hash of the whole as the map key. The hash only finds the
+ * candidate; {@link sameShape} compares every coordinate, so two islands are
+ * only ever treated as one when they are the same polygon.
+ */
+function islandShape(island: CrossSection): { key: string; coords: Float64Array } {
+  const rings = island.toPolygons().map((ring) => {
+    let start = 0;
+    for (let i = 1; i < ring.length; i += 1) {
+      const [x, y] = ring[i];
+      const [bx, by] = ring[start];
+      if (x < bx || (x === bx && y < by)) start = i;
+    }
+    const flat = new Float64Array(ring.length * 2);
+    for (let i = 0; i < ring.length; i += 1) {
+      const [x, y] = ring[(start + i) % ring.length];
+      flat[i * 2] = x;
+      flat[i * 2 + 1] = y;
+    }
+    return flat;
+  });
+  rings.sort((a, b) => {
+    if (a.length !== b.length) return a.length - b.length;
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+    }
+    return 0;
+  });
+  let total = 1 + rings.length;
+  for (const ring of rings) total += ring.length;
+  const coords = new Float64Array(total);
+  coords[0] = rings.length;
+  let at = 1;
+  for (const ring of rings) {
+    coords[at] = ring.length;
+    at += 1;
+  }
+  for (const ring of rings) {
+    coords.set(ring, at);
+    at += ring.length;
+  }
+  // FNV-1a over the 32-bit halves, twice with different seeds.
+  const words = new Uint32Array(coords.buffer);
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < words.length; i += 1) {
+    h1 = Math.imul(h1 ^ words[i], 0x01000193);
+    h2 = Math.imul(h2 ^ words[i], 0x9e3779b1);
+  }
+  return { key: `${h1 >>> 0}:${h2 >>> 0}:${coords.length}`, coords };
+}
+
+/** Same polygon, coordinate for coordinate. */
+function sameShape(known: Float64Array | undefined, coords: Float64Array): boolean {
+  if (known === undefined || known.length !== coords.length) return false;
+  for (let i = 0; i < known.length; i += 1) {
+    if (known[i] !== coords[i]) return false;
+  }
+  return true;
 }
 
 /** Does a building stand on this island? */
@@ -765,21 +846,13 @@ export function buildSurfaceRegions(
   const out: SurfaceRegion[] = [];
   for (let i = 0; i < repaired.length; i += 1) {
     const layer = repaired[i];
-    const pocket = grownPocket(ctx, layer.section);
-    const fitted = fittedSolid(ctx, layer.solidSection, deeperLayers(ctx, layer, repaired));
-    const solid = extrudeSection(
-      ctx.wasm,
-      ctx.arena,
-      fitted,
-      solidBottomMm(ctx, layer.placement),
-      layer.placement.topMm,
+    const pocket = perfSpan("surface.pocket", () => grownPocket(ctx, layer.section));
+    const fitted = perfSpan("surface.fit", () => fittedSolid(ctx, layer.solidSection, deeperLayers(ctx, layer, repaired)));
+    const solid = perfSpan("surface.extrude", () =>
+      extrudeSection(ctx.wasm, ctx.arena, fitted, solidBottomMm(ctx, layer.placement), layer.placement.topMm),
     );
-    const cutter = extrudeSection(
-      ctx.wasm,
-      ctx.arena,
-      pocket,
-      layer.placement.bottomMm,
-      cutterTopMm(ctx),
+    const cutter = perfSpan("surface.extrude", () =>
+      extrudeSection(ctx.wasm, ctx.arena, pocket, layer.placement.bottomMm, cutterTopMm(ctx)),
     );
     if (solid === null || cutter === null) continue;
     out.push({

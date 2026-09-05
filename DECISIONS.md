@@ -1226,3 +1226,27 @@ Append-only. Format: `- [phase] decision, one line`.
   timeout under full parallel load are the in-page fallback ingest at 3.55 s and two
   `store/editor` failure-state tests at 3.50 and 3.53 s, about 1.5 s of margin. Recorded so a
   future red on those is read as a machine before it is read as a defect.
+
+- `[V3.1-P7-31]` **The 1e-8 mm ribbon-union change is declined because it does not reach the
+  target, not because the tolerance is frightening.** A two-level road ribbon union saves about
+  100 ms and would change 172 to 191 of the road footprint's 495 rings at 1e-8 mm. With
+  `plate_mm` at a 2489 ms median after the exact work, 100 ms still misses 2000. The trade on
+  offer was therefore to perturb the geometry that five preset cities currently pass the
+  reference validator on, in exchange for a target we would still fail. 1e-8 mm is far below
+  anything printable and below float32 precision, and had it actually crossed the target it
+  would have been worth weighing; a geometry-moving change that does not achieve its purpose is
+  pure risk. The agent measured it and declined to apply it, which is the correct order.
+- `[V3.1-P7-32]` **`road_mode` is fixed exactly; `plate_mm` misses and the geometry wave is not
+  the whole cause.** Five levers, all exact, same solids and same bytes: `bridges` claims
+  `road_mode` as the keyed test `=== "off"` so engrave and emboss leave the 220 ms deck build
+  cached; the ridge merge caches island verdicts by exact polygon so the second pass re-judges 12
+  of 392 islands; the repair ladder checks a split pass by the exact open-edge delta over touched
+  triangles instead of recounting 170k, taking `mesh.clean.check` on `merged` from 186-210 to
+  66 ms; `componentCount` keys edges numerically, which was 226-253 ms of a 389-410 ms
+  `mesh.sweep` against only 89-93 ms of kernel simplify; and one double mesh read per finish now
+  serves both the body count and the record. `road_mode` goes from a 2010 ms median to 1670,
+  meeting its target by 330 ms rather than 21. `plate_mm` is unchanged within noise and still
+  misses. Its remaining cost is Clipper2 and four kernel booleans that predate this run: the
+  geometry wave's own share is about 240 ms, and a full rollback would still read about 2100. So
+  the release must not say the geometry work broke this target; it contributed to a row that was
+  already close, and the row is reported as missed with both figures.

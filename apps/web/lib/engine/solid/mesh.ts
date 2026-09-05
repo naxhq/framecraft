@@ -264,9 +264,11 @@ function edgeKey(a: number, b: number): number {
  * 10 ms here. Same keys, same counts; only the container changed.
  */
 class EdgeCounts {
-  private readonly keys: Float64Array;
-  private readonly counts: Int32Array;
-  private readonly mask: number;
+  private keys: Float64Array;
+  private counts: Int32Array;
+  private mask: number;
+  /** Distinct keys inserted, a key whose count fell back to zero included: what the load factor is measured on. */
+  private held = 0;
 
   constructor(expected: number) {
     let capacity = 16;
@@ -274,6 +276,34 @@ class EdgeCounts {
     this.keys = new Float64Array(capacity).fill(-1);
     this.counts = new Int32Array(capacity);
     this.mask = capacity - 1;
+  }
+
+  /** An independent copy: the repair ladder mutates one per rung and the input's own table has to stay pristine. */
+  clone(): EdgeCounts {
+    const out = new EdgeCounts(0);
+    out.keys = this.keys.slice();
+    out.counts = this.counts.slice();
+    out.mask = this.mask;
+    out.held = this.held;
+    return out;
+  }
+
+  /** Twice the capacity, the live keys re-hashed; a key whose count is zero is left behind. */
+  private grow(): void {
+    const keys = this.keys;
+    const counts = this.counts;
+    this.keys = new Float64Array(keys.length * 2).fill(-1);
+    this.counts = new Int32Array(keys.length * 2);
+    this.mask = this.keys.length - 1;
+    this.held = 0;
+    for (let i = 0; i < keys.length; i += 1) {
+      if (keys[i] === -1 || counts[i] === 0) continue;
+      const a = Math.floor(keys[i] / 4294967296);
+      const j = this.slot(a, keys[i] - a * 4294967296);
+      this.keys[j] = keys[i];
+      this.counts[j] = counts[i];
+      this.held += 1;
+    }
   }
 
   private slot(a: number, b: number): number {
@@ -292,8 +322,21 @@ class EdgeCounts {
 
   add(a: number, b: number): void {
     const i = this.slot(a, b);
-    if (this.keys[i] === -1) this.keys[i] = edgeKey(a, b);
+    if (this.keys[i] === -1) {
+      this.keys[i] = edgeKey(a, b);
+      this.counts[i] = 1;
+      this.held += 1;
+      if (this.held * 2 > this.keys.length) this.grow();
+      return;
+    }
     this.counts[i] += 1;
+  }
+
+  /** Take one occurrence of a directed edge back out. The key stays in the table at zero. */
+  remove(a: number, b: number): void {
+    const i = this.slot(a, b);
+    if (this.keys[i] === -1 || this.counts[i] === 0) throw new Error(`EdgeCounts.remove: ${a} -> ${b} is not held`);
+    this.counts[i] -= 1;
   }
 
   count(a: number, b: number): number {
@@ -301,11 +344,25 @@ class EdgeCounts {
     return this.keys[i] === -1 ? 0 : this.counts[i];
   }
 
-  /** Every distinct edge held, as `(a, b, count)`. */
+  /**
+   * How many of the two directions of the undirected edge `{a, b}` are open
+   * right now: a direction that occurs at all, and not exactly once with
+   * exactly one twin. {@link openEdgeCount} is this summed over every edge.
+   */
+  openness(a: number, b: number): number {
+    const ab = this.count(a, b);
+    const ba = this.count(b, a);
+    let bad = 0;
+    if (ab > 0 && (ab !== ba || ab !== 1)) bad += 1;
+    if (ba > 0 && (ba !== ab || ba !== 1)) bad += 1;
+    return bad;
+  }
+
+  /** Every distinct edge held with a non-zero count, as `(a, b, count)`. */
   forEach(visit: (a: number, b: number, count: number) => void): void {
     for (let i = 0; i < this.keys.length; i += 1) {
       const key = this.keys[i];
-      if (key === -1) continue;
+      if (key === -1 || this.counts[i] === 0) continue;
       const a = Math.floor(key / 4294967296);
       visit(a, key - a * 4294967296, this.counts[i]);
     }
@@ -319,7 +376,11 @@ class EdgeCounts {
  * and STL readers, the slicers and 04's `watertight` row all need.
  */
 export function openEdges(mesh: Mesh): number {
-  const indices = mesh.indices;
+  return openEdgeCount(edgeTable(mesh.indices));
+}
+
+/** Every directed edge of a triangle list, counted. */
+function edgeTable(indices: ArrayLike<number>): EdgeCounts {
   const seen = new EdgeCounts(indices.length);
   for (let i = 0; i + 2 < indices.length; i += 3) {
     const a = indices[i];
@@ -329,11 +390,82 @@ export function openEdges(mesh: Mesh): number {
     seen.add(b, c);
     seen.add(c, a);
   }
+  return seen;
+}
+
+/** {@link openEdges}, read off a table that counts the mesh's edges. */
+function openEdgeCount(seen: EdgeCounts): number {
   let bad = 0;
   seen.forEach((a, b, count) => {
     if (seen.count(b, a) !== count || count !== 1) bad += 1;
   });
   return bad;
+}
+
+/** One triangle a repair took out of (`-1`) or put into (`+1`) a mesh, in the order it happened. */
+interface TriangleEvent {
+  sign: 1 | -1;
+  a: number;
+  b: number;
+  c: number;
+}
+
+/**
+ * Move a table from one mesh to the mesh the events make of it, and return
+ * how far the open-edge count moved.
+ *
+ * Exact, not estimated: an edge no event touches keeps both of its counts, so
+ * only the touched edges can change their openness and only those are
+ * measured, before and after. The events are applied in order, so a triangle
+ * one pass added and then retired is counted in and out again. This is what
+ * lets the repair ladder verify a split of a few hundred needles without
+ * re-walking the 170 000 triangles of the merged plate for each pass (the
+ * full recount, `mesh.clean.check`, was 200 ms of that mesh's repair).
+ */
+function applyEvents(table: EdgeCounts, events: readonly TriangleEvent[]): number {
+  const touched = new Map<number, [number, number]>();
+  const touch = (u: number, v: number): void => {
+    const lo = u < v ? u : v;
+    const hi = u < v ? v : u;
+    touched.set(edgeKey(lo, hi), [lo, hi]);
+  };
+  for (const e of events) {
+    touch(e.a, e.b);
+    touch(e.b, e.c);
+    touch(e.c, e.a);
+  }
+  let before = 0;
+  for (const [u, v] of touched.values()) before += table.openness(u, v);
+  for (const e of events) {
+    if (e.sign > 0) {
+      table.add(e.a, e.b);
+      table.add(e.b, e.c);
+      table.add(e.c, e.a);
+    } else {
+      table.remove(e.a, e.b);
+      table.remove(e.b, e.c);
+      table.remove(e.c, e.a);
+    }
+  }
+  let after = 0;
+  for (const [u, v] of touched.values()) after += table.openness(u, v);
+  return after - before;
+}
+
+/** Undo {@link applyEvents}: the same events inverted, in reverse order. */
+function revertEvents(table: EdgeCounts, events: readonly TriangleEvent[]): void {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const e = events[i];
+    if (e.sign > 0) {
+      table.remove(e.a, e.b);
+      table.remove(e.b, e.c);
+      table.remove(e.c, e.a);
+    } else {
+      table.add(e.a, e.b);
+      table.add(e.b, e.c);
+      table.add(e.c, e.a);
+    }
+  }
 }
 
 /** Signed volume of a closed triangle mesh, mm^3 (the divergence theorem). */
@@ -592,8 +724,15 @@ function collapseNeedles(
  * the needle leaves every other edge paired exactly as it was, and moves no
  * vertex at all.
  */
-function splitNeedles(mesh: Mesh, threshold: number, area: AreaOf): { mesh: Mesh; split: number } {
+function splitNeedles(
+  mesh: Mesh,
+  threshold: number,
+  area: AreaOf,
+): { mesh: Mesh; split: number; events: TriangleEvent[] } {
   const tri: number[] = Array.from(mesh.indices);
+  // Every triangle retired or created, in order: what the caller's edge table
+  // is moved by instead of being rebuilt (`applyEvents`).
+  const events: TriangleEvent[] = [];
   const alive: boolean[] = new Array(tri.length / 3).fill(true);
   const limit = alive.length;
 
@@ -627,7 +766,7 @@ function splitNeedles(mesh: Mesh, threshold: number, area: AreaOf): { mesh: Mesh
     twinOf.set(t, twin);
     wanted.add(twin);
   }
-  if (needles.length === 0) return { mesh, split: 0 };
+  if (needles.length === 0) return { mesh, split: 0, events };
 
   const owner = new Map<number, number>();
   const index = (t: number): void => {
@@ -673,6 +812,7 @@ function splitNeedles(mesh: Mesh, threshold: number, area: AreaOf): { mesh: Mesh
 
     alive[t] = false;
     alive[neighbour] = false;
+    events.push({ sign: -1, a, b, c }, { sign: -1, a: tri[n], b: tri[n + 1], c: tri[n + 2] });
     for (const face of [
       [v0, v1, x],
       [v1, v2, x],
@@ -680,6 +820,7 @@ function splitNeedles(mesh: Mesh, threshold: number, area: AreaOf): { mesh: Mesh
       tri.push(face[0], face[1], face[2]);
       alive.push(true);
       index(alive.length - 1);
+      events.push({ sign: 1, a: face[0], b: face[1], c: face[2] });
     }
     split += 1;
   }
@@ -689,7 +830,7 @@ function splitNeedles(mesh: Mesh, threshold: number, area: AreaOf): { mesh: Mesh
     if (!alive[t]) continue;
     out.push(tri[t * 3], tri[t * 3 + 1], tri[t * 3 + 2]);
   }
-  return { mesh: { positions: mesh.positions, indices: Uint32Array.from(out) }, split };
+  return { mesh: { positions: mesh.positions, indices: Uint32Array.from(out) }, split, events };
 }
 
 /**
@@ -808,31 +949,82 @@ export function componentCount(mesh: Mesh): number {
   // where a pinch shows up. `trimesh.body_count` - which is what the reference
   // validator's `bodies` row reads - builds its face adjacency the same way,
   // so this function answers the question that row will ask.
-  const edges = new Map<string, number[]>();
+  //
+  // The edge index is an open-addressing table on the numeric edge key, like
+  // `openEdges`': keyed by string it cost 100 ms a call on the merged Chicago
+  // plate, and the sliver sweep asks twice per mesh.
+  const first = new EdgeFaces(faces * 3);
   for (let f = 0; f < faces; f += 1) {
     const a = mesh.indices[f * 3];
     const b = mesh.indices[f * 3 + 1];
     const c = mesh.indices[f * 3 + 2];
-    for (const [u, v] of [
-      [a, b],
-      [b, c],
-      [c, a],
-    ]) {
-      const key = u < v ? `${u},${v}` : `${v},${u}`;
-      const bucket = edges.get(key);
-      if (bucket === undefined) edges.set(key, [f]);
-      else bucket.push(f);
-    }
+    first.add(a, b, f);
+    first.add(b, c, f);
+    first.add(c, a, f);
   }
-  for (const bucket of edges.values()) {
-    if (bucket.length !== 2) continue;
-    const ra = find(bucket[0]);
-    const rb = find(bucket[1]);
+  first.forEachPair((fa, fb) => {
+    const ra = find(fa);
+    const rb = find(fb);
     if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
-  }
+  });
   const roots = new Set<number>();
   for (let f = 0; f < faces; f += 1) roots.add(find(f));
   return roots.size;
+}
+
+/**
+ * The faces on each UNDIRECTED edge: how many, and the first two. Only an
+ * edge carrying exactly two faces joins them (see `componentCount`), so two is
+ * all that is ever read back.
+ */
+class EdgeFaces {
+  private readonly keys: Float64Array;
+  private readonly counts: Int32Array;
+  private readonly faceA: Int32Array;
+  private readonly faceB: Int32Array;
+  private readonly mask: number;
+
+  constructor(expected: number) {
+    let capacity = 16;
+    while (capacity < expected * 2) capacity *= 2;
+    this.keys = new Float64Array(capacity).fill(-1);
+    this.counts = new Int32Array(capacity);
+    this.faceA = new Int32Array(capacity);
+    this.faceB = new Int32Array(capacity);
+    this.mask = capacity - 1;
+  }
+
+  add(u: number, v: number, face: number): void {
+    const a = u < v ? u : v;
+    const b = u < v ? v : u;
+    let h = Math.imul(a, 0x9e3779b1) ^ Math.imul(b ^ 0x5bd1e995, 0x85ebca77);
+    h ^= h >>> 15;
+    h = Math.imul(h, 0x2c1b3c6d);
+    h ^= h >>> 12;
+    const key = edgeKey(a, b);
+    let i = h & this.mask;
+    for (;;) {
+      const held = this.keys[i];
+      if (held === key || held === -1) break;
+      i = (i + 1) & this.mask;
+    }
+    if (this.keys[i] === -1) {
+      this.keys[i] = key;
+      this.counts[i] = 1;
+      this.faceA[i] = face;
+      return;
+    }
+    if (this.counts[i] === 1) this.faceB[i] = face;
+    this.counts[i] += 1;
+  }
+
+  /** Every edge with exactly two faces, in table order. */
+  forEachPair(visit: (faceA: number, faceB: number) => void): void {
+    for (let i = 0; i < this.keys.length; i += 1) {
+      if (this.keys[i] === -1 || this.counts[i] !== 2) continue;
+      visit(this.faceA[i], this.faceB[i]);
+    }
+  }
 }
 
 function edgeLength(p: ArrayLike<number>, ia: number, ib: number): number {
@@ -891,7 +1083,15 @@ export function cleanMesh(
   const before = meshVolumeMm3(input);
   const inputArea = measure(input);
   const beforeDegenerate = countDegenerate(input, threshold, inputArea);
-  const beforeOpen = perfSpan("mesh.clean.check", () => openEdges(input));
+  // The input's edge table is kept: every rung of the ladder starts from the
+  // input, and a split pass moves a copy of it by its own few triangles
+  // (`applyEvents`) rather than recounting the whole mesh.
+  const checkedInput = perfSpan("mesh.clean.check", () => {
+    const table = edgeTable(input.indices);
+    return { table, open: openEdgeCount(table) };
+  });
+  const inputTable = checkedInput.table;
+  const beforeOpen = checkedInput.open;
   // Only ever needed by the needle collapse below, and only when there is
   // something to repair, so it is computed behind the early return.
   let beforeBodiesCache: number | null = null;
@@ -951,31 +1151,49 @@ export function cleanMesh(
     let candidateWelded = 0;
     let candidateSplit = 0;
 
+    // The table that counts `candidate`'s edges. The input's own is shared
+    // between the rungs and copied before a split pass moves it.
+    let candidateTable = inputTable;
+    let ownsTable = false;
+
     const first = pairs === null ? { mesh: input, welded: 0 } : perfSpan("mesh.clean.weld", () => weld(input, rung, pairs));
     if (first.welded > 0) {
       // A weld rewrites the position array, so the measure has to be rebuilt on
       // it; the two repairs below keep the positions they were given and reuse
-      // this one.
+      // this one. It rewrites the triangles too, so the check is a full count.
       const weldedArea = measure(first.mesh);
-      const open = perfSpan("mesh.clean.check", () => openEdges(first.mesh));
+      const checked = perfSpan("mesh.clean.check", () => {
+        const table = edgeTable(first.mesh.indices);
+        return { table, open: openEdgeCount(table) };
+      });
       const degenerate = countDegenerate(first.mesh, threshold, weldedArea);
-      if (acceptable(first.mesh, open, degenerate)) {
+      if (acceptable(first.mesh, checked.open, degenerate)) {
         candidate = first.mesh;
         candidateArea = weldedArea;
         candidateDegenerate = degenerate;
-        candidateOpen = open;
+        candidateOpen = checked.open;
         candidateWelded = first.welded;
+        candidateTable = checked.table;
+        ownsTable = true;
       }
     }
 
     // Every pass is a transaction: a pass that leaves the mesh no better, or
-    // leaves a hole in it, is thrown away and the last good mesh is kept.
+    // leaves a hole in it, is thrown away and the last good mesh is kept. A
+    // split touches a few triangles of a large mesh, so its check is the
+    // exact movement of the open-edge count over those triangles' edges.
     for (let pass = 0; pass < REPAIR_ROUNDS && candidateDegenerate > 0; pass += 1) {
       const attempt = perfSpan("mesh.clean.split", () => splitNeedles(candidate, threshold, candidateArea));
       if (attempt.split === 0) break;
-      const open = perfSpan("mesh.clean.check", () => openEdges(attempt.mesh));
+      if (!ownsTable) {
+        candidateTable = candidateTable.clone();
+        ownsTable = true;
+      }
+      const table = candidateTable;
+      const open = perfSpan("mesh.clean.check", () => candidateOpen + applyEvents(table, attempt.events));
       const degenerate = countDegenerate(attempt.mesh, threshold, candidateArea);
       if (degenerate >= candidateDegenerate || !acceptable(attempt.mesh, open, degenerate)) {
+        revertEvents(table, attempt.events);
         break;
       }
       candidate = attempt.mesh;

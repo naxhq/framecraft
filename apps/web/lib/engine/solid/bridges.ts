@@ -62,6 +62,7 @@ import {
 import { bridgeRoadWays, bridgeRailWays, railWidthGroundM } from "./roads";
 import { baseOsmIdOfRoad, hiddenOverrideIds, widthScaleOverrides } from "./overrides";
 import type { RegionName } from "../types";
+import { perfSpan } from "../../perf";
 
 /** A centreline that is going to be built in the air. */
 export interface BridgeWay {
@@ -424,7 +425,7 @@ function groundedOnly(
   ctx: BuildContext,
   solid: Manifold,
 ): { solid: Manifold | null; dropped: number } {
-  const bodies = ctx.arena.keepAll(solid.decompose());
+  const bodies = perfSpan("bridges.decompose", () => ctx.arena.keepAll(solid.decompose()));
   if (bodies.length <= 1) {
     const only = bodies[0];
     const grounded = only === undefined || only.boundingBox().min[2] < ctx.baseTopMm;
@@ -437,7 +438,7 @@ function groundedOnly(
     ctx.arena.dropAll(bodies);
     return { solid, dropped: 0 };
   }
-  const merged = kept.length === 0 ? null : batchedUnion(ctx.wasm, ctx.arena, kept);
+  const merged = kept.length === 0 ? null : perfSpan("bridges.reunion", () => batchedUnion(ctx.wasm, ctx.arena, kept));
   const out = merged === null ? null : ctx.arena.keep(merged);
   ctx.arena.dropAll(bodies.filter((body) => body !== out));
   return { solid: out, dropped };

@@ -774,6 +774,8 @@ export function pruneDebrisCounted(
   arena: Arena,
   solid: Manifold,
   minVolume: number = DEBRIS_MM3,
+  /** `readMesh(solid)` when the caller has it: exact volumes for the quick count (see `bodiesFromMesh`). */
+  read?: Mesh,
 ): {
   solid: Manifold;
   dropped: number;
@@ -785,7 +787,7 @@ export function pruneDebrisCounted(
   // 278-body buildings region costs 85 ms and on the Overpass-path roads
   // region (29 bodies, 71 000 triangles) 65 ms; the count is a union-find
   // over the mesh manifold3d already holds, a few milliseconds.
-  const quick = bodiesFromMesh(solid, minVolume);
+  const quick = perfSpan("prune.quick", () => bodiesFromMesh(solid, minVolume, read));
   if (quick !== null) {
     return {
       solid,
@@ -793,7 +795,7 @@ export function pruneDebrisCounted(
       bodies: { real: quick.count, debris: 0, debrisVolume: 0, smallestMm3: quick.count === 1 ? solid.volume() : quick.smallestMm3 },
     };
   }
-  const bodies = arena.keepAll(solid.decompose());
+  const bodies = perfSpan("prune.decompose", () => arena.keepAll(solid.decompose()));
   const volumes = bodies.map((body) => body.volume());
   let real = 0;
   let debris = 0;
@@ -818,7 +820,7 @@ export function pruneDebrisCounted(
     return unchanged;
   }
   const kept = bodies.filter((_body, index) => volumes[index] >= minVolume);
-  const merged = arena.keep(wasm.Manifold.union(kept));
+  const merged = perfSpan("prune.union", () => arena.keep(wasm.Manifold.union(kept)));
   let smallestKept = Infinity;
   for (const volume of volumes) if (volume >= minVolume) smallestKept = Math.min(smallestKept, volume);
   arena.dropAll(bodies);
@@ -845,11 +847,24 @@ export function pruneDebrisCounted(
  * ones the findings print. Nothing this returns is reported as a volume
  * except `smallestMm3`, which no reader consumes.
  */
-export function bodiesFromMesh(solid: Manifold, minVolume: number): { count: number; smallestMm3: number } | null {
-  const mesh = solid.getMesh();
-  const stride = mesh.numProp;
-  const p = mesh.vertProperties;
-  const tris = mesh.triVerts;
+export function bodiesFromMesh(
+  solid: Manifold,
+  minVolume: number,
+  /**
+   * The solid's mesh in DOUBLE precision (`readMesh`), when the caller has it.
+   * Without it the count reads `getMesh()`'s float32 vertices, whose volumes
+   * are only trusted an order of magnitude above the floor; with it the
+   * volumes are the kernel's own numbers to within summation noise, and the
+   * margin is that noise. The roads region carries bodies between one and ten
+   * times the debris floor, so the float32 read sent every finish of it to a
+   * 60 ms decomposition that then pruned nothing.
+   */
+  read?: Mesh,
+): { count: number; smallestMm3: number } | null {
+  const mesh = read === undefined ? solid.getMesh() : null;
+  const stride = mesh === null ? 3 : mesh.numProp;
+  const p: ArrayLike<number> = mesh === null ? (read as Mesh).positions : mesh.vertProperties;
+  const tris: ArrayLike<number> = mesh === null ? (read as Mesh).indices : mesh.triVerts;
   const vertexCount = Math.floor(p.length / Math.max(1, stride));
   if (vertexCount === 0 || tris.length === 0) return null;
   const parent = new Int32Array(vertexCount);
@@ -874,24 +889,46 @@ export function bodiesFromMesh(solid: Manifold, minVolume: number): { count: num
     join(tris[i], tris[i + 1]);
     join(tris[i + 1], tris[i + 2]);
   }
-  // Signed volume per component, by the divergence theorem over its triangles.
+  // Signed volume per component, by the divergence theorem over its triangles,
+  // as the kernel takes it: `v0 . ((v1 - v0) x (v2 - v0))`, whose terms scale
+  // with the triangle rather than with its distance from the origin, so a
+  // speck 90 mm out sums small numbers and not the difference of large ones.
+  // `spread` is the sum of the terms' magnitudes per component and `faces`
+  // their count: together they bound what floating summation can have moved
+  // the total by, on this side and on the kernel's.
   const volume = new Float64Array(vertexCount);
+  const spread = new Float64Array(vertexCount);
+  const faces = new Uint32Array(vertexCount);
   for (let i = 0; i + 2 < tris.length; i += 3) {
     const a = tris[i] * stride;
     const b = tris[i + 1] * stride;
     const c = tris[i + 2] * stride;
-    volume[find(tris[i])] +=
-      p[a] * (p[b + 1] * p[c + 2] - p[b + 2] * p[c + 1]) -
-      p[a + 1] * (p[b] * p[c + 2] - p[b + 2] * p[c]) +
-      p[a + 2] * (p[b] * p[c + 1] - p[b + 1] * p[c]);
+    const ax = p[a];
+    const ay = p[a + 1];
+    const az = p[a + 2];
+    const e1x = p[b] - ax;
+    const e1y = p[b + 1] - ay;
+    const e1z = p[b + 2] - az;
+    const e2x = p[c] - ax;
+    const e2y = p[c + 1] - ay;
+    const e2z = p[c + 2] - az;
+    const term = ax * (e1y * e2z - e1z * e2y) - ay * (e1x * e2z - e1z * e2x) + az * (e1x * e2y - e1y * e2x);
+    const root = find(tris[i]);
+    volume[root] += term;
+    spread[root] += Math.abs(term);
+    faces[root] += 1;
   }
   let count = 0;
   let smallest = Infinity;
-  const clear = 10 * minVolume;
+  // Float32 vertices: trusted only an order of magnitude above the floor.
+  const clear = read === undefined ? 10 * minVolume : minVolume;
   for (let v = 0; v < vertexCount; v += 1) {
     if (parent[v] !== v) continue;
     const mm3 = volume[v] / 6;
-    if (!(mm3 >= clear)) return null;
+    // Double vertices: the floor plus the summation noise of both sides, a
+    // generous multiple of the classic (n - 1) * eps * sum|terms| bound.
+    const noise = read === undefined ? 0 : ((4 * faces[v] + 64) * Number.EPSILON * spread[v]) / 6 + 1e-6 * minVolume;
+    if (!(mm3 >= clear + noise)) return null;
     count += 1;
     if (mm3 < smallest) smallest = mm3;
   }
@@ -992,7 +1029,9 @@ export interface SweptSolid {
 export function sweepSlivers(solid: Manifold, mesh: Mesh): SweptSolid | null {
   const before = degenerateFaces(mesh, REPAIR_AREA_MM2);
   if (before === 0) return null;
-  const swept = solid.simplify(SWEEP_TOLERANCE_MM);
+  // Three rows under `mesh.sweep`: the kernel's simplify, the read of what it
+  // produced, and the two body counts that guard it.
+  const swept = perfSpan("sweep.simplify", () => solid.simplify(SWEEP_TOLERANCE_MM));
   const reject = (): null => {
     swept.delete();
     return null;
@@ -1000,15 +1039,24 @@ export function sweepSlivers(solid: Manifold, mesh: Mesh): SweptSolid | null {
   if (swept.isEmpty() || swept.status() !== "NoError") return reject();
   const reference = solid.volume();
   if (Math.abs(swept.volume() - reference) > SWEEP_VOLUME_TOLERANCE * Math.max(Math.abs(reference), 1)) return reject();
-  const raw = swept.getMesh();
-  const candidate: Mesh = {
-    positions: doublePositions(swept, raw.vertProperties, raw.numProp),
-    indices: new Uint32Array(raw.triVerts),
-  };
+  const candidate = perfSpan("sweep.read", () => readMesh(swept));
   const after = degenerateFaces(candidate, REPAIR_AREA_MM2);
   if (after >= before) return reject();
-  if (componentCount(candidate) > componentCount(mesh)) return reject();
+  if (perfSpan("sweep.bodies", () => componentCount(candidate) > componentCount(mesh))) return reject();
   return { solid: swept, mesh: candidate, degenerate: { before, after } };
+}
+
+/**
+ * A solid's mesh as the finish reads it: `getMesh()`, with the vertices in
+ * DOUBLE precision (`doublePositions`). Two perf rows, because the double read
+ * is a kernel copy and the larger of the two.
+ */
+export function readMesh(solid: Manifold): Mesh {
+  const raw = perfSpan("mesh.get", () => solid.getMesh());
+  return {
+    positions: perfSpan("mesh.double", () => doublePositions(solid, raw.vertProperties, raw.numProp)),
+    indices: new Uint32Array(raw.triVerts),
+  };
 }
 
 export function toRegionMesh(
@@ -1026,15 +1074,17 @@ export function toRegionMesh(
    * `[V3-P7-A9]`).
    */
   clean: { collapseNeedles?: boolean } = {},
+  /**
+   * `readMesh(solid)`, when the caller already has it. A finish stage reads
+   * the mesh once for the body count and once here; handing the first read
+   * over saves the kernel copy that `doublePositions` costs (25 ms on the
+   * roads region, 45 on the merged plate). Must be the mesh of THIS solid.
+   */
+  read: Mesh = readMesh(solid),
 ): RegionMesh {
   // Four perf rows under the finish and merged stages, because the split
   // matters: `mesh.clean` is the repair ladder, which is the whole cost of a
   // merged solid that carries degenerate seams and nothing on a clean region.
-  const raw = perfSpan("mesh.get", () => solid.getMesh());
-  const read: Mesh = {
-    positions: perfSpan("mesh.double", () => doublePositions(solid, raw.vertProperties, raw.numProp)),
-    indices: new Uint32Array(raw.triVerts),
-  };
   // The mesh repair first; the kernel's own sweep (`sweepSlivers`) only when
   // that leaves a face under the REPAIR threshold, which is the slit case the
   // mesh repair cannot close. The margin matters: the reference validator

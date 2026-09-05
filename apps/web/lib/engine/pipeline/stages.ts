@@ -95,7 +95,9 @@ import { buildLettering, facesFor, loadFaces } from "../solid/lettering";
 import { loadGlyphFace } from "../../fontGlyphs";
 import { labelPose } from "../../labelAnchor";
 import {
+  DEBRIS_MM3,
   UNION_DEBRIS_MM3,
+  readMesh,
   batchedUnion,
   extrudeSection,
   pruneDebrisCounted,
@@ -839,14 +841,18 @@ const surfaceParks = defineStage({
       if (built === null || "regions" in built) continue;
       repaired.push({ ...built });
     }
-    mergeRecessRidges(build, repaired, ctx.input("repair-buildings").footprint);
+    perfSpan("surface.ridges", () => mergeRecessRidges(build, repaired, ctx.input("repair-buildings").footprint));
 
     const regions: SurfaceRegion[] = [];
     for (const layer of repaired) {
-      const pocket = grownPocket(build, layer.section);
-      const fitted = fittedSolid(build, layer.solidSection, deeperLayers(build, layer, repaired));
-      const solid = extrudeSection(ctx.wasm, ctx.arena, fitted, solidBottomMm(build, layer.placement), layer.placement.topMm);
-      const cutter = extrudeSection(ctx.wasm, ctx.arena, pocket, layer.placement.bottomMm, cutterTopMm(build));
+      const pocket = perfSpan("surface.pocket", () => grownPocket(build, layer.section));
+      const fitted = perfSpan("surface.fit", () => fittedSolid(build, layer.solidSection, deeperLayers(build, layer, repaired)));
+      const solid = perfSpan("surface.extrude", () =>
+        extrudeSection(ctx.wasm, ctx.arena, fitted, solidBottomMm(build, layer.placement), layer.placement.topMm),
+      );
+      const cutter = perfSpan("surface.extrude", () =>
+        extrudeSection(ctx.wasm, ctx.arena, pocket, layer.placement.bottomMm, cutterTopMm(build)),
+      );
       if (solid === null || cutter === null) continue;
       regions.push({
         region: layer.region,
@@ -906,7 +912,12 @@ const bridges = defineStage({
   phase: "geometry",
   params: [
     "bridges.*",
-    "road_mode",
+    // The only thing a deck asks of `road_mode` is whether the roads exist at
+    // all (`roads.roadBridgeWays`); engraved and embossed roads carry the same
+    // bridges, so the key is that one test and not the value. Measured: the
+    // stage is 220 ms of a `road_mode` change on the Chicago plate, and it
+    // built the identical decks before and after.
+    { path: "road_mode", label: "off", key: (value) => value === "off" },
     "road_scale",
     "regions.roads.depth_mm",
     "regions.rail.depth_mm",
@@ -1402,7 +1413,10 @@ const sit = defineStage({
   run(ctx) {
     let minZ = Infinity;
     const baseSolid = ctx.input("region-base").solid;
-    if (baseSolid !== null && !baseSolid.isEmpty()) minZ = Math.min(minZ, baseSolid.boundingBox().min[2]);
+    // The base carve is lazy in the kernel and this bounding-box read is where
+    // it is evaluated, so the row is the carve's cost, not a box lookup.
+    const baseMinZ = baseSolid === null ? null : perfSpan("sit.base", () => (baseSolid.isEmpty() ? null : baseSolid.boundingBox().min[2]));
+    if (baseMinZ !== null) minZ = Math.min(minZ, baseMinZ);
     for (const part of ctx.input("hangers").parts) {
       if (!part.solid.isEmpty()) minZ = Math.min(minZ, part.solid.boundingBox().min[2]);
     }
@@ -1441,8 +1455,15 @@ function finishStage(region: RegionName): StageDef<FinishStageId> {
     ...(owned ? { inputDigests: { buildings: "ownerIds" } } : {}),
     run(ctx) {
       const solid = ctx.input(regionStageId(region)).solid;
-      if (solid === null || solid.isEmpty()) return null;
-      const pruned = perfSpan("finish.prune", () => pruneDebrisCounted(ctx.wasm, ctx.arena, solid));
+      // The region stage's booleans are lazy in the kernel and this read is
+      // where they are evaluated: the row names that cost rather than letting
+      // it hide in the stage's own wall clock.
+      if (solid === null || perfSpan("finish.solid", () => solid.isEmpty())) return null;
+      // One read of the mesh, in double, for both the body count and the
+      // record below: the count's quick path is exact on it, and the record
+      // reuses it whenever the solid it ships is this very handle.
+      const read = perfSpan("finish.read", () => readMesh(solid));
+      const pruned = perfSpan("finish.prune", () => pruneDebrisCounted(ctx.wasm, ctx.arena, solid, DEBRIS_MM3, read));
       if (pruned.solid.isEmpty()) return null;
       const shift = ctx.input("sit").shiftMm;
       const placed = shift === 0 ? pruned.solid : ctx.arena.keep(pruned.solid.translate([0, 0, shift]));
@@ -1456,7 +1477,7 @@ function finishStage(region: RegionName): StageDef<FinishStageId> {
       const slot = isOverride ? (style?.slot ?? 1) : regionSlot(ctx.params, twin);
       const colorHex = isOverride ? (style?.colorHex ?? OVERRIDE_FALLBACK_HEX) : regionColor(ctx.params, twin);
       const mesh = perfSpan("finish.mesh", () =>
-        toRegionMesh(placed, region, slot, colorHex, pruned.bodies.real + pruned.bodies.debris),
+        toRegionMesh(placed, region, slot, colorHex, pruned.bodies.real + pruned.bodies.debris, {}, placed === solid ? read : undefined),
       );
       const carriesBuildings = !isOverride || groupForRegion(overrideGroups(ctx.params), region)?.layer === "building";
       if (owned && carriesBuildings) {
@@ -1596,11 +1617,14 @@ const merged = defineStage({
         },
       };
     }
-    const pruned = perfSpan("merged.prune", () => pruneDebrisCounted(ctx.wasm, ctx.arena, welded, UNION_DEBRIS_MM3));
+    // The read is where the kernel evaluates the weld; one read serves the
+    // body count and, when nothing was pruned or shifted, the record too.
+    const read = perfSpan("merged.read", () => readMesh(welded));
+    const pruned = perfSpan("merged.prune", () => pruneDebrisCounted(ctx.wasm, ctx.arena, welded, UNION_DEBRIS_MM3, read));
     const shift = ctx.input("sit").shiftMm;
     const clean = shift === 0 ? pruned.solid : ctx.arena.keep(pruned.solid.translate([0, 0, shift]));
     const mesh = perfSpan("merged.mesh", () =>
-      toRegionMesh(clean, "base", regionSlot(ctx.params, "base"), regionColor(ctx.params, "base"), pruned.bodies.real),
+      toRegionMesh(clean, "base", regionSlot(ctx.params, "base"), regionColor(ctx.params, "base"), pruned.bodies.real, {}, clean === welded ? read : undefined),
     );
     return { clean, mesh };
   },

@@ -329,7 +329,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       "id": "bridges",
       "phase": "geometry",
       "params": [
-        "road_mode",
+        "road_mode=off",
         "road_scale",
         "regions.roads.depth_mm",
         "regions.rail.depth_mm",

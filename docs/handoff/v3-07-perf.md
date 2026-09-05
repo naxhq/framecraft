@@ -737,3 +737,208 @@ triangles and 4.6 million entities; the writer's twelve-decimal grid lost
 zero faces (`gridLostTriangles` 0), against the six to twelve the six-decimal
 grid lost.
 
+
+## 10. The `plate_mm` miss, worked (2026-09-05, after `[V3.1-P7-27]`)
+
+`[V3.1-P7-27]` found `plate_mm` at 2389-2469 ms against 2000 and `road_mode`
+marginal at 1898-1979, and put the growth in `solid/**`. This section is the
+work on that finding: every row of the two changes attributed to a span,
+what was made cheaper (all of it exactly: the same solids, the same meshes,
+the same bytes), what was measured and declined because it would have moved
+the geometry, and the numbers. Same harness as 8.1 (Node through
+`vite-node`, one `StageCache`, the Chicago Overpass fixture through
+`fetchImpl`, `regionBatchMs: 0`, defaults plus one frame-edge `{city}` line,
+perf mode on). The host was busier than in 8.1 all session: overall CPU 22 to
+40 per cent from the user's browsers and other long-lived processes, so the
+absolute numbers here read above 8.1's, and the comparison that counts is
+the interleaved one in 10.4, where both trees see the same noise.
+
+### 10.1 Where `plate_mm` spends its 2.3 to 2.5 s to the preview
+
+New spans (no-ops with perf mode off) name what the stage wall clocks hid.
+One `plate_mm` run, 2326 ms to the preview, the region and geometry stages:
+
+| stage | ms | of which |
+|---|---:|---|
+| `surface-roads` | 503 | `surface.union` 306 (13 919 ribbon contours, 111 236 points, to 1728 rings and 23 242 points), `surface.close` 106, the rest 90 |
+| `finish-roads` | 380 | `finish.solid` 141 to 158 (the region's lazy boolean, roads with the bridge decks, evaluated on first read), `finish.mesh` 94, `finish.prune` 65 (`prune.decompose` 61: the pre-prune roads solid really carries sub-floor debris) |
+| `surface-parks` | 379 | `surface.ridges` 196 (`ridges.judge` 100 over three passes, `ridges.islands` 21, `ridges.complement` 18, `ridges.recut` 20, `ridges.bridge` 9), `surface.extrude` 100 (six extrusions), `surface.fit` 22, the parks repair itself about 60 |
+| `sit` | 320 to 344 | `sit.base`: the base carve (`plate - cutters`), lazy in the kernel and evaluated by this stage's bounding-box read |
+| `bridges` | 223 | `bridges.decompose` 113 (the deck-and-column union, evaluated by `groundedOnly`), the deck repair 50, extrusions |
+| `repair-buildings` | 125 | |
+| `finish-base` | 94 | `mesh.clean` 57 (`mesh.clean.check` x4 31) |
+| `attribution` | 91 | |
+| `finish-buildings`, `finish-frame`, `region-roads`, `buildings` | 164 | |
+
+So the geometry wave's own cost on this row is the ridge merge, the seam
+trim and the re-cut, about 240 ms; the other 2.1 s is Clipper2 (the ribbon
+union and its closing pair) and four kernel booleans (the base carve, the
+roads-with-decks union, the deck-with-columns union, the six extrusions)
+that predate it. Even a full rollback of section 9 would leave the row at
+about 2100 on this host; the target cannot be met from `surface-parks`
+alone.
+
+### 10.2 What changed, and why each is exact
+
+1. **`bridges` is keyed on `road_mode === "off"`, not on `road_mode`**
+   (`stages.ts`, a `KeyedClaim` like `context`'s `frame_style.profile`).
+   The stage's only read of the leaf is `roads.roadBridgeWays`' "are there
+   roads at all"; engraved and embossed roads carry identical decks. An
+   engrave-to-emboss change built the same 220 ms of decks before and after.
+   The `describeGraph` block in `v3-01-pipeline.md` moves one line for it
+   (`road_mode` to `road_mode=off` under `bridges`), regenerated.
+2. **The ridge merge remembers the islands it cleared** (`areas.ts:
+   mergeInto`). A bridge changes the complement only where it lands, so the
+   next pass decomposes mostly the same islands; measured on the Chicago
+   sink merge, pass two had 392 islands of which 380 were vertex-for-vertex
+   the islands pass one had cleared, and every one was paying the erosion
+   probe and the appendage search again. The verdict is cached by the exact
+   polygon (rings rotated to their smallest vertex, sorted, hashed to find
+   the candidate, then compared coordinate for coordinate), so a cache hit
+   is the same polygon and nothing else. Islands the bridge touched are
+   different polygons and are judged afresh; an island with a wedge is
+   bridged and never recurs.
+3. **The repair ladder's split passes check open edges by exact delta**
+   (`mesh.ts`). `splitNeedles` now reports the triangles it retired and
+   created, in order; the ladder keeps the mesh's edge table (the same
+   open-addressing table `openEdges` builds, now clonable and decrementable)
+   and moves it by those triangles, measuring the openness of the touched
+   edges before and after. An untouched edge keeps both counts, so the moved
+   count equals a full recount; a rejected pass is reverted. A weld still
+   gets a full count (it rewrites every triangle). `mesh.clean.check` on the
+   merged Chicago plate went from 186 to 210 ms for twelve calls to 66.
+4. **`componentCount` indexes edges numerically** (`mesh.ts`). It keyed a
+   `Map` by `"u,v"` strings over 3T edges; on the 118 000-triangle merged
+   plate that was 226 to 253 ms of the 389 to 410 ms `mesh.sweep`, against
+   89 to 93 for the kernel's simplify itself: the sweep was mostly its guard
+   counting bodies twice. Same adjacency rule (edges with exactly two faces
+   join), same table shape as `openEdges`.
+5. **The finish reads a solid's mesh once, in double, for both the body
+   count and the record** (`manifold.ts: readMesh`, `bodiesFromMesh`,
+   `pruneDebrisCounted`, `toRegionMesh`; `stages.ts` finish and `merged`).
+   The quick body count read float32 vertices and trusted a body only an
+   order of magnitude above the debris floor; on the double read the
+   volumes are the kernel's to within summation noise (bounded per body from
+   the terms' magnitudes) and the margin is that noise. The record reuses the
+   read whenever the solid it ships is the handle that was read, which saves
+   the `warpBatch` copy `doublePositions` costs (17 to 25 ms a region). On
+   Chicago this helps `finish-base`; `finish-roads` still decomposes because
+   its pre-prune solid has real debris, which the count correctly declines to
+   answer.
+6. **Spans**: `surface.ridges`, `ridges.merge/complement/islands/judge/
+   bridge/recut`, `surface.pocket/fit/extrude`, `finish.solid`, `finish.read`,
+   `merged.read`, `sit.base`, `bridges.decompose/reunion`, `prune.quick/
+   decompose/union`, `sweep.simplify/read/bodies`.
+
+Not weakened, not skipped: no threshold, test, validator or repair changed.
+`sweepSlivers` runs exactly when it ran before; it only no longer pays for a
+string-keyed body count. The merge judges every island it judged before,
+once.
+
+### 10.3 Measured and declined
+
+Two changes to the roads ribbon would have bought real time and were not
+made, because each moves the geometry at the last digit and "unchanged
+cities" means unchanged.
+
+- **A two-level union** (chunks of 20 to 400 contours unioned first, then
+  the chunks): the one-pass union of the Chicago ribbon is 250 ms warm and
+  the two-level form 145 to 155. But Clipper2 rounds intermediate results
+  to its 1e-8 grid, and the two forms differ: 1727 rings against 1728 on
+  the raw union, and after the closing pair 172 to 191 of the 495 rings
+  differ in at least one coordinate. Geometrically noise; not the same
+  footprint.
+- **Wedge sectors instead of full 16-gons at ribbon joints** (the two
+  rectangles already cover a joint's disc except the outer wedge): built
+  from the same sample points it is not identical either (the same area to
+  the last digit, but 1800 rings against 1728, from zero-area slivers where
+  a sector's radial edge meets the chord), and the guard it needs (both
+  adjacent segments at least a half-width long) keeps 58 per cent of the
+  circles on Chicago's dense node spacing, so it was 15 per cent of the
+  union at best.
+
+Also looked at and left: the roads-with-decks union and the base carve are
+single kernel booleans on 70 000 to 80 000-triangle solids with no exact
+shortcut; `Manifold.extrude` goes straight to the kernel's triangulator; the
+JS binding (manifold-3d 3.5.1) has no double-precision mesh reader, so
+`doublePositions`' kernel copy stays; deciding deck groundedness in 2D
+instead of by decomposing the union is exact only with a tangency fallback
+and would save the decompose, not the union.
+
+### 10.4 The numbers
+
+Interleaved A/B, three rounds of the working tree then a worktree of
+`b938384`, two runs per change per round, back to back so both trees see the
+same host; overall CPU 40 per cent from other processes throughout. Every
+reading, ms:
+
+| row | before (`b938384`), 6 readings | after, 6 readings |
+|---|---|---|
+| `plate_mm` to preview | 2539, 2560, 2344, 2526, 2533, 2511 | 2491, 2486, 2461, 2264, 2533, 2645 |
+| `plate_mm` to done | 4529, 4497, 4260, 4565, 4517, 4463 | 4351, 4327, 4307, 3911, 4414, 4480 |
+| `road_mode` to preview | 2115, 1955, 2067, 1941, 2011, 2004 | 1663, 1693, 1641, 1639, 1680, 1752 |
+| `road_mode` to done | 4224, 4110, 4271, 4197, 4167, 4125 | 3646, 3691, 3519, 3546, 3642, 3867 |
+
+`road_mode` is met with a real margin: median 1670 against 2000 on a host
+where the old tree read 2010 (a miss on this host today), because the
+bridges are cached. To done is 170 ms (plate) and 550 ms (road) cheaper,
+which is items 3 and 4. **`plate_mm` to the preview is unchanged within the
+noise**: median 2489 against 2530 before, and it misses on this host as it
+missed on 8.1's quieter one. The 40 to 70 ms the row gained is the island
+cache, the split checks and one saved read; the 2.1 s that remains is 10.1's
+table and is not the geometry wave's.
+
+What it would take: the ribbon union and closing pair (about 400 ms) and
+the base carve (300 to 340) are the only two items large enough to reach the
+target, and both are exact-by-construction library calls. The two-level
+union is the only measured lever that gets close (about 100 ms), and it is a
+geometry change; whether a 1e-8 mm footprint difference is acceptable is not
+this note's call.
+
+### 10.5 Tests, checks, and the six cities
+
+`mesh.test.ts` gains a `describe` for the incremental count: the moved
+table's count equals a full recount after every accepted split on one, two
+and three needle bodies, the no-repair path reports the input's own count
+(a box with a face removed is three open edges either way), and
+`componentCount` still joins across two-face edges only (a doubled triangle
+cuts itself and its twin off the box: three bodies). `bodies.test.ts` is new:
+the double read answers exactly for a 0.027 mm3 body beside a 1000 mm3 one
+(the float32 read declines), declines under the floor and on it, and agrees
+with the kernel's decomposition on what is debris. `tsc --noEmit` and
+`eslint --max-warnings 0` clean; `vitest run lib/engine/solid
+lib/engine/pipeline` 18 files, 371 tests passed (the `describeGraph` pin
+after the block was regenerated).
+
+All six presets rebuilt through the browser engine (`export:cli --overpass
+... --params fixtures/print-params-parts.json --target generic-3mf`, the
+matrix script's own command) and judged by `make validate`, on this tree:
+
+| preset | verdict | `min_wall` |
+|---|---|---:|
+| chicago-loop | ALL CHECKS PASS | 0.874 |
+| new-york-midtown | ALL CHECKS PASS | 0.8873 |
+| paris-eiffel | ALL CHECKS PASS | 1.0 |
+| tokyo-shinjuku | FAIL `min_wall` | 0.2539, 2 of 468 |
+| london-city | ALL CHECKS PASS | 0.8174 |
+| san-francisco-fidi | ALL CHECKS PASS | 1.14 |
+
+Unchanged from `FAILURES.md`'s table to the last digit.
+
+### 10.6 Lines for DECISIONS.md (the orchestrator appends; this agent does not edit it)
+
+- [V3.1-P7-29] `bridges` claims `road_mode` as the keyed test `=== "off"`:
+  the decks depend on whether roads exist, not on engrave against emboss,
+  so a `road_mode` change no longer rebuilds them. `road_mode` to the
+  preview went from a median 2010 to 1670 ms in an interleaved A/B on a
+  loaded host; the old reading was inside 21 ms of its target on a quiet one.
+- [V3.1-P7-30] The `[V3.1-P7-27]` `plate_mm` miss stands, measured: median
+  2489 ms to the preview after this work against 2530 before, interleaved on
+  one host. Everything exact was taken (the ridge merge's island cache, the
+  repair ladder's delta open-edge check, a numeric `componentCount` under the
+  sliver sweep, one double mesh read per finish); what remains is the
+  Clipper2 ribbon union and closing pair and four kernel booleans that
+  predate the geometry wave. Two geometry-moving levers (a two-level ribbon
+  union, wedge sectors at joints) were measured and declined; the first is
+  worth about 100 ms and changes 172 to 191 of the road footprint's 495
+  rings at the 1e-8 mm digit. Neither city verdict nor threshold moved.

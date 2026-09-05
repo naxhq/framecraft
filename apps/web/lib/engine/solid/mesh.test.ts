@@ -338,3 +338,69 @@ describe("hardenForFloat32", () => {
     expect(out.report.mesh.split).toBe(0);
   });
 });
+
+/**
+ * The repair ladder no longer recounts every open edge after a split pass: it
+ * moves the mesh's edge table by the triangles the pass retired and created
+ * and reads the count off that. The count it reports must be the count a full
+ * walk of the finished mesh gives, split after split, body after body.
+ */
+describe("the incremental open-edge count", () => {
+  /** Several needle boxes side by side: one split per body, in one pass. */
+  function needleRow(count: number): Mesh {
+    let mesh = needleBox(90, 145);
+    for (let i = 1; i < count; i += 1) mesh = concat(mesh, needleBox(90 + i * 3, 145));
+    return mesh;
+  }
+
+  it("agrees with a full recount after every split the ladder accepts", () => {
+    // Three at most: each split moves 3e-7 mm3 and a pass is one transaction
+    // against the 1e-6 mm3 volume bound, so a row of five is rightly refused.
+    for (const bodies of [1, 2, 3]) {
+      const mesh = needleRow(bodies);
+      expect(openEdges(mesh)).toBe(0);
+      expect(componentCount(mesh)).toBe(bodies);
+      const out = cleanMesh(mesh, { float32: true });
+      expect(out.report.split, `${bodies} bodies`).toBe(bodies);
+      expect(out.report.degenerate).toBe(0);
+      expect(out.report.applied).toBe(true);
+      // The reported count is the moved table's; the recount is the truth.
+      expect(out.report.openEdges).toBe(openEdges(out.mesh));
+      expect(out.report.openEdges).toBe(0);
+      expect(componentCount(out.mesh)).toBe(bodies);
+      expect(float32DegenerateFaces(out.mesh)).toBe(0);
+    }
+  });
+
+  it("reports the input's own count, from the same table, when there is nothing to repair", () => {
+    const mesh = concat(box([0, 0, 0], 1), box([5, 0, 0], 1));
+    const out = cleanMesh(mesh);
+    expect(out.mesh).toBe(mesh);
+    expect(out.report.openEdges).toBe(openEdges(mesh));
+    // A box with one face missing is 3 open edges, whichever way it is counted.
+    const holed: Mesh = { positions: mesh.positions, indices: mesh.indices.slice(3) };
+    expect(openEdges(holed)).toBe(3);
+    expect(cleanMesh(holed).report.openEdges).toBe(3);
+  });
+
+  it("counts bodies across edges with exactly two faces, and only those", () => {
+    // Two boxes sharing one vertex index: joined at a point, still two bodies.
+    const a = box([0, 0, 0], 1);
+    const b = box([1, 1, 1], 1);
+    const joined = concat(a, b);
+    // Vertex 6 of `a` is (1, 1, 1), vertex 0 of `b` (index 8) is the same point:
+    // route b's corner through a's vertex.
+    const indices = Array.from(joined.indices).map((v) => (v === 8 ? 6 : v));
+    const pinched: Mesh = { positions: joined.positions, indices: Uint32Array.from(indices) };
+    expect(componentCount(pinched)).toBe(2);
+    expect(componentCount(joined)).toBe(2);
+    expect(componentCount(a)).toBe(1);
+    // A box with a face missing is still one body; an edge carried by four
+    // faces (the same triangle listed twice) joins nothing through that edge.
+    expect(componentCount({ positions: a.positions, indices: a.indices.slice(3) })).toBe(1);
+    // Listing one triangle twice puts three faces on each of its edges: it and
+    // its twin are cut off from the box, which is otherwise still one piece.
+    const doubled: Mesh = { positions: a.positions, indices: Uint32Array.from([...a.indices, ...a.indices.slice(0, 3)]) };
+    expect(componentCount(doubled)).toBe(3);
+  });
+});
