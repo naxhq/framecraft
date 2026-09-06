@@ -985,3 +985,55 @@ two guards reverted to `tauriApi()`, the four hardening unit tests go red and
 the e2e times out on `data-fc-ready` exactly as the original failure did; the
 five unit tests that must NOT move (the honest `isTauri()`, the loud save, the
 complete shell) stay green, which is what says the fix degraded the right half.
+
+### 10.9 The harness could test a build nobody asked for, and now cannot
+
+The two failures in 10.7 were found, fixed and mutation-probed, and then
+reported as still failing. They were not. The full run had been pointed at a
+`:3000` whose `out/` was built an hour before either fix landed: the served
+`sw.js` contained none of the new code, and the served bundle contained
+neither `framecraft:kill` nor the hardening warning. `playwright.config.ts`
+sets `reuseExistingServer: true` unconditionally -- it has to, because
+`make gate` starts the stack and health-waits on it before Playwright is
+launched -- so a bare `npx playwright test` drives whatever is on the port and
+says nothing about it.
+
+The evidence that settled it, before anything was changed: of the three fixes,
+the one living in the SPEC passed and the two living in the BUILT BUNDLE
+failed. That split has one explanation. The two tests were then run alone
+against the same server, with no neighbours at all, and failed identically --
+which is what exonerates the shared origin by experiment rather than by
+argument, since a shared-origin defect cannot reproduce with nothing to share
+it with. (The suite is `workers: 1` and `fullyParallel: false`, and Playwright
+gives each test its own context, so Cache Storage and registrations were
+already partitioned.)
+
+`e2e/serverFreshness.ts` is now `globalSetup`, and it refuses to start a run
+against a server that is not serving this tree. Three checks, cheapest and
+most exact first:
+
+| check | what it compares | what it catches |
+|---|---|---|
+| 1 | served `/sw.js` against `public/sw.js`, byte for byte | a stale worker, in EITHER mode, with no timestamps and no mode detection -- an equality, because `public/` is served verbatim by both `next dev` and the export |
+| 2 | served `/` against `out/index.html` | a static server on somebody else's tree, which is the same silent failure wearing a different hat |
+| 3 | newest source mtime against newest `out/` mtime | a stale BUNDLED file -- `lib/platform.ts` is invisible to check 1, because only `sw.js` is copied verbatim |
+
+`next dev` compiles per request and cannot be stale, so checks 2 and 3 are
+skipped for it rather than fudged; it is told apart by `/404.html`, which the
+export serves as a real page and dev answers 404 for. Nothing listening at all
+is "nothing to check", which is correct whichever order the runner starts
+`webServer` and `globalSetup` in. The only way past it is
+`PLAYWRIGHT_ALLOW_STALE_SERVER=1`, named explicitly, for the one honest case:
+deliberately pointing `PLAYWRIGHT_BASE_URL` at another origin.
+
+Proved in both directions against the gate's own server. Stale -- the state
+the tree was actually in after a mutation probe -- refuses before any test
+runs, naming the file and both timestamps: `lib\platform.ts changed at
+2026-09-06 00:57:13 / apps/web/out was built at 2026-09-05 14:32:10`. An
+edited `public/sw.js` that has not been rebuilt refuses on check 1 instead,
+with its own message. Fresh, the same command runs and passes. One artifact
+left as found: on this Windows host Playwright's teardown after a refused
+`globalSetup` sometimes aborts Node and exits 127 rather than 1. It does that
+with `process.exit(1)` in place of the throw as well, so it is the runner's
+teardown and not this hook; the exit is non-zero either way and the printed
+block is what a reader acts on.

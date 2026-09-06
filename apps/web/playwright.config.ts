@@ -75,6 +75,17 @@ const PROD_WEB = process.env.FRAMECRAFT_WEB_MODE === "prod";
 
 export default defineConfig({
   testDir: "./e2e",
+  /*
+   * `reuseExistingServer` below is ALWAYS true, for the reason spelled out
+   * there, and the price is that a bare `npx playwright test` drives whatever
+   * is already on the port -- including a build from before the change under
+   * test. That happened on 2026-09-05 and cost an evening: two `siteperf`
+   * tests reported as broken were running against an `out/` built an hour
+   * before the fixes landed. The comment above ("safe orders, pick one") is
+   * what we had, and it is not enough, so the order is now CHECKED. See
+   * `e2e/serverFreshness.ts` for what it compares and how to opt out.
+   */
+  globalSetup: path.join(__dirname, "e2e", "serverFreshness.ts"),
   // One stack, one browser: the specs share a live server and a build queue.
   fullyParallel: false,
   workers: 1,
