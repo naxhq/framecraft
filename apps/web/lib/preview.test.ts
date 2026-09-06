@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 
 import { DEFAULT_PRINT_PARAMS } from "./contracts";
 import type { PrintParams, SceneGraph } from "./contracts";
+import { BUDGET_FACTOR } from "./testBudget";
 import {
   buildBuildings,
   buildingInstanceMatrices,
@@ -30,6 +31,15 @@ const p = (overrides: Partial<PrintParams> = {}): PrintParams => ({
   ...DEFAULT_PRINT_PARAMS,
   ...overrides,
 });
+
+/**
+ * 02's slider budget: one 30 fps frame to rewrite 5 000 instance matrices,
+ * LOCAL at `VITEST_BUDGET_FACTOR=1`. Scaled like the rest of the suite's
+ * wall-clock rows (`lib/testBudget.ts`) so a slow box cannot fail it for being
+ * slow, though it has never been close on either machine -- see the reading it
+ * now prints.
+ */
+const MATRIX_BUDGET_MS = 33 * BUDGET_FACTOR;
 
 describe("minAreaRect", () => {
   it("recovers an axis-aligned rectangle exactly", () => {
@@ -234,16 +244,21 @@ describe("the pick proxies' slider budget", () => {
     const { buildings } = buildBuildings(many, params);
     expect(buildings.length).toBe(5000);
 
-    // The slider path is matrices only; 02's budget is 33 ms per re-render.
-    // Still load-bearing with the proxies invisible: a hero pick raycasts
-    // against these boxes, so they have to follow the height sliders.
+    // The slider path is matrices only; 02's budget is 33 ms per re-render
+    // (`MATRIX_BUDGET_MS`, one frame at 30 fps, LOCAL at factor 1). Still
+    // load-bearing with the proxies invisible: a hero pick raycasts against
+    // these boxes, so they have to follow the height sliders.
     const buffer = new Float32Array(buildings.length * 16);
     const started = performance.now();
     for (let i = 0; i < 5; i += 1) {
       buildingInstanceMatrices(buildings, params, scale, buffer);
     }
     const perUpdate = (performance.now() - started) / 5;
-    expect(perUpdate).toBeLessThan(33);
+    console.info(
+      `[instance matrices] ${buildings.length} buildings, ${perUpdate.toFixed(2)} ms per update ` +
+        `(budget ${MATRIX_BUDGET_MS} ms at factor ${BUDGET_FACTOR})`,
+    );
+    expect(perUpdate).toBeLessThan(MATRIX_BUDGET_MS);
   });
 });
 

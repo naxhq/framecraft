@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 
 import { defaultPrintParams, type PrintParams, type SceneGraph } from "../../contracts";
+import { BUDGET_FACTOR } from "../../testBudget";
 import { StageCache, runPipeline, type PipelineJob } from "../pipeline/index";
 import type { FinishOut } from "../pipeline/stage";
 import { NO_OWNER, type RegionMesh } from "../types";
@@ -13,6 +14,21 @@ import type { BuiltBuildings } from "./buildings";
 import { chicagoScene } from "./fixture";
 import { Arena, batchedUnion, extrudeSection, loadManifold, rectContour, toRegionMesh } from "./manifold";
 import { attributeTriangleOwners } from "./owners";
+
+/**
+ * A second `attributeTriangleOwners` pass over the shipped Chicago buildings
+ * mesh has to cost this, LOCAL, at `VITEST_BUDGET_FACTOR=1`: it is an O(n)
+ * walk of 19 378 triangles and the bound exists so it cannot quietly become a
+ * search. Scaled with the rest of the suite's wall-clock rows for consistency,
+ * not because it was failing -- it reads 10.7 to 10.8 ms here and 26.5 to
+ * 35.1 ms on a runner, comfortably inside 100 either way. It is worth knowing
+ * that this is the one row whose runner ratio (2.5x to 3.3x) sits ABOVE the
+ * declared factor, and that this says nothing about the hardware: at a 10 ms
+ * magnitude the reading is timer granularity and JIT warmup, which is also why
+ * two runner samples of the same work differ by 32 %. A budget this far from
+ * its readings is the right shape for a measurement that noisy.
+ */
+const OWNERS_BUDGET_MS = 100 * BUDGET_FACTOR;
 
 function job(scene: SceneGraph, params: PrintParams, key: string): PipelineJob {
   return {
@@ -86,11 +102,14 @@ describe("per-triangle building identity", () => {
       const startedMs = performance.now();
       const again = attributeTriangleOwners(finish.solid, finish.mesh, built.ownerIds);
       const elapsedMs = performance.now() - startedMs;
-      console.info(`[owners] chicago buildings: ${triangles} triangles, ${expected.length} buildings, ${elapsedMs.toFixed(1)} ms`);
+      console.info(
+        `[owners] chicago buildings: ${triangles} triangles, ${expected.length} buildings, ` +
+          `${elapsedMs.toFixed(1)} ms (budget ${OWNERS_BUDGET_MS} ms at factor ${BUDGET_FACTOR})`,
+      );
       expect(again.unmatched).toBe(0);
       expect(again.owners).toEqual(region.owners);
       expect(again.triangleOwner).toEqual(region.triangleOwner);
-      expect(elapsedMs).toBeLessThan(100);
+      expect(elapsedMs).toBeLessThan(OWNERS_BUDGET_MS);
     } finally {
       cache.dispose();
     }

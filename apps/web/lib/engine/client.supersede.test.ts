@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { defaultPrintParams } from "../contracts";
+import { BUDGET_FACTOR } from "../testBudget";
 import { createEngineClient, type ProgressEvent } from "./client";
 import { blockScene } from "./pipeline/testScenes";
 import { resetOverpassCacheForTest } from "./protocol";
@@ -24,6 +25,15 @@ import { resetOverpassCacheForTest } from "./protocol";
 const here = dirname(fileURLToPath(import.meta.url));
 const RAW = JSON.parse(readFileSync(resolve(here, "../../../../tests/fixtures/overpass-tiny-loop.json"), "utf-8")) as unknown;
 const REQUEST = { lat: 41.8827, lon: -87.6233, radius_m: 900, rotation_deg: 0, preset_id: "chicago-loop" };
+
+/**
+ * How long an ingest may wait for a running build to reach its next stage
+ * boundary, LOCAL at `VITEST_BUDGET_FACTOR=1`. It is a bound on a STAGE's
+ * duration plus a fetch and a normalise, all three of which cost more on
+ * slower hardware, so it scales with the declared factor like every other
+ * wall-clock row (`lib/testBudget.ts`).
+ */
+const YIELD_BUDGET_MS = 3_000 * BUDGET_FACTOR;
 
 describe("EngineClient: an in-flight build never blocks an ingest", () => {
   afterEach(() => {
@@ -131,7 +141,14 @@ describe("cancel latency (audit finding 9)", () => {
       // The build yields at its next stage boundary; on the block scene no
       // stage takes longer than the audit's merged (about 0.6 s), so the
       // ingest cannot wait more than that plus its own fetch and normalise.
-      expect(Date.now() - started).toBeLessThan(3_000);
+      // That reasoning is about how long a STAGE runs, which is exactly the
+      // thing that costs more on slower hardware, so the bound scales with it.
+      const waitedMs = Date.now() - started;
+      console.info(
+        `[supersede] ingest waited ${waitedMs} ms for the build to yield ` +
+          `(budget ${YIELD_BUDGET_MS} ms at factor ${BUDGET_FACTOR})`,
+      );
+      expect(waitedMs).toBeLessThan(YIELD_BUDGET_MS);
       expect(ingested.ok).toBe(true);
       expect(await outcome).toMatchObject({ code: "cancelled" });
     } finally {

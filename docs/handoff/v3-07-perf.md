@@ -1306,3 +1306,122 @@ after 22 252 ms.
   `buildModel` calls where its siblings make one) carries a declared per-test
   ceiling of `20_000 * BUDGET_FACTOR` with its reason beside it, so a genuinely
   hung test anywhere else in the suite still fails in five seconds.
+
+### 12.6 The row left unscaled, the sweep that should have caught it (2026-09-06, second pass)
+
+Run 34064448493 proved the factor and found what 12.4 got wrong. The scaled
+rows behaved: `[normalise] 2012 ms (budget 3000 ms at factor 2)` -- which is
+2012 ms, so at factor 1 it would have gone red a second time -- and
+`[chicago 2x2] 14786 ms (budget 50000 ms at factor 2)`. One row failed:
+
+```
+engine.test.ts > chicago on a hillside > drapes every layer, stays printable
+  and stays inside the time budget    AssertionError: expected 15023 to be less than 15000
+```
+
+12.4 left that budget alone on the stated grounds that it "passed on the runner
+at 8 807 ms". That reading was the FLAT build (`[chicago] build`, the other
+15 s budget in the same file), not the drape. Two budgets, one number, and the
+one that mattered was never checked. The drape had in fact read 13 970 ms on
+run 34034936993 -- 93 % of its budget, the thinnest margin in the suite -- and
+was there to be seen in the log I had already pulled.
+
+**Is the drape genuinely too slow, or does the budget lack a factor?** The
+budget, and this time the evidence is unusually clean: the runner builds the
+*identical* model, 168 296 triangles against a flat 133 696, 5.60 mm of relief,
+37.85 mm tall, to the digit on both machines. Same work, different clock.
+
+| `[terrain]` chicago draped | reading | of budget |
+|---|---:|---:|
+| this host, alone | ~6 240 ms | 42 % |
+| this host, in-suite (three runs) | 7 111, 7 126, 7 211 ms | 47 to 48 % |
+| runner, run 34034936993 | 13 970 ms | 93 % |
+| runner, run 34064448493 | 15 023 ms | 100.2 % (**red**) |
+
+In-suite against in-suite that is **1.94x to 2.11x**, inside the 1.55x to
+2.13x measured in 12.2 and no different in kind. At factor 2 the runner sits at
+50 % of a 30 000 ms budget against this host's 48 % of 15 000 -- the same
+equal-margin result that set the factor in the first place. Nothing in
+`terrain.ts` or `engine.ts` changed, and the flat build in the same file is
+*faster* than the 6.63 s `[V3-P7-fix2-3]` recorded.
+
+What the two runs also show is runner-to-runner variance: +6.6 % on ingest
+(1 887 -> 2 012) and +7.5 % on the drape (13 970 -> 15 023) for identical work.
+A budget with 7 % of headroom is a coin flip, which is what 15 000 against
+13 970 was.
+
+**On `[V3-P8-gate]`.** Read with its successor, which is the operative ruling:
+`[V3-P7-fix2-3]` VOIDED `[V3-P8-gate]` and restored these budgets to 15 s
+unscaled, because the 13.7 to 13.9 s that justified doubling them was
+`measureMinWall`'s swapped filters -- a real defect the raised budget then hid
+for a phase. What it forbids, in its own words, is a budget "raised to
+accommodate a regression". It does not forbid a factor; it puts the burden of
+proof on anyone who touches the number, and its evidence ("the full suite
+passes under exactly the full-suite parallelism that was said to flake") is
+about THIS host and makes no claim about a hosted runner. That burden is
+discharged above -- identical output, unchanged code, and the same ~2x on five
+independent rows -- and `* BUDGET_FACTOR` leaves the local number at 15 000,
+which is precisely what that ruling restored. The reasoning is written into
+`engine.test.ts` beside both constants so the next reader does not have to
+reconstruct it.
+
+**The sweep, done properly this time.** Every wall-clock assertion in the
+vitest suite, found by walking `performance.now()`/`Date.now()` rather than by
+grepping for budget-shaped names, which is how the drape was missed:
+
+| assertion | local | runner | budget | now |
+|---|---:|---:|---:|---|
+| `engine.test.ts` drape | 7 211 ms | 15 023 ms | 15 000 | **scaled** |
+| `engine.test.ts` flat build | 5 673 ms | 8 223, 8 807 ms | 15 000 | **scaled** |
+| `owners.test.ts` re-attribution | 9.1, 10.8 ms | 26.5, 35.1 ms | 100 | scaled, never at risk |
+| `preview.test.ts` instance matrices | 0.48 ms | -- | 33 | scaled, never at risk |
+| `client.supersede.test.ts` ingest yield | 1 ms | -- | 3 000 | scaled, never at risk |
+
+All five now print `(budget N ms at factor F)` beside the reading, so the next
+failure carries its margin instead of needing this table. The bottom three were
+scaled for consistency, not need; the `owners` row is worth one note, because
+its runner ratio (2.5x to 3.3x) is the only one ABOVE the declared factor and
+that says nothing about hardware -- at a 10 ms magnitude the reading is timer
+granularity and JIT warmup, which is also why two runner samples of identical
+work differ by 32 %.
+
+Three clock-reading tests are deliberately left alone, and none is a speed
+assertion:
+
+* `store/editor.test.ts`'s `waitFor` default of 10 s is a polling hang guard in
+  a helper. Its slowest single test on the runner is 3.5 s.
+* `lib/perf.test.ts` compares durations only as LOWER bounds
+  (`toBeGreaterThanOrEqual(15)` after a 15 ms spin) or with `toBeCloseTo`
+  against a stubbed clock. Slower hardware only makes those more true.
+* `lib/engine/pipeline/matrix.test.ts` prints a duration and asserts nothing.
+
+**Sanity, both again.** Factor 1, whole suite, this host, on the edited tree:
+`Test Files 112 passed (112)`, `Tests 2359 passed (2359)` in 113.00 s, with
+`[terrain] chicago draped in 7 111 ms … (budget 15000 ms at factor 1)` and
+`[chicago] build 5 601 ms … (budget 15000 ms at factor 1)` -- the local budgets
+are untouched. Slowed function, busy-wait in
+`buildModel` (`lib/engine/engine.ts`, reverted after): 9 000 ms reads 15 240 ms
+and **FAILS** at factor 1 (`expected 15240 to be less than 15000`); the same
+9 000 ms passes at factor 2, correctly, since 9 s of new work is inside what a
+2x-slower box is allowed; 24 000 ms reads 30 292 ms and **FAILS** at factor 2
+(`expected 30292 to be less than 30000`). The budget has teeth at both.
+
+### 12.7 Further lines for DECISIONS.md (the orchestrator appends; this agent does not edit it)
+
+- [V3.1-P14-5] `engine.test.ts`'s two 15 s budgets, `owners.test.ts`'s 100 ms
+  re-attribution bound, `preview.test.ts`'s 33 ms matrix budget and
+  `client.supersede.test.ts`'s 3 s yield bound all scale with
+  `VITEST_BUDGET_FACTOR`, completing what `[V3.1-P14-4]` started. Only the
+  drape was ever at risk: 13 970 ms then 15 023 ms on consecutive runners
+  against 15 000, for a model identical to the one this host builds in 7 211 ms
+  (168 296 triangles, 5.60 mm relief, 37.85 mm tall, on both) -- a 1.94x to
+  2.11x hardware ratio, not a regression. The other three have 11x to 3 000x
+  headroom and were scaled for consistency; all five now print their reading
+  and their margin.
+- [V3.1-P14-6] `[V3-P7-fix2-3]`'s restoration of the 15 s budgets stands: at
+  factor 1, which every local gate runs at, they are 15 000 exactly as it left
+  them. That ruling forbids raising a budget to accommodate a slow reading
+  before proving the slowness is hardware and not a defect, and its own
+  evidence concerns this host only. The proof for the runner is recorded in
+  `docs/handoff/v3-07-perf.md` section 12.6 and summarised beside both
+  constants in the test.

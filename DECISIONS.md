@@ -1406,3 +1406,25 @@ Append-only. Format: `- [phase] decision, one line`.
   per timezone. Entries are now stamped from UTC fields so the same input yields the same bytes
   on every host, and the pin means what it says. The pin was never re-taken to match this host,
   which was the tempting fix and would have frozen the defect in place.
+
+- `[V3.1-P14-5]` **`engine.test.ts`'s budgets take the factor, and `[V3-P7-fix2-3]` is satisfied
+  rather than overturned.** CI failed the hillside drape at 15023 ms against 15000, 23 ms over.
+  That budget was deliberately unscaled, because `[V3-P7-fix2-3]` had restored it to 15 s after a
+  previous doubling hid a real defect, swapped filters in `measureMinWall`, for a whole phase. Its
+  rule is that a budget must never be raised to accommodate a REGRESSION, and it puts the burden
+  of proof on whoever touches the number. The burden is discharged here by the cleanest evidence
+  available: the runner builds the identical model, 168296 triangles against a flat 133696, 5.60 mm
+  relief and 37.85 mm tall, to the digit on both machines. Same work, different clock, 1.94x to
+  2.11x, inside the 1.55x to 2.13x already measured. At factor 1 the number is still exactly the
+  15000 that ruling restored. Two earlier figures of mine were wrong and are corrected: the drape
+  measures 7111 to 7211 ms in-suite on this host, 48 per cent of budget, not the 11254 I had been
+  quoting, which was the flat build; and the runner's own variance is plus or minus 7 per cent
+  across two runs (13970 then 15023), so 15000 against 13970 was always a coin flip.
+  The sweep that found it was done by walking `performance.now()` and `Date.now()` rather than by
+  grepping budget-shaped names, which is how the drape was missed the first time. Five wall-clock
+  assertions are now scaled and print their factor; three are deliberately left alone with
+  reasons, none of them a speed assertion: a `waitFor` polling hang guard, lower bounds against a
+  stubbed clock that slow hardware only makes more true, and a duration that is printed but never
+  asserted. Worth recording: `owners.test.ts`'s runner ratio of 2.5x to 3.3x sits ABOVE the
+  factor, and that is timer granularity at a 10 ms magnitude rather than hardware, two runner
+  samples of identical work differing by 32 per cent.
