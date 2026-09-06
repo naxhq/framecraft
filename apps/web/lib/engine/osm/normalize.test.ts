@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { SceneRequest } from "../../contracts";
+import { BUDGET_FACTOR } from "../../testBudget";
 import { area, netArea, type Ring } from "./geometry";
 import { heightRulesFrom } from "./heights";
 import { projectOverpass, sceneFromOverpass, sceneFromProjected, type OverpassResponse } from "./normalize";
@@ -18,6 +19,15 @@ const RAW = JSON.parse(readFileSync(`${FIXTURES_DIR}tests/fixtures/overpass-chic
 const PYTHON_SCENE = JSON.parse(readFileSync(`${FIXTURES_DIR}fixtures/chicago-scene.json`, "utf-8"));
 
 const CHICAGO_LOOP: SceneRequest = { lat: 41.8827, lon: -87.6233, radius_m: 900.0, rotation_deg: 0.0, preset_id: "chicago-loop" };
+
+/**
+ * The ingest budget, LOCAL, at `VITEST_BUDGET_FACTOR=1`: 1.5 s for the whole
+ * 16k-element Chicago fixture. It is the same 1.5 s `geometry.ts`'s module doc
+ * and `[V3-P2-E1]` name as the reason the approximate simplify split exists at
+ * all, so it does not move -- what moves is the factor the box it runs on
+ * declares. See `lib/testBudget.ts` and docs/handoff/v3-07-perf.md section 12.
+ */
+const NORMALISE_BUDGET_MS = 1_500 * BUDGET_FACTOR;
 
 function ringNetArea(ring: Ring, holes: Ring[]): number {
   return netArea(ring, holes);
@@ -73,7 +83,13 @@ describe("sceneFromOverpass (parity against the Python /scene reference)", () =>
     const t0 = performance.now();
     sceneFromOverpass(RAW, CHICAGO_LOOP);
     const elapsedMs = performance.now() - t0;
-    expect(elapsedMs).toBeLessThan(1500);
+    // Printed the way the e2e budgets print, so a red row says WHICH of the two
+    // it was: a slow function, or a box that never declared how slow it is.
+    console.info(
+      `[normalise] ${elapsedMs.toFixed(0)} ms ` +
+        `(budget ${NORMALISE_BUDGET_MS} ms at factor ${BUDGET_FACTOR})`,
+    );
+    expect(elapsedMs).toBeLessThan(NORMALISE_BUDGET_MS);
   });
 
   it("every returned building polygon is valid (>= 3 ring points, positive area, well-formed holes)", () => {

@@ -1140,3 +1140,169 @@ Unchanged to the last digit.
   with no text the frame is the blank, byte for byte what it was. Six
   readings: 203.4, 250.0, 206.3, 267.2, 265.6, 251.8 against 400, from
   447.6, 382, 421.8, 368, 401.3, 380. Six city verdicts unchanged.
+
+## 12. Wall-clock budgets on CI hardware: the vitest budget factor (2026-09-06)
+
+CI run 34034936993, job `unit (vitest)`, failed two rows that pass on this host:
+
+```
+lib/engine/osm/normalize.test.ts > normalises the 16k-element Chicago fixture in
+  well under 1.5 s      AssertionError: expected 1887.303477999999 to be less than 1500
+lib/engine/solid/tiling.test.ts > the joint > accounts for every cubic millimetre:
+  the tiles are the model less the gaps         Error: Test timed out in 5000ms.
+```
+
+Neither is a regression. Both are this host's speed written into a test and then
+asserted on somebody else's hardware. The Playwright suite has not had that
+problem since `E2E_BUDGET_FACTOR` (default 1; the hosted-runner jobs set 3):
+every wait there is a local number times a declared factor, and `smoke.spec.ts`
+prints the pair -- "budget 1200 ms at factor 3" -- so a red row says which of the
+two it was. The vitest budgets had no such factor, so they asserted a developer
+workstation on a shared four-core runner and meant nothing when they failed
+there.
+
+### 12.1 The mechanism
+
+`apps/web/lib/testBudget.ts` is the vitest sibling, same parse and same default
+as the e2e one:
+
+```ts
+export const BUDGET_FACTOR = Number(process.env.VITEST_BUDGET_FACTOR ?? 1) || 1;
+```
+
+Its own name rather than a second reader of `E2E_BUDGET_FACTOR`, because the two
+runners are started from different jobs and a hosted runner is not equally
+slower at both: the e2e factor covers WebGL under SwiftShader with no GPU, this
+one covers CPU-bound WASM booleans and JS. Measured separately, they differ.
+
+Three places changed, each of them the same number expressed against declared
+hardware:
+
+| where | before | after |
+|---|---|---|
+| `normalize.test.ts`, ingest budget | `1500` | `1_500 * BUDGET_FACTOR` |
+| `tiling.test.ts`, 2x2 build budget | `25_000` | `25_000 * BUDGET_FACTOR` |
+| `tiling.test.ts`, "every cubic millimetre" | no timeout (vitest's 5 s default) | declared `20_000 * BUDGET_FACTOR` |
+
+Both scaled budgets now print `(budget N ms at factor F)` beside the reading, the
+way `smoke.spec.ts` does, so the next failure carries its own diagnosis.
+
+`vitest.config.ts` still sets **no** `testTimeout`. The 5 s default is right for
+the great majority of the suite's 2 356 tests, and raising it globally would buy
+a handful of WASM builds their headroom by giving every genuinely hung test that
+much longer to hang. The 131 places that need more say so themselves, next to
+the reason.
+
+### 12.2 The readings, and where the factor comes from
+
+Four rows measured the same way on both machines: one full `vitest run` of the
+whole suite, so each test competes with the same neighbours it competes with in
+the job that failed. This host is a Ryzen 9 9950X3D (32 threads, 61.6 GiB,
+Windows 11), running 31 forks; the runner is `ubuntu-latest`, and its readings
+are run 34034936993's own log.
+
+| reading | this host | GitHub runner | ratio |
+|---|---:|---:|---:|
+| ingest, the timed block (`[normalise]`) | 972 ms, 961 ms | 1 887 ms | **1.94, 1.96** |
+| Chicago 2x2 tiled build (`[chicago 2x2]`) | 7 027 ms, 7 073 ms | 14 968 ms | **2.13, 2.12** |
+| Chicago flat build (`[chicago] build`) | 5 673 ms | 8 807 ms | **1.55** |
+| "every cubic millimetre", whole test | 2 439 ms | >5 000 ms (killed at the default) | **>2.05** |
+| whole suite, wall clock | 114.62 s | 341.73 s | 2.98 |
+| whole suite, sum of test time | 472.05 s | 700.80 s | 1.48 |
+
+The last two rows are here to be discounted rather than used: wall clock mostly
+measures worker count (31 forks against about 3) and the sum of test time mostly
+measures how starved each worker was. The per-test rows are the comparable ones
+and they put the runner at **1.55x to 2.13x** this host.
+
+So the committed factor is **2**, the top of the measured range rounded to an
+integer. What that buys, and why it is not 3:
+
+* ingest at factor 2 is 1 887 ms against a 3 000 ms budget, 63 % of it. Here it
+  is 961 to 972 ms against 1 500 ms, 64 to 65 % of it. The same margin, which is
+  what "one threshold expressed against declared hardware" has to mean. At
+  factor 3 the runner would have had **more** headroom than the developer
+  (42 %), which is a weaker assertion there than here wearing a factor's
+  clothes.
+* the 2x2 build at factor 2 is 14 968 ms against 50 000 ms (30 %), against
+  7 027 ms of 25 000 ms here (28 %). Same again.
+* nothing local moves. At factor 1 -- what `make gate`, `make gate-fast` and a
+  bare `npm test` all run at -- 1 500 is still 1 500 and 25 000 is still 25 000.
+
+For scale: the ingest row passed on this same workflow on 2026-09-02 (run
+33611314264, before the v3-14 job split) and fails now. Nothing in
+`normalize.ts` changed; the suite grew, and a suite that grows costs more on
+four cores than on thirty-two. Worth watching -- if the ratio climbs past 2.13
+the next time it is taken, the honest answer is another measurement and a new
+declared factor, not a bigger budget.
+
+The one declared timeout is sized differently on purpose. Nothing in "every
+cubic millimetre" asserts a duration; it builds `smallScene` three times (whole,
+snug, loose) where its siblings build it once or twice, and that alone is what
+put it over the 5 s default. It is a hang guard, so it gets about eight times
+the measured cost -- 20 s local, 40 s at factor 2 -- which fails a genuinely
+stuck build in well under a minute and never fails a slow box.
+
+### 12.3 Sanity checks
+
+Both were run, and both had to pass before any of this was worth committing.
+
+**1. Factor 1 is unchanged, and green.** The whole suite, this host, on the
+edited tree: `Test Files 113 passed (113)`, `Tests 2358 passed (2358)`, 114.60 s
+-- against 114.62 s and the same green for the tree before the change. The two
+rows print `[normalise] 961 ms (budget 1500 ms at factor 1)` and
+`[chicago 2x2] 7 073 ms, 4 tiles (budget 25000 ms at factor 1)`: the same
+readings as before, against the same budgets. Setting the factor to 2 on this
+host only changes what is printed --
+`[normalise] 487 ms (budget 3000 ms at factor 2)`,
+`[chicago 2x2] 5 574 ms, 4 tiles (budget 50000 ms at factor 2)` -- which is the
+point: the number in the test never moved.
+
+**2. A deliberately slowed function still reddens the budget.** A busy-wait
+dropped into `sceneFromOverpass` (`lib/engine/osm/normalize.ts`), reverted
+after, with the same wait run at both factors:
+
+| slowdown | factor | reading | budget | verdict |
+|---:|---:|---:|---:|---|
+| 1 200 ms | 1 | 1 737 ms | 1 500 | **FAIL** -- `expected 1736.6261 to be less than 1500` |
+| 1 200 ms | 2 | 1 742 ms | 3 000 | pass, correctly: 1.2 s of new work is inside what a 2x-slower box is allowed |
+| 2 700 ms | 2 | 3 249 ms | 3 000 | **FAIL** -- `expected 3248.5550999999996 to be less than 3000` |
+
+So the budget still has teeth at both factors; the factor moves the line, it
+does not remove it.
+
+The declared timeout was checked the same way, with the busy-wait in
+`buildModel` (`lib/engine/engine.ts`, reverted after) so all three of the test's
+builds pay it. Unslowed it passes in 1 735 ms. At 7 000 ms per build it fails
+with `Test timed out in 20000ms` -- the declared ceiling, not vitest's 5 000 --
+after 22 252 ms.
+
+### 12.4 What was deliberately not touched
+
+* `engine.test.ts`'s `TIME_BUDGET_MS` and `TERRAIN_TIME_BUDGET_MS`, both 15 s.
+  They passed on the runner with room (8 807 ms measured) and they carry a
+  history worth keeping verbatim: `[V3-P8-gate]` raised the first of them once
+  and it turned out to be hiding `measureMinWall`'s real defect. They can adopt
+  the factor when somebody has a reading that says they should; this wave had
+  none.
+* `tiling.test.ts`'s existing 120 s and 180 s per-test timeouts. They are hang
+  guards already far above any measured cost, and scaling them would push them
+  past the job's own 10-minute timeout, where a ceiling stops meaning anything.
+
+### 12.5 Lines for DECISIONS.md (the orchestrator appends; this agent does not edit it)
+
+- [V3.1-P7-38] The vitest wall-clock budgets scale with `VITEST_BUDGET_FACTOR`
+  (`apps/web/lib/testBudget.ts`, default 1; `ci.yml`'s `unit` job sets 2), the
+  mechanism the Playwright specs have had as `E2E_BUDGET_FACTOR`. No budget
+  moved: 1 500 ms of ingest and 25 000 ms of 2x2 build are what they were at
+  factor 1, which is what every local gate runs at. The factor is 2 because it
+  was measured -- four paired full-suite readings at 1.55x, 1.94x, 2.13x and
+  >2.05x -- rather than copied from the e2e factor of 3, which covers
+  SwiftShader and is a steeper penalty. At 2 the ingest row sits at 63 % of
+  budget on the runner against 64 to 65 % on the dev host: the same claim on
+  both.
+- [V3.1-P7-39] `vitest.config.ts` still sets no global `testTimeout`. The one
+  test that outgrew the 5 s default ("every cubic millimetre", three
+  `buildModel` calls where its siblings make one) carries a declared per-test
+  ceiling of `20_000 * BUDGET_FACTOR` with its reason beside it, so a genuinely
+  hung test anywhere else in the suite still fails in five seconds.

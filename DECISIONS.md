@@ -1372,3 +1372,24 @@ Append-only. Format: `- [phase] decision, one line`.
   even while emboss cannot yet close a gap the way engraving can. That is what ships.
   The `TEXT=all` fixture is then re-cut to a row the geometry can actually print while still
   exercising an embossed line, because a fixture's job is coverage, not a particular string.
+
+- `[V3.1-P14-4]` **The vitest wall-clock budgets get a declared factor, measured at 2, not a
+  raised number.** CI's `unit` job failed on two budgets that pass locally, because the budgets
+  asserted a developer laptop's speed on a shared runner. The repo already had the right shape on
+  the Playwright side, where the smoke run reports "budget 1200 ms at factor 3", so the same
+  mechanism now covers the vitest budgets through `lib/testBudget.ts` and `VITEST_BUDGET_FACTOR`,
+  set only in the `unit` job. It is deliberately a separate name from the e2e factor: a runner is
+  not equally slower at SwiftShader WebGL and at CPU-bound WASM, and pretending one number fits
+  both would be the same error in a new place. The local budgets do not move, and both budgets now
+  print their factor the way the smoke run does.
+  The factor is 2 because it was measured, not chosen to fit: paired readings against run
+  34034936993 give ingest 961-972 ms against 1887, the 2x2 tiled build 7027-7073 against 14968,
+  a flat Chicago build 5673 against 8807, and the timed-out test 2439 against over 5000, a range
+  of 1.55x to 2.13x. Three was rejected with a real argument rather than caution: at 3 the runner
+  would sit at 42 per cent of budget against this host's 65, which is a LAXER assertion on CI than
+  locally, while 2 gives 63 against 65, the same claim on both machines. The timed-out tiling test
+  gets a declared per-test ceiling with its reason rather than a raised global `testTimeout`, so
+  every other test keeps the 5 second default and a genuinely hung test still fails fast.
+  Proved in both directions: at factor 1 the suite is unchanged at 2358 passed in the same time,
+  and a busy-wait injected into `sceneFromOverpass` reddens the budget at factor 1 and again, at a
+  larger wait, at factor 2. Both injections were reverted and the source files verified untouched.

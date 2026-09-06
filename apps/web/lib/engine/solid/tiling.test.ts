@@ -11,6 +11,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { defaultPrintParams, type PrintParams } from "../../contracts";
+import { BUDGET_FACTOR } from "../../testBudget";
 import * as T from "../../transform";
 import { resolveProfile } from "../../printers";
 import { buildModel } from "../engine";
@@ -34,8 +35,26 @@ import {
 } from "./measure";
 import { degenerateFaces, openEdges } from "./mesh";
 
-/** A 2x2 tiled Chicago has to build inside this, in Node, on a developer machine. */
-const TILED_TIME_BUDGET_MS = 25_000;
+/**
+ * A 2x2 tiled Chicago has to build inside this, in Node, on a developer
+ * machine -- 25 s LOCAL, at `VITEST_BUDGET_FACTOR=1`. The number does not move
+ * for a slower box; the factor that box declares does. See
+ * `lib/testBudget.ts` and docs/handoff/v3-07-perf.md section 12.
+ */
+const TILED_TIME_BUDGET_MS = 25_000 * BUDGET_FACTOR;
+
+/**
+ * The per-test ceiling for "accounts for every cubic millimetre", which is the
+ * one test in this file that pays for THREE full builds of `smallScene` (whole,
+ * snug, loose) rather than one or two, and so is the one that outgrew vitest's
+ * 5 s default. It is a hang guard, not a budget: nothing here asserts a
+ * duration, so it is set clear of the measured cost -- 1.7 to 1.9 s alone and
+ * 2.4 s under a full-suite run here, 5.1 s and still unfinished on a runner --
+ * with about eight times that as headroom, and scaled by the same factor so it
+ * means the same thing on both. A genuinely stuck build still fails in well
+ * under a minute, and every OTHER test in the suite keeps the 5 s default.
+ */
+const VOLUME_ACCOUNTING_TIMEOUT_MS = 20_000 * BUDGET_FACTOR;
 
 let wasm: ManifoldToplevel;
 
@@ -480,7 +499,7 @@ describe("the joint", () => {
     const looseLoss = whole.merged.volumeMm3 - total(loose);
     expect(looseLoss).toBeGreaterThan(snugLoss);
     expect(looseLoss / whole.merged.volumeMm3).toBeLessThan(0.02);
-  });
+  }, VOLUME_ACCOUNTING_TIMEOUT_MS);
 });
 
 describe("the index mark", () => {
@@ -536,7 +555,10 @@ describe("the Chicago plate, split four ways", () => {
     const started = Date.now();
     const result = await buildModel({ scene: chicagoScene(), params, date: "2026-09-01" });
     const elapsed = Date.now() - started;
-    console.info(`[chicago 2x2] ${elapsed} ms, ${result.tiles?.length} tiles`);
+    console.info(
+      `[chicago 2x2] ${elapsed} ms, ${result.tiles?.length} tiles ` +
+        `(budget ${TILED_TIME_BUDGET_MS} ms at factor ${BUDGET_FACTOR})`,
+    );
 
     expect(result.tiles).toHaveLength(4);
     expect(elapsed).toBeLessThan(TILED_TIME_BUDGET_MS);

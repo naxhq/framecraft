@@ -147,7 +147,16 @@ jobs:
 
   # ---------------------------------------------------------------------
   # 2. unit  -- vitest, with the zero-skip check that `make gate` step 3 does.
-  #    Projected 3m 10s (npm ci 12s + vitest 2m 31s + overhead).
+  #    MEASURED 6m 08s on run 34034936993, of which vitest itself is 5m 42s
+  #    (341.73s: 112 files, 2 356 tests) and the rest is checkout, a cold npm
+  #    cache and the guard. The 3m 10s projected at v3-14 (npm ci 12s + vitest
+  #    2m 31s) was not a regression from, it was a projection that priced the
+  #    runner at roughly this host's speed. The same suite is 1m 55s here, and
+  #    the gap is mostly worker count -- 31 forks against the runner's few --
+  #    not per-test cost, which is 1.55x to 2.13x (see the `VITEST_BUDGET_FACTOR`
+  #    note below). The suite has also grown a lot across the v3.1 waves. It
+  #    still fits the 10-minute timeout, with under 4 minutes to spare; when it
+  #    stops fitting, the answer is sharding this job, not a longer timeout.
   # ---------------------------------------------------------------------
   unit:
     name: unit (vitest)
@@ -181,6 +190,24 @@ jobs:
 
       - name: vitest
         working-directory: apps/web
+        env:
+          # The vitest sibling of the `E2E_BUDGET_FACTOR: "3"` the Playwright
+          # job sets below: it declares how much slower THIS hardware is than
+          # the dev host the wall-clock budgets are written for, so one
+          # threshold covers both boxes instead of a laptop's speed being
+          # asserted on a shared runner. It scales assertions and declared
+          # per-test timeouts only (`apps/web/lib/testBudget.ts`); no budget is
+          # weakened, and at the default factor 1 every number is what it was.
+          #
+          # 2, not 3, because it was measured rather than copied: the same four
+          # readings taken from a full `vitest run` on both machines put this
+          # runner at 1.55x to 2.13x the dev host, where the e2e factor covers
+          # SwiftShader WebGL and is a much steeper 2.2x to 3.7x. At 2 the
+          # ingest row sits at 63 % of its budget on the runner and 65 % of it
+          # on the dev host: the same claim on both machines, which is the
+          # whole point. Readings and method: docs/handoff/v3-07-perf.md
+          # section 12.
+          VITEST_BUDGET_FACTOR: "2"
         run: npm test 2>&1 | tee vitest.log
 
       - name: fail on any skipped/todo vitest test
