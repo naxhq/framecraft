@@ -32,7 +32,7 @@ import { boxRegion, makeResult, sampleRegions } from "./fixtures";
 import { MODEL_PART } from "./generic3mf";
 import { exportForTarget } from "./index";
 import { isTiled, resultForTile, tileStem } from "./tiles";
-import { unzipAll, unzipText } from "./zip";
+import { readStamps, unzipAll, unzipText } from "./zip";
 
 const CREATED = new Date(Date.UTC(2026, 0, 1));
 
@@ -297,8 +297,32 @@ describe("an untiled build", () => {
     // stamps it, so this number does NOT move on a release bump the way it
     // would have if the tests saw the real version. `lib/version.ts` explains
     // the choice.
+    //
+    // It moved a sixth time, and this time NOTHING in the model moved: not the
+    // metadata, not the mesh, not the plate, not the config parts. What moved
+    // is the zip framing, and the reason it could is that it had never been
+    // the same on two hosts. fflate derives every entry's DOS timestamp from
+    // the Date's LOCAL fields, so `CREATED` (2026-01-01T00:00:00Z) was stamped
+    // as 2025-12-31 18:00:00 on the Central Time machine every pin above was
+    // taken on, and as 2026-01-01 00:00:00 on the UTC runner CI uses, in each
+    // of the file's 22 headers. The previous number was the Central Time
+    // rendering; CI had computed b68e0835 for the same fixture since the test
+    // existed (its 2026-09-02 run shows the same failure, masked by a piped
+    // `npm test`), and this host reproduces it exactly under `TZ=UTC` with the
+    // old writer, which is what isolates the zone as the only difference.
+    // `zip.ts` now stamps the UTC fields itself, `zip.test.ts` holds that
+    // across five zones, and this host in its own zone and under `TZ=UTC` both
+    // produce the number below, which is CI's number, not this machine's.
     const digest = createHash("sha256").update(file.bytes).digest("hex");
-    expect(digest).toBe("bca6c6aa746df126dd2ad3a9aae6066d7353c0f62c2ee55e4e2d8c30213c592b");
+    expect(digest).toBe("b68e0835602a91c3da1d315f66caa9e75860655b8462599569f1d30b55aa5f33");
+    // Every header carries the UTC rendering of CREATED, whatever zone this
+    // runs in: 2026-01-01 00:00:00 is year 46 << 9 | month 1 << 5 | day 1, and
+    // midnight is 0. This is the assertion that fails on a zone-dependent
+    // writer even where the hash happens to match the pinning host.
+    for (const stamp of readStamps(file.bytes)) {
+      expect(stamp.local, stamp.name).toEqual({ time: 0, date: (46 << 9) | (1 << 5) | 1 });
+      expect(stamp.central, stamp.name).toEqual(stamp.local);
+    }
     expect(unzipText(file.bytes, "3D/3dmodel.model")).toContain('<metadata name="framecraft:palette">default</metadata>');
     // The block is there, once each, so a future edit that drops it fails here
     // as well as on the hash.

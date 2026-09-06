@@ -175,6 +175,28 @@ export function resetOverpassCacheForTest(): void {
   }
 }
 
+/**
+ * Resolve once no live session in this realm is running or holding a job.
+ * Test-only.
+ *
+ * A cancel is cooperative: `handle({kind: "cancel"})` sets the running job's
+ * abort flag and the runner honours it at its next stage boundary, so the
+ * session stays `busy` for as long as the stage in flight takes (the manifold
+ * WASM load included, on the first run of a realm). The client rejects the
+ * caller's promise the moment it posts the cancel, which is right for the
+ * page and useless for a test suite: a suite that starts a run per test and
+ * cancels it in teardown cannot tell, from anything the store exposes, whether
+ * the session it shares with the next test has actually let go -- and a run
+ * the next test starts queues behind the old one until it has. This is the
+ * signal `afterEach` awaits before it hands the session on.
+ */
+export function whenSessionsIdleForTest(): Promise<void> {
+  const busy = [...sessions].filter((session) => session.busy || session.hasQueued);
+  if (busy.length === 0) return Promise.resolve();
+  // A job that starts while we wait (the queued one) is caught by the re-check.
+  return Promise.all(busy.map((session) => session.whenIdle())).then(() => whenSessionsIdleForTest());
+}
+
 // ---------------------------------------------------------------------------
 // The session
 // ---------------------------------------------------------------------------
@@ -216,6 +238,7 @@ export class PipelineSession {
   private current: ActiveJob | null = null;
   private queued: QueuedJob | null = null;
   private last: LastRun | null = null;
+  private idleWaiters: Array<() => void> = [];
   private readonly options: PipelineSessionOptions;
 
   constructor(options: PipelineSessionOptions = {}) {
@@ -226,6 +249,17 @@ export class PipelineSession {
   /** True while a job is running. */
   get busy(): boolean {
     return this.current !== null;
+  }
+
+  /** True while a request is waiting for the running job to stop. */
+  get hasQueued(): boolean {
+    return this.queued !== null;
+  }
+
+  /** Resolves when this session has neither a running nor a queued job (see `whenSessionsIdleForTest`). */
+  whenIdle(): Promise<void> {
+    if (this.current === null && this.queued === null) return Promise.resolve();
+    return new Promise((resolve) => this.idleWaiters.push(resolve));
   }
 
   handle(msg: WorkerRequest, post: Post): void {
@@ -274,7 +308,13 @@ export class PipelineSession {
       this.current = null;
       const next = this.queued;
       this.queued = null;
-      if (next !== null) this.start(next);
+      if (next !== null) {
+        this.start(next);
+        return;
+      }
+      const waiters = this.idleWaiters;
+      this.idleWaiters = [];
+      for (const resolve of waiters) resolve();
     });
   }
 

@@ -1393,3 +1393,16 @@ Append-only. Format: `- [phase] decision, one line`.
   Proved in both directions: at factor 1 the suite is unchanged at 2358 passed in the same time,
   and a busy-wait injected into `sceneFromOverpass` reddens the budget at factor 1 and again, at a
   larger wait, at factor 2. Both injections were reverted and the source files verified untouched.
+
+- `[V3.1-P13-5]` **The exported zip was a function of the host's timezone, and that is a real
+  determinism defect rather than a test problem.** CI's `tiles.test.ts` failed a pinned export
+  hash, `b68e08...` on the ubuntu runner against `bca6c6...` here, and neither of my two
+  hypotheses was right: `CREDITS_TEXT` is built from explicit `\n` escapes so the CRLF checkout
+  cannot reach it, and the kernel was not the culprit either. The cause is that `fflate` derives
+  the MS-DOS date and time words from the `Date`'s LOCAL fields, so the fixed `DEFAULT_MTIME`
+  stamps different bytes in Chicago than in UTC. Two people exporting the same model in different
+  timezones therefore got byte-different files, and a hash pinned on one machine could never hold
+  on another. The header comment claimed the packer was deterministic; it was deterministic only
+  per timezone. Entries are now stamped from UTC fields so the same input yields the same bytes
+  on every host, and the pin means what it says. The pin was never re-taken to match this host,
+  which was the tempting fix and would have frozen the defect in place.

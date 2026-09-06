@@ -25,6 +25,7 @@ import {
   fetchOverpass,
   resetBundledPresetManifest,
 } from "@/lib/engine/osm/overpass";
+import { whenSessionsIdleForTest } from "@/lib/engine/protocol";
 import { INITIAL_LOCATION, useEditorStore } from "@/store/editor";
 import {
   COMMIT_DEBOUNCE_MS,
@@ -154,7 +155,15 @@ describe("keyboard navigation through the Location sliders", () => {
   let fetchSpy: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    vi.useFakeTimers();
+    // Only the timers this suite measures: the commit gate's debounce. Not
+    // `setImmediate`, which is how the engine yields to the event loop between
+    // stages (`pipeline/runner.ts:yieldToEventLoop`): a fake one fires only on
+    // a clock advance, so a run still going when a test ends would park on it,
+    // `vi.useRealTimers()` would discard it unfired, and the realm's one
+    // session would stay busy for every test after -- their requests queued
+    // behind a job that can never reach the boundary where its cancel takes
+    // effect. That is the state CI's zero-Overpass-calls failure was in.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     useEditorStore.setState({
       location: { ...INITIAL_LOCATION },
       params: { ...DEFAULT_PRINT_PARAMS },
@@ -175,11 +184,22 @@ describe("keyboard navigation through the Location sliders", () => {
     resetBundledPresetManifest();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     // A preview starts a real pipeline run; without this it keeps going after
     // the test returns, on whatever state a later test happens to set.
     useEditorStore.getState().cancelPipeline();
     vi.useRealTimers();
+    // The cancel is cooperative. The store's promise settles the moment the
+    // cancel is posted, but the session's job stops only at its next stage
+    // boundary (after the manifold load, on the realm's first run), and the
+    // session is one per realm: a run the next test starts queues behind this
+    // one and its request reaches `fetch` only once the old job has let go.
+    // Whether that happened inside the next test's fake-timer window used to
+    // depend on how far the abandoned run had got, which is the host's speed
+    // -- CI measured zero Overpass calls where this machine measured one. So
+    // every test hands the session on idle, and a run that cannot stop fails
+    // this hook loudly instead of leaking into the next test.
+    await whenSessionsIdleForTest();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
