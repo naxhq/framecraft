@@ -457,6 +457,62 @@ describe("trees", () => {
     expect(outstandingWasmObjects()).toBe(0);
   }, 120_000);
 
+  it("carries the trees of a park the user raised ([V3.1-P11-4])", async () => {
+    // A park with three trees standing on it, raised a millimetre by an
+    // `object_overrides` row, which moves the polygon out of `parks` and into
+    // `override_1`. Before the fix the raised park arrived at the tree stage as
+    // a BLOCKER - it was no longer the `parks` region - and every tree standing
+    // on it was culled as "standing on something else": `stats.trees` 3 -> 0
+    // and the region 204 triangles -> 12, a user losing three trees for asking
+    // for one raise, and told nothing about it.
+    const parts = {
+      radiusM: RADIUS_M,
+      green: [area(square(60, -60, 100), [], "w-park")],
+      trees: [
+        { x: 40, y: -50, radius_m: 6 },
+        { x: 70, y: -80, radius_m: 7 },
+        { x: 85, y: -40, radius_m: 5 },
+      ],
+    };
+    const flat = await buildModel({ scene: scene(parts), params: defaultPrintParams() });
+    const raised = await buildModel({
+      scene: scene(parts),
+      params: {
+        ...defaultPrintParams(),
+        object_overrides: [{ osm_id: "w-park", layer: "green", raise_mm: 1 }],
+      },
+    });
+
+    // Every tree that printed before prints now, and none is reported blocked.
+    expect(flat.stats.trees).toBe(3);
+    expect(raised.stats.trees).toBe(3);
+    expect(raised.stats.treesDropped).toBe(0);
+    expect(raised.findings.find((f) => f.id === "trees-blocked")).toBeUndefined();
+
+    // The park left `parks` for `override_1` and took its trees with it: the
+    // same solid, welded into one body, with the same triangles.
+    const before = regionOf(flat, "parks")!;
+    const after = regionOf(raised, "override_1")!;
+    expect(regionOf(raised, "parks")).toBeUndefined();
+    expect(after.indices.length).toBe(before.indices.length);
+    expect(after.bodies).toBe(before.bodies);
+    // ... one millimetre further up, canopies and all, not left standing on
+    // the plate under a slab that walked out from under them. Read at the TOP
+    // faces: a raised region still reaches down through the base top to weld
+    // to the plate (`placementOf`'s ceiling clamp), so its underside stays
+    // where it was and only what it carries moves.
+    expect(after.bbox.max[2] - before.bbox.max[2]).toBeCloseTo(1.0, 3);
+    // Probed on the grass and again on a canopy, so this is the whole surface
+    // moving rather than one bounding box growing.
+    const grass: [number, number] = [mm(20), mm(-100)];
+    const canopy: [number, number] = [mm(40), mm(-50)];
+    expect(regionHeightAt(raised, "override_1", ...grass)! - regionHeightAt(flat, "parks", ...grass)!).toBeCloseTo(1.0, 3);
+    expect(regionHeightAt(raised, "override_1", ...canopy)! - regionHeightAt(flat, "parks", ...canopy)!).toBeCloseTo(1.0, 3);
+    // And it is still one printed object, not a grove floating over a park.
+    expect(raised.merged.bodies).toBe(1);
+    expect(outstandingWasmObjects()).toBe(0);
+  }, 120_000);
+
   it("honours params.trees", async () => {
     const trees = [{ x: 0, y: -60, radius_m: 4 }];
     const off = await buildModel({

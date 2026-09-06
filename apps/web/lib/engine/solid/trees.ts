@@ -23,6 +23,7 @@
  */
 
 import * as T from "../../transform";
+import type { RegionName } from "../types";
 import type { BuildContext } from "./context";
 import { PART_OVERLAP_MM, addFinding, finding } from "./context";
 import type { Drape } from "./drape";
@@ -51,9 +52,37 @@ export const TRUNK_MAX_RATIO = 0.7;
 /** How far a tree reaches into the surface it stands on, print mm. */
 export const TREE_SKIRT_MM = 0.6;
 
+/**
+ * A patch of parkland a tree may stand on, and where its trees belong.
+ *
+ * The ordinary `parks` layer is one of these; so is every `override_N` region a
+ * green polygon was lifted into. They are offered in the order the surfaces
+ * were built, which puts the override grounds first, because a polygon the user
+ * singled out owns its ground against the layer it came out of.
+ */
+export interface TreeGround {
+  /** The region the trees standing here weld into and print in. */
+  region: RegionName;
+  /** The repaired footprint of this patch of parkland. */
+  section: CrossSection;
+  /** How far this ground rides above the parks layer's own top face, print mm. */
+  liftMm: number;
+}
+
+/** The trees of one region, as one solid with many bodies. */
+export interface TreeGrove {
+  region: RegionName;
+  solid: Manifold;
+}
+
 export interface BuiltTrees {
-  /** Every surviving tree as one solid with many bodies, or null. */
-  solid: Manifold | null;
+  /**
+   * The surviving trees, grouped by the region each welds into: `parks` for
+   * every tree standing on the parkland layer or on open ground, and one entry
+   * per green override region for the trees standing on a polygon the user
+   * lifted out of it ([V3.1-P11-4]).
+   */
+  groves: readonly TreeGrove[];
   kept: number;
   /** Trees the size floor removed. */
   dropped: number;
@@ -71,18 +100,27 @@ export function minTrunkRadiusMm(ctx: BuildContext): number {
 }
 
 /**
- * Build every surviving tree, as one solid.
+ * Build every surviving tree, grouped by the region it belongs to.
  *
  * `blockers` are the repaired footprints that already own their ground: the
- * buildings and every surface layer. A tree centred inside one of them is
- * dropped rather than left standing on a roof or in a river.
+ * buildings and every surface layer that is NOT parkland. A tree centred inside
+ * one of them is dropped rather than left standing on a roof or in a river.
+ *
+ * `grounds` are the parkland patches, which are the opposite of a blocker: a
+ * tree centred on one belongs to it, rides whatever raise it carries and welds
+ * into its region. Before [V3.1-P11-4] there was one list and a park lifted
+ * into an override region left it, so it arrived here as a blocker and took
+ * every tree standing on it out of the model - a user raising a park lost its
+ * trees without being told. A tree on none of them stands on open ground and
+ * belongs to `parks`, exactly as it always has.
  */
 export function buildTrees(
   ctx: BuildContext,
   blockers: readonly (CrossSection | null)[],
+  grounds: readonly TreeGround[],
   drape: Drape | null,
 ): BuiltTrees {
-  const empty: BuiltTrees = { solid: null, kept: 0, dropped: 0, blocked: 0 };
+  const empty: BuiltTrees = { groves: [], kept: 0, dropped: 0, blocked: 0 };
   const trees = ctx.scene.trees;
   if (!ctx.params.trees || trees.length === 0) return empty;
 
@@ -94,6 +132,11 @@ export function buildTrees(
   }
 
   const index = new EdgeIndex(blockers);
+  // One index per raised patch of parkland, and none at all on the ordinary
+  // build: a ground that neither moves nor prints in a region of its own asks
+  // the same question of every tree and always gets the same answer.
+  const lifted = grounds.filter((ground) => ground.region !== "parks" || ground.liftMm !== 0);
+  const groundIndex = lifted.map((ground) => new EdgeIndex([ground.section]));
   const { wasm, arena, scale } = ctx;
   // A deeper skirt than a building's, and for a reason a flat build never sees:
   // a tree is placed rigidly, at the terrain height under its own centre, while
@@ -104,7 +147,7 @@ export function buildTrees(
   const skirt = Math.min(ctx.baseTopMm / 3, Math.max(PART_OVERLAP_MM, TREE_SKIRT_MM));
   const bottom = ctx.baseTopMm - skirt;
   const trunkFloor = minTrunkRadiusMm(ctx);
-  const solids: Manifold[] = [];
+  const solids = new Map<RegionName, Manifold[]>([["parks", []]]);
   let blocked = 0;
 
   for (const i of chosen) {
@@ -125,11 +168,21 @@ export function buildTrees(
       blocked += 1;
       continue;
     }
-    const lift = drapeSurfaceMm(drape, x, y);
+    // The parkland this tree stands on, if any: the first patch to claim it,
+    // which is an override ground before the layer it came out of.
+    const at = groundIndex.findIndex((ground) => ground.contains(x, y));
+    const ground = at < 0 ? null : lifted[at];
+    const region = ground === null ? "parks" : ground.region;
+    const lift = drapeSurfaceMm(drape, x, y) + (ground === null ? 0 : ground.liftMm);
+    let group = solids.get(region);
+    if (group === undefined) {
+      group = [];
+      solids.set(region, group);
+    }
     for (const piece of treePieces(ctx, radius, height, trunkFloor, skirt)) {
       const placed = arena.keep(piece.translate([x, y, bottom + lift]));
       piece.delete();
-      solids.push(placed);
+      group.push(placed);
     }
   }
 
@@ -147,9 +200,13 @@ export function buildTrees(
       ),
     );
   }
-  const merged = batchedUnion(wasm, arena, solids);
+  const groves: TreeGrove[] = [];
+  for (const [region, pieces] of solids) {
+    const merged = batchedUnion(wasm, arena, pieces);
+    if (merged !== null) groves.push({ region, solid: merged });
+  }
   return {
-    solid: merged,
+    groves,
     kept: chosen.length - blocked,
     dropped,
     blocked,

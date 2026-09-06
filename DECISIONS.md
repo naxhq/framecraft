@@ -1450,3 +1450,23 @@ Append-only. Format: `- [phase] decision, one line`.
   stage its comment describes, a test whose comment and behaviour have diverged; and
   `owners.test.ts` sits at 2.5x to 3.3x, above the factor, from timer granularity at a 10 ms
   magnitude rather than hardware, which should not later be read as evidence the factor is low.
+
+- `[V3.1-P11-5]` **The trees defect is reproduced, is broader than recorded, and was layer
+  membership.** `[V3.1-P11-4]` was written from one measurement and explicitly required
+  independent reproduction before any fix. Reproduced exactly: a park carrying three trees, given
+  `raise_mm: 1` through `object_overrides`, drops `stats.trees` from 3 to 0 with `treesDropped`
+  going 0 to 3 and the region falling from 204 triangles to 12. One detail the original record
+  missed: an info finding `trees-blocked` is raised, so the trees are culled as BLOCKED rather
+  than dropped for size, which is the clue that names the cause.
+  The cause is none of the three shapes I guessed. The `trees` stage chose its blockers as "every
+  surface region whose name is not `parks`", so an override moves the polygon into `override_N`,
+  the park stops matching that name, arrives as a blocker, and every tree centred on it is culled
+  as standing on something else. It follows that the defect is WIDER than `[V3.1-P11-4]` says: a
+  colour-only override on a green polygon loses its trees identically, and `raise_mm` was merely
+  the case someone happened to probe.
+  The fix is general rather than a special case for overrides: a repaired surface now carries the
+  layer it came from and how far it rides above that layer's top face, measured from the
+  placements so a clamped raise moves passengers exactly as far as it moved the slab. Trees block
+  on the source layer instead of the region name and treat every green ground as ground to stand
+  on. Default builds are unchanged, because with no green override the grouping is one `parks`
+  grove built from the same list in the same order.

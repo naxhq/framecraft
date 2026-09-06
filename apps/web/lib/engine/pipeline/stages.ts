@@ -859,11 +859,13 @@ const surfaceParks = defineStage({
       if (solid === null || cutter === null) continue;
       regions.push({
         region: layer.region,
+        source: layer.source,
         solid,
         cutter,
         section: layer.section,
         pocket,
         placement: layer.placement,
+        liftMm: layer.liftMm,
         dropped: layer.dropped,
       });
     }
@@ -946,9 +948,16 @@ const trees = defineStage({
   inputDigests: GROUND_READS,
   run(ctx) {
     const surfaces = ctx.input("surface-parks").regions;
+    // Parkland is what a tree STANDS on and everything else is what takes its
+    // ground away, and which is which is the layer a surface came from, not the
+    // region it prints in: a park lifted into `override_N` is still a park
+    // ([V3.1-P11-4]).
     return buildTrees(
       ctx.build,
-      [ctx.input("repair-buildings").footprint, ...surfaces.filter((s) => s.region !== "parks").map((s) => s.section)],
+      [ctx.input("repair-buildings").footprint, ...surfaces.filter((s) => s.source !== "parks").map((s) => s.section)],
+      surfaces
+        .filter((s) => s.source === "parks")
+        .map((s) => ({ region: s.region, section: s.section, liftMm: s.liftMm })),
       ctx.input("terrain").drape,
     );
   },
@@ -1304,11 +1313,18 @@ function regionInputs(region: RegionName): StageId[] {
     default:
       // The gradient bands come from `buildings`; an `override_N` region can
       // hold buildings AND a surface layer, so it reads both. Both carry the
-      // roof labels of the buildings they hold (Task 12).
+      // roof labels of the buildings they hold (Task 12). It reads `trees` for
+      // the same reason `parks` does: a green polygon lifted into it keeps the
+      // trees standing on it ([V3.1-P11-4]).
       return overrideIndexOf(region) === null
         ? ["buildings", "labels"]
-        : ["context", "terrain", "surface-parks", "buildings", "labels"];
+        : ["context", "terrain", "surface-parks", "trees", "buildings", "labels"];
   }
+}
+
+/** The trees welded into one region, or null when none stand on its ground. */
+function groveFor(ctx: StageContext, region: RegionName): Manifold | null {
+  return ctx.input("trees").groves.find((grove) => grove.region === region)?.solid ?? null;
 }
 
 /** The part digest of `labels` a region stage keys on: the roof pieces for a building region, the ground pieces otherwise. */
@@ -1356,7 +1372,7 @@ function regionSolid(ctx: StageContext, region: RegionName): Manifold | null {
         }
       }
       if (region === "parks") {
-        const grove = ctx.input("trees").solid;
+        const grove = groveFor(ctx, "parks");
         if (grove !== null) solid = batchedUnion(ctx.wasm, ctx.arena, [solid, grove]) ?? solid;
       }
       return solid;
@@ -1385,6 +1401,10 @@ function regionSolid(ctx: StageContext, region: RegionName): Manifold | null {
         surface === undefined
           ? null
           : (drapeSolid(ctx.build, ctx.input("terrain").drape, surface.solid, undefined, false) ?? surface.solid);
+      // A park lifted into this region brings its trees with it, welded in the
+      // way `parks` welds its own ([V3.1-P11-4]).
+      const grove = groveFor(ctx, region);
+      if (grove !== null) solid = batchedUnion(ctx.wasm, ctx.arena, [solid, grove]) ?? solid;
       const band = ctx.input("buildings").overrideBands.find((entry) => entry.region === region);
       if (band !== undefined) {
         // A recoloured building keeps its roof label: every non-hero roof piece
@@ -1607,8 +1627,7 @@ const assembly = defineStage({
     }
     const standing: Manifold[] = [];
     for (const bridge of ctx.input("bridges")) standing.push(bridge.solid);
-    const grove = ctx.input("trees").solid;
-    if (grove !== null) standing.push(grove);
+    for (const grove of ctx.input("trees").groves) standing.push(grove.solid);
     for (const part of hangersOut.parts) standing.push(part.solid);
     const grooves: Manifold[] = [];
     for (const surface of ctx.input("surface-parks").regions) {

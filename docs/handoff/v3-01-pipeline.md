@@ -1302,6 +1302,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "context",
         "terrain",
         "surface-parks",
+        "trees",
         "buildings#overrideBands",
         "labels#roofs"
       ],
@@ -1343,6 +1344,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "context",
         "terrain",
         "surface-parks",
+        "trees",
         "buildings#overrideBands",
         "labels#roofs"
       ],
@@ -1384,6 +1386,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "context",
         "terrain",
         "surface-parks",
+        "trees",
         "buildings#overrideBands",
         "labels#roofs"
       ],
@@ -1425,6 +1428,7 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "context",
         "terrain",
         "surface-parks",
+        "trees",
         "buildings#overrideBands",
         "labels#roofs"
       ],

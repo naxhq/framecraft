@@ -69,16 +69,32 @@ import type { RegionName } from "../types";
  */
 export interface RepairedSurface {
   region: RegionName;
+  /**
+   * The LAYER this ground came from, which `region` no longer tells you once an
+   * override group has lifted one polygon out of it: `override_2` may be a
+   * road, a pond or a park, and what stands on a park is not what stands on a
+   * pond. `region` for an ordinary layer, the group's own layer otherwise.
+   */
+  source: SurfaceName;
   /** The repaired footprint: what the pocket and the neighbours are built from. */
   section: CrossSection;
   /** The same, clipped to the plate: what the printed solid is built from. */
   solidSection: CrossSection;
   placement: Placement;
+  /**
+   * How far this ground's top face sits above where its own LAYER's does,
+   * print mm: 0 for a layer, the built part of `raise_mm` for a group that
+   * lifted a polygon out of one. What stands on this ground has to move by
+   * exactly this much to keep standing on it ([V3.1-P11-4]).
+   */
+  liftMm: number;
   dropped: number;
 }
 
 export interface SurfaceRegion {
   region: RegionName;
+  /** The layer this ground came from; see {@link RepairedSurface.source}. */
+  source: SurfaceName;
   /** The printed solid. */
   solid: Manifold;
   /** The prism that carves the base. */
@@ -88,6 +104,8 @@ export interface SurfaceRegion {
   /** The footprint the base was carved with: the section plus its collar. */
   pocket: CrossSection;
   placement: Placement;
+  /** How far this ground rides above its own layer; see {@link RepairedSurface.liftMm}. */
+  liftMm: number;
   dropped: number;
 }
 
@@ -280,7 +298,7 @@ export function buildSurfaceRegion(
     if (clipped === null) return null;
     solidSection = clipped;
   }
-  return { region, section: repaired.section, solidSection, placement, dropped: repaired.dropped };
+  return { region, source: region, section: repaired.section, solidSection, placement, liftMm: 0, dropped: repaired.dropped };
 }
 
 /**
@@ -321,6 +339,10 @@ export function buildOverrideSurface(
   group: OverrideGroup,
   blockers: readonly Blocker[],
 ): RepairedSurface | null {
+  // A building group has no ground of its own; `overridePlacement` says so too,
+  // and this is the same test written where the type can see it.
+  const source = group.surface;
+  if (source === null) return null;
   const placement = overridePlacement(ctx, group);
   if (placement === null) return null;
   const contours =
@@ -344,9 +366,14 @@ export function buildOverrideSurface(
   }
   return {
     region: group.region,
+    source,
     section: repaired.section,
     solidSection,
     placement,
+    // Measured against the layer's own top face rather than taken from
+    // `group.raiseMm`, so a raise the plate had to clamp moves its passengers
+    // exactly as far as it moved the slab, and no further.
+    liftMm: placement.topMm - placementFor(ctx, source).topMm,
     dropped: repaired.dropped,
   };
 }
@@ -857,11 +884,13 @@ export function buildSurfaceRegions(
     if (solid === null || cutter === null) continue;
     out.push({
       region: layer.region,
+      source: layer.source,
       solid,
       cutter,
       section: layer.section,
       pocket,
       placement: layer.placement,
+      liftMm: layer.liftMm,
       dropped: layer.dropped,
     });
   }
