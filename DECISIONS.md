@@ -1350,3 +1350,25 @@ Append-only. Format: `- [phase] decision, one line`.
   plate resize dims and undims across 10 frames and 6 streamed region batches. No explicit
   `invalidate()` was needed. `e2e/viewport.spec.ts` now pins idle, orbit and the streaming
   rebuild permanently, so the next person to touch the frameloop finds out from a test.
+
+- `[V3.1-P2-5]` **G6's refusal is correct and the fixture is what must change; the emboss gap
+  underneath it is a broken invariant and gets the smaller of two honest fixes.** `make gate-v2`
+  fails at G6 because `make export-fixture TEXT=all` refuses, and the cause is my own
+  `[V3.1-P2-2]`: the sight-edge rebate takes `edge_band_mm` from 5.0 to 4.0 mm of ink, so the
+  four engravings now fit at 4.08, 4.29, 4.76 and 4.80 mm where at `af02c98` they fitted at 5.16,
+  5.48, 5.97 and 6.30. The left line's repaired stroke lands at 0.29 mm against the 0.36 mm
+  minimum, and the engine says so. That is the system working: sizing text on the lip's flat face
+  is right, because a mark straddling the rebate step prints badly, and the cost in band width is
+  real and now recorded. The "6 mm lip band" in those warnings is a stale literal in `fit_text`,
+  pinned by a test, and is corrected to print the actual band.
+  The second failure is more serious and is not this run's doing. The right line is EMBOSSED, and
+  the emboss branch has no gap closing and no refusal, so it ships letters 0.208 mm apart that the
+  validator's lettering row then fails. Engraved text gets `merge_stroke_ridges`; embossed text
+  gets nothing. That breaks the invariant this run is required to preserve, that Stage 1 repair
+  and the Stage 4 gate speak one measure, and it has been latent since v2, hidden by the wider
+  band. The full fix, giving emboss the same gap treatment across the reference, the engine mirror
+  and the parity fixtures, is a wave of work. The minimum honest fix is not: the emboss branch
+  must REFUSE what the validator would fail, naming the gap, so the two speak one measure again
+  even while emboss cannot yet close a gap the way engraving can. That is what ships.
+  The `TEXT=all` fixture is then re-cut to a row the geometry can actually print while still
+  exercising an embossed line, because a fixture's job is coverage, not a particular string.
