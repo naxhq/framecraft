@@ -629,3 +629,117 @@ Status: Tokyo stays OPEN on its two original sites, numbers unchanged, and
 ships as the stated limitation the team lead ruled on 2026-09-03; the write-up
 above is accurate again. The four-region reading was a regression of this
 run and is closed.
+
+## OPEN: embossed text has no gap closing, only a refusal; G6 (`TEXT=all`) failed on the ruled 5 mm lip face (found 2026-09-06; gate green the same day under `[V3.1-P2-5]`)
+
+Found by `make gate-v2` step 4 of 5: `make export-fixture TEXT=all` (the
+Python reference, `app.cli bake --preset chicago-loop` with one 8 mm engraving
+per edge: top `{city}` sans, bottom `{coords}` mono, left `{scale}` serif,
+right `{date}` sans embossed, plus the arrow, the bar, a keyhole and the
+underside mark). Step 5, `COLOR=parts TEXT=all`, fails the same way. G8 and
+both G5 steps pass.
+
+**Regression against `af02c98`, measured in a worktree of it.** There the same
+command passes: `ALL CHECKS PASS`, the four lines fitted at 5.16, 5.48, 5.97
+and 6.30 mm, `lettering PASS 126 strokes of 7 piece(s); 0.488 mm stroke /
+0.765 mm ridge`. On this tree they fit at 4.08, 4.29, 4.76 and 4.80 mm and the
+bake fails twice.
+
+**Cause: the text band moved from the 6 mm lip to the 5 mm flat face, on
+purpose.** Commit `7d02e0e` (`[V3.1-P2-2]`, `[V3.1-P7-7]`) made
+`edge_band_mm` = `lip_face_width_mm - 2 x 0.5 mm` = 4.0 mm of ink height
+(was `FRAME_WIDTH_MM - 1.0` = 5.0 mm), so the same 8 mm asks now land 1.1 to
+1.5 mm smaller. The geometry is consistent: the text band and the north
+arrow's corner square are both sized on `lip_face_width_mm`; the arrow warning
+says "5 mm lip band" because it prints that function, while `fit_text`'s
+warnings say "6 mm lip band" because the string is a literal
+(`geom/transform.py` 1484 and 1495, mirrored at `lib/transform.ts` 1476 and
+1485, pinned by `test_lettering.py:415`). A stale label, not a second band.
+
+At the smaller sizes two of the fixture's four lines stop being printable at a
+0.4 mm nozzle, and both failures are the system judging correctly:
+
+1. **Left, `{scale}` in serif, refused.** Band-capped at 4.76 mm, its
+   narrowest stroke after the minimum-feature repair measures 0.29 mm against
+   the 0.36 mm minimum. At 5.97 mm (the af02c98 fit) the same string scales to
+   about 0.364 mm, which is why it passed there. The refusal's tail, "no size
+   up to 7.76 mm cuts this string", is vacuous rather than wrong: every
+   candidate the search tries above 4.76 mm is clamped back to the 4.76 mm band
+   cap by the auto-fit (7.76 = 4.76 + the 3.0 mm ladder), so it measured the
+   same geometry seven times. The message should say the band, not the ladder.
+2. **Right, `{date}` in sans EMBOSSED, shipped and failed by the validator.**
+   Band-capped at 4.80 mm, the layout warns "at 4.80 mm the letters ... come
+   within a nozzle of each other and will touch where they are closest; 6.01 mm
+   would keep them apart", and the geometry then ships a 0.208 mm gap between
+   two raised letters: `lettering FAIL ... 0.450 mm stroke / 0.208 mm ridge`,
+   `embossed gap 0.208 mm at z=6.20`. For ENGRAVED text `merge_stroke_ridges`
+   makes the warning true by handing a sub-nozzle ridge to the groove; the
+   emboss branch of `geom/lettering.py` has no counterpart, so a sub-nozzle gap
+   between embossed letters is neither closed nor refused. Latent since v2; the
+   6 mm band hid it for this fixture because 6.30 mm kept the letters apart.
+
+**Measured candidates** (same command, one or two lines changed):
+
+| left | right | result |
+|---|---|---|
+| `{scale}` serif (the fixture) | `{date}` sans emboss | left refused (0.29 mm); `lettering FAIL` 0.208 mm embossed gap |
+| `{scale}` mono (4.42 mm) | `{date}` sans emboss | no refusal; `lettering FAIL` 0.208 mm embossed gap |
+| `{city}` serif (3.98 mm) | `{date}` sans emboss | no refusal; `lettering FAIL` 0.208 mm embossed gap |
+| `{city}` serif (3.98 mm) | `{date}` mono emboss (4.77 mm) | `ALL CHECKS PASS`; `lettering PASS 122 strokes of 7 piece(s); 0.450 mm stroke / 0.491 mm ridge` |
+
+**Ruled `[V3.1-P2-5]` and done the same day, the smaller honest half:**
+
+1. **Embossed text now REFUSES what the validator would fail.** The emboss
+   branch measures the void between its raised pieces the way the gate does
+   (the edge's band less the material, each part at the one-nozzle floor,
+   `thicken.narrowest_width` / the opening residue's inscribed width) and
+   refuses under 0.36 mm, naming the measured gap, the floor and the size that
+   clears it: "the right engraving was not cut: two of its raised letters come
+   within 0.21 mm of each other, under the 0.36 mm a 0.4 mm nozzle can leave
+   between them; ...". Reference `geom/lettering.py` (`verify(gap_domain=...)`,
+   and the size search judges the same gap so a size it names is real) and the
+   engine mirror `lib/engine/solid/lettering.ts` (`narrowestEmbossGapMm`), each
+   pinned by a test on a sans `2026-09-06` embossed at 8 mm (refused, 0.21 mm)
+   against the same string in mono (built): `test_lettering.py` and
+   `text.test.ts`. Stage 1 and Stage 4 speak one measure again; nothing was
+   weakened.
+   One thing the mirror could not copy literally, stated: the reference opens
+   the void with GEOS's mitred buffer, and Clipper2's mitred buffer is not the
+   same operation on a wedge-shaped slit. Measured on that date in three
+   faces, GEOS reads the sans slit as one 0.21 mm2 part (refused), reads
+   nothing at all between the mono digits (built) and only sub-floor lenses
+   in serif (built); Clipper2's mitred opening cuts the sans slit into three
+   fragments of 0.08 mm2 (built, wrongly), and its exact round opening reads
+   the sans slit at 0.29 mm2 but also 0.20 mm2 for a 0.30 mm wide, 0.7 mm long
+   gap between two mono digits (refused, wrongly). The engine therefore uses
+   the round opening and takes one probe radius off each end of a stretch
+   before holding it to the same 0.16 mm2 floor, which is what GEOS's mitre
+   effectively does at a slit's mouths; on the three faces it then decides as
+   the reference does, and reports 0.24 mm where the validator reads 0.21 on
+   the mesh. The decision is mirrored; the second decimal is each library's
+   own. A case where the two still disagree is a `text.test.ts` case waiting
+   to be written, not a reason to weaken either.
+2. **The `TEXT=all` fixture is re-cut** to the row measured above: left
+   `{city}` serif, right `{date}` mono embossed. The Makefile comment carries
+   the old row's measurements so nobody re-cuts it back.
+3. **The stale literal is gone.** `fit_text` names the band it measured
+   (`edge_band_mm`, "4 mm text band on the lip" at the default rebate) in both
+   languages; `test_lettering.py` pins the computed number and
+   `fixtures/lettering-expected.json` was regenerated for the new wording.
+
+**Still OPEN, owed to mesh-bake:** embossed text has no gap CLOSING. Engraved
+text gets `merge_stroke_ridges`; an embossed pair that comes within a nozzle
+is refused outright, where the engraved pair would have been joined and cut.
+The full treatment (close a sub-nozzle gap between raised letters, or a ruled
+refusal with the letters joined as the layout's own warning promises) is a
+wave of work across the reference, the engine mirror, the parity fixtures and
+the matrix probes.
+
+**A user-visible price of `[V3.1-P2-2]`, recorded so it is not rediscovered:**
+the sight-edge rebate costs a millimetre of usable lettering band. The text
+band is the lip's flat face less the 0.5 mm margins, 4.0 mm of ink against
+5.0 mm before the rebate, so every frame-edge line auto-fits about 20 per cent
+smaller than it did (8 mm asks land at 4.1 to 4.8 mm instead of 5.2 to 6.3),
+and strings that were printable at the old cap are not at the new one: serif
+digits at any size the band allows, and sans embossed text whose letters sit
+closer than a nozzle at 4.8 mm. `lip_depth_mm: 0` gives the millimetre back.

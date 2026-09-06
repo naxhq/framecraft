@@ -64,6 +64,35 @@ describe("edge engravings", () => {
     expect(frame.bodies).toBe(1);
   }, 60_000);
 
+  it("refuses an embossed line whose letters come within a nozzle, as the validator would", async () => {
+    // [V3.1-P2-5]: the layout only WARNS that adjacent letters will touch, and
+    // for engraved text the ridge merge makes that true; embossed text has no
+    // merge, so the slit between two raised letters is a void the reference
+    // validator fails at the one-nozzle floor (0.208 mm on this string at the
+    // 4.80 mm the 5 mm face allows). The build refuses it first, naming the
+    // gap and the floor, instead of shipping it to be failed later.
+    const sans = await buildWith({
+      ...defaultPrintParams(),
+      engravings: [{ edge: "right", text: "2026-09-06", mode: "emboss", size_mm: 8 }],
+    });
+    const line = sans.resolvedText.find((entry) => entry.id === "engraving-0");
+    expect(line?.status).toBe("skipped");
+    expect(line?.reason).toMatch(/raised letters come within 0\.\d\d mm of each other/);
+    const gap = Number(/come within (\d+\.\d\d) mm/.exec(line?.reason ?? "")?.[1]);
+    expect(gap).toBeGreaterThan(0);
+    expect(gap).toBeLessThan(0.36);
+    expect(line?.reason).toContain("0.36 mm");
+    expect(sans.findings.some((f) => f.id === "text-too-small")).toBe(true);
+    // The same string in mono keeps a nozzle between its letters at the same
+    // band and is built: the refusal is about the measured gap, not the mode.
+    const mono = await buildWith({
+      ...defaultPrintParams(),
+      engravings: [{ edge: "right", text: "2026-09-06", mode: "emboss", size_mm: 8, font: "mono" }],
+    });
+    expect(mono.resolvedText.find((entry) => entry.id === "engraving-0")?.status).toBe("cuts");
+    expect(outstandingWasmObjects()).toBe(0);
+  }, 120_000);
+
   it("refuses edge text when there is no lip to carry it", async () => {
     const result = await buildWith({
       ...defaultPrintParams(),

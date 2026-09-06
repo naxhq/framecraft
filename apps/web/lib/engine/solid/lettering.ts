@@ -50,8 +50,9 @@ import {
   extrudeSection,
   intersectSection,
   sectionOf,
+  subtractSection,
 } from "./manifold";
-import { openingWidthMm } from "./measure";
+import { inscribedWidthMm, openingWidthMm } from "./measure";
 import { MIN_WALL_PROBE_FACTOR, widenThinParts } from "./repair";
 
 /** Segments per full circle in a glyph dilation. */
@@ -249,6 +250,111 @@ export function repairText(
   };
 }
 
+/**
+ * The narrowest void between raised pieces on an edge's band, print mm, or
+ * null when the band holds no void narrow enough to measure.
+ *
+ * Stage 4's own reading of an embossed band (`check_lettering` in the
+ * reference validator: the band less the material, every part measured at the
+ * one-nozzle floor), taken here on the section before it is extruded. Engraved
+ * text never needs it: `mergeRecessRidges` hands a sub-nozzle ridge to the
+ * groove before anything is measured. Embossed text has no such merge yet
+ * (`[V3.1-P2-5]`), so two letters that come within a nozzle of each other
+ * leave a slit the printer cannot lay down and the gate fails the plate; this
+ * is what lets `buildLettering` refuse that slit first.
+ *
+ * The domain is the rectangle the reference measures in (`_band_domain`): the
+ * lip's full width along the edge, centred on the flat face. The whole void's
+ * own inscribed width is the band's, so what decides is the opening residue,
+ * the parts of the void narrower than `0.9 x min_detail`, each measured by its
+ * inscribed width: `thicken.narrowest_width` at that floor. Measured 0.208 mm
+ * on a sans date embossed at the 4.80 mm the default face allows, which is the
+ * number the validator read off the mesh.
+ */
+export function narrowestEmbossGapMm(ctx: BuildContext, section: CrossSection, edge: string): number | null {
+  const { wasm, arena, params } = ctx;
+  const [cx, cy] = T.edge_band_center_mm(params, edge);
+  const halfLen = params.plate_mm / 2;
+  const halfBand = T.FRAME_WIDTH_MM / 2;
+  const along = edge === "top" || edge === "bottom";
+  const hx = along ? halfLen : halfBand;
+  const hy = along ? halfBand : halfLen;
+  const rect: Contour = [
+    [cx - hx, cy - hy],
+    [cx + hx, cy - hy],
+    [cx + hx, cy + hy],
+    [cx - hx, cy + hy],
+  ];
+  const domain = sectionOf(wasm, arena, [rect]);
+  if (domain === null) return null;
+  const voids = domain.subtract(section);
+  arena.drop(domain);
+  if (voids.isEmpty()) {
+    voids.delete();
+    return null;
+  }
+  arena.keep(voids);
+  const minDetail = T.min_detail_mm(params);
+  // The text repair's own area floor (`text_area_floor`): a lens under one
+  // nozzle squared is a corner artefact of the opening, not a gap.
+  const areaFloor = minDetail * minDetail;
+  // The opening residue of the void at the one-nozzle floor, and where this
+  // mirror has to differ from the reference's recipe to reach its answers.
+  // The reference and the validator open the void with GEOS's MITRED buffer;
+  // Clipper2's mitred dilation of the eroded void spikes back into a
+  // wedge-shaped slit and cuts its residue into fragments of 0.08 mm2 where
+  // GEOS reads one part of 0.21 (a sans date embossed at 4.80 mm), so the
+  // same recipe here would build what the validator fails. A ROUND dilation
+  // reaches exactly one radius back into the slit, which is what an opening
+  // means, and reads the whole sub-nozzle stretch: 0.29 mm2 for that slit,
+  // but also 0.20 mm2 for a 0.30 mm wide, 0.7 mm long gap between two mono
+  // digits that GEOS's mitred opening covers entirely and the validator then
+  // reads at 0.49 mm on the mesh. GEOS's mitre reaches about one probe radius
+  // further into each mouth of a slit than the round opening does, so one
+  // radius per end is taken off the stretch before it is held to the area
+  // floor (below). Measured on the three faces of that date: sans refused at
+  // 0.24 mm (the validator: 0.21 on the mesh), mono and serif built, as the
+  // reference decides them. The decision is what the mirror promises; the
+  // second decimal of the width is Clipper2's against GEOS's.
+  const radius = MIN_WALL_PROBE_FACTOR * minDetail;
+  const eroded = voids.offset(-radius, ROUND, 2, GLYPH_JOIN_SEGMENTS);
+  if (eroded.isEmpty()) {
+    eroded.delete();
+    arena.drop(voids);
+    return null;
+  }
+  arena.keep(eroded);
+  const opened = arena.keep(eroded.offset(radius, ROUND, 2, GLYPH_JOIN_SEGMENTS));
+  arena.drop(eroded);
+  const residue = subtractSection(arena, voids, opened);
+  arena.drop(opened);
+  if (residue === null || residue === voids) {
+    arena.drop(voids);
+    return null;
+  }
+  arena.drop(voids);
+  const parts = arena.keepAll(residue.decompose());
+  arena.drop(residue);
+  let narrowest: number | null = null;
+  for (const part of parts) {
+    const area = part.area();
+    if (area >= areaFloor) {
+      const width = inscribedWidthMm(part, minDetail, minDetail * GAP_WIDTH_TOLERANCE);
+      // What the reference's mitred opening leaves of this stretch: see the
+      // note above. A part is a stretch of slit `area / width` long; one probe
+      // radius at each mouth is taken off before it is held to the floor.
+      const stretchMm = width > 0 ? area / width : 0;
+      const counted = width * Math.max(0, stretchMm - 2 * radius);
+      if (counted >= areaFloor) narrowest = narrowest === null ? width : Math.min(narrowest, width);
+    }
+    arena.drop(part);
+  }
+  return narrowest;
+}
+
+/** Resolution of the gap's inscribed-width search as a fraction of a nozzle: `thicken.MIC_TOLERANCE_RATIO`. */
+const GAP_WIDTH_TOLERANCE = 0.01;
+
 // ---------------------------------------------------------------------------
 // The whole thing
 // ---------------------------------------------------------------------------
@@ -261,6 +367,8 @@ interface Piece {
   fit: T.TextFit;
   depthMm: number;
   face: "top" | "bottom";
+  /** The lip edge the piece stands on (`top`, `bottom`, `left`, `right`), null on the underside. */
+  edge: string | null;
   /** Index in `params.engravings`, so a refusal can offer to resize THAT line. */
   sourceIndex: number;
   /** Would this line be laid out at all at `sizeMm`? See `tooSmallFinding`. */
@@ -569,6 +677,7 @@ export function buildLettering(
       fit: entry.fit,
       depthMm: entry.depth_mm,
       face: "top",
+      edge: entry.edge,
       sourceIndex,
       verifySize: (sizeMm) => edgeCutsAt(edgeParams, edges, tokens, rotationDeg, entry.index, sizeMm),
     });
@@ -656,6 +765,7 @@ export function buildLettering(
       fit,
       depthMm: depth,
       face: "bottom",
+      edge: null,
       sourceIndex,
       verifySize: (sizeMm) =>
         !T.fit_text(
@@ -727,6 +837,36 @@ export function buildLettering(
       );
       ctx.arena.drop(repaired.section);
       continue;
+    }
+    if (piece.mode === "emboss" && piece.edge !== null) {
+      // Stage 4 fails a void under one nozzle between two raised letters, and
+      // embossed text has no ridge merge to close one ([V3.1-P2-5]), so the
+      // slit is measured here, the way the gate measures it, and refused
+      // before it is built. The layout's own gap estimate is the size named.
+      const gapFail = STROKE_FAIL_FACTOR * T.min_detail_mm(params);
+      const gapMm = perfSpan("lettering.gap", () => narrowestEmbossGapMm(ctx, repaired.section, piece.edge ?? "top"));
+      if (gapMm !== null && gapMm < gapFail) {
+        const reason =
+          `two of its raised letters come within ${gapMm.toFixed(2)} mm of each other, under the ` +
+          `${gapFail.toFixed(2)} mm a ${params.nozzle_mm} mm nozzle can leave between them; ` +
+          `${piece.fit.gap_size_mm.toFixed(2)} mm would keep them apart`;
+        ctx.resolvedText.push(
+          resolved(piece.id, piece.fit, piece.surface, piece.mode, "skipped", piece.depthMm, reason),
+        );
+        addFinding(
+          ctx,
+          tooSmallFinding(
+            params,
+            `"${piece.fit.text}" was not cut`,
+            reason,
+            piece.fit,
+            piece.sourceIndex,
+            piece.verifySize,
+          ),
+        );
+        ctx.arena.drop(repaired.section);
+        continue;
+      }
     }
 
     const cut = perfSpan("lettering.extrude", () => emitPiece(ctx, piece, repaired.section, lipTop));

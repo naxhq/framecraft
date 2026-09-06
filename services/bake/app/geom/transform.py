@@ -1479,9 +1479,14 @@ def fit_text(
 
     refused = False
     reason = ""
+    # The band is named by its measured height, not by a literal: it is the
+    # lip's flat face less the margins (`edge_band_mm`), 4 mm at the default
+    # rebate, and a warning that said "6 mm" while the arrow's said "5 mm" read
+    # as two bands where there is one ([V3.1-P2-5]).
+    band_label = f"{_g(band_mm)} mm text band on the lip"
     if fitted < TEXT_MIN_SIZE_MM:
         refused = True
-        limit = "edge" if by_length <= by_band else "6 mm lip band"
+        limit = "edge" if by_length <= by_band else band_label
         reason = (
             f"the {what} does not fit the {limit} even at the smallest legal "
             f"{_g(TEXT_MIN_SIZE_MM)} mm: it would need "
@@ -1492,7 +1497,7 @@ def fit_text(
     elif fitted < requested:
         warnings.append(
             f"the {what} was reduced from {_g(requested)} mm to {_f2(fitted)} mm to fit "
-            + ("the edge" if by_length <= by_band else "the 6 mm lip band")
+            + ("the edge" if by_length <= by_band else f"the {band_label}")
         )
 
     if not refused and fitted < min_size:

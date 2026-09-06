@@ -404,15 +404,51 @@ def test_layout_auto_fit_shrinks_instead_of_clipping() -> None:
     )
 
 
-def test_layout_auto_fit_also_respects_the_six_millimetre_lip() -> None:
-    """The band across the lip is the other limit: 8 mm of type does not fit a
-    6 mm lip, whatever the plate is."""
+def test_layout_auto_fit_also_respects_the_lip_band() -> None:
+    """The band across the lip is the other limit: 8 mm of type does not fit
+    the lip's flat face, whatever the plate is - and the warning names the band
+    it measured (4 mm at the default rebate, [V3.1-P2-2]), not a literal."""
     p = params(plate_mm=256, engravings=[engraving(text="Chicago", size_mm=8.0)])
     fit = T.lettering_layout(p, ctx()).engravings[0].fit
     assert fit.size_mm < 8.0
     ink = fit.ink_top_mm - fit.ink_bottom_mm + 2.0 * fit.dilation_mm
     assert ink <= T.edge_band_mm(p) + 1e-9
-    assert any("6 mm lip band" in w for w in fit.warnings)
+    assert T.edge_band_mm(p) == pytest.approx(4.0)
+    assert any(f"{T._g(T.edge_band_mm(p))} mm text band on the lip" in w for w in fit.warnings)
+    assert not any("6 mm" in w for w in fit.warnings)
+
+
+def test_build_refuses_an_embossed_line_whose_letters_come_within_a_nozzle() -> None:
+    """[V3.1-P2-5]: Stage 1 and Stage 4 speak one measure for embossed gaps.
+
+    The layout WARNS when adjacent letters come within a nozzle (a wedge that
+    touches at one end stays legible), and for engraved text the ridge merge
+    then makes that true.  Embossed text has no merge: the slit between two
+    raised letters is a void the printer cannot lay down, and the Stage 4
+    ``lettering`` row fails it at the one-nozzle floor - measured 0.208 mm on a
+    sans date at the 4.80 mm the 5 mm face allows.  So the build refuses it
+    first, naming the gap and the floor, exactly as it refuses a starved
+    stroke; shipping it and failing the bake later is the outcome this closes.
+    """
+    p = params(engravings=[engraving(edge="right", text="2026-09-06", size_mm=8.0, mode="emboss")])
+    fit = T.lettering_layout(p, ctx()).engravings[0].fit
+    assert not fit.refused
+    assert fit.size_mm < fit.gap_size_mm, "the premise: the layout only warns about this gap"
+    geom = L.build(p, ctx(), rotation_deg=0.0)
+    assert geom.emboss == []
+    [refusal] = [w for w in geom.warnings if "was not cut" in w]
+    assert "raised letters come within" in refusal
+    gap = float(re.search(r"come within (\d+\.\d\d) mm", refusal).group(1))
+    assert 0.0 < gap < 0.36
+    assert "0.36 mm" in refusal
+    # The same string in mono keeps a nozzle between its letters at the same
+    # band and is built: the refusal is about the measured gap, not the mode.
+    q = params(
+        engravings=[engraving(edge="right", text="2026-09-06", size_mm=8.0, mode="emboss", font="mono")]
+    )
+    built = L.build(q, ctx(), rotation_deg=0.0)
+    assert built.emboss != []
+    assert not any("was not cut" in w for w in built.warnings)
 
 
 def test_layout_refuses_text_whose_counters_cannot_survive() -> None:

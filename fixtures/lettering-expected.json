@@ -273,7 +273,7 @@
               "refused": false,
               "reason": "",
               "warnings": [
-                "the top engraving was reduced from 6 mm to 4.08 mm to fit the 6 mm lip band",
+                "the top engraving was reduced from 6 mm to 4.08 mm to fit the 4 mm text band on the lip",
                 "at 4.08 mm the letters of this top engraving come within a nozzle of each other and will touch where they are closest; 4.49 mm would keep them apart"
               ]
             }
@@ -306,7 +306,7 @@
               "refused": false,
               "reason": "",
               "warnings": [
-                "the bottom engraving was reduced from 6 mm to 4.29 mm to fit the 6 mm lip band"
+                "the bottom engraving was reduced from 6 mm to 4.29 mm to fit the 4 mm text band on the lip"
               ]
             }
           },
@@ -338,7 +338,7 @@
               "refused": false,
               "reason": "",
               "warnings": [
-                "the left engraving was reduced from 6 mm to 4.76 mm to fit the 6 mm lip band",
+                "the left engraving was reduced from 6 mm to 4.76 mm to fit the 4 mm text band on the lip",
                 "at 4.76 mm the letters of this left engraving come within a nozzle of each other and will touch where they are closest; 4.99 mm would keep them apart"
               ]
             }
@@ -371,7 +371,7 @@
               "refused": false,
               "reason": "",
               "warnings": [
-                "the right engraving was reduced from 6 mm to 4.80 mm to fit the 6 mm lip band",
+                "the right engraving was reduced from 6 mm to 4.80 mm to fit the 4 mm text band on the lip",
                 "at 4.80 mm the letters of this right engraving come within a nozzle of each other and will touch where they are closest; 6.01 mm would keep them apart"
               ]
             }
@@ -418,12 +418,12 @@
           "fit": null
         },
         "warnings": [
-          "the top engraving was reduced from 6 mm to 4.08 mm to fit the 6 mm lip band",
+          "the top engraving was reduced from 6 mm to 4.08 mm to fit the 4 mm text band on the lip",
           "at 4.08 mm the letters of this top engraving come within a nozzle of each other and will touch where they are closest; 4.49 mm would keep them apart",
-          "the bottom engraving was reduced from 6 mm to 4.29 mm to fit the 6 mm lip band",
-          "the left engraving was reduced from 6 mm to 4.76 mm to fit the 6 mm lip band",
+          "the bottom engraving was reduced from 6 mm to 4.29 mm to fit the 4 mm text band on the lip",
+          "the left engraving was reduced from 6 mm to 4.76 mm to fit the 4 mm text band on the lip",
           "at 4.76 mm the letters of this left engraving come within a nozzle of each other and will touch where they are closest; 4.99 mm would keep them apart",
-          "the right engraving was reduced from 6 mm to 4.80 mm to fit the 6 mm lip band",
+          "the right engraving was reduced from 6 mm to 4.80 mm to fit the 4 mm text band on the lip",
           "at 4.80 mm the letters of this right engraving come within a nozzle of each other and will touch where they are closest; 6.01 mm would keep them apart"
         ]
       }
@@ -1042,7 +1042,7 @@
               "refused": false,
               "reason": "",
               "warnings": [
-                "the bottom engraving was reduced from 8 mm to 5.35 mm to fit the 6 mm lip band",
+                "the bottom engraving was reduced from 8 mm to 5.35 mm to fit the 4 mm text band on the lip",
                 "at 5.35 mm the letters of this bottom engraving come within a nozzle of each other and will touch where they are closest; 7.32 mm would keep them apart"
               ]
             }
@@ -1089,7 +1089,7 @@
           "fit": null
         },
         "warnings": [
-          "the bottom engraving was reduced from 8 mm to 5.35 mm to fit the 6 mm lip band",
+          "the bottom engraving was reduced from 8 mm to 5.35 mm to fit the 4 mm text band on the lip",
           "at 5.35 mm the letters of this bottom engraving come within a nozzle of each other and will touch where they are closest; 7.32 mm would keep them apart"
         ]
       }
@@ -1378,7 +1378,7 @@
               "refused": false,
               "reason": "",
               "warnings": [
-                "the bottom engraving was reduced from 5 mm to 4.13 mm to fit the 6 mm lip band"
+                "the bottom engraving was reduced from 5 mm to 4.13 mm to fit the 4 mm text band on the lip"
               ]
             }
           }
@@ -1425,7 +1425,7 @@
         },
         "warnings": [
           "engraving 1 (top) was not cut: at 1.50 mm a 0.4 mm nozzle cannot cut this top engraving without closing a counter; it needs 3.39 mm",
-          "the bottom engraving was reduced from 5 mm to 4.13 mm to fit the 6 mm lip band"
+          "the bottom engraving was reduced from 5 mm to 4.13 mm to fit the 4 mm text band on the lip"
         ]
       }
     },
@@ -2475,7 +2475,7 @@
             "refused": false,
             "reason": "",
             "warnings": [
-              "the scale bar label was reduced from 6 mm to 5.35 mm to fit the 6 mm lip band",
+              "the scale bar label was reduced from 6 mm to 5.35 mm to fit the 4 mm text band on the lip",
               "at 5.35 mm the letters of this scale bar label come within a nozzle of each other and will touch where they are closest; 5.58 mm would keep them apart"
             ]
           },
@@ -2746,7 +2746,7 @@
             "refused": false,
             "reason": "",
             "warnings": [
-              "the scale bar label was reduced from 6 mm to 5.35 mm to fit the 6 mm lip band",
+              "the scale bar label was reduced from 6 mm to 5.35 mm to fit the 4 mm text band on the lip",
               "at 5.35 mm the letters of this scale bar label come within a nozzle of each other and will touch where they are closest; 5.45 mm would keep them apart"
             ]
           },
@@ -3015,7 +3015,7 @@
             "refused": false,
             "reason": "",
             "warnings": [
-              "the scale bar label was reduced from 6 mm to 5.35 mm to fit the 6 mm lip band",
+              "the scale bar label was reduced from 6 mm to 5.35 mm to fit the 4 mm text band on the lip",
               "at 5.35 mm the letters of this scale bar label come within a nozzle of each other and will touch where they are closest; 5.58 mm would keep them apart"
             ]
           },
@@ -3859,7 +3859,7 @@
               "refused": true,
               "reason": "at 2.94 mm a 0.8 mm nozzle cannot cut this top engraving without closing a counter; it needs 6.15 mm, which does not fit this edge: shorten the text or widen the plate",
               "warnings": [
-                "the top engraving was reduced from 8 mm to 2.94 mm to fit the 6 mm lip band"
+                "the top engraving was reduced from 8 mm to 2.94 mm to fit the 3.4 mm text band on the lip"
               ]
             }
           }
@@ -3905,7 +3905,7 @@
           "fit": null
         },
         "warnings": [
-          "the top engraving was reduced from 8 mm to 2.94 mm to fit the 6 mm lip band",
+          "the top engraving was reduced from 8 mm to 2.94 mm to fit the 3.4 mm text band on the lip",
           "engraving 1 (top) was not cut: at 2.94 mm a 0.8 mm nozzle cannot cut this top engraving without closing a counter; it needs 6.15 mm, which does not fit this edge: shorten the text or widen the plate"
         ]
       }

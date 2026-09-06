@@ -1471,9 +1471,14 @@ export function fit_text(
 
   let refused = false;
   let reason = "";
+  // The band is named by its measured height, not by a literal: it is the
+  // lip's flat face less the margins (`edge_band_mm`), 4 mm at the default
+  // rebate, and a warning that said "6 mm" while the arrow's said "5 mm" read
+  // as two bands where there is one ([V3.1-P2-5]).
+  const band_label = `${g_format(band_mm)} mm text band on the lip`;
   if (fitted < TEXT_MIN_SIZE_MM) {
     refused = true;
-    const limit = by_length <= by_band ? "edge" : "6 mm lip band";
+    const limit = by_length <= by_band ? "edge" : band_label;
     reason =
       `the ${what} does not fit the ${limit} even at the smallest legal ` +
       `${g_format(TEXT_MIN_SIZE_MM)} mm: it would need ` +
@@ -1482,7 +1487,7 @@ export function fit_text(
   } else if (fitted < requested) {
     warnings.push(
       `the ${what} was reduced from ${g_format(requested)} mm to ${f2(fitted)} mm to fit ` +
-        (by_length <= by_band ? "the edge" : "the 6 mm lip band"),
+        (by_length <= by_band ? "the edge" : `the ${band_label}`),
     );
   }
 

@@ -541,8 +541,20 @@ gate-v2:
 #                 sidecar and passed (v2-07 audit, finding 1).
 #   TEXT=all      every v2 frame ornament -> artifacts/chicago-text.3mf:
 #                 one engraving per edge (top {city} sans, bottom {coords} mono,
-#                 left {scale} serif, right {date} sans EMBOSSED), the north
+#                 left {city} serif, right {date} mono EMBOSSED), the north
 #                 arrow, an automatic scale bar, a keyhole hanger and the
+#                 underside mark. The left and right rows were re-cut on
+#                 2026-09-06 ([V3.1-P2-5]): the sight-edge rebate of
+#                 [V3.1-P2-2] sizes the text band on the lip's 5 mm flat face
+#                 (4 mm of ink, was 5), and on it the old row was unprintable
+#                 at a 0.4 mm nozzle, measured: serif {scale} band-caps at
+#                 4.76 mm where its repaired stroke is 0.29 mm against the
+#                 0.36 mm minimum, and sans {date} embossed band-caps at
+#                 4.80 mm where two raised letters come within 0.208 mm, which
+#                 the validator's lettering row fails. The fixture's job is
+#                 coverage (three faces, one embossed line, every ornament),
+#                 not a particular string; this row measures 0.450 mm stroke
+#                 / 0.491 mm ridge and passes. Do not re-cut it back.
 #                 underside mark. Base 4 mm: a 2 mm keyhole plus the 0.6 mm road
 #                 engraving needs 3.6 mm before the 1 mm floor rule is met, so a
 #                 3 mm plate is refused (transform.underside_min_base_mm).
@@ -567,8 +579,8 @@ export-fixture:
 			fields="$$fields,\"engravings\":["; \
 			fields="$$fields{\"edge\":\"top\",\"text\":\"{city}\",\"size_mm\":8.0,\"font\":\"sans\"},"; \
 			fields="$$fields{\"edge\":\"bottom\",\"text\":\"{coords}\",\"size_mm\":8.0,\"font\":\"mono\",\"align\":\"end\"},"; \
-			fields="$$fields{\"edge\":\"left\",\"text\":\"{scale}\",\"size_mm\":8.0,\"font\":\"serif\"},"; \
-			fields="$$fields{\"edge\":\"right\",\"text\":\"{date}\",\"size_mm\":8.0,\"font\":\"sans\",\"mode\":\"emboss\"}]"; \
+			fields="$$fields{\"edge\":\"left\",\"text\":\"{city}\",\"size_mm\":8.0,\"font\":\"serif\"},"; \
+			fields="$$fields{\"edge\":\"right\",\"text\":\"{date}\",\"size_mm\":8.0,\"font\":\"mono\",\"mode\":\"emboss\"}]"; \
 			fields="$$fields,\"north_arrow\":{\"enabled\":true,\"corner\":\"ne\",\"size_mm\":4.0}"; \
 			fields="$$fields,\"scale_bar\":{\"enabled\":true,\"edge\":\"bottom\",\"length_mode\":\"auto\"}"; \
 			fields="$$fields,\"hanger\":\"keyhole\""; \

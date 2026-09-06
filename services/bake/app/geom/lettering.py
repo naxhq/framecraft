@@ -1131,12 +1131,36 @@ def build(
             )
         return f"it prints at {found:.2f} mm; try that size, a plainer face or a finer nozzle"
 
+    def narrowest_gap_mm(polys: Sequence[Polygon], domain: Polygon) -> float | None:
+        """The narrowest void between raised pieces inside ``domain``, print mm.
+
+        Stage 4's own reading of an embossed band (:func:`app.validate.checks.
+        check_lettering`: the band less the material, every part measured with
+        :func:`thicken.narrowest_width` at the one-nozzle floor), taken here on
+        the pieces before they are extruded.  Engraved text never needs it:
+        :func:`merge_stroke_ridges` hands a sub-nozzle ridge to the groove
+        before anything is measured.  Embossed text has no such merge yet
+        ([V3.1-P2-5]), so a pair of letters that come within a nozzle of each
+        other leave a slit the printer cannot lay down and the gate fails; this
+        is what lets the refusal below see that slit first.
+        """
+        material = shapely.union_all(list(polys))
+        if material.is_empty:
+            return None
+        widths = [
+            thicken.narrowest_width(void, min_detail, area_floor)
+            for void in thicken.explode(domain.difference(material))
+            if void.area >= area_floor
+        ]
+        return min(widths) if widths else None
+
     def verify(
         polys: Sequence[Polygon],
         what: str,
         min_size_mm: float,
         target: float,
         search: "Callable[[], float | None] | None" = None,
+        gap_domain: Polygon | None = None,
     ) -> bool:
         """Measure the finished geometry; warn and refuse if it does not hold.
 
@@ -1150,6 +1174,11 @@ def build(
 
         ``search``, when given, is called only on the refusal path and returns a
         size that really does measure clean, so the warning can name one.
+
+        ``gap_domain`` is given for EMBOSSED text: the band the pieces stand in,
+        so the void between two raised letters is judged by the same one-nozzle
+        floor the gate applies to it (``ridge_fail``).  An engraved line's
+        ridges were merged before this point and need no such check.
         """
         if not polys:
             return False
@@ -1172,6 +1201,16 @@ def build(
                 + remedy(search, min_size_mm)
             )
             return False
+        if gap_domain is not None:
+            gap = narrowest_gap_mm(polys, gap_domain)
+            if gap is not None and gap < ridge_fail:
+                out.warnings.append(
+                    f"the {what} was not cut: two of its raised letters come within "
+                    f"{gap:.2f} mm of each other, under the {ridge_fail:.2f} mm a "
+                    f"{float(params.nozzle_mm):g} mm nozzle can leave between them; "
+                    + remedy(search, min_size_mm)
+                )
+                return False
         return True
 
     probed: dict[tuple[int, float], bool] = {}
@@ -1231,7 +1270,13 @@ def build(
         if narrowest_of(polys2, target2) < thicken.MIN_WALL_FAIL_FACTOR * target2:
             return False
         counters2 = counter_widths_mm(polys2, params)
-        return not (counters2 and min(counters2) < ridge_fail)
+        if counters2 and min(counters2) < ridge_fail:
+            return False
+        if placed.mode == "emboss":
+            gap2 = narrowest_gap_mm(polys2, _band_domain(params, placed.edge))
+            if gap2 is not None and gap2 < ridge_fail:
+                return False
+        return True
 
     def smallest_working_size(index: int, from_mm: float) -> "tuple[float | None, float]":
         """The smallest size above ``from_mm`` whose geometry measures clean.
@@ -1369,6 +1414,7 @@ def build(
             fit.min_size_mm,
             target,
             search=lambda i=engraving.index: smallest_working_size(i, fit.size_mm),
+            gap_domain=_band_domain(params, engraving.edge) if engraving.mode == "emboss" else None,
         ):
             continue
         if engraving.mode == "emboss":
