@@ -370,24 +370,44 @@ jobs:
   # the same six through `export:cli --overpass --center`, so the two pipelines
   # are judged on every preset rather than the browser one on Chicago alone.
   #
-  # READ THIS BEFORE TREATING A RED preset-matrix AS A REGRESSION. The browser
-  # half is red on arrival, on purpose, and it is the finding [V3.1-P7-4]
-  # asked for. Measured 2026-09-03 on the dev host: the reference pipeline
-  # builds and validates all six presets (Paris: ALL CHECKS PASS), while the
-  # browser engine on the identical committed fixture fails five of the six.
-  # `min_wall` on New York, Tokyo, London and San Francisco (narrowest
-  # 0.134 mm against a 0.720 mm floor) and degenerate faces on Paris and
-  # London; Chicago alone passes, which is the one city the browser engine had
-  # ever been run on. That is a real parity gap between the two engines, not a
-  # flaw in this job, and the numbers are in docs/handoff/v3-08-siteperf.md.
-  # This workflow is advisory by design (see the header), so it reports the gap
-  # rather than blocking on it. Do not silence it by dropping the validation.
+  # EXACTLY ONE RED CITY IS EXPECTED. Measured 2026-09-05 on the dev host, with
+  # the browser engine building each committed fixture through
+  # `export:cli --overpass --center` and `make validate` judging every file:
   #
-  # Timeout from measurement on this host: 221 s for the reference half, plus
-  # 37 s of browser-engine builds (4 to 8 s per preset) and 34 s of validator
-  # runs for the browser half, so about 4 min 52 s for the whole script. The
-  # 30 minutes below is roughly six times that, which covers a slower runner
-  # and a cold npm cache.
+  #   chicago-loop        ALL CHECKS PASS   min_wall 0.874
+  #   new-york-midtown    ALL CHECKS PASS   min_wall 0.8873
+  #   paris-eiffel        ALL CHECKS PASS   min_wall 1.0
+  #   london-city         ALL CHECKS PASS   min_wall 0.8174
+  #   san-francisco-fidi  ALL CHECKS PASS   min_wall 1.14
+  #   tokyo-shinjuku      FAIL min_wall     0.2539 on 2 of 468 regions
+  #
+  # The reference pipeline passes all six. Tokyo is the ONE expected red: it is
+  # understood, diagnosed and written up in docs/handoff/FAILURES.md (acute
+  # building tips at z = 2.9692 mm, and a 0.4989 mm reading at z = 4.9107 mm
+  # that is an artefact of the validator's own mitre erosion), and it ships as
+  # a stated limitation. Every other row on Tokyo passes, `bodies`,
+  # `part_meshes` and `degenerate_faces` included.
+  #
+  # SO: any city other than tokyo-shinjuku going red IS A REGRESSION and must
+  # be treated as one. A Tokyo failure at some OTHER check, or at a materially
+  # worse min_wall, is a regression too. This comment is not a licence to
+  # ignore a red job; it names the single failure that is already accounted
+  # for. An earlier version of this block described five red cities, which was
+  # true on 2026-09-03 and was closed by the v3.1 geometry work.
+  #
+  # This workflow is advisory by design (see the header), so it reports the
+  # remaining gap rather than blocking on it. Do not silence it by dropping the
+  # validation from either half.
+  #
+  # Timeout. Re-measured on this host 2026-09-05 for the browser half only:
+  # 42 s of builds across the six presets (3.7 s to 9.9 s each, Tokyo slowest).
+  # The reference half and the validator runs were NOT re-timed; the figures
+  # this block used to quote for them (221 s and 34 s, so about 4 min 52 s for
+  # the whole script) predate the geometry work, which got slower, and should
+  # be read as a floor rather than a current measurement. Even allowing the
+  # untimed parts to have grown in the same proportion the browser builds did,
+  # the script lands near 5 min 30 s, so the 30 minutes below still keeps a
+  # margin of roughly five times over a slower runner and a cold npm cache.
   # ---------------------------------------------------------------------
   preset-matrix:
     name: preset matrix (6 presets, both engines, offline)
