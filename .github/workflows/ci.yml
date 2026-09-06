@@ -150,13 +150,14 @@ jobs:
   #    MEASURED 6m 08s on run 34034936993, of which vitest itself is 5m 42s
   #    (341.73s: 112 files, 2 356 tests) and the rest is checkout, a cold npm
   #    cache and the guard. The 3m 10s projected at v3-14 (npm ci 12s + vitest
-  #    2m 31s) was not a regression from, it was a projection that priced the
-  #    runner at roughly this host's speed. The same suite is 1m 55s here, and
-  #    the gap is mostly worker count -- 31 forks against the runner's few --
-  #    not per-test cost, which is 1.55x to 2.13x (see the `VITEST_BUDGET_FACTOR`
-  #    note below). The suite has also grown a lot across the v3.1 waves. It
-  #    still fits the 10-minute timeout, with under 4 minutes to spare; when it
-  #    stops fitting, the answer is sharding this job, not a longer timeout.
+  #    2m 31s) is not a figure this regressed from: it was a projection that
+  #    priced the runner at roughly this host's speed. The same suite runs in
+  #    1m 55s here, so most of the gap is worker count -- 31 forks against the
+  #    runner's few -- rather than per-test cost, which is a measured 1.55x to
+  #    2.13x (see the `VITEST_BUDGET_FACTOR` note on the vitest step below).
+  #    The suite has also grown a lot across the v3.1 waves. It still fits the
+  #    10-minute timeout with nearly 4 minutes to spare; when it stops fitting,
+  #    the answer is sharding this job, not a longer timeout.
   # ---------------------------------------------------------------------
   unit:
     name: unit (vitest)
