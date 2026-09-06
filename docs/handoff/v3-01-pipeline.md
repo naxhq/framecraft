@@ -554,7 +554,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       ],
       "extra": [],
       "digests": [
-        "base"
+        "base",
+        "frame"
       ]
     },
     {
@@ -660,7 +661,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
       ],
       "extra": [],
       "digests": [
-        "base"
+        "base",
+        "frame"
       ]
     },
     {
@@ -678,6 +680,40 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "attribution#base",
         "hangers#base",
         "frame-cutters#base"
+      ],
+      "extra": [],
+      "digests": []
+    },
+    {
+      "id": "frame-blank",
+      "phase": "geometry",
+      "params": [
+        "plate_mm",
+        "base_thickness_mm",
+        "nozzle_mm",
+        "frame",
+        "frame_style.profile",
+        "frame_style.corner",
+        "frame_style.corner_radius_mm",
+        "frame_style.lip_depth_mm",
+        "frame_style.shadow_gap.enabled",
+        "frame_style.shadow_gap.width_mm",
+        "frame_style.shadow_gap.depth_mm",
+        "frame_style.matting.enabled",
+        "frame_style.matting.width_mm",
+        "frame_style.matting.proud_mm",
+        "frame_style.separate.enabled",
+        "frame_style.separate.mount",
+        "frame_style.separate.tolerance_mm",
+        "frame_style.texture.pattern",
+        "frame_style.texture.scale_mm",
+        "frame_style.texture.depth_mm"
+      ],
+      "inputs": [
+        "context",
+        "ornaments#frame",
+        "attribution#frame",
+        "frame-cutters#frame"
       ],
       "extra": [],
       "digests": []
@@ -712,7 +748,8 @@ stage defines. Params render prefixes expanded; a keyed claim renders as
         "lettering",
         "ornaments",
         "attribution",
-        "frame-cutters"
+        "frame-cutters",
+        "frame-blank"
       ],
       "extra": [],
       "digests": []

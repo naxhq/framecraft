@@ -1,4 +1,4 @@
-# v3.1 reach audit — does the feature get to a real user?
+# v3.1 reach audit - does the feature get to a real user?
 
 Audited against `[V3.1-O8]` and `[V3.1-O11]`: a claim that a feature reaches the
 user is accepted only from a test that reads the user-visible surface, or from a
@@ -21,11 +21,11 @@ exported parts.
 
 ---
 
-## 1. HIGH — gate V3-1 is RED: no matrix probe for any `object_overrides` leaf
+## 1. HIGH - gate V3-1 is RED: no matrix probe for any `object_overrides` leaf
 
 **The missing link.** All eleven `object_overrides[].*` leaves are in
 `PRINT_PARAM_LEAF_PATHS` (`apps/web/lib/contracts.ts:934-944`), are claimed by
-pipeline stages, and have controls in the viewport inspector — but
+pipeline stages, and have controls in the viewport inspector - but
 `apps/web/lib/engine/pipeline/matrix.probes.ts` has no probe for a single one of
 them and `EXEMPT` does not list them. `matrix.test.ts:116` therefore fails.
 
@@ -62,7 +62,7 @@ leaves through `MatrixGroup` (the matrix's own harness) on the `block` scene in
 So the defect is the missing evidence rung, not a dead feature. Two things stay
 genuinely unverified end to end and the probes owed for them are not free:
 
-- `raise_mm` — no matrix scene has a water or green polygon with an id.
+- `raise_mm` - no matrix scene has a water or green polygon with an id.
   `lib/engine/solid/fixture.ts:area()` takes an optional `osmId` and every call
   in `lib/engine/pipeline/testScenes.ts` omits it, so an override row cannot
   name one. A probe needs a new fixture, not just a table row.
@@ -77,16 +77,16 @@ for any of them. The e2e (`e2e/objects.spec.ts`) covers `slot`+`color` in the
 file and `width_scale`+`hidden` in the preview only; six leaves have no
 surface-reading test at all.
 
-## 2. MEDIUM — three geometry unit tests red; re-check, probably in flight
+## 2. MEDIUM - three geometry unit tests red; re-check, probably in flight
 
 Full `npx vitest run` on the tree as of 18:28: **4 failed, 2310 passed**. One is
 finding 1. The other three:
 
-- `lib/engine/solid/synthetic.test.ts:153` "keeps the hole through the solid" —
+- `lib/engine/solid/synthetic.test.ts:153` "keeps the hole through the solid"  - 
   `7281.282 > 7281.792` expected, off by 0.5 mm3.
-- `lib/engine/solid/tiling.test.ts:477` "accounts for every cubic millimetre" —
+- `lib/engine/solid/tiling.test.ts:477` "accounts for every cubic millimetre"  - 
   `snugLoss` is `-6.72e-9`, expected `>= 0`.
-- `lib/engine/solid/engine.test.ts:461` "drapes every layer…" — the thin-wall
+- `lib/engine/solid/engine.test.ts:461` "drapes every layer…" - the thin-wall
   detail read the singular branch of `validate.ts:338` ("The narrowest wall
   measures 0.559 mm…") where the test expects the plural ("N places are under
   it"), i.e. the build now finds one thin region where it used to find several.
@@ -95,7 +95,7 @@ All three land in `areas.ts` / `repair.ts` / `manifold.ts`, the three files that
 were being edited while the suite ran. Not claimed as reach findings; handed to
 whoever owns that edit to re-run after it settles.
 
-## 3. LOW — the settings search cannot find the export-format select
+## 3. LOW - the settings search cannot find the export-format select
 
 `lib/settingsSearch.ts:50` excludes the whole `output` group from the index.
 `export_target` is a real `PrintParams` leaf with a real control
@@ -105,7 +105,7 @@ control's own help string says the search works "across every group"
 (`controlCatalog.ts:1656`) and `README.md:52` says "A search box finds any
 control by name". The label and object-override controls are in `output` too and
 are equally unfindable, which is defensible (they are placed on an object, not
-in a group); the export format is not — it is a settings-panel-shaped choice
+in a group); the export format is not - it is a settings-panel-shaped choice
 that happens to be rendered in the action bar.
 
 **Reproduction.** Open the editor, press `/`, type "format". No hits.
@@ -113,12 +113,12 @@ that happens to be rendered in the action bar.
 Fix is one of: index `output` and let the hit scroll to the action bar, or
 correct both sentences. Either is a decision for the panel/search owner.
 
-## 4. LOW — the build stamp and the About dialog are never read on a page
+## 4. LOW - the build stamp and the About dialog are never read on a page
 
 Task 15's identity surface. `components/editor/SiteFooter.test.tsx` renders with
 `renderToStaticMarkup` under the `node` environment, where `buildInfo()` always
 returns `0.0.0-unbuilt` with an empty commit (`lib/version.ts`, deliberately), so
-nothing asserts that a BUILT page shows a real version, commit and date — the
+nothing asserts that a BUILT page shows a real version, commit and date - the
 one thing the stamp exists for. The dialog is rendered as markup but never
 opened: no test clicks `about-button`, and no Playwright spec mentions the
 footer's stamp or the dialog at all.
@@ -151,7 +151,7 @@ Checked to the bytes or to the rendered DOM, and found sound:
 - **T10 names and hover.** `e2e/objects.spec.ts` hovers the real solids and reads
   the popover's name and height source; the keyboard route (`Shift+F10`) is
   covered too.
-- **T11 overrides.** Reaches the exported file — measured above, and
+- **T11 overrides.** Reaches the exported file - measured above, and
   `e2e/objects.spec.ts:270-278` reads `name="override_1"` and
   `displaycolor="#B00020FF"` out of the downloaded 3MF.
 - **T12 labels.** `LabelsPanel` is mounted at `PreviewPane.tsx:53`, `LabelGizmo`

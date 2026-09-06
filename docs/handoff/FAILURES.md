@@ -8,7 +8,7 @@ Format: one section per defect, newest last. Status: OPEN / FIXED (by whom).
 
 ---
 
-## F1 — `npx tsc --noEmit` fails in `apps/web/lib/warnings.test.ts`
+## F1 - `npx tsc --noEmit` fails in `apps/web/lib/warnings.test.ts`
 
 - **Found by**: P5 qa-gate, while type-checking the new `e2e/smoke.spec.ts`
   against the project's own `tsconfig.json`.
@@ -44,12 +44,12 @@ only the cast needs the extra hop.
 
 ---
 
-## F2 — `e2e/ui.spec.ts` asserted a premise `[V2-P5-fix]` had already deleted
+## F2 - `e2e/ui.spec.ts` asserted a premise `[V2-P5-fix]` had already deleted
 
 - **Found by**: V2-P7 qa-gate, on the first authoritative `make gate` of the
   phase (2026-08-30).
 - **Owner**: qa-gate (the file is a Playwright spec, which this phase owns).
-  **No application code is at fault** — the app is behaving exactly as
+  **No application code is at fault** - the app is behaving exactly as
   `[V2-P5-fix]` specified.
 - **Severity**: gate-breaking. In `test.describe.configure({ mode: "serial" })`
   a failure takes the rest of the file with it, so this one assertion cost 13
@@ -94,8 +94,8 @@ gone. It had quietly turned into "the default is refused", which is the
 opposite of what the contract now promises.
 
 - **Status**: FIXED by V2-P7 qa-gate. The spec no longer infers the refused
-  size: it now (1) **pins the new default** — `engraving_0_size_mm-value` reads
-  `4.0 mm` and the verdict reads `Cuts at`, with rings drawn — then (2) sets
+  size: it now (1) **pins the new default** - `engraving_0_size_mm-value` reads
+  `4.0 mm` and the verdict reads `Cuts at`, with rings drawn - then (2) sets
   3 mm explicitly, the old default, and requires `Not cut` **and the rings to
   go back to 0**, then (3) raises to 6 mm and requires exactly 8 rings again.
   That is strictly more coverage than before: the preview is now proved to take

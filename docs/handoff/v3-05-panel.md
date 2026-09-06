@@ -266,8 +266,8 @@ column spent its 599 px like this:
 
 `flex-1` is `flex: 1 1 0%` with no floor, so the group list absorbed all the
 negative free space and collapsed to zero visible height. Every group toggle
-was then unclickable, and the last 127 px of the Output section — the bottom of
-the stats and recent-designs cards — was clipped away by the sheet's
+was then unclickable, and the last 127 px of the Output section - the bottom of
+the stats and recent-designs cards - was clipped away by the sheet's
 `overflow-hidden` and reachable by nothing.
 
 `[V3-P4-U]`'s `max-h-[45vh]` cap was meant to prevent exactly this and could
@@ -275,7 +275,7 @@ not: **the viewport is not the column.** 45vh is 324 px at this height, and the
 column had 254 px left after the action bar and the panel header, so the cap
 never bound. Three changes, all in the space actually being divided:
 
-- `param-groups` carries `min-h-[45%]` instead of `min-h-0` — a floor measured
+- `param-groups` carries `min-h-[45%]` instead of `min-h-0` - a floor measured
   against the panel, which has a definite height the whole way up. It binds
   when the column is short and gets out of the way when it is tall.
 - `group-output` drops `shrink-0` and becomes a `min-h-0` flex column, so it

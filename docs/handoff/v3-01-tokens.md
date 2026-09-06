@@ -52,7 +52,7 @@ neighbourhood/author) so the two are never confused in code or in review.
   clobbering a user override; `applyShared` treats a link's own non-empty
   label as an override. `"place"` added to `NestedParamKey`.
 - `apps/web/components/editor/EditorShell.tsx`: the geocode-triggering effect
-  (always mounted, watches `lat/lon/preset_id`) and `initAuthor()` on mount —
+  (always mounted, watches `lat/lon/preset_id`) and `initAuthor()` on mount  - 
   deliberately NOT inside the store's core actions (see DECISIONS `[V3-P1]`
   for why: `setPin`/`setRadius`/`setRotation` stay network-free, matching the
   existing `store/editor.test.ts` guarantee).
@@ -68,7 +68,7 @@ neighbourhood/author) so the two are never confused in code or in review.
   reason for the underside mark preview; its own frame-off note reworded to
   cover only the north arrow and scale bar (no longer duplicating the new
   lettering-specific note).
-- `apps/web/components/editor/OutputPanel.tsx`: the "Resolved output" panel —
+- `apps/web/components/editor/OutputPanel.tsx`: the "Resolved output" panel  - 
   one row per text that will be cut, its surface, and cut/skipped + reason.
 - `apps/web/components/scene/CityPreview.tsx`: `letteringWarnings` merged into
   the Issues-badge warnings memo.

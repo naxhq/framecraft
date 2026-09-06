@@ -29,7 +29,7 @@ apps/web/lib/engine/pipeline/
 `testScenes.ts` was not changed at first: `block`, `rail`, `bridge` and
 `terrain` carried everything the matrix needed except an untagged building, and
 that belongs in an Overpass response rather than a finished `SceneGraph`
-(section 4). Two later waves added one scene each — `labelled` for the surface
+(section 4). Two later waves added one scene each - `labelled` for the surface
 labels of Task 12, whose probes live in `matrix.labels.ts`, and `override` for
 the per-object overrides of Task 11 (section 2, "Per-object overrides").
 
@@ -315,7 +315,7 @@ its dovetails would duplicate `solid/tiling.test.ts`, which already does it.
 The eleven `object_overrides[].*` leaves, all on the `override` scene: the
 `block` with an `osm_id` on its pond and its park. That scene exists because a
 row is keyed by the BASE OSM element id and an `AreaFeature` carries no `id` at
-all — `solid/overrides.ts:baseOsmIdOfArea` reads `osm_id` outright, and
+all - `solid/overrides.ts:baseOsmIdOfArea` reads `osm_id` outright, and
 `fixture.ts:area()` omitted it, so before this wave no synthetic water or green
 polygon could be named by a row and `raise_mm` had nothing to act on.
 `area()` now takes an optional third argument and `overrideScene()` is the only
@@ -323,7 +323,7 @@ caller that passes one, so every scene built before it is byte-identical.
 
 The objects are the block's own: the 72 m tower `b-tall` (10430.27 mm3 printed,
 roof 33.24 mm, the tallest), the 18 m block `b-low` (west edge -32.76 mm), the
-courtyard block `b-court` (roof 15.60 mm, west edge -29.40 mm — the tallest and
+courtyard block `b-court` (roof 15.60 mm, west edge -29.40 mm - the tallest and
 the westmost thing left when the other two go), the road `r-main` (14 m wide)
 and the pond `w-pond`.
 
@@ -407,8 +407,8 @@ it is written up here so the next contract pass can fix the sentence.
 
 ## 3. Coverage and run time
 
-`PRINT_PARAM_LEAF_PATHS` has 157 leaves. 147 are probed — 135 in
-`matrix.probes.ts` and the 12 `labels[].*` in `matrix.labels.ts` — and 10 are
+`PRINT_PARAM_LEAF_PATHS` has 157 leaves. 147 are probed - 135 in
+`matrix.probes.ts` and the 12 `labels[].*` in `matrix.labels.ts` - and 10 are
 exempt (the four rulings, with `part_colors.*` expanded to its seven leaves).
 The count grew from the 134 this file first measured as schema 4 landed: 12
 `labels[].*` leaves (Task 12) and 11 `object_overrides[].*` (Task 11). The
@@ -446,7 +446,7 @@ own measured time (`matrix: 124 probes in NNN s`) on every run, so the number in
 a CI log is never a guess.
 
 The shape of the cost is one `after` run per probe plus one `before` build per
-group — 147 and 40 as this was written — on the small synthetic scenes, about
+group - 147 and 40 as this was written - on the small synthetic scenes, about
 700 ms each. Keeping it in ONE file is deliberate: the
 warm cache per group is what makes an `after` run partial, and splitting the
 table across files would cost a fresh cold build per group.
