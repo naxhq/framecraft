@@ -1313,3 +1313,15 @@ Append-only. Format: `- [phase] decision, one line`.
   a running server becomes an explicit opt-in, or the run verifies the served bundle against the
   tree and refuses loudly. A comment telling the next person to rebuild is what we effectively
   had already.
+
+- `[V3.1-P7-34]` **The lettering interaction budget is a coin flip, which makes it both a real
+  latency shortfall and a useless gate.** Six readings of "a lettering change reaches the model
+  inside the interaction budget" against its 400 ms line at factor 1: 447.6, 382, 421.8, 368,
+  401.3, 380. Roughly half fail, and the median sits on the threshold. Two things follow and
+  neither is "raise the budget". First, this is a genuine product shortfall: 400 ms is the
+  interaction target for a change the user makes by typing, and half the time we miss it.
+  Second, an assertion that passes or fails at random is not a gate; it will produce reds in CI
+  that mean nothing, and this run has already spent hours distinguishing real failures from
+  noise. The fix is to make the lettering path fast enough to have real margin, not to move the
+  line to where the measurements happen to be. If it cannot be given margin, the budget stays
+  where it is and the row is reported as missed, exactly as `plate_mm` is.
