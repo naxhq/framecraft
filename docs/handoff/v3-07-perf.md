@@ -954,3 +954,189 @@ Unchanged from `FAILURES.md`'s table to the last digit.
   union, wedge sectors at joints) were measured and declined; the first is
   worth about 100 ms and changes 172 to 191 of the road footprint's 495
   rings at the 1e-8 mm digit. Neither city verdict nor threshold moved.
+
+## 11. The lettering interaction budget, worked (2026-09-06, after `[V3.1-P7-34]`)
+
+`[V3.1-P7-34]` found "a lettering change reaches the model inside the
+interaction budget" a coin flip: 447.6, 382, 421.8, 368, 401.3, 380 against
+400 at factor 1. Reproduced on this tree before anything was touched: two of
+three repeats failed (432.8 the one the runner printed). This section is where
+the time went, measured before any change, what was changed, and the readings
+after. The threshold is 400 ms at factor 1 throughout; nothing in the test,
+the validator or any budget moved.
+
+### 11.1 Where the time went
+
+Measured in the browser the test uses (headless Chromium, SwiftShader, the
+Chicago fixture through the route mock), `?perf=1` on, with a trace on the
+engine worker's messages and the page's long tasks. One 390 ms reading:
+
+| from | to | ms | what |
+|---|---|---:|---|
+| the input event | the `run` message leaves for the worker | 217 | 80 ms of `PIPELINE_DEBOUNCE_MS`, then 137 ms waiting for the main thread |
+| the worker starts | `finish-frame` done | 142 | `lettering` 50 (`repair.stroke` 30, `repair.widen` 10), `finish-frame` 89 (`finish.solid` 67, read 8, prune 4, mesh 9), 78 cached stages about 3 |
+| `region-ready` posted | the frame mesh is on the DOM (`data-region-versions`) | 5 | the transfer, the store write and the React commit |
+| the DOM attribute moved | the test's `requestAnimationFrame` poll saw it | 27 | the next frame boundary |
+
+So the engine was 116 to 142 ms of a 368 to 448 ms reading, and the rest was
+the main thread: the page's long-task observer showed 60 to 79 ms tasks back
+to back for the whole window, which is one r3f frame of this scene under
+SwiftShader. The `Canvas` ran `frameloop="always"`, so the debounce timer
+fired at the first frame boundary after 80 ms (Chrome runs a due frame ahead
+of a due timer), the worker's region message was handled at the next one,
+and the replaced mesh was seen at a third. This inverts the assumption the
+task was written on: it read as a geometry cost and was mostly rendering
+infrastructure, which is worth remembering before the next slow interaction
+is chased into the engine.
+
+The engine's own 116 to 142 ms had one avoidable piece. `frame` subtracts
+every cutter from the lip in one lazy kernel boolean that `finish-frame`
+evaluates, and on the Chicago plate that boolean is (measured with the
+handles out of a warm cache): the lip 48 triangles, the eleven-glyph text
+cutter 3164, the four mandatory attribution marks 3920 each. The whole
+difference took 57 to 65 ms; the lip minus the text alone 9 to 10; the lip
+minus everything but the text 50 to 51; and that blank minus the text 17 to
+18. Every keystroke was re-cutting 15 680 triangles of attribution that the
+keystroke cannot move, because `frame` reads the lettering whole.
+
+### 11.2 What changed
+
+1. **`frameloop="demand"`** (`components/scene/CityPreview.tsx`). A frame is
+   rendered when something changed: every change that should move the
+   picture reaches three.js as a React prop (a region mesh, the dimming, a
+   tint, the theme) or as an OrbitControls `change` event, which drei
+   invalidates on, damping included. Idle, the main thread is free, so the
+   timer fires at 80 ms and the worker's message is handled when it lands.
+2. **The `Canvas` behind a `memo`** of the props the scene reads
+   (`PreviewCanvas`, same file; its three DOM handlers made identity-stable
+   through refs). Demand mode alone still lost: r3f 9.7 re-applies the root
+   configuration in a layout effect on every render of `<Canvas>`, and its
+   size comparison never matches the measured rect it is handed (the rect
+   carries `x`/`y`/`right`/`bottom`, the stored size does not, and `is.equ`
+   checks that every key of the one exists on the other), so every render
+   called `setSize` on the root store, whose subscription invalidates the
+   loop. `CityPreview` re-renders on every stage event, which was one 60 ms
+   frame per stage, back to back through the run. Six readings with demand
+   mode but without the memo: 266.6, 339.5, 403.4, 300.4, 323.3, 333.9.
+3. **Stable handlers and `userData` per region mesh**
+   (`components/scene/RegionMeshes.tsx`). A fresh `{ region }` object or a
+   fresh closure per render is a changed prop to r3f, and a changed prop is
+   an applied prop, and an applied prop asks for a frame. The pointer
+   handlers are now reused while the mesh, `onHover` and `onPick` they close
+   over are the same, and `userData` is one object per region name.
+4. **A `frame-blank` stage** (`pipeline/stages.ts`, `stage.ts`): the lip
+   with the attribution marks, the ornaments, the mating features and the
+   texture already cut, evaluated in its own stage and keyed on the CONTENT
+   of those three cutter lists (`ornaments#frame`, `attribution#frame`,
+   `frame-cutters#frame`, all three now in `PART_EXPOSURE`, the
+   `frame-cutters` digest covering all of `mating` because that is what the
+   part exposes) rather than on the stages that made them, which re-run with
+   the lettering for the layout and come back with the same solids. `frame`
+   then cuts only the text pockets from the blank when the text is engraved
+   or absent; with no text the result is the blank itself, cutter for cutter
+   and byte for byte what it was, which is what keeps the six cities' frames
+   unchanged. Embossed text keeps the one-shot order (additive first, then
+   every cutter), because a letter added to the blank would not meet the
+   texture and ornament cutters the rest of the lip met.
+5. **Spans** inside the lettering repair (`lettering.layout/glyphs/repair/
+   extrude`, `repair.section/dilate/clip/widen/stroke/starve`) and
+   `frame.blank`, all no-ops with perf mode off. What they show, and what was
+   left alone: `repair.stroke` is `openingWidthMm`'s bisection, eight
+   openings at sixteen segments over the whole line, 10 to 30 ms by glyph
+   count. Its answer is compared against `0.9 x target` and the bisection grid
+   decides the value within one resolution step, so a shortcut that skipped
+   openings could move a verdict near the line; it stays.
+
+Worker side, in Node (`vite-node`, one `StageCache`, the Chicago fixture
+through `fetchImpl`, `regionBatchMs: 0`, a warm change of one frame-edge line,
+four texts of 7 to 11 glyphs): to the end of the region phase 99 to 120 ms
+before, 47 to 82 after; `finish-frame` 68 to 72 before, 28 to 33 after;
+`finish.solid` 55 to 58 before, 13 to 19 after; `lettering` 16 to 47 in both.
+The cold Chicago run pays the blank once, 44 ms in its own stage, and its
+`finish-frame` drops from 72 to 16.
+
+### 11.3 The six readings
+
+`npx playwright test --project=chromium -g "a lettering change reaches the
+model inside the interaction budget" --repeat-each=6`, this host, the
+production build served static, nothing else of ours running:
+
+| tree | six readings, ms | median |
+|---|---|---:|
+| before (`[V3.1-P7-34]`) | 447.6, 382, 421.8, 368, 401.3, 380 | 391 |
+| scene changes 1 to 3 only | 315.1, 325.1, 320.3, 321.3, 296.4, 284.6 | 318 |
+| **this section, all of it** | **203.4, 250.0, 206.3, 267.2, 265.6, 251.8** | **251** |
+
+Six of six pass, the slowest 133 ms under the line. What remains is 80 ms
+of debounce in the store (not this note's file), a frame for the dimming
+that overlaps it, 50 to 80 ms of engine work, and one frame boundary at the
+end. The test's own trace recording sits on top of all of that: the same
+change measured by a plain script reads 236 to 267.
+
+### 11.4 The viewport under demand mode, driven
+
+The risk `frameloop="demand"` carries is a viewport that renders once per
+gesture and stops, and no existing spec orbits. Driven with Playwright
+against the served build, frames counted as WebGL draw calls on the preview's
+canvas per animation frame (NOT `page.locator("canvas").first()`: that is the
+MapLibre picker's canvas, which comes first in the DOM and happily pans; the
+preview's is under `[data-testid="preview-canvas"]`):
+
+| gesture | frames | picture |
+|---|---|---|
+| idle, 2 s | 0 | unchanged |
+| left drag, 30 pointer moves | 90 during, 21 in the 1.5 s after release, 22 more in the next 1.5 s (damping at 16 fps runs about 3.5 s), then 0 | changed |
+| wheel, 10 notches | 14 | changed |
+| right drag (pan), 20 moves | 38 | changed |
+| hover sweep, 36 samples over the model | popover visible on 35, 19 distinct titles, repositioned 34 times | |
+| `plate_mm` 180 to 220 (a full rebuild) | dimmed false, true, false; 2 frames by the time the overlay showed, 10 over the run, 6 streamed region batches | |
+
+Nothing needed an explicit `invalidate()`: drei's OrbitControls calls it on
+`change`, r3f calls it on every applied prop and on every child added or
+removed, and a streamed region is a prop. `e2e/viewport.spec.ts` holds the
+idle (at most one frame in 1.5 s), the orbit (more than one frame across 20
+moves and a picture that moved) and the rebuild (more than one frame) cases
+permanently, on the tiny fixture (11 s here); it is not tagged `@smoke`, so
+it runs in the full gate and nightly.
+
+### 11.5 Tests, checks, and the six cities
+
+`vitest run lib/engine/pipeline lib/engine/solid components/scene`: 24 files,
+441 tests passed. `incremental.test.ts` pins `frame-blank` cached under a
+text edit; the `describeGraph` block in `v3-01-pipeline.md` is regenerated
+(one stage added, `ornaments` and `frame-cutters` gain a `frame` digest,
+`frame` gains the `frame-blank` input). `tsc --noEmit` and `eslint
+--max-warnings 0` clean.
+
+All six presets rebuilt through the browser engine (`export:cli --overpass
+... --params fixtures/print-params-parts.json --target generic-3mf`) and
+judged by `make validate` on this tree: chicago-loop ALL CHECKS PASS 0.874,
+new-york-midtown ALL CHECKS PASS 0.8873, paris-eiffel ALL CHECKS PASS 1.0,
+tokyo-shinjuku FAIL `min_wall` 0.2539 (2 of 468, narrowest 0.254),
+london-city ALL CHECKS PASS 0.8174, san-francisco-fidi ALL CHECKS PASS 1.14.
+Unchanged to the last digit.
+
+### 11.6 Lines for DECISIONS.md (the orchestrator appends; this agent does not edit it)
+
+- [V3.1-P7-35] The lettering budget's miss was rendering, not geometry:
+  116 to 142 ms of a 368 to 448 ms reading was engine work, and the rest was
+  an always-on r3f loop at 60 ms a frame under software GL making the
+  debounce timer, the worker's message and the replaced mesh each wait for a
+  frame boundary. Measured with stage spans and a worker message trace before
+  anything changed. A slow interaction is not an engine cost until the main
+  thread has been looked at.
+- [V3.1-P7-36] The preview `Canvas` runs `frameloop="demand"` behind a memo of
+  the props the scene reads, with per-region handlers and `userData` held
+  stable across renders. Demand alone was not enough: r3f 9.7 calls `setSize`
+  on every `<Canvas>` render (its size comparison never matches the measured
+  rect) and that invalidates a frame, so a re-render per stage event was a
+  frame per stage event. Driven and counted: idle renders nothing, an orbit
+  drag renders continuously with its damping tail, zoom, pan, hover and a
+  streaming rebuild all render; `e2e/viewport.spec.ts` pins it.
+- [V3.1-P7-37] `frame-blank` is a stage: the lip with every non-lettering
+  cutter already out, keyed on the content of those cutters, so a keystroke
+  cuts the text pockets and not 15 680 triangles of attribution marks. The
+  frame boolean a lettering edit evaluates went from 55 to 65 ms to 13 to 19;
+  with no text the frame is the blank, byte for byte what it was. Six
+  readings: 203.4, 250.0, 206.3, 267.2, 265.6, 251.8 against 400, from
+  447.6, 382, 421.8, 368, 401.3, 380. Six city verdicts unchanged.

@@ -1325,3 +1325,28 @@ Append-only. Format: `- [phase] decision, one line`.
   noise. The fix is to make the lettering path fast enough to have real margin, not to move the
   line to where the measurements happen to be. If it cannot be given margin, the budget stays
   where it is and the row is reported as missed, exactly as `plate_mm` is.
+
+- `[V3.1-P7-35]` **The lettering budget was rendering cost, not geometry, and it now has margin.**
+  Six readings after the fix: 203.4, 250.0, 206.3, 267.2, 265.6, 251.8, median 251 with the
+  slowest 133 ms inside the 400 ms line, against 447.6, 382, 421.8, 368, 401.3, 380 before. The
+  breakdown of one 390 ms reading, taken before any change, is the finding: 217 ms passed between
+  the keystroke and the run message, 80 ms of debounce plus 137 ms waiting on a main thread
+  running back-to-back r3f frames of 60 to 79 ms under SwiftShader; the engine was 142 ms, of
+  which the frame boolean was 67 ms and 15680 of its triangles were attribution marks; 5 ms
+  reached the DOM and 27 ms waited for the next frame boundary. I had this filed as a geometry
+  cost and it was mostly the renderer. The fixes are `frameloop="demand"` behind a `React.memo`,
+  because r3f 9.7 calls `setSize` and invalidates on every `Canvas` render so `demand` alone only
+  reached a median of 318 with one failure; stable per-region handlers and `userData`; and a
+  cached `frame-blank` stage keyed on cutter content, taking `finish.solid` from 55-58 to
+  13-19 ms with no-text frames byte-identical. Embossed text keeps the exact old boolean order.
+- `[V3.1-P7-36]` **`frameloop="demand"` was accepted only after the camera was proved to still
+  move, by counting frames.** The risk with `demand` is a viewport that looks right until the
+  user drags it, and nothing in the suite would have caught it: an e2e that asserts a region is
+  on screen never orbits and the a11y pass never touches the canvas. Verified against the served
+  build by counting WebGL frames on the preview canvas, correctly distinguished from the MapLibre
+  canvas that comes first in DOM order: idle two seconds gives 0 frames; a 30-move left drag
+  gives 90 frames plus a 21-frame damping tail with the picture changed; ten wheel notches give
+  14; a 20-move right-drag pan gives 38; a hover sweep shows the popover on 35 of 36 samples; a
+  plate resize dims and undims across 10 frames and 6 streamed region batches. No explicit
+  `invalidate()` was needed. `e2e/viewport.spec.ts` now pins idle, orbit and the streaming
+  rebuild permanently, so the next person to touch the frameloop finds out from a test.

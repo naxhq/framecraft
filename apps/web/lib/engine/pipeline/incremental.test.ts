@@ -83,6 +83,11 @@ const GEOMETRY_NOT_TOUCHED_BY_TEXT: readonly StageId[] = [
   "fonts",
   "attribution",
   "hangers",
+  // The lip with the attribution marks, the ornaments and the mating features
+  // already cut: keyed on the content of those cutters, which a text edit
+  // leaves as they were, so the frame boolean a keystroke re-evaluates is the
+  // text pockets alone (`[V3.1-P7-34]`).
+  "frame-blank",
   "region-buildings",
   "finish-buildings",
   "region-roads",

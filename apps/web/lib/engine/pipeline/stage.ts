@@ -87,6 +87,7 @@ export type StaticStageId =
   | "hangers"
   | "frame-cutters"
   | "base"
+  | "frame-blank"
   | "frame"
   | "sit"
   | "assembly"
@@ -264,6 +265,13 @@ export interface BaseOut {
   solid: Manifold;
 }
 
+export interface FrameBlankOut {
+  /** The frame lip as built, null with the frame off. */
+  lip: Manifold | null;
+  /** The lip with every cutter that is not lettering already taken out of it: the attribution marks, the ornaments, the mating features and the texture. Evaluated, not lazy. */
+  blank: Manifold | null;
+}
+
 export interface FrameOut {
   /** The frame region solid, null with the frame off. */
   frame: Manifold | null;
@@ -345,6 +353,7 @@ export interface StaticStageOutputs {
   hangers: HangersOut;
   "frame-cutters": FrameCuttersOut;
   base: BaseOut;
+  "frame-blank": FrameBlankOut;
   frame: FrameOut;
   sit: SitOut;
   assembly: AssemblyOut;

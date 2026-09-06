@@ -401,6 +401,31 @@ interface MeshInteraction {
   onClick?: (event: ThreeEvent<MouseEvent>) => void;
 }
 
+/** One region's handlers and exactly what they were built from, so a render that changed none of it reuses them. */
+interface HandlerEntry {
+  mesh: RegionMesh;
+  onHover: HoverHandler | undefined;
+  onPick: ((id: string) => void) | undefined;
+  handlers: MeshInteraction;
+}
+
+/**
+ * The `userData` a region's mesh carries, one object per region name for the
+ * life of the page. The right-click raycast reads `region` back off the hit
+ * object; nothing else does, and a fresh `{ region }` per render would be a
+ * prop change to r3f every time this component re-rendered (see the render).
+ */
+const USER_DATA = new Map<string, { region: string }>();
+
+function userDataFor(region: string): { region: string } {
+  let data = USER_DATA.get(region);
+  if (data === undefined) {
+    data = { region };
+    USER_DATA.set(region, data);
+  }
+  return data;
+}
+
 function interactionHandlers(
   region: string,
   mesh: RegionMesh,
@@ -587,6 +612,29 @@ export function RegionMeshes({
     [store],
   );
 
+  // The pointer props, reused across renders while nothing they close over
+  // moved. This component re-renders on every store write the viewport reads
+  // (each stage a run starts, each parameter edit), and to r3f a prop that is
+  // a fresh function or a fresh object IS a changed prop: it is applied, and
+  // in a demand-mode loop an applied prop is a rendered frame. Handed the same
+  // handlers and the same `userData` object, r3f finds nothing to apply, and
+  // a re-render that changed no mesh asks for no frame. Measured on the smoke
+  // test's software-GL host, that was one 60 ms frame per stage event, back to
+  // back, for the whole of a lettering run.
+  const handlerCache = useRef(new Map<string, HandlerEntry>());
+  const handlersFor = (region: string, mesh: RegionMesh): MeshInteraction => {
+    const held = handlerCache.current.get(region);
+    if (held !== undefined && held.mesh === mesh && held.onHover === onHover && held.onPick === onPick) {
+      return held.handlers;
+    }
+    const handlers = interactionHandlers(region, mesh, onHover, onPick, press);
+    handlerCache.current.set(region, { mesh, onHover, onPick, handlers });
+    return handlers;
+  };
+  for (const region of handlerCache.current.keys()) {
+    if (!regions.has(region)) handlerCache.current.delete(region);
+  }
+
   // `data-testid` on a react-three-fiber primitive is NOT a DOM attribute --
   // `<group>`/`<mesh>` become real `THREE.Object3D` instances inside the
   // WebGL canvas, not HTML elements, so a Playwright DOM locator can never
@@ -603,13 +651,11 @@ export function RegionMeshes({
         <mesh
           key={region}
           data-testid={`region-mesh-${region}`}
-          userData={{ region }}
+          userData={userDataFor(region)}
           geometry={geometry}
           castShadow={!dimmed}
           receiveShadow={!dimmed}
-          {...(isPickableRegion(region)
-            ? interactionHandlers(region, mesh, onHover, onPick, press)
-            : {})}
+          {...(isPickableRegion(region) ? handlersFor(region, mesh) : {})}
         >
           <meshStandardMaterial
             color={materialColor}

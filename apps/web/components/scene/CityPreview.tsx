@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type KeyboardEvent } from "react";
 import { Canvas } from "@react-three/fiber";
 
 import AdjustmentsChip from "@/components/editor/AdjustmentsChip";
@@ -237,6 +237,67 @@ function useRegionVersions(regions: ReadonlyMap<string, RegionMesh>): string {
     return parts.join(" ");
   }, [regions]);
 }
+
+/**
+ * The `<Canvas>` and everything in it, re-rendered only when one of ITS props
+ * moved (`[V3.1-P7-34]`).
+ *
+ * Two things this memo is for, both measured on the smoke test's software-GL
+ * host, where one frame of this scene is about 60 ms of main thread:
+ *
+ * 1. The loop is `frameloop="demand"`: a frame is rendered when something
+ *    changed, not sixty times a second regardless. The model is static
+ *    between changes, and every change that should move the picture reaches
+ *    three.js as a React prop (a new region mesh, the dimming, a tint, the
+ *    theme) or as an OrbitControls `change` event (drei invalidates on it,
+ *    damping included), so each asks for exactly the frame it needs. With
+ *    `always`, an idle preview kept the main thread busy for the whole of
+ *    every frame, and a lettering edit paid for that three times over before
+ *    its mesh could reach the screen: the 80 ms debounce timer waited for a
+ *    frame boundary to fire, the worker's region message waited for the next
+ *    one to be handled, and the replaced mesh waited for a third to be seen.
+ *    That was 137 to 217 ms before the worker was even asked and another 25
+ *    to 30 after it answered, against 116 to 142 ms of actual engine work.
+ *
+ * 2. `CityPreview` re-renders on every store write the viewport reads, which
+ *    during a run is every stage event, and a re-render of `<Canvas>` itself
+ *    is a frame: r3f re-applies its configuration in a layout effect on each
+ *    render, and (as of @react-three/fiber 9.7) its size comparison never
+ *    matches the measured rect it is handed, so every render calls `setSize`
+ *    on the root store, whose subscription invalidates the loop. Keeping the
+ *    canvas behind a memo of the props the scene actually reads turns eighty
+ *    stage events into zero frames; the DOM around it (the overlay, the
+ *    chips, the data attributes) still re-renders as before.
+ */
+const PreviewCanvas = memo(function PreviewCanvas({
+  onKeyDown,
+  onFocus,
+  onBlur,
+  ...scene
+}: ComponentProps<typeof PreviewScene> & {
+  onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void;
+  onFocus: () => void;
+  onBlur: () => void;
+}) {
+  return (
+    <Canvas
+      frameloop="demand"
+      shadows="percentage"
+      dpr={[1, 2]}
+      camera={{ position: [140, 170, 190], fov: 40, near: 1, far: 5000 }}
+      data-testid="preview-canvas"
+      tabIndex={0}
+      role="application"
+      aria-label="3D preview. Arrow keys move the object cursor, Page Up and Page Down change layer between buildings, roads, water and green space, Enter picks a hero building or opens the menu for anything else, and the Menu key or Shift+F10 opens that menu on the object under the cursor."
+      aria-describedby="preview-cursor-status"
+      onKeyDown={onKeyDown}
+      onFocus={onFocus}
+      onBlur={onBlur}
+    >
+      <PreviewScene {...scene} />
+    </Canvas>
+  );
+});
 
 export function CityPreview() {
   const graph = useEditorStore((state) => state.scene.graph);
@@ -667,7 +728,7 @@ export function CityPreview() {
   }, [cursorId, cursorLayer, dilationById, graph, heroIdSet, surfaceKey, surfaceStops]);
 
   const onViewportKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLDivElement>) => {
+    (event: KeyboardEvent<HTMLDivElement>) => {
       if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
         event.preventDefault();
         openInspectorForCursor();
@@ -723,6 +784,15 @@ export function CityPreview() {
     ],
   );
 
+  // The canvas's own DOM handlers, identity-stable so that `PreviewCanvas`'s
+  // memo holds: the key handler closes over the cursor state and is rebuilt
+  // whenever that moves, which must not re-render the canvas (see the memo).
+  const viewportKeyDownRef = useRef(onViewportKeyDown);
+  viewportKeyDownRef.current = onViewportKeyDown;
+  const onCanvasKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => viewportKeyDownRef.current(event), []);
+  const onCanvasFocus = useCallback(() => setFocused(true), []);
+  const onCanvasBlur = useCallback(() => setFocused(false), []);
+
   if (!graph || scale === null) {
     return status === "loading" ? <PreviewSkeleton /> : <PreviewEmpty />;
   }
@@ -759,39 +829,28 @@ export function CityPreview() {
         `role="application"` is what tells a screen reader to pass the arrow
         keys through to this widget instead of using them to browse.
       */}
-      <Canvas
-        shadows="percentage"
-        dpr={[1, 2]}
-        camera={{ position: [140, 170, 190], fov: 40, near: 1, far: 5000 }}
-        data-testid="preview-canvas"
-        tabIndex={0}
-        role="application"
-        aria-label="3D preview. Arrow keys move the object cursor, Page Up and Page Down change layer between buildings, roads, water and green space, Enter picks a hero building or opens the menu for anything else, and the Menu key or Shift+F10 opens that menu on the object under the cursor."
-        aria-describedby="preview-cursor-status"
-        onKeyDown={onViewportKeyDown}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-      >
-        <PreviewScene
-          regions={regions}
-          recessBands={recessBands}
-          dimmed={view.dimmed}
-          dimOpacity={multipliers.dim}
-          recessShade={multipliers.recess}
-          tiles={pipelineResult?.tiles}
-          tileColor={themed.tileLine}
-          background={viewportPalette.background}
-          sky={viewportPalette.sky}
-          bounce={viewportPalette.bounce}
-          gridColor={viewportPalette.grid}
-          plateMm={frameWidthMm}
-          fitTrigger={graph}
-          tints={tints}
-          onPick={onPickBuilding}
-          onHover={onHover}
-          onInspect={onInspect}
-        />
-      </Canvas>
+      <PreviewCanvas
+        onKeyDown={onCanvasKeyDown}
+        onFocus={onCanvasFocus}
+        onBlur={onCanvasBlur}
+        regions={regions}
+        recessBands={recessBands}
+        dimmed={view.dimmed}
+        dimOpacity={multipliers.dim}
+        recessShade={multipliers.recess}
+        tiles={pipelineResult?.tiles}
+        tileColor={themed.tileLine}
+        background={viewportPalette.background}
+        sky={viewportPalette.sky}
+        bounce={viewportPalette.bounce}
+        gridColor={viewportPalette.grid}
+        plateMm={frameWidthMm}
+        fitTrigger={graph}
+        tints={tints}
+        onPick={onPickBuilding}
+        onHover={onHover}
+        onInspect={onInspect}
+      />
 
       {/*
         The object popover. It sits over the canvas, not in it: nothing it does

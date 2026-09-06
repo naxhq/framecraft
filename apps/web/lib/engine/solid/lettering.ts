@@ -26,6 +26,7 @@
 
 import type { Engraving, PrintParams } from "../../contracts";
 import { loadGlyphFace, loadedGlyphFace, type GlyphFace } from "../../fontGlyphs";
+import { perfSpan } from "../../perf";
 import type { PreviewArea } from "../../preview";
 import { glyphAreas, placeArea } from "../../previewText";
 import type { TokenContext } from "../../tokens";
@@ -184,14 +185,13 @@ export function repairText(
   targetMm: number,
   keep: CrossSection | null,
 ): RepairedText | null {
-  const contours = contoursFromAreas(areas);
-  const raw = sectionOf(ctx.wasm, ctx.arena, contours);
+  const raw = perfSpan("repair.section", () => sectionOf(ctx.wasm, ctx.arena, contoursFromAreas(areas)));
   if (raw === null) return null;
   const before = holeCount(raw);
 
   let section = raw;
   if (dilationMm > 0) {
-    const grown = raw.offset(dilationMm, ROUND, 2, GLYPH_JOIN_SEGMENTS);
+    const grown = perfSpan("repair.dilate", () => raw.offset(dilationMm, ROUND, 2, GLYPH_JOIN_SEGMENTS));
     if (grown.isEmpty()) {
       grown.delete();
       ctx.arena.drop(raw);
@@ -202,7 +202,7 @@ export function repairText(
   }
 
   if (keep !== null) {
-    const clipped = intersectSection(ctx.arena, section, keep);
+    const clipped = perfSpan("repair.clip", () => intersectSection(ctx.arena, section, keep));
     if (section !== clipped) ctx.arena.drop(section);
     if (clipped === null) return null;
     section = clipped;
@@ -212,29 +212,34 @@ export function repairText(
   // is brought up to it, exactly as a building's wing is. The target is the
   // TEXT's (one nozzle for a groove, two for an emboss), not the structural
   // minimum wall, or every engraving would come out as a fat smear.
-  const widened = widenThinParts(ctx, section, undefined, targetMm, keep);
+  const widened = perfSpan("repair.widen", () => widenThinParts(ctx, section, undefined, targetMm, keep));
   if (widened !== section) {
     ctx.arena.drop(section);
     section = widened;
   }
 
-  const strokeMm = openingWidthMm(section, 3 * targetMm, {
-    keepFraction: STROKE_AREA_RATIO,
-    resolutionMm: targetMm / 20,
-    segments: GLYPH_JOIN_SEGMENTS,
-  });
+  const strokeMm = perfSpan("repair.stroke", () =>
+    openingWidthMm(section, 3 * targetMm, {
+      keepFraction: STROKE_AREA_RATIO,
+      resolutionMm: targetMm / 20,
+      segments: GLYPH_JOIN_SEGMENTS,
+    }),
+  );
   // A piece of the text that is under the target EVERYWHERE cannot be saved by
   // a stroke measurement that half the glyph passes: it is a letter the nozzle
   // would miss entirely. This is the reference implementation's own erosion
   // probe (`thicken.MIN_WALL_PROBE_FACTOR`), applied per connected piece.
-  let starved = 0;
-  const pieces = ctx.arena.keepAll(section.decompose());
-  for (const piece of pieces) {
-    const eroded = piece.offset(-MIN_WALL_PROBE_FACTOR * targetMm, ROUND, 2, GLYPH_JOIN_SEGMENTS);
-    if (eroded.isEmpty()) starved += 1;
-    eroded.delete();
-  }
-  ctx.arena.dropAll(pieces);
+  const starved = perfSpan("repair.starve", () => {
+    let count = 0;
+    const pieces = ctx.arena.keepAll(section.decompose());
+    for (const piece of pieces) {
+      const eroded = piece.offset(-MIN_WALL_PROBE_FACTOR * targetMm, ROUND, 2, GLYPH_JOIN_SEGMENTS);
+      if (eroded.isEmpty()) count += 1;
+      eroded.delete();
+    }
+    ctx.arena.dropAll(pieces);
+    return count;
+  });
 
   return {
     section,
@@ -508,7 +513,7 @@ export function buildLettering(
   // the params, which the pipeline's strict-claims check would count as a
   // dependency of the lettering on all of them (`pipeline/claims.ts`).
   const edgeParams = withEngravings(params, edges.map((item) => item.engraving));
-  const layout = T.lettering_layout(edgeParams, tokens, rotationDeg);
+  const layout = perfSpan("lettering.layout", () => T.lettering_layout(edgeParams, tokens, rotationDeg));
   reportLayoutWarnings(ctx, layout.warnings);
 
   const out: LetteringGeometry = {
@@ -560,7 +565,7 @@ export function buildLettering(
       id,
       surface,
       mode,
-      areas: placedGlyphs(asset, entry.fit, entry.placement),
+      areas: perfSpan("lettering.glyphs", () => placedGlyphs(asset, entry.fit, entry.placement)),
       fit: entry.fit,
       depthMm: entry.depth_mm,
       face: "top",
@@ -669,12 +674,8 @@ export function buildLettering(
   // --- repair, measure and cut -----------------------------------------
   for (const piece of pieces) {
     const target = T.text_stroke_target_mm(params, piece.mode === "emboss" ? "emboss" : "engrave");
-    const repaired = repairText(
-      ctx,
-      piece.areas,
-      piece.fit.dilation_mm,
-      target,
-      piece.face === "top" ? keep : null,
+    const repaired = perfSpan("lettering.repair", () =>
+      repairText(ctx, piece.areas, piece.fit.dilation_mm, target, piece.face === "top" ? keep : null),
     );
     if (repaired === null) {
       ctx.resolvedText.push(
@@ -728,7 +729,7 @@ export function buildLettering(
       continue;
     }
 
-    const cut = emitPiece(ctx, piece, repaired.section, lipTop);
+    const cut = perfSpan("lettering.extrude", () => emitPiece(ctx, piece, repaired.section, lipTop));
     if (!cut) {
       ctx.resolvedText.push(
         resolved(piece.id, piece.fit, piece.surface, piece.mode, "skipped", piece.depthMm, "the extrusion came back empty"),

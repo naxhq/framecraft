@@ -273,6 +273,9 @@ export const PART_EXPOSURE: Readonly<Record<string, readonly string[]>> = {
   "repair-buildings#footprint": ["footprint"],
   "buildings#overrideBands": ["overrideBands"],
   "buildings#ownerIds": ["ownerIds"],
+  "ornaments#frame": ["frameCut"],
+  "attribution#frame": ["frameCut"],
+  "frame-cutters#frame": ["mating", "texture"],
 };
 
 /**
@@ -1074,7 +1077,7 @@ const ornaments = defineStage({
   // this stage reads what it takes to cut them into the lip and the underside.
   params: ["hanger", "base_thickness_mm", "plate_mm", "frame", "nozzle_mm", "frame_style.*", ...PLACEMENT_LEAVES],
   inputs: ["context", "lettering"],
-  digests: { base: (out) => solidsDigest(out.baseCut) },
+  digests: { base: (out) => solidsDigest(out.baseCut), frame: (out) => solidsDigest(out.frameCut) },
   run(ctx) {
     const build = ctx.build;
     const geometry = buildOrnaments(build, ctx.input("lettering").layout);
@@ -1131,8 +1134,13 @@ const frameCutters = defineStage({
   inputs: ["context", "lettering"],
   // What the base reads of the frame cutters: the snap ridge, the magnet
   // pockets and the shadow gap. Empty for a plain frame, so a profile or
-  // texture change leaves the base cached.
-  digests: { base: (out) => solidsDigest([...out.mating.baseAdd, ...out.mating.baseCut, out.shadowGap]) },
+  // texture change leaves the base cached. What the frame blank reads: the
+  // texture and the mating features (all of `mating`, which is what the part
+  // exposes, so the digest covers everything a reader of the part can see).
+  digests: {
+    base: (out) => solidsDigest([...out.mating.baseAdd, ...out.mating.baseCut, out.shadowGap]),
+    frame: (out) => solidsDigest([...out.mating.frameCut, ...out.mating.baseAdd, ...out.mating.baseCut, out.texture]),
+  },
   run(ctx) {
     const build = ctx.build;
     const shadowGap = buildShadowGap(build);
@@ -1178,11 +1186,48 @@ const base = defineStage({
   },
 });
 
+/**
+ * The frame lip with every cutter that is not lettering already taken out of
+ * it (`[V3.1-P7-34]`): the attribution marks, the ornaments, the mating
+ * features and the texture.
+ *
+ * Its own stage so that a text edit does not pay for the rest. The frame
+ * boolean is lazy in the kernel and evaluated by `finish-frame`; measured on
+ * the Chicago plate with an eleven-glyph line, 55 to 65 ms of it was the four
+ * attribution marks (3920 triangles each) against under 10 for the text, and
+ * every keystroke re-ran the whole of it because `frame` reads the lettering.
+ * Keyed on the CONTENT of the three cutter lists rather than on the stages
+ * that made them (`ornaments` and `frame-cutters` re-run with the lettering,
+ * for the layout, and come back with the same solids), so a text edit finds
+ * it cached; a style, plate or attribution change re-runs it. Evaluated here
+ * rather than left lazy, so the cost sits on the stage that owns it.
+ */
+const frameBlank = defineStage({
+  id: "frame-blank",
+  phase: "geometry",
+  params: ["frame", "plate_mm", "nozzle_mm", "base_thickness_mm", "frame_style.*"],
+  inputs: ["context", "ornaments", "attribution", "frame-cutters"],
+  inputDigests: { ornaments: "frame", attribution: "frame", "frame-cutters": "frame" },
+  run(ctx) {
+    const lip = buildFrameLip(ctx.build);
+    if (lip === null) return { lip: null, blank: null };
+    const cutters = ctx.input("frame-cutters");
+    const blank = subtractSolids(ctx.wasm, ctx.arena, lip, [
+      ...ctx.input("ornaments").frameCut,
+      ...ctx.input("attribution").frameCut,
+      ...cutters.mating.frameCut,
+      cutters.texture,
+    ]);
+    perfSpan("frame.blank", () => blank.numTri());
+    return { lip, blank };
+  },
+});
+
 const frame = defineStage({
   id: "frame",
   phase: "geometry",
   params: ["frame", "plate_mm", "nozzle_mm", "base_thickness_mm", "frame_style.*"],
-  inputs: ["context", "lettering", "ornaments", "attribution", "frame-cutters"],
+  inputs: ["context", "lettering", "ornaments", "attribution", "frame-cutters", "frame-blank"],
   run(ctx) {
     const build = ctx.build;
     reportUnbuiltFrameStyle(build);
@@ -1192,23 +1237,35 @@ const frame = defineStage({
       build,
       letteringOut.frameCut.length + letteringOut.frameAdd.length + letteringOut.inlayCut.length + ornamentsOut.frameCut.length > 0,
     );
-    const lip = buildFrameLip(build);
-    // Additive first, then the cutters, in the reference implementation's
-    // order: an embossed letter has to meet the same engraving cutter the rest
-    // of the lip does.
-    const raisedFrame = lip === null ? null : (batchedUnion(ctx.wasm, ctx.arena, [lip, ...letteringOut.frameAdd]) ?? lip);
+    const { lip, blank } = ctx.input("frame-blank");
+    if (lip === null || blank === null) return { frame: null, raisedFrame: null };
+    if (letteringOut.frameAdd.length === 0) {
+      // Engraved text, or none: the blank minus the text pockets. The same set
+      // as the one-shot difference below (the pockets are cut from a solid the
+      // other cutters have already left), and with no text at all it IS the
+      // blank, cutter for cutter and byte for byte. What it saves is the cost
+      // of the attribution marks' 15 000 triangles on every keystroke: the
+      // frame boolean that finish-frame evaluates went from 55 to 65 ms to 17
+      // to 18 on the Chicago plate with an eleven-glyph line.
+      return {
+        frame: subtractSolids(ctx.wasm, ctx.arena, blank, [...letteringOut.frameCut, ...letteringOut.inlayCut]),
+        raisedFrame: lip,
+      };
+    }
+    // Embossed text: additive first, then every cutter, in the reference
+    // implementation's order, because an embossed letter has to meet the same
+    // engraving cutter the rest of the lip does, and a letter added to the
+    // blank would not.
+    const raisedFrame = batchedUnion(ctx.wasm, ctx.arena, [lip, ...letteringOut.frameAdd]) ?? lip;
     const cutters = ctx.input("frame-cutters");
-    const frameSolid =
-      raisedFrame === null
-        ? null
-        : subtractSolids(ctx.wasm, ctx.arena, raisedFrame, [
-            ...letteringOut.frameCut,
-            ...letteringOut.inlayCut,
-            ...ornamentsOut.frameCut,
-            ...ctx.input("attribution").frameCut,
-            ...cutters.mating.frameCut,
-            cutters.texture,
-          ]);
+    const frameSolid = subtractSolids(ctx.wasm, ctx.arena, raisedFrame, [
+      ...letteringOut.frameCut,
+      ...letteringOut.inlayCut,
+      ...ornamentsOut.frameCut,
+      ...ctx.input("attribution").frameCut,
+      ...cutters.mating.frameCut,
+      cutters.texture,
+    ]);
     return { frame: frameSolid, raisedFrame };
   },
 });
@@ -1890,6 +1947,7 @@ export const STAGES: readonly StageDef[] = [
   hangers as StageDef,
   frameCutters as StageDef,
   base as StageDef,
+  frameBlank as StageDef,
   frame as StageDef,
   ...regionPhase(),
   assembly as StageDef,
