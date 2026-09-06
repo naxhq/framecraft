@@ -1279,12 +1279,18 @@ after 22 252 ms.
 
 ### 12.4 What was deliberately not touched
 
+> **The first bullet below is WRONG and 12.6 supersedes it.** It is kept as
+> written because 12.6 is about how it was wrong. Both budgets now take the
+> factor; do not act on this bullet.
+
 * `engine.test.ts`'s `TIME_BUDGET_MS` and `TERRAIN_TIME_BUDGET_MS`, both 15 s.
   They passed on the runner with room (8 807 ms measured) and they carry a
   history worth keeping verbatim: `[V3-P8-gate]` raised the first of them once
   and it turned out to be hiding `measureMinWall`'s real defect. They can adopt
   the factor when somebody has a reading that says they should; this wave had
   none.
+  <br>(8 807 ms was the FLAT build, not the drape; the drape had already read
+  13 970 ms on the same run, at 93 % of the budget this bullet calls roomy.)
 * `tiling.test.ts`'s existing 120 s and 180 s per-test timeouts. They are hang
   guards already far above any measured cost, and scaling them would push them
   past the job's own 10-minute timeout, where a ceiling stops meaning anything.
@@ -1307,7 +1313,7 @@ after 22 252 ms.
   ceiling of `20_000 * BUDGET_FACTOR` with its reason beside it, so a genuinely
   hung test anywhere else in the suite still fails in five seconds.
 
-### 12.6 The row left unscaled, the sweep that should have caught it (2026-09-06, second pass)
+### 12.6 The row left unscaled: was a regression being masked? (2026-09-06, second pass)
 
 Run 34064448493 proved the factor and found what 12.4 got wrong. The scaled
 rows behaved: `[normalise] 2012 ms (budget 3000 ms at factor 2)` -- which is
@@ -1326,44 +1332,80 @@ one that mattered was never checked. The drape had in fact read 13 970 ms on
 run 34034936993 -- 93 % of its budget, the thinnest margin in the suite -- and
 was there to be seen in the log I had already pulled.
 
-**Is the drape genuinely too slow, or does the budget lack a factor?** The
-budget, and this time the evidence is unusually clean: the runner builds the
-*identical* model, 168 296 triangles against a flat 133 696, 5.60 mm of relief,
-37.85 mm tall, to the digit on both machines. Same work, different clock.
+#### Is this budget being raised to accommodate a regression?
+
+That is `[V3-P7-fix2-3]`'s question and it is the only one worth answering
+here, so it is answered first. That ruling VOIDED `[V3-P8-gate]` and restored
+these two budgets to 15 s unscaled, because the 13.7 to 13.9 s that had
+justified doubling them was not host noise at all -- it was `measureMinWall`'s
+swapped filters, a real defect the raised budget then hid for a whole phase. It
+ends: "A budget raised to accommodate a regression is a weakened test, and this
+one hid a shipping defect for a whole phase."
+
+Nothing about a runner answers that. The only thing that does is the same
+drape, on the same host, before and after our work. Measured in a detached
+worktree with `node_modules` junctioned from the live tree (`package-lock.json`
+is identical across all three trees), each run alone on a quiet host and
+interleaved with HEAD so host drift cannot favour either side:
+
+| tree | `[terrain]` chicago draped | triangles (flat) |
+|---|---|---|
+| `7eda2d7` -- last tree CI passed vitest on, 2026-09-02 | 8 605, 8 691 ms | 170 534 (135 742) |
+| `af02c98` -- Wave 3 checkpoint, before this run's geometry wave | 8 175, 8 208, 8 141 ms | 170 534 (135 742) |
+| `ab1b28f` -- HEAD | 5 899, 5 900, 5 867 ms | 168 296 (133 696) |
+
+**The drape got 28 % faster across the geometry wave** (`af02c98` -> HEAD,
+-2 286 ms) and 32 % faster since the last green CI, on slightly LESS geometry:
+170 534 triangles became 168 296. `snapSection`, `sweepSlivers`,
+`repairSliceProfiles`, the frame-on `mergeRecessRidges` and the `fittedSolid`
+seam trim gave 2.3 s of margin back rather than consuming it.
+
+So the condition `[V3-P7-fix2-3]` was written about was tested for and is
+absent. A regression would show as this row getting SLOWER on this host; it got
+faster at every one of the three points measured, across 37 commits (7 to
+`af02c98`, 30 more to HEAD). Scaling it is
+not the act that ruling forbids, and at factor 1 -- what `make gate`,
+`make gate-fast` and a bare `npm test` all run -- the number is still 15 000,
+exactly as `[V3-P7-fix2-3]` left it. A future reader arriving at this budget
+with that ruling in hand should stop here: the question was asked, and the
+table above is the answer.
+
+#### Then why did CI go red?
+
+Because the local cost fell while the runner's reading rose, and only one of
+those is our code.
 
 | `[terrain]` chicago draped | reading | of budget |
 |---|---:|---:|
-| this host, alone | ~6 240 ms | 42 % |
+| this host, alone | 5 867 to 5 900 ms | 39 % |
 | this host, in-suite (three runs) | 7 111, 7 126, 7 211 ms | 47 to 48 % |
 | runner, run 34034936993 | 13 970 ms | 93 % |
 | runner, run 34064448493 | 15 023 ms | 100.2 % (**red**) |
 
-In-suite against in-suite that is **1.94x to 2.11x**, inside the 1.55x to
-2.13x measured in 12.2 and no different in kind. At factor 2 the runner sits at
-50 % of a 30 000 ms budget against this host's 48 % of 15 000 -- the same
-equal-margin result that set the factor in the first place. Nothing in
-`terrain.ts` or `engine.ts` changed, and the flat build in the same file is
-*faster* than the 6.63 s `[V3-P7-fix2-3]` recorded.
+In-suite against in-suite that is **1.94x to 2.11x**, inside the 1.55x to 2.13x
+measured in 12.2 and no different in kind; the runner builds the *identical*
+model, 5.60 mm of relief and 37.85 mm tall to the digit on both machines. Same
+work, different clock. At factor 2 the runner sits at 50 % of a 30 000 ms
+budget against this host's 47 to 48 % of 15 000 -- the same equal-margin result
+that set the factor in the first place.
 
-What the two runs also show is runner-to-runner variance: +6.6 % on ingest
-(1 887 -> 2 012) and +7.5 % on the drape (13 970 -> 15 023) for identical work.
-A budget with 7 % of headroom is a coin flip, which is what 15 000 against
-13 970 was.
+What moved on the runner is the SUITE. At `7eda2d7` vitest ran inside the old
+combined `web` job on a much smaller suite and this row passed there; 112 files
+now contend for a few cores where far fewer once did. Add the runner-to-runner
+variance the two runs show for identical work -- +6.6 % on ingest (1 887 ->
+2 012) and +7.5 % on the drape (13 970 -> 15 023) -- and a budget holding at
+93 % was a coin flip waiting to be called.
 
-**On `[V3-P8-gate]`.** Read with its successor, which is the operative ruling:
-`[V3-P7-fix2-3]` VOIDED `[V3-P8-gate]` and restored these budgets to 15 s
-unscaled, because the 13.7 to 13.9 s that justified doubling them was
-`measureMinWall`'s swapped filters -- a real defect the raised budget then hid
-for a phase. What it forbids, in its own words, is a budget "raised to
-accommodate a regression". It does not forbid a factor; it puts the burden of
-proof on anyone who touches the number, and its evidence ("the full suite
-passes under exactly the full-suite parallelism that was said to flake") is
-about THIS host and makes no claim about a hosted runner. That burden is
-discharged above -- identical output, unchanged code, and the same ~2x on five
-independent rows -- and `* BUDGET_FACTOR` leaves the local number at 15 000,
-which is precisely what that ruling restored. The reasoning is written into
-`engine.test.ts` beside both constants so the next reader does not have to
-reconstruct it.
+**A correction to the readings this was nearly decided on.** 11 254 ms alone
+and 11 978 ms in-suite were quoted several times while this was being argued,
+and they do not reproduce: they are above every one of the three trees measured
+above, including the pre-wave one. They were taken while several agents were
+running vitest on this host concurrently. The quiet-host truth is 5 889 ms
+alone and 7 111 to 7 211 in-suite, so the row has about 52 % of its budget
+spare in-suite rather than the 20 to 25 % those figures implied. Timing
+readings taken on a shared dev host during a multi-agent run are not evidence;
+this is the second time in this section that a number nearly decided a ruling
+on its own.
 
 **The sweep, done properly this time.** Every wall-clock assertion in the
 vitest suite, found by walking `performance.now()`/`Date.now()` rather than by
@@ -1379,11 +1421,26 @@ grepping for budget-shaped names, which is how the drape was missed:
 
 All five now print `(budget N ms at factor F)` beside the reading, so the next
 failure carries its margin instead of needing this table. The bottom three were
-scaled for consistency, not need; the `owners` row is worth one note, because
-its runner ratio (2.5x to 3.3x) is the only one ABOVE the declared factor and
-that says nothing about hardware -- at a 10 ms magnitude the reading is timer
-granularity and JIT warmup, which is also why two runner samples of identical
-work differ by 32 %.
+scaled for consistency, not need. Two of them are findings rather than
+housekeeping, and both are written down here because the next person to read
+those tests will otherwise draw the wrong conclusion from them:
+
+* **`client.supersede.test.ts`'s 3 000 ms bound no longer measures what its
+  comment says it does.** The comment reasons from "no stage takes longer than
+  the audit's merged (about 0.6 s), so the ingest cannot wait more than that
+  plus its own fetch and normalise". The ingest now waits **1 to 3 ms**. The
+  assertion still passes, and it would pass if the yield regressed by three
+  orders of magnitude. It wants re-pointing at something near the real figure,
+  or re-stating as the hang guard it has become; what it must not do is keep
+  standing there looking like a 0.6 s claim. Not changed in this wave, because
+  choosing the new bound needs the yield's own measurements, not this one's.
+* **`owners.test.ts`'s 2.5x to 3.3x runner ratio is not evidence the factor is
+  too low.** It is the only row above the declared 2, and the reason is
+  magnitude, not hardware: at 9 to 12 ms locally the reading is timer
+  granularity and JIT warmup, which is also why two runner samples of identical
+  work differ by 32 % (26.5 and 35.1 ms). Ratios taken at a 10 ms scale should
+  not be mixed into the population that sets the factor; the four rows in 12.2
+  are all at 1 s or above for that reason.
 
 Three clock-reading tests are deliberately left alone, and none is a speed
 assertion:
@@ -1406,22 +1463,16 @@ and **FAILS** at factor 1 (`expected 15240 to be less than 15000`); the same
 2x-slower box is allowed; 24 000 ms reads 30 292 ms and **FAILS** at factor 2
 (`expected 30292 to be less than 30000`). The budget has teeth at both.
 
-### 12.7 Further lines for DECISIONS.md (the orchestrator appends; this agent does not edit it)
+### 12.7 Where this is ruled on
 
-- [V3.1-P14-5] `engine.test.ts`'s two 15 s budgets, `owners.test.ts`'s 100 ms
-  re-attribution bound, `preview.test.ts`'s 33 ms matrix budget and
-  `client.supersede.test.ts`'s 3 s yield bound all scale with
-  `VITEST_BUDGET_FACTOR`, completing what `[V3.1-P14-4]` started. Only the
-  drape was ever at risk: 13 970 ms then 15 023 ms on consecutive runners
-  against 15 000, for a model identical to the one this host builds in 7 211 ms
-  (168 296 triangles, 5.60 mm relief, 37.85 mm tall, on both) -- a 1.94x to
-  2.11x hardware ratio, not a regression. The other three have 11x to 3 000x
-  headroom and were scaled for consistency; all five now print their reading
-  and their margin.
-- [V3.1-P14-6] `[V3-P7-fix2-3]`'s restoration of the 15 s budgets stands: at
-  factor 1, which every local gate runs at, they are 15 000 exactly as it left
-  them. That ruling forbids raising a budget to accommodate a slow reading
-  before proving the slowness is hardware and not a defect, and its own
-  evidence concerns this host only. The proof for the runner is recorded in
-  `docs/handoff/v3-07-perf.md` section 12.6 and summarised beside both
-  constants in the test.
+The rulings this section argued for are already in `DECISIONS.md` and are the
+authority; this file is the working and the readings behind them. See
+`[V3.1-P14-4]` for the factor itself, `[V3.1-P14-5]` for the five remaining
+budgets taking it, and `[V3.1-P14-6]` for the before-and-after that satisfies
+`[V3-P7-fix2-3]`. The drafts that used to sit here have been dropped rather
+than left to drift out of step with what was actually recorded.
+
+One item is deliberately left open rather than ruled on:
+`client.supersede.test.ts`'s 3 000 ms bound, which reads 1 to 3 ms and no
+longer measures the 0.6 s stage its comment describes. Re-pointing it needs the
+yield's own measurements, which this wave did not take.

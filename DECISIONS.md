@@ -1428,3 +1428,25 @@ Append-only. Format: `- [phase] decision, one line`.
   asserted. Worth recording: `owners.test.ts`'s runner ratio of 2.5x to 3.3x sits ABOVE the
   factor, and that is timer granularity at a 10 ms magnitude rather than hardware, two runner
   samples of identical work differing by 32 per cent.
+
+- `[V3.1-P14-6]` **`[V3.1-P14-5]` is confirmed by the before-and-after that `[V3-P7-fix2-3]`
+  actually demands: the drape got 28 per cent FASTER.** Identical-model evidence answered "is the
+  runner slower"; it did not answer "is a regression being masked", which is the only question the
+  prior ruling asks. Measured in a worktree on a quiet host, interleaved to control for drift:
+  8605 and 8691 ms at `7eda2d7`, the last tree CI passed vitest on; 8175, 8208 and 8141 ms at
+  `af02c98`, before this run's geometry wave; 5899, 5900 and 5867 ms at HEAD, with 170534
+  triangles becoming 168296. So `snapSection`, `sweepSlivers`, `repairSliceProfiles`, the frame-on
+  `mergeRecessRidges` and the `fittedSolid` seam trim made this row 2286 ms cheaper on slightly
+  less geometry, giving margin back rather than consuming it. The condition `[V3-P7-fix2-3]` was
+  written about was tested for and is absent.
+  Correcting my own figure a second time: 11254 ms alone and 11978 in-suite do not reproduce. They
+  were taken while several agents ran vitest concurrently. The quiet readings are 5889 alone and
+  7111 to 7211 in-suite, so the row uses 52 per cent of its budget rather than the 80 I inferred.
+  The local cost fell while the runner's reading rose, and both have one cause that is not the
+  drape: the suite grew to 112 files competing for the runner's few cores, plus the plus or minus
+  7 per cent runner variance already visible between two runs.
+  Two findings from the same sweep, recorded because they are not housekeeping:
+  `client.supersede.test.ts`'s 3000 ms bound reads 1 to 3 ms and so no longer measures the 0.6 s
+  stage its comment describes, a test whose comment and behaviour have diverged; and
+  `owners.test.ts` sits at 2.5x to 3.3x, above the factor, from timer granularity at a 10 ms
+  magnitude rather than hardware, which should not later be read as evidence the factor is low.
