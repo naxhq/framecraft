@@ -210,11 +210,15 @@ function bandsOf(
   low: number,
   high: number,
   faceZMm: number,
+  /** `ResolvedLine.id` per cutter, in the same order; absent for ornaments and hangers, which have no line. */
+  lineIds: readonly string[] = [],
 ): RecessBand[] {
   const out: RecessBand[] = [];
-  for (const cutter of cutters) {
-    const band = bandOf(cutter, low, high);
-    if (band !== null) out.push({ region, kind, zMm: band.zMm, xyMm: band.xyMm, faceZMm });
+  for (let i = 0; i < cutters.length; i += 1) {
+    const band = bandOf(cutters[i], low, high);
+    if (band === null) continue;
+    const lineId = lineIds[i];
+    out.push({ region, kind, zMm: band.zMm, xyMm: band.xyMm, faceZMm, ...(lineId === undefined ? {} : { lineId }) });
   }
   return out;
 }
@@ -1090,7 +1094,17 @@ const lettering = defineStage({
         // A frame or inlay pocket is cut DOWN from the lip, so the lip top is
         // its face; `baseCut` is documented as cutting the base FROM BELOW
         // (`solid/lettering.ts`, `piece.face === "bottom"`), so its face is 0.
-        ...bandsOf([...geometry.frameCut, ...geometry.inlayCut], "frame", "lettering", frameBottom, lipTop, lipTop),
+        ...bandsOf(
+          [...geometry.frameCut, ...geometry.inlayCut],
+          "frame",
+          "lettering",
+          frameBottom,
+          lipTop,
+          lipTop,
+          // The ids concatenate in the same order the cutters do, so a band
+          // can name the line whose text the viewport should caption it with.
+          [...geometry.frameCutIds, ...geometry.inlayCutIds],
+        ),
         ...bandsOf(geometry.baseCut, "base", "lettering", 0, build.baseTopMm, 0),
       ],
     };

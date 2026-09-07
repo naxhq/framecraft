@@ -148,3 +148,50 @@ test("Chicago's {city} resolves in the preview, the Resolved output panel and th
   await expect(resolvedRow).toHaveAttribute("data-status", "skipped");
   await expect(resolvedRow).toContainText("Frame is off");
 });
+
+/**
+ * The caption, which is what makes a cut line legible at the zoom people work
+ * at ([V3.1-U8]).
+ *
+ * The gap this closes is the one the author found twice. `[V3.1-U3]` stopped
+ * the lip being darkened along with the letters, which was a real defect, and
+ * I verified it on a SHORT word in the light viewport dollied right in, then
+ * claimed engraved text could be seen. At whole-plate zoom a 4 mm cap height on
+ * a 180 mm plate is about 17 pixels tall with strokes under two pixels wide,
+ * and no colour makes a sub-two-pixel stroke read as a word. So the assertion
+ * here is not about shading at all: it is that the viewport SAYS what the frame
+ * carries, without being zoomed.
+ */
+test("the viewport says what each frame line will cut, at the zoom the model is framed at", async ({
+  page,
+}) => {
+  mockNominatim(page);
+  await mockChicagoOverpass(page);
+  await page.goto("/");
+  await page.locator('[data-preset-id="chicago-loop"]').click();
+  await expect(page.getByTestId("preview-stats")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
+
+  // No lettering, no caption: the viewport does not annotate a frame that
+  // carries nothing.
+  await expect(page.getByTestId("lettering-callout")).toHaveCount(0);
+
+  await openGroup(page, "frame");
+  await page.getByTestId("engraving-add").click();
+  await page.locator("#engraving_0_text").fill("DePaul University 22222222");
+
+  // The words the BUILD resolved, on screen, at the default framing.
+  const callout = page.getByTestId("lettering-callout");
+  await expect(callout).toHaveCount(1, { timeout: WARMUP_BUDGET_MS });
+  await expect(callout).toBeVisible();
+  await expect(callout).toHaveText("DePaul University 22222222");
+
+  // A second line on the same edge gets its OWN words, which is what the
+  // band's line id is for: matched by geometry they would swap.
+  await page.getByTestId("engraving-add").click();
+  await page.locator("#engraving_1_text").fill("SECOND LINE");
+  await expect(page.getByTestId("lettering-callout")).toHaveCount(2, { timeout: WARMUP_BUDGET_MS });
+  await expect(page.getByTestId("lettering-callout").filter({ hasText: "SECOND LINE" })).toHaveCount(1);
+  await expect(
+    page.getByTestId("lettering-callout").filter({ hasText: "DePaul University 22222222" }),
+  ).toHaveCount(1);
+});

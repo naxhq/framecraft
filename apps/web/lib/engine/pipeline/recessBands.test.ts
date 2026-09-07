@@ -101,6 +101,26 @@ describe("an engraved frame line, from the engine to the shading", () => {
     expect(shading.shaded).toBeLessThan(shading.total / 2);
   }, 240000);
 
+  it("names the line it was cut for, so the viewport can caption it with its own words", async () => {
+    // Two lines on the SAME edge is the case that makes an id necessary:
+    // matching a band to a line by which edge its box hugs reads identically
+    // for both, and would caption each with the other's words ([V3.1-U8]).
+    const after = await (group as MatrixGroup).run("engravings", [
+      { ...LINE, edge: "bottom", text: "FIRST" },
+      { ...LINE, edge: "bottom", text: "SECOND" },
+    ]);
+    const bands = bandsForRegion(after.result.recessBands ?? [], "frame");
+    const ids = bands.map((band) => band.lineId);
+    expect(bands.length).toBeGreaterThanOrEqual(2);
+    for (const id of ids) expect(id, "a lettering band with no line id cannot be captioned").toBeDefined();
+    // Distinct ids, and each one is a line the build actually resolved.
+    expect(new Set(ids).size).toBe(ids.length);
+    const resolved = new Map(after.result.resolvedText.map((line) => [line.id, line.text]));
+    expect(ids.map((id) => resolved.get(id as string))).toEqual(
+      expect.arrayContaining(["FIRST", "SECOND"]),
+    );
+  }, 240000);
+
   it("shades nothing at all when there is no lettering", async () => {
     const plain = await (group as MatrixGroup).run("engravings", []);
     const bands = bandsForRegion(plain.result.recessBands ?? [], "frame");

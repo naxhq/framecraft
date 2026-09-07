@@ -1637,3 +1637,32 @@ Append-only. Format: `- [phase] decision, one line`.
   better, but the blind spot is in the independent judge this project measures itself against and
   is NOT fixed by this work. Also open, and pre-existing: the remedy tail "no size up to 7.71 mm
   cuts this string", which is vacuous because the band cap clamps every probe.
+
+- `[V3.1-U8]` **The viewport says what each frame line cuts, because shading alone cannot carry a
+  sub-two-pixel stroke.** Reported by the author twice, and the second report is the one that
+  showed my first fix was oversold. `[V3.1-U3]` corrected a real defect -- the lettering band's top
+  bound WAS the frame's own lip, so the lip was darkened by exactly as much as the letters and the
+  text could not be seen at any zoom in any viewport -- and I then wrote that engraved text "can be
+  seen in the preview". I had verified that with a short word, in the LIGHT viewport, dollied right
+  in. The author's case was a forty-character line at whole-plate zoom in the DARK viewport, and
+  there it still could not be read.
+  Measured before changing anything, on the author's exact line: the build cuts it
+  (`status: "cuts"`, 4 mm, +4 618 triangles), the band carries the right box and face, and 6 998
+  of the frame's 25 618 triangles take the darkened colour. So neither the geometry nor
+  `[V3.1-U5]`'s contrast work was wrong. What was wrong was my assumption that contrast was the
+  whole problem: at whole-plate zoom a 4 mm cap height on a 180 mm plate is about 17 screen pixels
+  tall with strokes under two pixels wide, and no colour makes a sub-two-pixel stroke read as a
+  word. I had also borrowed `CONTRAST_THRESHOLD`, which this codebase calibrates for LARGE adjacent
+  colour areas ("a careful eye tells them apart across a seam"), and applied it to 0.4 mm glyph
+  strokes, which need substantially more. Reasoning by analogy where a measurement was available.
+  So the preview now SAYS what the model says rather than only showing it: one caption per
+  lettering band, drawn in the interface's own type at a fixed screen size in the viewport's ink,
+  carrying the line's resolved text. It is deliberately not a picture of the engraving -- a preview
+  that draws letters the printer will not produce is the settings complaint over again -- and the
+  shading still does its job the moment the camera comes in.
+  A band now names the line it was cut for (`RecessBand.lineId`, carried from the piece id through
+  `LetteringGeometry.frameCutIds`). Matching a band to a line by geometry alone, which edge of the
+  plate its box hugs, reads identically for two lines stacked on one edge and would caption each
+  with the other's words; `recessBands.test.ts` builds exactly that case.
+  The caption reads the FRESH result's `resolvedText` and never the editor's own prediction, so it
+  can never claim a line the build has not cut.

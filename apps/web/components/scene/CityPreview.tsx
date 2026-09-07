@@ -16,7 +16,7 @@ import {
 } from "@/lib/advisor";
 import type { PrintParams, SceneGraph } from "@/lib/contracts";
 import type { EngineBuilding } from "@/lib/engine/osm/types";
-import type { AuditFinding, LabelBand, RecessBand, RegionMesh } from "@/lib/engine/types";
+import type { AuditFinding, LabelBand, RecessBand, RegionMesh, ResolvedLine } from "@/lib/engine/types";
 import { previewView } from "@/lib/enginePreview";
 import { loadGlyphFace, loadedGlyphFace } from "@/lib/fontGlyphs";
 import { autoHeroIds, heroCandidates, heroCapMessage } from "@/lib/heroes";
@@ -193,6 +193,7 @@ const NO_HEROES: readonly string[] = [];
  */
 const NO_FINDINGS: readonly AuditFinding[] = [];
 const NO_BANDS: readonly RecessBand[] = [];
+const NO_LINES: readonly ResolvedLine[] = [];
 
 /** The axis-aligned bounds of an ink rectangle in plan, engine mm. */
 function boundsOf(rect: ReadonlyArray<readonly [number, number]>): [number, number, number, number] {
@@ -602,6 +603,16 @@ export function CityPreview() {
     () => shadingBands(engineBands, labelBands, sitShiftMm),
     [engineBands, labelBands, sitShiftMm],
   );
+  /*
+    The words each lettering band is captioned with ([V3.1-U8]).
+
+    The FRESH result's own `resolvedText` and never the editor's prediction: a
+    caption that says what the build has not cut yet would be the preview
+    disagreeing with the model, which is the whole complaint this app was
+    rebuilt around. While a run is in flight the last good result's lines stay
+    up beside its last good meshes, dimmed together.
+  */
+  const calloutLines = pipelineResult?.resolvedText ?? NO_LINES;
   // The camera follows the real model once there is one, and the plate the
   // controls ask for until then.
   const frameWidthMm = pipelineResult?.stats.widthMm ?? params.plate_mm;
@@ -920,6 +931,7 @@ export function CityPreview() {
         gridColor={viewportPalette.grid}
         plateMm={frameWidthMm}
         fitTrigger={graph}
+        resolvedText={calloutLines}
         tints={tints}
         onPick={onPickBuilding}
         onHover={onHover}

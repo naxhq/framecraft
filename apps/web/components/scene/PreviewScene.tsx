@@ -6,9 +6,10 @@ import { useThree } from "@react-three/fiber";
 import type { PerspectiveCamera } from "three";
 
 import PerfFrameMark from "@/components/scene/PerfFrameMark";
-import type { RecessBand, RegionMesh, TileResult } from "@/lib/engine/types";
+import type { RecessBand, RegionMesh, ResolvedLine, TileResult } from "@/lib/engine/types";
 import { useCameraStore } from "@/store/camera";
 import LabelGizmo from "./LabelGizmo";
+import LetteringCallout from "./LetteringCallout";
 import RegionMeshes, { type HoverHandler, type InspectHandler, type TintMap } from "./RegionMeshes";
 import TileGrid from "./TileGrid";
 
@@ -45,6 +46,7 @@ export function PreviewScene({
   gridColor,
   plateMm,
   fitTrigger,
+  resolvedText,
   onPick,
   onHover,
   onInspect,
@@ -66,6 +68,8 @@ export function PreviewScene({
   plateMm: number;
   /** Re-frames the view whenever this changes identity (a new scene). */
   fitTrigger: unknown;
+  /** The lines the build resolved, so each lettering band can be captioned with its own words. */
+  resolvedText: readonly ResolvedLine[];
   /** Hero picking: the id of the building whose solid was clicked. */
   onPick: (id: string) => void;
   /**
@@ -121,6 +125,9 @@ export function PreviewScene({
         {/* The surface-label handles (v3.1 Task 12): pipeline output too, read
             straight off the store's result rather than threaded through props. */}
         <LabelGizmo color={tileColor} />
+        {/* What each line of frame lettering says, on the line, at any zoom
+            ([V3.1-U8]). Shading alone cannot carry a sub-two-pixel stroke. */}
+        <LetteringCallout bands={recessBands} resolvedText={resolvedText} color={tileColor} />
       </group>
 
       <Grid

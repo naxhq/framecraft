@@ -380,6 +380,15 @@ export interface RecessBand {
    * and are left alone. Absent on an older band, which then shades both ends.
    */
   faceZMm?: number;
+  /**
+   * The `ResolvedLine.id` this band was cut for, on a lettering band.
+   *
+   * Carried so the viewport can put the line's TEXT where the line actually
+   * is ([V3.1-U8]). Matching band to line by geometry alone -- which edge of
+   * the plate the box hugs -- reads the same for two lines stacked on one
+   * edge, and would caption them with each other's words.
+   */
+  lineId?: string;
 }
 
 /** Terrain sampler in scene metres (ENU); returns elevation in metres above the tile minimum. */

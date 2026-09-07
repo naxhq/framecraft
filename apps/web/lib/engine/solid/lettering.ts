@@ -92,6 +92,13 @@ export interface LetteringGeometry {
   /** Cutters for the frame lip: engraved text only. */
   frameCut: Manifold[];
   /**
+   * The `ResolvedLine.id` of the line each `frameCut` and `inlayCut` cutter was
+   * made for, in the same order, so a band can name its line ([V3.1-U8]). One
+   * entry per SOLID and not per piece: a piece may emit several.
+   */
+  frameCutIds: string[];
+  inlayCutIds: string[];
+  /**
    * Pockets an inlay fills, on the lip and on the underside.
    *
    * Kept apart from the plain cutters because the single-object model does not
@@ -945,7 +952,9 @@ export function buildLettering(
 
   const out: LetteringGeometry = {
     frameCut: [],
+    frameCutIds: [],
     inlayCut: [],
+    inlayCutIds: [],
     frameAdd: [],
     baseCut: [],
     inlay: [],
@@ -1253,8 +1262,14 @@ export function buildLettering(
       ctx.arena.drop(repaired.section);
       continue;
     }
-    for (const solid of cut.frameCut) out.frameCut.push(solid);
-    for (const solid of cut.inlayCut) out.inlayCut.push(solid);
+    for (const solid of cut.frameCut) {
+      out.frameCut.push(solid);
+      out.frameCutIds.push(piece.id);
+    }
+    for (const solid of cut.inlayCut) {
+      out.inlayCut.push(solid);
+      out.inlayCutIds.push(piece.id);
+    }
     for (const solid of cut.frameAdd) out.frameAdd.push(solid);
     for (const solid of cut.baseCut) out.baseCut.push(solid);
     for (const solid of cut.inlay) out.inlay.push(solid);
