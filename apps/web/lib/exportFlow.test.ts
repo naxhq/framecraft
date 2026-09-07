@@ -15,6 +15,8 @@ import { describe, expect, it } from "vitest";
 import {
   EXPORT_FAILED_LABEL,
   EXPORT_STALE_NOTE,
+  deliverExportFiles,
+  deliveryNote,
   exportDone,
   exportDownloadLinks,
   exportStarted,
@@ -23,6 +25,7 @@ import {
   initialExportState,
   isTerminal,
   markExportStale,
+  modelFiles,
   revokeExportUrls,
   stemForResult,
   type ExportState,
@@ -204,6 +207,22 @@ describe("exportDone", () => {
     );
   });
 
+  it("says which of the two files is the model and which is the report about it", () => {
+    // Not a naming convention: an OBJ export writes two model files and a STEP
+    // export writes one, and only the state knows which of the entries the
+    // user actually asked for.
+    const state = exportDone(initialExportState, fakeOutput(), []);
+    expect(state.files.map((file) => file.kind)).toEqual(["model", "report"]);
+    expect(modelFiles(state).map((file) => file.filename)).toEqual(["chicago.stl"]);
+    revokeExportUrls(state);
+  });
+
+  it("has not delivered anything yet: that is the store's next move, not this reducer's", () => {
+    const state = exportDone(initialExportState, fakeOutput(), []);
+    expect(state.delivery).toBeNull();
+    revokeExportUrls(state);
+  });
+
   it("revokes a previous export's URLs on the next exportDone", () => {
     const first = exportDone(initialExportState, fakeOutput(), []);
     const firstHrefs = first.files.map((file) => file.href);
@@ -246,5 +265,97 @@ describe("staleness", () => {
 
   it("the stale note is real copy, not empty", () => {
     expect(EXPORT_STALE_NOTE.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Handing the finished model over, which for the whole of 3.1.0 nothing did.
+ *
+ * Reported by the author against the deployed site: "export doesn't work, it
+ * shows progress bar then says export done but nothing downloaded
+ * automatically, had to click show results tiny text to bring up result and
+ * output panel and see two green buttons". `requestExport` ended at
+ * `exportDone`, so the only route to the file was a link inside a collapsible
+ * section, and Export reporting "Done" had put nothing anywhere the user
+ * looked.
+ */
+describe("deliverExportFiles", () => {
+  /** The bare minimum of a DOM: enough for an anchor to be made, clicked and removed. */
+  function withFakeDocument<T>(run: (clicks: string[]) => T): T {
+    const clicks: string[] = [];
+    const body = {
+      appendChild: () => undefined,
+      removeChild: () => undefined,
+    };
+    const fake = {
+      body,
+      createElement: () => ({
+        href: "",
+        download: "",
+        rel: "",
+        click(this: { download: string }) {
+          clicks.push(this.download);
+        },
+      }),
+    };
+    (globalThis as { document?: unknown }).document = fake;
+    try {
+      return run(clicks);
+    } finally {
+      delete (globalThis as { document?: unknown }).document;
+    }
+  }
+
+  it("downloads every model file and never the report", async () => {
+    const state = exportDone(initialExportState, fakeOutput(), []);
+    const files = modelFiles(state);
+    const outcomes = await withFakeDocument(async (clicks) => {
+      const result = await deliverExportFiles(files);
+      // The claim, in the terms the defect was reported in: a file arrives.
+      expect(clicks).toEqual(["chicago.stl"]);
+      return result;
+    });
+    expect(outcomes).toEqual(["browser"]);
+    expect(deliveryNote(files, outcomes)).toBe("chicago.stl downloaded.");
+    revokeExportUrls(state);
+  });
+
+  it("keeps the links pointing at the same bytes, so the file can be fetched again without rebuilding it", async () => {
+    const state = exportDone(initialExportState, fakeOutput(), []);
+    const hrefs = state.files.map((file) => file.href);
+    await withFakeDocument(() => deliverExportFiles(modelFiles(state)));
+    // Delivering must not revoke what the Output panel is still offering.
+    expect(state.files.map((file) => file.href)).toEqual(hrefs);
+    await expect((await fetch(state.files[0].href)).arrayBuffer()).resolves.toBeDefined();
+    revokeExportUrls(state);
+  });
+
+  it("with no DOM at all, reports nothing rather than a failure", async () => {
+    const state = exportDone(initialExportState, fakeOutput(), []);
+    const files = modelFiles(state);
+    const outcomes = await deliverExportFiles(files);
+    expect(outcomes).toEqual(["unavailable"]);
+    // Server rendering and the node test environment: nothing was asked of a
+    // page and nothing went wrong, so there is no line to show a user.
+    expect(deliveryNote(files, outcomes)).toBeNull();
+    revokeExportUrls(state);
+  });
+
+  it("names what the desktop dialog did, including a cancel, rather than claiming a save", () => {
+    const file = {
+      label: "chicago.stl",
+      filename: "chicago.stl",
+      href: "blob:x",
+      mime: "model/stl",
+      kind: "model" as const,
+    };
+    expect(deliveryNote([file], ["saved"])).toBe("chicago.stl saved.");
+    expect(deliveryNote([file], ["cancelled"])).toBe(
+      "Nothing was saved. The download links below still hold the file.",
+    );
+    expect(deliveryNote([file], ["failed"])).toBe(
+      "chicago.stl could not be saved. The download links below still hold the file.",
+    );
+    expect(deliveryNote([], [])).toBeNull();
   });
 });

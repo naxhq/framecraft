@@ -1470,3 +1470,126 @@ Append-only. Format: `- [phase] decision, one line`.
   on the source layer instead of the region name and treat every green ground as ground to stand
   on. Default builds are unchanged, because with no green override the grouping is one `parks`
   grove built from the same list in the same order.
+
+- `[V3.1-U1]` **Export produced a file and never handed it over.** Reported against the deployed
+  3.1.0 site: "export doesn't work, it shows progress bar then says export done but nothing
+  downloaded automatically, had to click show results tiny text to bring up result and output
+  panel". Exact, and a plain omission rather than a policy. `store/editor.ts:requestExport` ended
+  at `exportDone`, which turns the worker's bytes into Blob object URLs and stops; the only thing
+  that ever turned one into a file was an `<a download>` rendered inside the OUTPUT group, which
+  is collapsible and which the author had collapsed. Save project has always delivered on the
+  click (`lib/project.ts:downloadProject` builds an anchor and clicks it, and takes the native
+  dialog inside Tauri), so the two halves of the app disagreed about what a button that writes a
+  file does. Export now delivers through the same door. Every MODEL file goes, because an OBJ
+  export is a `.obj` and its `.mtl` and delivering one of the two is delivering a model with no
+  colours; the sidecar never goes, because a second automatic download of something the user did
+  not ask for is how a browser learns to distrust a page. The Output panel keeps its links, which
+  are now what they should always have been -- a way to fetch the file again without rebuilding
+  it. What made the whole unit suite green while this was true is that no test asked whether a
+  file arrived; `store/editor.pipeline.test.ts` and `e2e/workflow.spec.ts` now do, the e2e with
+  the results panel deliberately collapsed.
+
+- `[V3.1-U2]` **The sidecar was offered as if it were a rival project format.** Same report:
+  "two green buttons .3mf and .json (why json when save project and load project uses
+  .framecraft)". A fair question, because the two links were identical green buttons reading
+  "Download chicago.3mf" and "Download chicago.json" with nothing to tell them apart. A
+  `DownloadFile` now says what it IS (`kind: "model" | "report"`), the report renders quiet rather
+  than positive and is labelled "Model report", and one line under the links says it is what the
+  build measured about the model, for a bug report or `make validate`, and that a project is
+  `.framecraft` written by Save project. The extension was never the thing that could answer this.
+
+- `[V3.1-U3]` **Recess shading darkened the surface the text was cut into, so lettering was
+  invisible.** Reported as "some settings still not shown in preview like when i added text
+  labeling to the frame but not shown in preview, or building label doesn't show in preview".
+  The geometry was always there -- adding one line moved the Chicago build from 169 990 to 172 204
+  triangles -- and the mechanism meant to make an engrave read at viewing distance
+  (`EngineResult.recessBands` plus `RegionMeshes.insideBands`) was the thing hiding it. Measured
+  on the shipped build: one engraved line emits `frame`/`lettering` `zMm [4.60009765625, 5]`, and
+  5 is the frame's own lip top; the predicate was Z-only and closed at both ends, so of the 1888
+  frame triangles it darkened, 485 were the lip itself. The letters came out exactly the colour of
+  what they were cut into, which is indistinguishable from lettering that was never cut.
+  Three defects in one feature, all fixed as presentation with no coordinate moved:
+  a band is now a BOX (`xyMm` from the cutter's bounding box) rather than a slab across the whole
+  region; it names the face it was cut FROM (`faceZMm`, passed per call site because it is the
+  HIGH bound for a lettering or ornament pocket and the LOW bound for an underside mark) and
+  triangles on that face are left alone; and surface labels reach the shading at all, converted
+  from `EngineResult.labelBands` in `CityPreview.tsx:shadingBands` rather than in the `labels`
+  stage, so neither the sidecar nor a Task 12 matrix probe moves because the preview learned to
+  draw them. A fourth, found while fixing it and latent rather than reported: every band was
+  compared against the region meshes in the WRONG COORDINATE SPACE. `EngineResult.sitShiftMm` says
+  so in its own doc comment -- bands are engine mm, meshes are sat mm -- and the shading never
+  added it, so on any model the `sit` stage lifted (a terrain drape, a hanger standing below the
+  plate) it darkened a slab at the wrong height entirely. Zero on a flat plate, which is why
+  nothing caught it.
+
+- `[V3.1-U4]` **Save and share carry every print setting; the one real loss was the forward
+  compatibility block.** Reported as "save and load project ... misses some settings - same thing
+  for shareable link". Measured three ways before changing anything, and the settings are not
+  lost: `PRINT_PARAM_SPEC` validates all 157 `PRINT_PARAM_LEAF_PATHS`; every one of the 38
+  top-level keys, set to a spec-derived non-default, survives both `encodeShare`/`decodeShare` and
+  `buildProject`/`parseProject` unchanged, and `defaultPrintParams()` has no undefined key for
+  `JSON.stringify` to drop; and on the deployed build the link the app produced, reopened,
+  produced the byte-identical link back. What WAS lost is `extras`, the top-level blocks a NEWER
+  FrameCraft wrote that this build has no field for. `lib/project.ts` promises in its own header
+  that they survive -- "dropping it on the floor would quietly destroy the user's work the next
+  time they saved" -- and `parseProject` did return them, but both load paths called
+  `applyProject(location, params)` and threw the third value away, and `saveProject` called
+  `buildProject` with its default empty one. The store now holds `projectExtras` and Save writes
+  them back. `lib/project.test.ts` passed throughout because it hands `parseProject`'s `extras`
+  straight back to `buildProject` itself: a module test that supplies the value cannot see a
+  caller that never supplies it, which is why the claim is now pinned on the store and in
+  `e2e/workflow.spec.ts` against a file carrying a block this build cannot read.
+  Still not carried, and NOT changed here because it is a question about intent rather than a
+  defect: the app's light/dark chrome theme, which settings groups are open, and the camera pose.
+  None is a `PrintParams` field and none is in the layout payload.
+
+- `[V3.1-U5]` **The recess shade was measured in the wrong colour space, and on the frame it was
+  half the threshold.** Found while verifying `[V3.1-U3]`, and it is the second half of "the
+  lettering does not show": fixing the band's SHAPE stops the lip being darkened along with the
+  letters, but it does not help if what the letters are darkened BY is under the point at which a
+  difference is a difference. My first measurement of that was wrong and is corrected here. A
+  vertex colour is assumed by three.js to be in the renderer's working (linear) space and is NOT
+  converted, while `material.color` IS converted from sRGB, so the product is linear and an
+  sRGB-space calculation overstates the darkening badly: I first computed delta-E 10.22 for the
+  frame, and the real figure is 5.95. Against `lib/contrastCheck.ts:CONTRAST_THRESHOLD` of 12 --
+  this app's own number for "a careful eye tells them apart across a seam" -- the full table at
+  the 0.62 token reads frame `#3A3A3A` 5.95, rail `#6B6B6B` 9.08, water `#2F7FC1` 11.52, parks
+  `#5A9E4B` 13.48, base `#D8D3C6` 15.01, matting `#EDE9E0` 16.07, hero `#E3A72F` 16.52. So the
+  token works on the light regions and fails on the dark ones, and the frame, the reported case,
+  is the darkest colour in every built-in palette. Multiplying a dark colour barely moves it.
+  `recessMultiplier` now steps the token down per region until the result clears the threshold:
+  every region that already read keeps 0.62 exactly, so nothing that works today is repainted,
+  and `#3A3A3A` walks to about 0.33. A colour no multiplier can move is pure black, which gets
+  the floor and is stated as a limit rather than papered over -- fixing that would mean giving a
+  banded region the absolute-colour path the tinted one uses, which is a bigger change than this
+  defect justifies.
+
+- `[V3.1-U6]` **The camera travels, and nothing else about the view does.** Asked and answered by
+  the author, against the three candidates `[V3.1-U4]` left open: the camera angle and zoom
+  travel; the app's light/dark chrome theme and the settings-panel group states stay per-device;
+  and a shared link keeps waiting for Preview rather than fetching on load, so opening one in a
+  background tab is still not consent to an Overpass query.
+  Built as a sibling of `lib/layout.ts` and not as part of it, which `[V3.1-O6]` makes tempting
+  since both are "the way its author framed it". Three reasons they stay apart, all about where
+  the value comes from: the layout lives in a store the shell owns and moves a few times a
+  session while the camera lives inside the `<Canvas>` and moves continuously under a drag; the
+  layout writes `localStorage` on every mutation, which is right for the one and would be a write
+  per pointer move for the other; and a layout is pixel widths that clamp to the recipient's
+  screen while a pose is millimetres in the model's own space, which every screen shares. The
+  pose rides as `c` in the link and `camera` in the project envelope, both optional, both
+  presentation: a pose this build cannot read leaves the recipient's own view alone and never
+  refuses the design around it. The envelope version stays at 4 -- an unknown block is kept and
+  written back by `ProjectExtras`, and bumping to 5 would lock 3.1.0 out of a file it can
+  otherwise read completely.
+  Two traps, one avoided by reading the old note and one that had to be caught.
+  `ActionBar` subscribes to the pose rather than reading it at render time, because it reads
+  nothing inside the canvas and would otherwise repeat exactly what `[V3.1-O6]` records for the
+  layout: a memo keyed on values the component never subscribed to, leaving the copied URL byte
+  for byte unchanged after the thing it describes had moved.
+  And the restored pose is HELD until the user touches the controls, not applied once. A one-shot
+  is what I built first and it was wrong: `FitView` runs on `plateMm`, which is the params default
+  until a model exists and the model's own measured width afterwards, so opening a link and
+  pressing Preview fires it twice; the first fit consumed the claim and the second overwrote it
+  with the default framing. Every unit test passed while that was true, and `e2e/shell.spec.ts`
+  is what failed -- the same lesson as `[V3.1-O8]`, that a test which drives the mechanism can
+  agree with a feature that does not work.

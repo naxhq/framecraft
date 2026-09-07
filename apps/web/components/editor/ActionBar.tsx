@@ -22,10 +22,12 @@ import {
   type ProjectLoadResult,
 } from "@/lib/project";
 import { recentDesignName, recordRecent } from "@/lib/recent";
+import { cameraPayload } from "@/lib/camera";
 import { SHARE_LINK_LENGTH_LIMIT, encodeShare, shareUrl } from "@/lib/share";
 import { exportBlockReason, heightCeilingMm, predictedTopMm, warningDeps } from "@/lib/warnings";
 import type { PipelineFailure, PipelineProgress } from "@/store/editor";
 import { locationToRequest, useEditorStore } from "@/store/editor";
+import { useCameraStore } from "@/store/camera";
 import { useLayoutStore } from "@/store/layout";
 import { Note } from "./Controls";
 import ExportErrorDetail, { type ErrorDetailModel, type ErrorDetailTone } from "./ExportErrorDetail";
@@ -276,6 +278,7 @@ export function ActionBar() {
   const sceneStale = useEditorStore((state) => state.scene.stale);
   const params = useEditorStore((state) => state.params);
   const location = useEditorStore((state) => state.location);
+  const projectExtras = useEditorStore((state) => state.projectExtras);
   // Booleans and identities only: `state.pipeline.progress` is read by
   // `RunStatus` and `RunOutcomeNotice` alone, so the buttons and the notes here
   // do not re-render on each of a run's ~142 stage events.
@@ -355,9 +358,24 @@ export function ActionBar() {
       }),
     [layoutSizes, layoutCollapsed, layoutMaximized],
   );
+  /*
+    The camera, SUBSCRIBED for exactly the reason the layout above is.
+
+    `encodeShare` defaults this to `currentCameraPayload()`, read at call time,
+    which is right for a module and wrong for this component: `ActionBar` reads
+    nothing inside the canvas, so an orbit would never re-render it, the memo
+    below would never re-run, and `data-share-url` would keep the pose captured
+    on the first render -- the same defect `[V3.1-O6]` records for the layout,
+    where dragging a divider left the copied URL byte for byte unchanged.
+
+    The store writes `pose` once per gesture and not per frame, so this
+    re-encodes when a drag settles, not while it is moving.
+  */
+  const cameraPose = useCameraStore((state) => state.pose);
+  const camera = useMemo(() => cameraPayload(cameraPose), [cameraPose]);
   const link = useMemo(
-    () => (href === null ? null : shareUrl(href, locationToRequest(location), params, layout)),
-    [href, layout, location, params],
+    () => (href === null ? null : shareUrl(href, locationToRequest(location), params, layout, camera)),
+    [camera, href, layout, location, params],
   );
   // A link that no longer describes what is on screen must not still say "Copied".
   useEffect(() => setCopyState("idle"), [link]);
@@ -412,7 +430,10 @@ export function ActionBar() {
    * the Blob download in a browser, exactly like an export.
    */
   const saveProject = async (): Promise<void> => {
-    const project = buildProject(location, params);
+    // The layout defaults to the one on screen; the extras are whatever the
+    // opened file carried that this build could not read, written back
+    // unchanged so saving in an older build never deletes a newer one's work.
+    const project = buildProject(location, params, undefined, undefined, projectExtras);
     if (!isTauri()) {
       downloadProject(project);
       return;
@@ -441,7 +462,9 @@ export function ActionBar() {
     setProjectError(error);
     setProjectNotice(notice);
     if (!outcome.ok) return;
-    useEditorStore.getState().applyProject(outcome.location, outcome.params);
+    // `outcome.extras` is what a NEWER FrameCraft wrote beside `params`, and
+    // the next Save has to put it back: see `store/editor.ts:projectExtras`.
+    useEditorStore.getState().applyProject(outcome.location, outcome.params, outcome.extras);
   };
 
   return (

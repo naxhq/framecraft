@@ -44,8 +44,10 @@
  * the floor would quietly destroy the user's work the next time they saved.
  */
 
+import { adoptCameraPayload, currentCameraPayload } from "@/store/camera";
 import { adoptLayoutPayload, currentLayoutPayload } from "@/store/layout";
 import { defaultPrintParams, type PrintParams } from "./contracts";
+import type { CameraPayload } from "./camera";
 import { RADIUS_MAX_M, RADIUS_MIN_M } from "./geo";
 import { layoutFromPayload, type LayoutPayload, type LayoutState } from "./layout";
 import { parsePrintParams } from "./share";
@@ -135,6 +137,20 @@ export interface FrameCraftProject {
    * whenever the layout is simply the default.
    */
   layout?: LayoutPayload;
+  /**
+   * Where the preview camera was looking, `{p, t}` in engine millimetres
+   * ([V3.1-U6]). The other half of the framing `layout` carries, and
+   * presentation on the same terms: optional, ignored when it cannot be read,
+   * and never a reason a file fails to open.
+   *
+   * The envelope version does NOT move for it. A reader that does not know the
+   * field keeps it as an extra and writes it back unchanged, which is what
+   * `ProjectExtras` is for, and bumping to 5 would lock 3.1.0 out of a file it
+   * can otherwise read completely. Absent means "leave this device's camera
+   * alone", which is the right answer both for a file written before the field
+   * existed and for one whose author never moved the view.
+   */
+  camera?: CameraPayload;
 }
 
 /** A project plus whatever blocks this build does not know about. */
@@ -156,6 +172,7 @@ export function buildProject(
   now: Date = new Date(),
   layout: LayoutPayload | null = currentLayoutPayload(),
   extras: ProjectExtras = {},
+  camera: CameraPayload | null = currentCameraPayload(),
 ): WrittenProject {
   const known: FrameCraftProject = {
     format: PROJECT_FORMAT,
@@ -169,6 +186,7 @@ export function buildProject(
     place: params.city_label ?? "",
     params,
     ...(layout === null ? {} : { layout }),
+    ...(camera === null ? {} : { camera }),
   };
   return { ...stripKnownKeys(extras), ...known };
 }
@@ -250,6 +268,7 @@ const KNOWN_KEYS: ReadonlySet<string> = new Set([
   "place",
   "params",
   "layout",
+  "camera",
 ]);
 
 function stripKnownKeys(source: ProjectExtras): ProjectExtras {
@@ -393,6 +412,10 @@ export function parseProject(text: string, filename = ""): ProjectLoadResult {
   */
   const layout = record.layout === undefined ? null : layoutFromPayload(record.layout);
   if (layout !== null) adoptLayoutPayload(record.layout);
+  // And where the camera was looking ([V3.1-U6]), on the same terms: the
+  // document carries it, opening the document restores it, and a pose this
+  // build cannot read leaves this browser's own view alone.
+  adoptCameraPayload(record.camera);
 
   const savedBy = typeof record.app_version === "string" ? record.app_version : "";
 

@@ -737,6 +737,66 @@ describe("Export", () => {
     };
   });
 
+  /**
+   * The defect the author reported against the deployed 3.1.0 site: "export
+   * doesn't work, it shows progress bar then says export done but nothing
+   * downloaded automatically".
+   *
+   * It was exact. `requestExport` ended at `exportDone`, which builds Blob
+   * URLs and stops, and the only thing that ever turned one into a file was an
+   * `<a download>` inside the Output panel's COLLAPSIBLE results block. Every
+   * test in this file passed throughout, because none of them asked the one
+   * question a user asks: did a file arrive?
+   */
+  it("delivers the model file on the export, not only a link to it", async () => {
+    const clicked: string[] = [];
+    (globalThis as { document?: unknown }).document = {
+      body: { appendChild: () => undefined, removeChild: () => undefined },
+      createElement: () => ({
+        href: "",
+        download: "",
+        rel: "",
+        click(this: { download: string }) {
+          clicked.push(this.download);
+        },
+      }),
+    };
+    try {
+      previewed();
+      await useEditorStore.getState().requestExport();
+      expect(clicked).toEqual(["framecraft.stl"]);
+      const state = useEditorStore.getState().exportState;
+      expect(state.delivery).toBe("framecraft.stl downloaded.");
+      // The links are still there: delivering the file must not take away the
+      // way to fetch it again without rebuilding it.
+      expect(state.files.map((file) => file.filename)).toEqual(["framecraft.stl", "framecraft.json"]);
+    } finally {
+      delete (globalThis as { document?: unknown }).document;
+    }
+  });
+
+  it("delivers the model and never the sidecar: a second unasked-for download is not a favour", async () => {
+    const clicked: string[] = [];
+    (globalThis as { document?: unknown }).document = {
+      body: { appendChild: () => undefined, removeChild: () => undefined },
+      createElement: () => ({
+        href: "",
+        download: "",
+        rel: "",
+        click(this: { download: string }) {
+          clicked.push(this.download);
+        },
+      }),
+    };
+    try {
+      previewed();
+      await useEditorStore.getState().requestExport();
+      expect(clicked).not.toContain("framecraft.json");
+    } finally {
+      delete (globalThis as { document?: unknown }).document;
+    }
+  });
+
   it("reuses a finished run: no second build, one export job", async () => {
     previewed();
     const built = useEditorStore.getState().pipeline.result;

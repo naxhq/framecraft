@@ -181,25 +181,40 @@ function colourTwin(ctx: StageContext, region: RegionName): RegionName {
   return region;
 }
 
-/** Bounding-box Z range of a cutter, clipped to `[low, high]`; null when nothing survives. */
-function bandOf(cutter: Manifold, low: number, high: number): [number, number] | null {
+/** Bounding box of a cutter with its Z clipped to `[low, high]`; null when nothing survives. */
+function bandOf(
+  cutter: Manifold,
+  low: number,
+  high: number,
+): { zMm: [number, number]; xyMm: [number, number, number, number] } | null {
   const box = cutter.boundingBox();
   const lo = Math.max(box.min[2], low);
   const hi = Math.min(box.max[2], high);
-  return hi > lo ? [lo, hi] : null;
+  if (hi <= lo) return null;
+  return { zMm: [lo, hi], xyMm: [box.min[0], box.min[1], box.max[0], box.max[1]] };
 }
 
+/**
+ * The bands a set of cutters occupies, each carrying the face it was cut from.
+ *
+ * `faceZMm` is a parameter and not `high` because it is not always `high`: a
+ * lettering or ornament pocket is cut DOWN from the lip or the base top, so its
+ * face is the upper bound, while the underside mark is cut UP from z = 0, so
+ * its face is the lower one. Getting that backwards would shade the face and
+ * leave the cut alone, which is the defect this argument exists to prevent.
+ */
 function bandsOf(
   cutters: readonly Manifold[],
   region: RegionName,
   kind: RecessBand["kind"],
   low: number,
   high: number,
+  faceZMm: number,
 ): RecessBand[] {
   const out: RecessBand[] = [];
   for (const cutter of cutters) {
     const band = bandOf(cutter, low, high);
-    if (band !== null) out.push({ region, kind, zMm: band });
+    if (band !== null) out.push({ region, kind, zMm: band.zMm, xyMm: band.xyMm, faceZMm });
   }
   return out;
 }
@@ -1072,8 +1087,11 @@ const lettering = defineStage({
     return {
       ...geometry,
       recessBands: [
-        ...bandsOf([...geometry.frameCut, ...geometry.inlayCut], "frame", "lettering", frameBottom, lipTop),
-        ...bandsOf(geometry.baseCut, "base", "lettering", 0, build.baseTopMm),
+        // A frame or inlay pocket is cut DOWN from the lip, so the lip top is
+        // its face; `baseCut` is documented as cutting the base FROM BELOW
+        // (`solid/lettering.ts`, `piece.face === "bottom"`), so its face is 0.
+        ...bandsOf([...geometry.frameCut, ...geometry.inlayCut], "frame", "lettering", frameBottom, lipTop, lipTop),
+        ...bandsOf(geometry.baseCut, "base", "lettering", 0, build.baseTopMm, 0),
       ],
     };
   },
@@ -1093,8 +1111,8 @@ const ornaments = defineStage({
     return {
       ...geometry,
       recessBands: [
-        ...bandsOf(geometry.frameCut, "frame", "ornament", frameBottomMm(build), lipTopMm(build)),
-        ...bandsOf(geometry.baseCut, "base", "ornament", 0, build.baseTopMm),
+        ...bandsOf(geometry.frameCut, "frame", "ornament", frameBottomMm(build), lipTopMm(build), lipTopMm(build)),
+        ...bandsOf(geometry.baseCut, "base", "ornament", 0, build.baseTopMm, 0),
       ],
     };
   },
@@ -1123,7 +1141,8 @@ const hangers = defineStage({
   run(ctx) {
     const build = ctx.build;
     const geometry = buildHangers(build);
-    return { ...geometry, recessBands: bandsOf(geometry.baseCut, "base", "underside", 0, build.baseTopMm) };
+    // A hanger pocket is cut UP into the base from its underside, so 0 is the face.
+    return { ...geometry, recessBands: bandsOf(geometry.baseCut, "base", "underside", 0, build.baseTopMm, 0) };
   },
 });
 

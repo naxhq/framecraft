@@ -18,6 +18,7 @@
  */
 
 import { deflateSync } from "fflate";
+import { resetCameraForTest, useCameraStore } from "@/store/camera";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -1149,6 +1150,46 @@ describe("a link is untrusted input", () => {
 // ==========================================================================
 // The spec table itself
 // ==========================================================================
+
+/**
+ * The camera, the other half of the framing `[V3.1-O6]` gave the columns.
+ *
+ * Presentation, on exactly the layout's terms: carried when there is something
+ * to carry, absent when there is not, and never a reason a link is refused.
+ */
+describe("the camera a link carries", () => {
+  const CAMERA = { p: [207, 247.25, 273.13] as [number, number, number], t: [0, 0, 0] as [number, number, number] };
+
+  it("carries a pose and hands it back", () => {
+    resetCameraForTest();
+    const payload = encodeShare(REQUEST, defaultPrintParams(), null, CAMERA);
+    const decoded = decodeShare(payload);
+    expect(decoded.ok).toBe(true);
+    // Adopted as a side effect, like the layout, so both doors into the editor
+    // restore it and neither can forget to.
+    expect(useCameraStore.getState().pendingPose()).toEqual({
+      position: [207, 247.25, 273.13],
+      target: [0, 0, 0],
+    });
+  });
+
+  it("writes nothing when there is no camera, so a link is the length it always was", () => {
+    const without = encodeShare(REQUEST, defaultPrintParams(), null, null);
+    const withCamera = encodeShare(REQUEST, defaultPrintParams(), null, CAMERA);
+    expect(withCamera.length).toBeGreaterThan(without.length);
+    // And the cost is small enough to be worth the framing: a pose is six
+    // numbers, and the link has an 8000-character ceiling.
+    expect(withCamera.length - without.length).toBeLessThan(100);
+  });
+
+  it("accepts a link whose camera it cannot read, and leaves this device's view alone", () => {
+    resetCameraForTest();
+    const decoded = decodeShare(payloadOf({ r: REQUEST, p: {}, c: { p: [1, 2] } }));
+    // A pose is never a reason to refuse a design.
+    expect(decoded.ok, decoded.ok ? "" : decoded.reason).toBe(true);
+    expect(useCameraStore.getState().pendingPose()).toBeNull();
+  });
+});
 
 describe("PRINT_PARAM_SPEC", () => {
   it("has one entry per key of the frozen contract, and no more", () => {

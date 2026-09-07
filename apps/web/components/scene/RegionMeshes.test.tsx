@@ -33,6 +33,7 @@
  */
 
 import { renderToStaticMarkup } from "react-dom/server";
+import { deltaE76 as deltaE } from "@/lib/colourMap";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { loop } = vi.hoisted(() => ({ loop: { callbacks: [] as (() => void)[] } }));
@@ -70,6 +71,9 @@ import RegionMeshes, {
   isClick,
   isTinted,
   materialColorFor,
+  RECESS_MIN_DELTA_E,
+  recessMultiplier,
+  shadedHex,
   tintMapOf,
 } from "./RegionMeshes";
 
@@ -174,8 +178,10 @@ describe("buildGeometry", () => {
       }
       if (tint !== 1) {
         shaded.push(centroidZ);
-        // The claim, stated as the design states it.
-        expect(tint).toBeCloseTo(shade, 6);
+        // The claim, stated as the design states it. Not the raw token: on a
+        // dark region the token does not clear the legibility threshold, and
+        // `recessMultiplier` is what the render path actually uses.
+        expect(tint).toBeCloseTo(recessMultiplier(region.colorHex, shade), 6);
         expect(insideBands(centroidZ, [FRAME_BAND])).toBe(true);
       } else {
         expect(insideBands(centroidZ, [FRAME_BAND])).toBe(false);
@@ -211,6 +217,85 @@ describe("buildGeometry", () => {
     ];
     expect(bandsForRegion(bands, "frame")).toEqual([FRAME_BAND]);
     expect(bandsForRegion(bands, "buildings")).toEqual([]);
+  });
+});
+
+/**
+ * The two ways a band used to darken something that is not the cut.
+ *
+ * Both are measured defects from the shipped 3.1.0 build, reported by the
+ * author against the deployed site as "text on the frame is not shown in the
+ * preview". The engine emitted `frame`/`lettering` `zMm [4.6, 5.0]` where 5.0
+ * is the frame's own lip top, and the Z-only, both-ends-closed predicate
+ * darkened the whole lip (485 triangles) by exactly the same 0.62 as the
+ * letters cut into it (1403), so the lettering could not be seen at any zoom:
+ * it was the same colour as its surround.
+ */
+describe("a band darkens the cut and not the surface it was cut from", () => {
+  /** A 0.4 mm pocket cut down from a lip at z = 1.5, over x/y 2..6. */
+  const POCKET: RecessBand = {
+    region: "frame",
+    kind: "lettering",
+    zMm: [1.1, 1.5],
+    xyMm: [2, 2, 6, 6],
+    faceZMm: 1.5,
+  };
+
+  it("leaves the face itself alone while shading the pocket floor under it", () => {
+    expect(insideBands(1.5, [POCKET], 4, 4)).toBe(false);
+    expect(insideBands(1.1, [POCKET], 4, 4)).toBe(true);
+    expect(insideBands(1.3, [POCKET], 4, 4)).toBe(true);
+  });
+
+  it("holds the face test to a tolerance, so a boolean that moved a vertex by an ulp still reads as the face", () => {
+    expect(insideBands(1.5 - 1e-9, [POCKET], 4, 4)).toBe(false);
+    // A micron below is three orders of magnitude under the 0.2 mm minimum
+    // engrave depth, so a real cut is never swallowed.
+    expect(insideBands(1.4985, [POCKET], 4, 4)).toBe(true);
+  });
+
+  it("leaves the rest of the region alone: the pocket only darkens its own footprint in plan", () => {
+    expect(insideBands(1.3, [POCKET], 4, 4)).toBe(true);
+    expect(insideBands(1.3, [POCKET], 40, 4)).toBe(false);
+    expect(insideBands(1.3, [POCKET], 4, 40)).toBe(false);
+  });
+
+  it("an emboss names its face at the BOTTOM, so the raised glyphs shade and the roof under them does not", () => {
+    const raised: RecessBand = {
+      region: "buildings",
+      kind: "label",
+      zMm: [8, 8.4],
+      xyMm: [0, 0, 10, 10],
+      faceZMm: 8,
+    };
+    expect(insideBands(8, [raised], 5, 5)).toBe(false);
+    expect(insideBands(8.4, [raised], 5, 5)).toBe(true);
+  });
+
+  it("through buildGeometry: the lip keeps its colour and the pocket goes dark", () => {
+    // Two triangles: one on the lip at z = 1.5, one on the pocket floor at 1.1,
+    // both inside the pocket's footprint.
+    const region: RegionMesh = {
+      region: "frame",
+      positions: new Float64Array([
+        3, 3, 1.5, 5, 3, 1.5, 3, 5, 1.5,
+        3, 3, 1.1, 5, 3, 1.1, 3, 5, 1.1,
+      ]),
+      indices: new Uint32Array([0, 1, 2, 3, 4, 5]),
+      volumeMm3: 0,
+      bbox: { min: [3, 3, 1.1], max: [5, 5, 1.5] },
+      bodies: 1,
+      slot: 2,
+      colorHex: "#3A3A3A",
+    };
+    const geometry = buildGeometry(region, [POCKET], 0.62);
+    const colour = geometry.getAttribute("color");
+    expect(colour.getX(0)).toBe(1);
+    expect(colour.getX(3)).toBeCloseTo(recessMultiplier(region.colorHex, 0.62), 6);
+    // And it is a real darkening, not the token passed through on a colour the
+    // token does not work on: `#3A3A3A` is exactly that colour.
+    expect(colour.getX(3)).toBeLessThan(0.62);
+    geometry.dispose();
   });
 });
 
@@ -536,5 +621,84 @@ describe("RegionMeshes", () => {
     );
     expect(loop.callbacks).toHaveLength(0);
     expect(perfDrainTimings()).toEqual([]);
+  });
+});
+
+/**
+ * How far the recess is darkened, which is the second half of "the lettering
+ * does not show".
+ *
+ * Fixing the band's shape stops the lip being darkened along with the letters.
+ * It does not help if what the letters are darkened BY is under the point at
+ * which a difference is a difference, and on the frame it was: `#3A3A3A` is
+ * the darkest colour in every built-in palette, and multiplying a dark colour
+ * barely moves it.
+ *
+ * The measurements below are in the space the renderer multiplies in. A vertex
+ * colour is assumed to be in the working (linear) space and is NOT converted,
+ * while `material.color` IS converted from sRGB, so the product is linear and
+ * an sRGB-space calculation overstates the darkening by a wide margin.
+ */
+describe("recessMultiplier", () => {
+  it("leaves every region the token already works on exactly where it was", () => {
+    // Measured: 0.62 moves these by delta-E 15.0, 16.1, 13.5, 16.5 -- all
+    // clear. A fix for the frame must not repaint the rest of the model.
+    for (const hex of ["#D8D3C6", "#EDE9E0", "#5A9E4B", "#E3A72F"]) {
+      expect(recessMultiplier(hex, 0.62), hex).toBe(0.62);
+    }
+  });
+
+  it("darkens further on the dark regions, where the token does not clear the threshold", () => {
+    for (const hex of ["#3A3A3A", "#6B6B6B", "#2F7FC1"]) {
+      const k = recessMultiplier(hex, 0.62);
+      expect(k, hex).toBeLessThan(0.62);
+      expect(deltaE(hex, shadedHex(hex, k)), hex).toBeGreaterThanOrEqual(RECESS_MIN_DELTA_E);
+    }
+  });
+
+  it("is the frame's own numbers, stated: 0.62 is half the threshold and the solved value clears it", () => {
+    // The reported case, so the numbers are written down rather than implied.
+    expect(deltaE("#3A3A3A", shadedHex("#3A3A3A", 0.62))).toBeCloseTo(5.95, 1);
+    const solved = recessMultiplier("#3A3A3A", 0.62);
+    expect(deltaE("#3A3A3A", shadedHex("#3A3A3A", solved))).toBeGreaterThanOrEqual(RECESS_MIN_DELTA_E);
+  });
+
+  it("gives black the floor rather than a number that pretends to work", () => {
+    // No MULTIPLIER can move black, and the honest thing is to say so here
+    // rather than loop forever looking for one.
+    expect(recessMultiplier("#000000", 0.62)).toBeLessThan(0.1);
+    expect(deltaE("#000000", shadedHex("#000000", 0.05))).toBe(0);
+  });
+
+  it("passes a colour it cannot parse straight through", () => {
+    expect(recessMultiplier("not a colour", 0.62)).toBe(0.62);
+  });
+
+  it("through buildGeometry: a dark frame's recess is darkened further than a pale base's", () => {
+    const band: RecessBand = {
+      region: "frame",
+      kind: "lettering",
+      zMm: [1.1, 1.5],
+      xyMm: [0, 0, 100, 100],
+      faceZMm: 1.5,
+    };
+    const at = (colorHex: string): number => {
+      const region: RegionMesh = {
+        region: "frame",
+        positions: new Float64Array([3, 3, 1.2, 5, 3, 1.2, 3, 5, 1.2]),
+        indices: new Uint32Array([0, 1, 2]),
+        volumeMm3: 0,
+        bbox: { min: [3, 3, 1.2], max: [5, 5, 1.2] },
+        bodies: 1,
+        slot: 2,
+        colorHex,
+      };
+      const geometry = buildGeometry(region, [band], 0.62);
+      const value = geometry.getAttribute("color").getX(0);
+      geometry.dispose();
+      return value;
+    };
+    expect(at("#3A3A3A")).toBeLessThan(at("#D8D3C6"));
+    expect(at("#D8D3C6")).toBeCloseTo(0.62, 6);
   });
 });

@@ -343,16 +343,37 @@ export interface TerrainGrid {
 }
 
 /**
- * One Z band a cut occupies in a region (v3.1): a lettering engrave or inlay
+ * One box a cut occupies in a region (v3.1): a lettering engrave or inlay
  * pocket, an ornament, an underside pocket. Presentation data for the preview's
  * recess shading, derived from the cutters' bounding boxes clipped to the face
  * they cut into; the geometry itself is untouched.
+ *
+ * A band is a BOX and not a Z slab, and it names the face it was cut FROM,
+ * because a Z-only band cannot show a recess. Measured on the shipped 3.1.0
+ * build: an engraved frame line emitted `zMm [4.6, 5.0]` where 5.0 is the
+ * frame's own top face, so the 485 triangles of that face were darkened by
+ * exactly the same 0.62 as the 1403 triangles of the letter recesses, and the
+ * lettering could not be seen at any zoom because it was the same colour as
+ * the surface it was cut into. `xyMm` confines the shading to the text's own
+ * footprint and `faceZMm` keeps the face itself out of it.
  */
 export interface RecessBand {
   region: RegionName;
-  kind: "lettering" | "ornament" | "underside";
+  kind: "lettering" | "ornament" | "underside" | "label";
   /** `[low, high]` engine millimetres. */
   zMm: [number, number];
+  /**
+   * `[minX, minY, maxX, maxY]` engine millimetres: the cut's footprint in plan.
+   * Absent on a band from a build before this field, which then shades the
+   * whole region's slab exactly as it used to.
+   */
+  xyMm?: [number, number, number, number];
+  /**
+   * Z of the surface the cut was made from: the TOP of an engrave, the BOTTOM
+   * of an emboss. Triangles at this height are the face itself, not the cut,
+   * and are left alone. Absent on an older band, which then shades both ends.
+   */
+  faceZMm?: number;
 }
 
 /** Terrain sampler in scene metres (ENU); returns elevation in metres above the tile minimum. */

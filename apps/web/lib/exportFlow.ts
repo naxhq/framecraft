@@ -31,6 +31,18 @@ export interface DownloadFile {
   /** A `blob:` object URL. Revoked by `exportStarted`/`revokeExportUrls` the moment it stops being current. */
   href: string;
   mime: string;
+  /**
+   * What the file IS, which is not something a `.json` extension can say.
+   *
+   * `model` is the thing the user asked for and the thing Export delivers
+   * without being asked twice (`deliverExportFiles`). `report` is the
+   * validator sidecar: the same facts about the model as a JSON object, for
+   * `make validate` and for a bug report, and NOT a project file -- a project
+   * is `.framecraft` and is written by Save project. Offering the two as
+   * equally weighted green buttons called "Download chicago.3mf" and
+   * "Download chicago.json" is what made that ambiguous.
+   */
+  kind: "model" | "report";
 }
 
 export interface ExportState {
@@ -51,6 +63,12 @@ export interface ExportState {
    * agree.
    */
   stale: boolean;
+  /**
+   * One line about where the finished file went, or null before an export has
+   * delivered one. Written by the store after `deliverExportFiles`; see
+   * `deliveryNote`.
+   */
+  delivery: string | null;
 }
 
 export const initialExportState: ExportState = {
@@ -62,6 +80,7 @@ export const initialExportState: ExportState = {
   findings: [],
   plan: null,
   stale: false,
+  delivery: null,
 };
 
 /** Shown by the Output panel and the stats card while `stale` is true. */
@@ -145,22 +164,27 @@ export function exportDone(previous: ExportState, outcome: ExportOut, findings: 
   for (const file of outcome.files) bytes += file.bytes.byteLength;
   perfMark("export.bytes", { bytes });
   const files: DownloadFile[] = [
-    ...outcome.files.map((file) => ({
+    ...outcome.files.map((file): DownloadFile => ({
       label: file.name,
       filename: file.name,
       href: URL.createObjectURL(new Blob([file.bytes as BlobPart], { type: file.mime })),
       mime: file.mime,
+      kind: "model",
     })),
     {
       label: outcome.sidecarName,
       filename: outcome.sidecarName,
       href: URL.createObjectURL(new Blob([sidecarBytes as BlobPart], { type: "application/json" })),
       mime: "application/json",
+      kind: "report",
     },
   ];
   return {
     phase: "done",
     error: null,
+    // The delivery has not happened yet: the store runs it on this state and
+    // writes the note back. Saying anything here would be saying it early.
+    delivery: null,
     files,
     target: outcome.target,
     notes: outcome.notes,
@@ -226,7 +250,13 @@ export function isTerminal(phase: ExportPhase): boolean {
   return phase === "done" || phase === "failed";
 }
 
-export type SaveOutcome = "browser" | "saved" | "cancelled" | "failed";
+export type SaveOutcome =
+  | "browser"
+  | "saved"
+  | "cancelled"
+  | "failed"
+  /** No DOM to deliver to: server rendering, or a unit test in the node environment. Not a failure; there was nothing to do. */
+  | "unavailable";
 
 /**
  * Route one finished download through the right door for the platform.
@@ -247,4 +277,103 @@ export async function saveDownloadFile(file: DownloadFile): Promise<SaveOutcome>
   } catch {
     return "failed";
   }
+}
+
+/** The model files an export produced: what Export is for, without the sidecar. */
+export function modelFiles(state: ExportState): DownloadFile[] {
+  return state.files.filter((file) => file.kind === "model");
+}
+
+/**
+ * Hand the finished model to the user, the way Save project already does.
+ *
+ * The defect this exists for, reported by the author against the deployed
+ * 3.1.0 site: "export doesn't work, it shows progress bar then says export
+ * done but nothing downloaded automatically, had to click show results tiny
+ * text to bring up result and output panel". That was exact.
+ * `store/editor.ts:requestExport` ended at `exportDone` and nothing anywhere
+ * triggered a download, so the only way to the file was a link inside a
+ * COLLAPSIBLE section, and a button labelled Export reporting "Done" had
+ * written nothing the user could find. The asymmetry made it plain that it was
+ * an omission rather than a policy: Save project has always delivered its file
+ * on the click (`lib/project.ts:downloadProject`).
+ *
+ * The links in the Output panel stay exactly where they are. They are now what
+ * they should always have been -- a way to fetch the file AGAIN without
+ * rebuilding it -- rather than the only way to fetch it at all.
+ *
+ * Every model file goes, not just the first: an OBJ export is a `.obj` AND its
+ * `.mtl`, and delivering one of the two is delivering a model with no colours.
+ * The sidecar never goes: it is a report about the file, the user did not ask
+ * for it, and a second automatic download of something they did not ask for is
+ * how a browser learns to distrust this page.
+ *
+ * Returns what happened per file, so the action bar can say which file it
+ * saved rather than claiming one it did not.
+ */
+export async function deliverExportFiles(files: readonly DownloadFile[]): Promise<SaveOutcome[]> {
+  const out: SaveOutcome[] = [];
+  for (const file of files) {
+    if (isTauri()) {
+      // Sequential, not concurrent: each file gets its own native dialog and
+      // two dialogs racing for the same window is not a save flow.
+      out.push(await saveDownloadFile(file));
+      continue;
+    }
+    out.push(clickDownload(file));
+  }
+  return out;
+}
+
+/**
+ * The browser half: an `<a download>` built, clicked and removed.
+ *
+ * The same shape as `lib/project.ts:downloadProject`, deliberately, minus the
+ * `URL.revokeObjectURL` -- the object URL belongs to `ExportState` and the
+ * Output panel's own link still points at it, so revoking here would take the
+ * re-download away the moment the first one succeeded. `exportStarted` and
+ * `revokeExportUrls` free them when the export stops being current.
+ */
+function clickDownload(file: DownloadFile): SaveOutcome {
+  if (typeof document === "undefined") return "unavailable";
+  try {
+    const link = document.createElement("a");
+    link.href = file.href;
+    link.download = file.filename;
+    link.rel = "noopener";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    return "browser";
+  } catch {
+    return "failed";
+  }
+}
+
+/**
+ * What the action bar says after a delivery, or null when there is nothing to
+ * add to "Done".
+ *
+ * A browser download is not observable from script -- the anchor click returns
+ * nothing and the file may still land in a download shelf the user has to
+ * open -- so this NAMES the file rather than claiming it arrived somewhere
+ * specific. Inside the desktop shell the dialog's own outcome is known, so a
+ * cancel and a failure can be told apart and said out loud.
+ */
+export function deliveryNote(files: readonly DownloadFile[], outcomes: readonly SaveOutcome[]): string | null {
+  if (files.length === 0) return null;
+  // No DOM at all is not an outcome worth reporting: nothing was asked of the
+  // page and nothing failed. Server rendering and the node test environment.
+  if (outcomes.every((outcome) => outcome === "unavailable")) return null;
+  const names = files.map((file) => file.filename).join(" and ");
+  if (outcomes.every((outcome) => outcome === "browser")) return `${names} downloaded.`;
+  if (outcomes.some((outcome) => outcome === "failed")) {
+    return `${names} could not be saved. The download links below still hold the file.`;
+  }
+  if (outcomes.every((outcome) => outcome === "cancelled")) {
+    return "Nothing was saved. The download links below still hold the file.";
+  }
+  const saved = files.filter((_, index) => outcomes[index] === "saved").map((file) => file.filename);
+  if (saved.length === 0) return null;
+  return `${saved.join(" and ")} saved.`;
 }

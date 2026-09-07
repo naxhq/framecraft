@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { inflateSync } from "fflate";
+
 import { expect, test, type Page } from "@playwright/test";
 
 import { DEFAULT_SIZES, HANDLE_PX, REGION_MIN_PX } from "../lib/layout";
@@ -478,6 +480,71 @@ test("a permalink restores the sender's layout, on a device that has none of its
   await expect(page.getByTestId("editor")).toBeVisible();
   await expect.poll(() => widthOf(page, "map"), { timeout: 5_000 }).toBe(DEFAULT_SIZES.map + 100);
   await expect(page.getByTestId("layout-rail-settings")).toBeVisible();
+});
+
+/**
+ * The `c` block out of a share URL: the camera and nothing else.
+ *
+ * The whole payload would be the wrong comparison. A restored page resolves
+ * its own place name and carries its own layout, so two links for the same
+ * design differ in ways that have nothing to do with the camera; this asserts
+ * the pose came back, which is the claim.
+ */
+function cameraOf(link: string | null): unknown {
+  const payload = new URL(String(link)).searchParams.get("s") ?? "";
+  const [, encoded] = payload.split(".");
+  const bytes = Buffer.from(encoded.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+  const body = new TextDecoder().decode(inflateSync(new Uint8Array(bytes)));
+  return (JSON.parse(body) as { c?: unknown }).c ?? null;
+}
+
+/**
+ * The camera is the other half of the framing ([V3.1-U6]).
+ *
+ * Two claims in one flow, and the first is the trap. `ActionBar` reads nothing
+ * inside the canvas, so a pose read imperatively at render time would leave
+ * the copied URL byte for byte unchanged after an orbit -- exactly what
+ * `[V3.1-O6]` records for the layout, on the shipped build, through the one
+ * button that makes the link. So the link has to MOVE when the camera does,
+ * and then it has to bring the camera back.
+ */
+test("a permalink moves when the camera does, and restores the view it was copied from", async ({
+  page,
+}) => {
+  await openEditor(page);
+  await previewChicago(page);
+
+  const copy = page.getByTestId("copy-link-button");
+  const before = await copy.getAttribute("data-share-url");
+  expect(before, "the copy-link button carries no URL").not.toBeNull();
+
+  // Orbit: press, move, release. The store publishes on the controls' `end`
+  // event, so the release is the part that matters.
+  const canvas = page.getByTestId("preview-canvas");
+  const box = await canvas.boundingBox();
+  expect(box, "the preview canvas has no box to drag in").not.toBeNull();
+  const cx = (box?.x ?? 0) + (box?.width ?? 0) / 2;
+  const cy = (box?.y ?? 0) + (box?.height ?? 0) / 2;
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  await page.mouse.move(cx + 140, cy + 60, { steps: 12 });
+  await page.mouse.up();
+
+  const after = await expect
+    .poll(async () => (await copy.getAttribute("data-share-url")) !== before, { timeout: 10_000 })
+    .toBe(true)
+    .then(() => copy.getAttribute("data-share-url"));
+  expect(after).not.toBeNull();
+
+  // Open it, and the view comes back. Asserted through the link the RESTORED
+  // page makes, which is the only camera readout the app exposes and is the
+  // stronger claim anyway: the pose survived a full round trip unchanged.
+  await page.goto(String(after));
+  await expect(page.getByTestId("editor")).toBeVisible();
+  await previewChicago(page);
+  await expect
+    .poll(async () => cameraOf(await copy.getAttribute("data-share-url")), { timeout: 10_000 })
+    .toEqual(cameraOf(after));
 });
 
 test("a project file carries the layout through the Save and Load buttons", async ({ page }) => {

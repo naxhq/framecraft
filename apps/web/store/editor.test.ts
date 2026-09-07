@@ -725,6 +725,52 @@ function withFinishedExport(): void {
   });
 }
 
+/**
+ * The blocks a project file carries that this build has no field for.
+ *
+ * `lib/project.test.ts` proves the MODULE keeps them, by handing
+ * `parseProject`'s `extras` straight back to `buildProject`. That test passed
+ * for the whole of 3.1.0 while the app dropped them: both load paths called
+ * `applyProject(location, params)` and threw the third value away, and Save
+ * called `buildProject` with its default empty one. A module test that
+ * supplies the value itself cannot see a caller that never supplies it, which
+ * is why the claim is pinned here, on the state the Save button reads.
+ */
+describe("projectExtras", () => {
+  const FUTURE = { future_block: { written_by: "3.2.0", keep: [1, 2, 3] } };
+
+  it("starts empty for a design that did not come from a file", () => {
+    expect(useEditorStore.getState().projectExtras).toEqual({});
+  });
+
+  it("keeps what an opened project carried, so the next save can write it back", () => {
+    useEditorStore.getState().applyProject(
+      { lat: 41.88, lon: -87.62, radius_m: 900, rotation_deg: 0, preset_id: null },
+      defaultPrintParams(),
+      FUTURE,
+    );
+    expect(useEditorStore.getState().projectExtras).toEqual(FUTURE);
+  });
+
+  it("survives a reset: resetting the settings is still editing the document that was opened", () => {
+    useEditorStore.getState().applyProject(
+      { lat: 41.88, lon: -87.62, radius_m: 900, rotation_deg: 0, preset_id: null },
+      defaultPrintParams(),
+      FUTURE,
+    );
+    useEditorStore.getState().resetParams();
+    expect(useEditorStore.getState().projectExtras).toEqual(FUTURE);
+  });
+
+  it("is replaced, not merged, by the next project opened", () => {
+    const store = useEditorStore.getState();
+    const at = { lat: 41.88, lon: -87.62, radius_m: 900, rotation_deg: 0, preset_id: null };
+    store.applyProject(at, defaultPrintParams(), FUTURE);
+    store.applyProject(at, defaultPrintParams(), {});
+    expect(useEditorStore.getState().projectExtras).toEqual({});
+  });
+});
+
 describe("export staleness", () => {
   it("starts current and keeps its download links", () => {
     withFinishedExport();

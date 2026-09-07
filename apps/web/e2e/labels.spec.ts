@@ -203,7 +203,7 @@ test("a right-click labels a roof; the label is cut, exported, dragged, turned, 
   await exportButton.click();
   const downloads = page.getByTestId("download-links");
   await expect(downloads).toBeVisible({ timeout: REBUILD_BUDGET_MS });
-  const sidecarHref = await downloads.getByRole("link", { name: /\.json$/ }).getAttribute("href");
+  const sidecarHref = await downloads.getByTestId("download-link-report").getAttribute("href");
   expect(sidecarHref, "the sidecar link has no href").toBeTruthy();
   const sidecar = await page.evaluate(async (url) => {
     const res = await fetch(url);

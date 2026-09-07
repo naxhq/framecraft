@@ -42,14 +42,18 @@ import { create } from "zustand";
 
 import {
   EXPORT_STOPPED_MESSAGE,
+  deliverExportFiles,
+  deliveryNote,
   exportDone,
   exportStarted,
   exportFailedLocally,
   initialExportState,
   markExportStale,
+  modelFiles,
   stemForResult,
   type ExportState,
 } from "@/lib/exportFlow";
+import type { ProjectExtras } from "@/lib/project";
 import { DEFAULT_PRINT_PARAMS, PARAM_RANGES, defaultPrintParams } from "@/lib/contracts";
 import type { PrintParams, SceneGraph, SceneRequest } from "@/lib/contracts";
 import {
@@ -318,6 +322,24 @@ export interface EditorState {
    * nothing about it would look like the link simply did nothing.
    */
   shareNotice: string | null;
+  /**
+   * Top-level blocks of the OPENED project file that this build does not model,
+   * carried so the next Save writes them back unchanged.
+   *
+   * `lib/project.ts` states the promise in its own header -- "dropping it on
+   * the floor would quietly destroy the user's work the next time they saved"
+   * -- and until this field existed the promise was false: `parseProject`
+   * returned `extras`, both load paths ignored the value, and `saveProject`
+   * called `buildProject` with its default empty one. A file written by a
+   * newer FrameCraft, opened here and saved, came out with the newer build's
+   * blocks deleted.
+   *
+   * `{}` for a design that did not come from a file, and for a file that had
+   * nothing this build could not read. Deliberately NOT cleared by
+   * `resetParams`: resetting the settings is still editing the document that
+   * was opened, and the foreign block belongs to the document.
+   */
+  projectExtras: ProjectExtras;
 
   // --- location (these four are the ONLY things that trigger the ingest job) ---
   setPin: (lat: number, lon: number) => void;
@@ -422,12 +444,15 @@ export interface EditorState {
 
   // --- project file ([V3-P6]: unlike a share restore, this DOES re-ingest) ---
   /**
-   * Apply a `.framecraft.json` project's `{ location, params }` (already
-   * parsed and validated by `lib/project.ts:parseProject`) and generate the
-   * scene for it immediately -- a project file is a deliberate "open this"
-   * action, not a link that might sit unopened in a background tab.
+   * Apply a `.framecraft` project's `{ location, params }` (already parsed and
+   * validated by `lib/project.ts:parseProject`) and generate the scene for it
+   * immediately -- a project file is a deliberate "open this" action, not a
+   * link that might sit unopened in a background tab.
+   *
+   * `extras` are the top-level blocks THIS build does not model, which the
+   * next Save has to write back. See `projectExtras`.
    */
-  applyProject: (location: LocationState, params: PrintParams) => void;
+  applyProject: (location: LocationState, params: PrintParams, extras?: ProjectExtras) => void;
 
   // --- shared configuration (a URL payload; still never a fetch) ---
   applyShared: (request: SceneRequest, params: PrintParams) => void;
@@ -1044,6 +1069,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   adjustmentsOpen: false,
   issuesOpen: false,
   shareNotice: null,
+  projectExtras: {},
 
   setPin: (lat, lon) => {
     set((state) => {
@@ -1415,10 +1441,11 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     if (locationChanged) scheduleTerrainJob(get, set);
   },
 
-  applyProject: (location, params) => {
+  applyProject: (location, params, extras = {}) => {
     set((state) => ({
       location,
       params,
+      projectExtras: extras,
       scene: { ...state.scene, stale: true },
       pipeline: markPipelineStale(state.pipeline),
       exportState: markExportStale(state.exportState),
@@ -1619,6 +1646,30 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       });
       set((state) => ({ exportState: exportDone(state.exportState, outcome, result.findings) }));
       perfFlush("export");
+      /*
+        Hand the file over. Export's whole job is a file, and until this line
+        existed it produced one and left it inside a collapsible panel, so
+        pressing Export and being told "Done" wrote nothing the user could
+        find (reported against the deployed 3.1.0 site). Save project has
+        always delivered on the click; this is Export doing the same.
+
+        After the `set`, not before: the links are what a failed or refused
+        delivery falls back to, and they have to be on screen first. Awaited
+        rather than fired and forgotten, because inside the desktop shell the
+        native dialog's outcome is the note.
+      */
+      const delivering = get().exportState;
+      const delivered = modelFiles(delivering);
+      const note = deliveryNote(delivered, await deliverExportFiles(delivered));
+      set((state) =>
+        // Only onto the export this actually delivered. A native save dialog
+        // can stay open for a while, and a newer export finishing behind it
+        // holds a different file: writing this note onto that one would name
+        // a file the user never saved.
+        state.exportState.files === delivering.files
+          ? { exportState: { ...state.exportState, delivery: note } }
+          : {},
+      );
     } catch (error) {
       if (error instanceof EngineClientError && error.code === "cancelled") {
         set((state) => ({

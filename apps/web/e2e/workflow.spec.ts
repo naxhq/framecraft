@@ -1,3 +1,4 @@
+import { readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -25,6 +26,15 @@ import { mockNominatimReverse, mockPhoton } from "./photonMock";
  *     pattern `e2e/share.spec.ts` already proves exhaustively, kept light
  *     here since this suite is about the WORKFLOW around it, not the payload
  *     format itself.
+ *  5. Press Export and receive a file. Nothing asserted this until the author
+ *     reported it against the deployed 3.1.0 build ("export doesn't work, it
+ *     shows progress bar then says export done but nothing downloaded
+ *     automatically"), and the whole unit suite was green while it was true:
+ *     the store built Blob URLs and left them in a collapsible panel.
+ *  6. Open a project file carrying a block this build does not model, save it
+ *     again, and find the block still there -- the forward-compatibility
+ *     promise `lib/project.ts` makes in its own header, which both load paths
+ *     were breaking by dropping `parseProject`'s `extras` on the floor.
  *
  * Budgets scale with `E2E_BUDGET_FACTOR`, matching every other spec in this
  * directory (`smoke.spec.ts`, `a11y.spec.ts`, `print.spec.ts`, `colour.spec.ts`).
@@ -200,6 +210,71 @@ test("save project, reload, load project: every setting comes back", async ({ pa
   // Loading a project re-ingests immediately, unlike a share link.
   await expect(page.getByTestId("preview-stats")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
   await expect(page.getByTestId("project-error")).toHaveCount(0);
+});
+
+test("Export hands over a file, without the results panel having to be found", async ({ page }) => {
+  await mockGeocoders(page);
+  await mockChicagoOverpass(page);
+  await page.goto("/");
+  await page.locator('[data-preset-id="chicago-loop"]').click();
+  await expect(page.getByTestId("preview-stats")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
+
+  // Collapse the results, which is the state the author hit: with the panel
+  // shut there was previously no way at all to reach the file.
+  const outputToggle = page.getByTestId("group-output-toggle");
+  if ((await outputToggle.getAttribute("aria-expanded")) === "true") await outputToggle.click();
+  await expect(outputToggle).toHaveAttribute("aria-expanded", "false");
+
+  const downloadPromise = page.waitForEvent("download", { timeout: WARMUP_BUDGET_MS });
+  await page.getByTestId("export-button").click();
+  const download = await downloadPromise;
+  // The MODEL, and the model's own format. Not the sidecar: a second file
+  // nobody asked for is not a delivery.
+  expect(download.suggestedFilename().endsWith(".3mf")).toBe(true);
+
+  // And the panel, once opened, still holds the file for a second fetch.
+  await outputToggle.click();
+  await expect(page.getByTestId("download-links").locator("a")).toHaveCount(2);
+  await expect(page.getByTestId("export-delivery")).toContainText(download.suggestedFilename());
+});
+
+test("a block this build does not understand survives being opened and saved", async ({ page }) => {
+  await mockGeocoders(page);
+  await mockChicagoOverpass(page);
+  await page.goto("/");
+  await page.locator('[data-preset-id="chicago-loop"]').click();
+  await expect(page.getByTestId("preview-stats")).toBeVisible({ timeout: WARMUP_BUDGET_MS });
+
+  const first = page.waitForEvent("download");
+  await page.getByTestId("save-project-button").click();
+  const seedPath = path.join(os.tmpdir(), `framecraft-extras-${Date.now()}.framecraft`);
+  await (await first).saveAs(seedPath);
+
+  /*
+    Stand in for a NEWER FrameCraft: a real project file with one top-level
+    block this build has no field for. `lib/project.ts` promises such a block
+    is kept -- "dropping it on the floor would quietly destroy the user's work
+    the next time they saved" -- and `parseProject` did return it; both load
+    paths simply ignored the value and Save wrote an empty one.
+  */
+  const seeded = JSON.parse(await readFile(seedPath, "utf8")) as Record<string, unknown>;
+  seeded.future_block = { written_by: "3.2.0", keep: [1, 2, 3] };
+  await writeFile(seedPath, JSON.stringify(seeded, null, 2), "utf8");
+
+  await page.reload();
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.getByTestId("load-project-button").click(),
+  ]);
+  await chooser.setFiles(seedPath);
+  await expect(page.getByTestId("project-error")).toHaveCount(0);
+
+  const second = page.waitForEvent("download");
+  await page.getByTestId("save-project-button").click();
+  const resavedPath = path.join(os.tmpdir(), `framecraft-extras-again-${Date.now()}.framecraft`);
+  await (await second).saveAs(resavedPath);
+  const resaved = JSON.parse(await readFile(resavedPath, "utf8")) as Record<string, unknown>;
+  expect(resaved.future_block).toEqual({ written_by: "3.2.0", keep: [1, 2, 3] });
 });
 
 test("a copied link restores in a fresh browser context", async ({ page, context, browser }) => {

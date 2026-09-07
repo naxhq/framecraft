@@ -103,7 +103,7 @@ test("Chicago's {city} resolves in the preview, the Resolved output panel and th
   await exportButton.click();
   const downloads = page.getByTestId("download-links");
   await expect(downloads).toBeVisible({ timeout: A4_BUDGET_MS });
-  const sidecarLink = downloads.getByRole("link", { name: /\.json$/ });
+  const sidecarLink = downloads.getByTestId("download-link-report");
   const sidecarHref = await sidecarLink.getAttribute("href");
   expect(sidecarHref, "the sidecar link has no href").toBeTruthy();
   expect(sidecarHref, "the sidecar is a Blob object URL, not a server path").toMatch(

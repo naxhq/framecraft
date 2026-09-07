@@ -49,7 +49,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_PRINT_PARAMS } from "@/lib/contracts";
 import type { PrintParams, SceneGraph } from "@/lib/contracts";
 import { claimedPaths, expandClaims, type ParamClaim } from "@/lib/engine/pipeline";
-import { previewDeps } from "./CityPreview";
+import { previewDeps, shadingBands } from "./CityPreview";
 
 // ===========================================================================
 // 1. Nothing rendered reads a parameter
@@ -561,5 +561,69 @@ describe("previewDeps", () => {
         changed(previewDeps.text(GRAPH, params, ROTATION_DEG, DATE, FACE_VERSION), after),
       ).toBe(true);
     }
+  });
+});
+
+/**
+ * What the viewport shades, assembled from two engine outputs.
+ *
+ * Both halves are corrections to the shipped 3.1.0 build, and both were
+ * reported by the author against the deployed site as settings that "do not
+ * show in the preview": a surface label had no shading at all because
+ * `RegionMeshes` only ever read `recessBands`, and every band was compared
+ * against the region meshes in the wrong coordinate space whenever the `sit`
+ * stage had lifted the model.
+ */
+describe("shadingBands", () => {
+  const RECESS = {
+    region: "frame" as const,
+    kind: "lettering" as const,
+    zMm: [4.6, 5] as [number, number],
+    xyMm: [10, 20, 30, 24] as [number, number, number, number],
+    faceZMm: 5,
+  };
+  const LABEL = {
+    id: "label-0",
+    index: 0,
+    mode: "engrave" as const,
+    zMm: [11.6, 12] as [number, number],
+    faceZMm: 12,
+    rect: [
+      [4, 1],
+      [9, 1],
+      [9, 3],
+      [4, 3],
+    ] as Array<[number, number]>,
+    region: "buildings" as const,
+  };
+
+  it("turns a surface label into a band the shading can read, bounded by its own ink rectangle", () => {
+    const [band] = shadingBands([], [LABEL], 0);
+    expect(band.region).toBe("buildings");
+    expect(band.kind).toBe("label");
+    expect(band.zMm).toEqual([11.6, 12]);
+    expect(band.faceZMm).toBe(12);
+    // The rectangle's bounds in plan, not the rectangle: the shading test is a
+    // box test, and a label's rect is already axis-aligned in its own frame.
+    expect(band.xyMm).toEqual([4, 1, 9, 3]);
+  });
+
+  it("moves every band into the coordinates the region meshes are drawn in", () => {
+    // `EngineResult.sitShiftMm` says it in its own doc comment: the bands are
+    // engine mm, the meshes are sat mm. The shading never added it, so on a
+    // draped or hanger-standing model it darkened a slab at the wrong height.
+    const bands = shadingBands([RECESS], [LABEL], 1.25);
+    expect(bands[0].zMm).toEqual([5.85, 6.25]);
+    expect(bands[0].faceZMm).toBe(6.25);
+    expect(bands[1].zMm).toEqual([12.85, 13.25]);
+    expect(bands[1].faceZMm).toBe(13.25);
+    // A shift never moves anything in plan.
+    expect(bands[0].xyMm).toEqual(RECESS.xyMm);
+    expect(bands[1].xyMm).toEqual([4, 1, 9, 3]);
+  });
+
+  it("is the same empty array when there is nothing to shade, so the memo below it never re-runs", () => {
+    expect(shadingBands([], [], 0)).toEqual([]);
+    expect(shadingBands(undefined, undefined, 3)).toBe(shadingBands([], [], 0));
   });
 });

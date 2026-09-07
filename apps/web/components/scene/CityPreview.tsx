@@ -16,7 +16,7 @@ import {
 } from "@/lib/advisor";
 import type { PrintParams, SceneGraph } from "@/lib/contracts";
 import type { EngineBuilding } from "@/lib/engine/osm/types";
-import type { AuditFinding, RecessBand, RegionMesh } from "@/lib/engine/types";
+import type { AuditFinding, LabelBand, RecessBand, RegionMesh } from "@/lib/engine/types";
 import { previewView } from "@/lib/enginePreview";
 import { loadGlyphFace, loadedGlyphFace } from "@/lib/fontGlyphs";
 import { autoHeroIds, heroCandidates, heroCapMessage } from "@/lib/heroes";
@@ -193,6 +193,73 @@ const NO_HEROES: readonly string[] = [];
  */
 const NO_FINDINGS: readonly AuditFinding[] = [];
 const NO_BANDS: readonly RecessBand[] = [];
+
+/** The axis-aligned bounds of an ink rectangle in plan, engine mm. */
+function boundsOf(rect: ReadonlyArray<readonly [number, number]>): [number, number, number, number] {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of rect) {
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  return [minX, minY, maxX, maxY];
+}
+
+/**
+ * Every band the viewport shades, in the space the region meshes are drawn in.
+ *
+ * Two things happen here, and both are corrections rather than additions.
+ *
+ * **Surface labels are shaded at all.** A label's cut is described by
+ * `EngineResult.labelBands`, which `RegionMeshes` never read, so an engraved
+ * roof label had the gizmo's outline and a handle and no visible text. A
+ * `LabelBand` already carries the region, the Z range, the face and the ink
+ * rectangle, so this is a rename into `RecessBand` and not a second source of
+ * truth. It is done here and not in the `labels` stage because `labelBands` is
+ * what the sidecar writes and what every Task 12 matrix probe reads, and
+ * neither should move because the preview learned to draw them. An engrave
+ * names its face at the top of its band and an emboss at the bottom, so the
+ * same rule shades the letters and leaves the surface alone either way.
+ *
+ * **Both kinds are moved into sat coordinates.** `EngineResult.sitShiftMm`
+ * says so in its own doc comment: the bands are engine mm, the region meshes
+ * are sat mm, and a consumer drawing one over the other adds the shift. The
+ * shading never did, so on any model the `sit` stage lifted -- a terrain drape,
+ * a hanger standing below the plate -- it was darkening a slab at the wrong
+ * height entirely. Zero on a flat plate, which is why it went unnoticed.
+ */
+export function shadingBands(
+  recess: readonly RecessBand[] | undefined,
+  labels: readonly LabelBand[] | undefined,
+  sitShiftMm: number,
+): readonly RecessBand[] {
+  const fromEngine = recess ?? NO_BANDS;
+  const fromLabels: readonly LabelBand[] = labels ?? [];
+  if (fromEngine.length === 0 && fromLabels.length === 0) return NO_BANDS;
+  const lift = (z: number): number => z + sitShiftMm;
+  const out: RecessBand[] = [];
+  for (const band of fromEngine) {
+    out.push({
+      ...band,
+      zMm: [lift(band.zMm[0]), lift(band.zMm[1])],
+      faceZMm: band.faceZMm === undefined ? undefined : lift(band.faceZMm),
+    });
+  }
+  for (const band of fromLabels) {
+    out.push({
+      region: band.region,
+      kind: "label",
+      zMm: [lift(band.zMm[0]), lift(band.zMm[1])],
+      xyMm: boundsOf(band.rect),
+      faceZMm: lift(band.faceZMm),
+    });
+  }
+  return out;
+}
 
 /**
  * The advisor band, as a design token.
@@ -527,7 +594,14 @@ export function CityPreview() {
     result: pipelineResult,
   });
   const regionVersions = useRegionVersions(regions);
-  const recessBands = pipelineResult?.recessBands ?? NO_BANDS;
+  // What the viewport shades, in the meshes' own coordinates: see `shadingBands`.
+  const engineBands = pipelineResult?.recessBands;
+  const labelBands = pipelineResult?.labelBands;
+  const sitShiftMm = pipelineResult?.sitShiftMm ?? 0;
+  const recessBands = useMemo<readonly RecessBand[]>(
+    () => shadingBands(engineBands, labelBands, sitShiftMm),
+    [engineBands, labelBands, sitShiftMm],
+  );
   // The camera follows the real model once there is one, and the plate the
   // controls ask for until then.
   const frameWidthMm = pipelineResult?.stats.widthMm ?? params.plate_mm;

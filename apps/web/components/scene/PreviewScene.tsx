@@ -7,6 +7,7 @@ import type { PerspectiveCamera } from "three";
 
 import PerfFrameMark from "@/components/scene/PerfFrameMark";
 import type { RecessBand, RegionMesh, TileResult } from "@/lib/engine/types";
+import { useCameraStore } from "@/store/camera";
 import LabelGizmo from "./LabelGizmo";
 import RegionMeshes, { type HoverHandler, type InspectHandler, type TintMap } from "./RegionMeshes";
 import TileGrid from "./TileGrid";
@@ -99,6 +100,9 @@ export function PreviewScene({
           per-frame callback at all (`PerfFrameMark`). */}
       <PerfFrameMark name="preview.firstFrame" />
       <FitView plateMm={plateMm} trigger={fitTrigger} />
+      {/* Publishes the pose a link and a project file carry ([V3.1-U6]).
+          Reads the camera, never a parameter, so the canvas rule holds. */}
+      <CameraReporter />
 
       {/* Print space is z-up; three is y-up. One rotation, once. */}
       <group rotation={[-Math.PI / 2, 0, 0]}>
@@ -137,22 +141,87 @@ export function PreviewScene({
   );
 }
 
-/** Frame the plate whenever a new scene arrives or the plate size changes. */
+/**
+ * Frame the plate whenever a new scene arrives or the plate size changes --
+ * unless a link or a project file asked for a pose, which wins once.
+ *
+ * A restored pose STANDS IN for the default framing rather than being applied
+ * once ([V3.1-U6]). This effect runs on `plateMm`, which is the params default
+ * until a model exists and the model's own measured width afterwards, so
+ * opening a link and pressing Preview fires it twice; a one-shot claim was
+ * taken by the first and overwritten by the second, and the link opened on the
+ * default view. The claim is released instead by the user touching the
+ * controls (`CameraReporter`), which is the event that actually means "this is
+ * my camera now".
+ *
+ * The far plane is set from the plate either way: a restored pose is a
+ * position and a target and says nothing about clipping, and a far plane left
+ * at a previous plate's distance is how a model goes half-invisible.
+ */
 export function FitView({ plateMm, trigger }: { plateMm: number; trigger: unknown }) {
   const camera = useThree((state) => state.camera) as PerspectiveCamera;
   const controls = useThree((state) => state.controls) as {
     target: { set: (x: number, y: number, z: number) => void };
     update: () => void;
   } | null;
+  const pendingPose = useCameraStore((state) => state.pendingPose);
 
   useEffect(() => {
     const distance = plateMm * 1.15;
-    camera.position.set(distance * 0.72, distance * 0.86, distance * 0.95);
     camera.far = distance * 30;
+    const restored = pendingPose();
+    if (restored !== null) {
+      camera.position.set(restored.position[0], restored.position[1], restored.position[2]);
+      camera.updateProjectionMatrix();
+      controls?.target.set(restored.target[0], restored.target[1], restored.target[2]);
+      controls?.update();
+      return;
+    }
+    camera.position.set(distance * 0.72, distance * 0.86, distance * 0.95);
     camera.updateProjectionMatrix();
     controls?.target.set(0, 0, 0);
     controls?.update();
-  }, [camera, controls, plateMm, trigger]);
+  }, [camera, controls, plateMm, trigger, pendingPose]);
+
+  return null;
+}
+
+/**
+ * Report where the camera ended up, once per gesture.
+ *
+ * On the controls' `end` event and never per frame: the action bar subscribes
+ * to this so the copied link carries the view the author is looking at, and a
+ * per-frame write would re-encode the whole share payload on every pointer
+ * move of an orbit. `end` fires once when a drag, a wheel or a pinch settles.
+ */
+export function CameraReporter() {
+  const camera = useThree((state) => state.camera);
+  const controls = useThree((state) => state.controls) as
+    | { target: { x: number; y: number; z: number }; addEventListener: (type: string, fn: () => void) => void; removeEventListener: (type: string, fn: () => void) => void }
+    | null;
+  const reportPose = useCameraStore((state) => state.reportPose);
+  const clearPendingPose = useCameraStore((state) => state.clearPendingPose);
+
+  useEffect(() => {
+    if (controls === null) return;
+    const report = (): void => {
+      reportPose({
+        position: [camera.position.x, camera.position.y, camera.position.z],
+        target: [controls.target.x, controls.target.y, controls.target.z],
+      });
+    };
+    // Once now, so a design shared without touching the camera still carries
+    // the framing the viewport chose rather than nothing at all.
+    report();
+    controls.addEventListener("end", report);
+    // `start` is the user putting a hand on the camera, and the only thing that
+    // ends a restored pose's claim on it.
+    controls.addEventListener("start", clearPendingPose);
+    return () => {
+      controls.removeEventListener("end", report);
+      controls.removeEventListener("start", clearPendingPose);
+    };
+  }, [camera, clearPendingPose, controls, reportPose]);
 
   return null;
 }

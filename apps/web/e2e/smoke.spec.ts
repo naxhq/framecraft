@@ -448,7 +448,7 @@ test("happy path: Chicago preset previews, sliders stay local, export downloads 
   expect(body.subarray(0, 2).toString("latin1")).toBe("PK");
   log(`3MF download: ${body.length.toLocaleString("en-US")} bytes`);
 
-  const sidecarLink = downloads.getByRole("link", { name: /\.json$/ });
+  const sidecarLink = downloads.getByTestId("download-link-report");
   await expect(sidecarLink).toBeVisible({ timeout: A4_BUDGET_MS });
   const sidecarHref = await sidecarLink.getAttribute("href");
   const sidecarBody = await fetchBlob(page, sidecarHref as string);
@@ -550,7 +550,7 @@ test("the downloaded file passes the Python printability validator (small scene)
   const meshHref = await meshLink.getAttribute("href");
   const meshBody = await fetchBlob(page, meshHref as string);
 
-  const sidecarLink = downloads.getByRole("link", { name: /\.json$/ });
+  const sidecarLink = downloads.getByTestId("download-link-report");
   const sidecarHref = await sidecarLink.getAttribute("href");
   const sidecarBody = await fetchBlob(page, sidecarHref as string);
 
@@ -622,7 +622,7 @@ test("the downloaded file passes the Python printability validator (full Chicago
   const meshHref = await meshLink.getAttribute("href");
   const meshBody = await fetchBlob(page, meshHref as string);
 
-  const sidecarLink = downloads.getByRole("link", { name: /\.json$/ });
+  const sidecarLink = downloads.getByTestId("download-link-report");
   const sidecarHref = await sidecarLink.getAttribute("href");
   const sidecarBody = await fetchBlob(page, sidecarHref as string);
 

@@ -5,6 +5,8 @@ import { useThree, type ThreeEvent } from "@react-three/fiber";
 import { BufferAttribute, BufferGeometry, Color, Raycaster, Vector2, type Group } from "three";
 
 import PerfFrameMark from "@/components/scene/PerfFrameMark";
+import { deltaE76 } from "@/lib/colourMap";
+import { CONTRAST_THRESHOLD } from "@/lib/contrastCheck";
 import { NO_OWNER, type BuildingTint, type RecessBand, type RegionMesh } from "@/lib/engine/types";
 import { isBuildingRegion, isPickableRegion, ownerAt, type HoverHit } from "@/lib/objectInfo";
 import { perfSpan } from "@/lib/perf";
@@ -28,13 +30,22 @@ import { perfSpan } from "@/lib/perf";
  * the per-region cache on object identity is exactly "rebuild iff the hash
  * moved". A lettering edit therefore re-uploads the frame and nothing else.
  *
- * **Recess shading is presentation, not geometry.** `EngineResult.recessBands`
- * names the Z bands the lettering, ornament and underside cuts occupy per
- * region; a triangle whose centroid Z falls inside one of its own region's
- * bands is given a darker vertex colour, so an engraved line reads at viewing
- * distance instead of disappearing into the single flat colour of the region
- * it was cut into. Not one coordinate moves; the band list is a named
- * exception in `docs/handoff/v3-01-pipeline.md` section 5.
+ * **Recess shading is presentation, not geometry.** A band names the BOX a
+ * lettering, ornament, underside or surface-label cut occupies in a region and
+ * the face it was cut from; a triangle whose centroid falls inside that box,
+ * and is not on that face, is given a darker vertex colour, so an engraved
+ * line reads at viewing distance instead of disappearing into the single flat
+ * colour of the region it was cut into. Not one coordinate moves; the band
+ * list is a named exception in `docs/handoff/v3-01-pipeline.md` section 5.
+ *
+ * The box and the face are both corrections, and both are why the shipped
+ * 3.1.0 build showed no lettering on the frame at all: a band used to be a Z
+ * SLAB closed at both ends, and its upper end IS the frame's own lip, so the
+ * lip and the letters cut into it were darkened by the same amount and the
+ * text was invisible at every zoom. How FAR they are darkened is
+ * `recessMultiplier` below, and was the other half of the same defect. `CityPreview.tsx:shadingBands` is where the
+ * bands are assembled, including the surface labels this file never used to
+ * see and the `sit` shift that puts all of them in these meshes' coordinates.
  *
  * **Per-building tint is the same mechanism, keyed by owner.** The buildings,
  * band and hero meshes carry `triangleOwner`/`owners` ([V3.1-P1-18]), so a
@@ -64,10 +75,122 @@ export function bandsForRegion(bands: readonly RecessBand[], region: string): Re
   return bands.filter((band) => band.region === region);
 }
 
-/** True when `z` lies inside any band, endpoints included. */
-export function insideBands(z: number, bands: readonly RecessBand[]): boolean {
+/**
+ * The delta-E a recess must reach against the surface it is cut into before it
+ * can be said to read.
+ *
+ * `lib/contrastCheck.ts:CONTRAST_THRESHOLD`, the number this app already uses
+ * for "a careful eye tells them apart across a seam", reused rather than
+ * invented: the question a recess asks is the same question two adjacent
+ * region colours ask.
+ */
+export const RECESS_MIN_DELTA_E = CONTRAST_THRESHOLD;
+
+/** The lowest multiplier worth trying. Below this everything is black anyway. */
+const RECESS_FLOOR = 0.05;
+
+/** sRGB 0..255 to linear light, the transfer three applies to `material.color`. */
+function toLinear(channel: number): number {
+  const s = channel / 255;
+  return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+}
+
+function toSrgb(linear: number): number {
+  const s = linear <= 0.0031308 ? linear * 12.92 : 1.055 * Math.pow(linear, 1 / 2.4) - 0.055;
+  return Math.max(0, Math.min(255, Math.round(s * 255)));
+}
+
+/** What the screen shows when a vertex colour of `k` multiplies a material of `hex`. */
+export function shadedHex(hex: string, k: number): string {
+  const packed = Number.parseInt(hex.slice(1), 16);
+  if (!Number.isFinite(packed)) return hex;
+  const out = [(packed >> 16) & 255, (packed >> 8) & 255, packed & 255].map((channel) =>
+    toSrgb(Math.min(1, toLinear(channel) * k)),
+  );
+  return `#${((out[0] << 16) | (out[1] << 8) | out[2]).toString(16).padStart(6, "0")}`;
+}
+
+/**
+ * The multiplier that makes a recess in `colorHex` actually readable.
+ *
+ * The token's `shade` is the starting point and stays the answer for every
+ * region where it already works, which is most of them. It does not work on a
+ * DARK region, and the frame is the darkest colour in every built-in palette:
+ * measured in the space the renderer multiplies in (linear, not sRGB -- a
+ * vertex colour is assumed to be in the working space already and is not
+ * converted), the token moves the default frame colour by a delta-E of 5.95,
+ * half the threshold above. That is the second half of why the author saw no
+ * lettering on the frame: even once the band stopped darkening the lip along
+ * with the letters, what it darkened them BY was under the point at which a
+ * difference is a difference. Multiplying a dark colour barely moves it. The
+ * whole measured table, region by region, is in DECISIONS `[V3.1-U5]`; the
+ * colours themselves stay in `app/globals.css`, which is why none is named
+ * here.
+ *
+ * So: step the multiplier down until the result clears `RECESS_MIN_DELTA_E`.
+ * The default base and matting colours clear it at the token and keep it, so
+ * nothing that reads today is repainted; the frame walks down to about a
+ * third. A region that cannot clear it at any multiplier gets the floor --
+ * pure black is the honest case, where no MULTIPLIER can move a colour at all,
+ * and saying so here is better than pretending a number exists.
+ */
+export function recessMultiplier(colorHex: string, shade: number): number {
+  if (!/^#[0-9a-fA-F]{6}$/.test(colorHex)) return shade;
+  let k = shade;
+  while (k > RECESS_FLOOR) {
+    if (deltaE76(colorHex, shadedHex(colorHex, k)) >= RECESS_MIN_DELTA_E) return k;
+    k *= 0.9;
+  }
+  return RECESS_FLOOR;
+}
+
+/**
+ * How far a triangle centroid may sit from a band's face and still count as
+ * being ON that face, engine mm.
+ *
+ * The face and the band bound are the same number computed twice (the cutter is
+ * clipped to the face the stage passes in), so equality would do on paper; a
+ * tolerance is what keeps it true after a boolean rebuilds the surface and
+ * leaves a vertex a few ulps off. One micron is three orders of magnitude
+ * below the 0.2 mm minimum engrave depth, so it can never swallow a real cut.
+ */
+const FACE_EPSILON_MM = 1e-3;
+
+/**
+ * True when a triangle centroid lies inside the cut a band describes.
+ *
+ * Three tests, and the second and third are why this is not the Z-only
+ * predicate it used to be:
+ *
+ *  - Z inside the band, as before.
+ *  - NOT on the band's own face (`faceZMm`). A band's bounds are the cut AND
+ *    the surface it was cut from, so a Z-only test darkened the frame's whole
+ *    top face by the same amount as the letters cut into it, and the lettering
+ *    was invisible at every zoom because it was the same colour as its
+ *    surround (measured on 3.1.0: 485 of 1888 shaded frame triangles were the
+ *    face itself). An emboss names its face at the BOTTOM and an engrave at
+ *    the top; excluding `faceZMm` is right for both.
+ *  - Inside the cut's own footprint in plan (`xyMm`). Without it the band is a
+ *    slab across the whole region, which for a roof label means every unrelated
+ *    building passing through that height goes dark too.
+ *
+ * A band with neither field is one from an older result and keeps the old
+ * behaviour rather than being silently dropped.
+ */
+export function insideBands(
+  z: number,
+  bands: readonly RecessBand[],
+  x = Number.NaN,
+  y = Number.NaN,
+): boolean {
   for (const band of bands) {
-    if (z >= band.zMm[0] && z <= band.zMm[1]) return true;
+    if (z < band.zMm[0] || z > band.zMm[1]) continue;
+    if (band.faceZMm !== undefined && Math.abs(z - band.faceZMm) <= FACE_EPSILON_MM) continue;
+    const box = band.xyMm;
+    if (box !== undefined && Number.isFinite(x) && Number.isFinite(y)) {
+      if (x < box[0] || x > box[2] || y < box[1] || y > box[3]) continue;
+    }
+    return true;
   }
   return false;
 }
@@ -197,18 +320,25 @@ export function buildGeometry(
   const owners = region.owners;
   const triangleOwner = region.triangleOwner;
   const base = tinted ? new Color(region.colorHex) : null;
+  // Solved once per region, not per triangle: it depends only on the region's
+  // own filament colour and the token.
+  const recess = recessMultiplier(region.colorHex, shade);
   const cache = new Map<string, Color>();
   for (let t = 0; t < triangles; t += 1) {
     const out = t * 9;
+    let xSum = 0;
+    let ySum = 0;
     let zSum = 0;
     for (let k = 0; k < 3; k += 1) {
       const source = region.indices[t * 3 + k] * 3;
       positions[out + k * 3] = region.positions[source];
       positions[out + k * 3 + 1] = region.positions[source + 1];
       positions[out + k * 3 + 2] = region.positions[source + 2];
+      xSum += region.positions[source];
+      ySum += region.positions[source + 1];
       zSum += region.positions[source + 2];
     }
-    const multiplier = insideBands(zSum / 3, bands) ? shade : 1;
+    const multiplier = insideBands(zSum / 3, bands, xSum / 3, ySum / 3) ? recess : 1;
     if (!tinted || base === null) {
       for (let k = 0; k < 9; k += 1) colors[out + k] = multiplier;
       continue;
@@ -264,7 +394,11 @@ interface CacheEntry extends BuiltRegion {
 }
 
 function bandsKeyOf(bands: readonly RecessBand[]): string {
-  return bands.map((band) => `${band.kind}:${band.zMm[0]}:${band.zMm[1]}`).join("|");
+  // Every field the shading reads, or a band that moved only in plan (a label
+  // dragged across a roof at one height) would keep the cached geometry.
+  return bands
+    .map((band) => `${band.kind}:${band.zMm[0]}:${band.zMm[1]}:${band.faceZMm ?? ""}:${(band.xyMm ?? []).join(",")}`)
+    .join("|");
 }
 
 export interface ReconcileResult {

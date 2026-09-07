@@ -39,7 +39,7 @@ export function DesktopProjectOpener() {
         store.setShareNotice(`${file.filename}: ${outcome.reason}`);
         return;
       }
-      store.applyProject(outcome.location, outcome.params);
+      store.applyProject(outcome.location, outcome.params, outcome.extras);
       // Null when the file was already current, which clears any previous
       // notice rather than leaving a stale one over a freshly opened project.
       store.setShareNotice(outcome.migrated);

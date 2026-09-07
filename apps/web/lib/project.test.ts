@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
+import { resetCameraForTest, useCameraStore } from "@/store/camera";
 
 import { PARAM_LIMITS, PARAM_RANGES, defaultPrintParams, type PrintParams } from "./contracts";
 import type { LayoutPayload, LayoutState } from "./layout";
@@ -418,9 +419,20 @@ function maximalParams(): PrintParams {
  * this channel is what is left: it is what stops an older build from silently
  * deleting a newer build's work the next time the user presses Save.
  */
+/*
+  Two blocks a LATER FrameCraft might write beside `params`, neither of which
+  this build models.
+
+  The second used to be `camera`, which stopped being hypothetical when
+  `[V3.1-U6]` gave the envelope a real camera block: it is a known key now, so
+  it is consumed rather than kept, and the test was asserting the opposite. A
+  fixture standing in for "a field from the future" has to name a field that is
+  actually still in the future, so it was renamed rather than the assertion
+  loosened.
+*/
 const FUTURE_BLOCKS = {
   annotations: [{ id: "note-1", text: "a block from a later FrameCraft" }],
-  camera: { azimuth_deg: 35, elevation_deg: 20 },
+  print_queue: { printer: "a name this build has never heard of", copies: 3 },
 } as const;
 
 /** A non-default framing: both boundaries moved and the settings column collapsed. */
@@ -462,6 +474,44 @@ describe("parseProject: a maximal project", () => {
       buildProject(decoded.location, decoded.params, SAVED_AT, MAXIMAL_LAYOUT, decoded.extras),
     );
     expect(second).toBe(first);
+  });
+
+  it("carries the camera, and hands it to the viewport when the file is opened", () => {
+    resetCameraForTest();
+    const camera = { p: [207, 247.25, 273.13] as [number, number, number], t: [0, 0, 0] as [number, number, number] };
+    const text = serializeProject(
+      buildProject(LOCATION, defaultPrintParams(), SAVED_AT, MAXIMAL_LAYOUT, {}, camera),
+    );
+    expect(JSON.parse(text).camera).toEqual(camera);
+    const decoded = parseProject(text);
+    expect(decoded.ok ? "ok" : decoded.reason).toBe("ok");
+    // Adopted as a side effect, like the layout: the document carries it, so
+    // opening the document restores it, through either door into the editor.
+    expect(useCameraStore.getState().pendingPose()).toEqual({
+      position: [207, 247.25, 273.13],
+      target: [0, 0, 0],
+    });
+  });
+
+  it("keeps `camera` out of the extras now that the envelope models it", () => {
+    resetCameraForTest();
+    const camera = { p: [1, 2, 3] as [number, number, number], t: [0, 0, 0] as [number, number, number] };
+    const text = serializeProject(buildProject(LOCATION, defaultPrintParams(), SAVED_AT, null, {}, camera));
+    const decoded = parseProject(text);
+    expect(decoded.ok ? "ok" : decoded.reason).toBe("ok");
+    if (!decoded.ok) return;
+    // A known key is consumed, never carried through as an unmodelled block --
+    // otherwise saving again would write it twice and the two could disagree.
+    expect(decoded.extras).toEqual({});
+  });
+
+  it("opens a file with no camera at all without touching this device's view", () => {
+    resetCameraForTest();
+    useCameraStore.getState().reportPose({ position: [9, 9, 9], target: [0, 0, 0] });
+    const text = serializeProject(buildProject(LOCATION, defaultPrintParams(), SAVED_AT, null, {}, null));
+    expect("camera" in JSON.parse(text)).toBe(false);
+    expect(parseProject(text).ok).toBe(true);
+    expect(useCameraStore.getState().pendingPose()).toBeNull();
   });
 
   it("is small enough that a plain-JSON container needs no compression", () => {

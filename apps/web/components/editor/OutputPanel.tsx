@@ -157,13 +157,48 @@ export function OutputPanel({
               </Note>
             ) : null}
 
+            {/*
+              Where the file went. Export delivers the model on the click now
+              (`store/editor.ts:requestExport` -> `deliverExportFiles`), so the
+              links below are a second copy rather than the only one, and this
+              line is what stops a finished export reading as "Done" and
+              nothing else.
+            */}
+            {exportState.delivery !== null && !exportState.stale ? (
+              <p className="text-2xs text-ink-faint" data-testid="export-delivery">
+                {exportState.delivery}
+              </p>
+            ) : null}
+
             {links.length > 0 ? (
               <div className="flex flex-wrap gap-2" data-testid="download-links">
+                {/*
+                  The model first and prominent, the report after it and quiet.
+
+                  They used to be two identical green buttons, "Download
+                  chicago.3mf" and "Download chicago.json", which read as two
+                  export formats and drew the question the author asked: why
+                  JSON, when a project is `.framecraft`? It is neither: it is
+                  the sidecar `make validate` reads, so it says so.
+                */}
                 {links.map((link) => (
                   <a
                     key={link.filename}
                     href={link.href}
                     download={link.filename}
+                    /*
+                      What the link IS, for a test to select by.
+
+                      Five e2e assertions used to find the sidecar with
+                      `getByRole("link", { name: /\.json$/ })`, i.e. by the
+                      link's visible TEXT ending in the extension. That is a
+                      selector on the copy: relabelling the button to say what
+                      the file is broke all five, which is a test finding the
+                      wrong thing rather than the app breaking. What those
+                      assertions actually mean is "the report link", so that is
+                      what they now ask for.
+                    */
+                    data-testid={`download-link-${link.kind}`}
                     onClick={(event) => {
                       // Inside the Tauri desktop shell an anchor download is
                       // inert; go through the native save dialog instead. In a
@@ -172,12 +207,22 @@ export function OutputPanel({
                       event.preventDefault();
                       void saveDownloadFile(link);
                     }}
-                    className="flex-1 rounded-milled border border-positive px-3 py-1.5 text-center text-2xs font-medium text-positive transition-colors hover:bg-positive-soft"
+                    className={
+                      link.kind === "model"
+                        ? "flex-1 rounded-milled border border-positive px-3 py-1.5 text-center text-2xs font-medium text-positive transition-colors hover:bg-positive-soft"
+                        : "flex-1 rounded-milled border border-line px-3 py-1.5 text-center text-2xs text-ink-faint transition-colors hover:text-ink"
+                    }
                   >
-                    Download {link.label}
+                    {link.kind === "model" ? `Download ${link.label}` : `Model report (${link.label})`}
                   </a>
                 ))}
               </div>
+            ) : null}
+            {links.some((link) => link.kind === "report") ? (
+              <p className="text-2xs text-ink-faint" data-testid="export-report-note">
+                The report is what this build measured about the model, for a bug report or for
+                `make validate`. It is not a project file: Save project writes .framecraft.
+              </p>
             ) : null}
 
             {exportState.notes.length > 0 ? (

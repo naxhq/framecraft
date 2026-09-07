@@ -47,6 +47,7 @@
 
 import { deflateSync, inflateSync } from "fflate";
 
+import { adoptCameraPayload, currentCameraPayload } from "@/store/camera";
 import { adoptLayoutPayload, currentLayoutPayload } from "@/store/layout";
 import {
   DEFAULT_PRINT_PARAMS,
@@ -54,6 +55,7 @@ import {
   PARAM_RANGES,
   defaultPrintParams,
 } from "./contracts";
+import type { CameraPayload } from "./camera";
 import { layoutFromPayload, type LayoutPayload, type LayoutState } from "./layout";
 import type {
   Colour,
@@ -746,6 +748,7 @@ export function encodeShare(
   request: SceneRequest,
   params: PrintParams,
   layout: LayoutPayload | null = currentLayoutPayload(),
+  camera: CameraPayload | null = currentCameraPayload(),
 ): string {
   const body = JSON.stringify({
     r: {
@@ -757,6 +760,7 @@ export function encodeShare(
     },
     p: paramsDiff(params),
     ...(layout === null ? {} : { l: layout }),
+    ...(camera === null ? {} : { c: camera }),
   });
   const compressed = deflateSync(new TextEncoder().encode(body), { level: 9 });
   return `${SHARE_VERSION}.${bytesToBase64Url(compressed)}.${checksum(body)}`;
@@ -877,6 +881,14 @@ export function decodeShare(payload: string): ShareDecode {
   */
   const layout = holder.l === undefined ? null : layoutFromPayload(holder.l);
   if (layout !== null) adoptLayoutPayload(holder.l);
+  /*
+    And the other half of the framing ([V3.1-U6]): where the camera was
+    looking. Adopted here for exactly the reasons the layout is -- one door for
+    both callers, and only after the payload has been accepted -- and, like the
+    layout, it can never refuse a link: a pose this build cannot read leaves
+    this device's own view where it was.
+  */
+  adoptCameraPayload(holder.c);
   return { ok: true, request, params: parsedParams.params, layout };
 }
 
@@ -1000,9 +1012,10 @@ export function shareUrl(
   request: SceneRequest,
   params: PrintParams,
   layout: LayoutPayload | null = currentLayoutPayload(),
+  camera: CameraPayload | null = currentCameraPayload(),
 ): string {
   const url = new URL(href);
-  url.searchParams.set(SHARE_PARAM, encodeShare(request, params, layout));
+  url.searchParams.set(SHARE_PARAM, encodeShare(request, params, layout, camera));
   url.hash = "";
   return url.toString();
 }
