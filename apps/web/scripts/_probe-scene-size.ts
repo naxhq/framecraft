@@ -4,9 +4,12 @@ import { readFileSync } from "node:fs";
 import { sceneFromOverpass, type OverpassResponse } from "../lib/engine/osm/normalize";
 import type { SceneRequest } from "../lib/contracts";
 
-const ROOT = "D:/VahidVibeProject/CityDesign3D";
+// Resolved from this file, not from an absolute path: the checkout is not
+// always at the same place, and hard-coding one machine's directory name
+// meant this probe broke the moment the folder was renamed.
+const ROOT = new URL("../../..", import.meta.url);
 const RAW = JSON.parse(
-  readFileSync(`${ROOT}/tests/fixtures/overpass-chicago-loop.json`, "utf-8"),
+  readFileSync(new URL("tests/fixtures/overpass-chicago-loop.json", ROOT), "utf-8"),
 ) as OverpassResponse;
 const REQUEST: SceneRequest = {
   lat: 41.8827,
