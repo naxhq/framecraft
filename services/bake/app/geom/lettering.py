@@ -66,6 +66,11 @@ __all__ = [
     "repair_text",
     "TextRepair",
     "merge_stroke_ridges",
+    "EmbossMerge",
+    "EMBOSS_JOIN_MAX_EM",
+    "gap_stretches",
+    "merge_emboss_gaps",
+    "widen_joins",
     "north_arrow_polygon",
     "scale_bar_polygons",
     "scale_bar_rules",
@@ -806,6 +811,264 @@ def merge_stroke_ridges(
     return layer.polygons
 
 
+#: The longest join two embossed letters may be given, as a fraction of the
+#: fitted size (the em), before the pair is one shape rather than two letters
+#: that touch.  A legibility rule, not a printability one - both outcomes print
+#: - so it is stated with its derivation.  The gap between two letters is
+#: either a WEDGE (a bowl against anything: ``06``, ``oo``, ``on``) or a SLOT
+#: (two straight stems: ``Il``, ``ll``, ``li``).  A wedge is under a nozzle only
+#: near its closest point, so the join is short: two bowls of a quarter-em
+#: radius that already touch join over ``2 * sqrt(2 * em/4 * 0.36 mm)``, about
+#: 1.5 to 1.9 mm at the 4.5 to 5 mm the lip band allows, and less when they do
+#: not touch.  A slot is under a nozzle along the whole height the stems share,
+#: at least an x-height less the rounding of the stem ends, 2.2 mm and up at
+#: the same sizes, and the pair prints as one clean bar - which the layout's
+#: "will touch where they are closest" did not promise.  0.4 em (1.9 mm at
+#: 4.8 mm) sits between the longest touch and the shortest fusion those faces
+#: make.  Measured by :func:`gap_stretches` as area over inscribed width of the
+#: void stretch that is filled, which is exact for a slot and reads a wedge
+#: short, the safe direction; on the sans strings measured at the band cap the
+#: ``0``-``6`` of the date reads 1.19 mm, Brooklyn's ``oo`` 1.03, Kalamazoo's
+#: ``al`` 1.74 (all joined), Milano's ``il`` 2.47 and Illinois's ``Il``, ``ll``
+#: and ``li`` 2.48 to 3.35 (all refused).
+EMBOSS_JOIN_MAX_EM = 0.4
+
+#: Segments per full circle of the disc :func:`gap_stretches` opens with:
+#: shapely's ``quad_segs=4``, and the mirror's ``GLYPH_JOIN_SEGMENTS`` (16), so
+#: the two libraries approximate the same disc with the same polygon.
+GAP_DISC_QUAD_SEGS = 4
+
+
+def gap_stretches(
+    void: Polygon, params: T.ParamsLike
+) -> list[tuple[Polygon, float, float]]:
+    """The stretches of one void under a nozzle: ``(part, width_mm, length_mm)``.
+
+    The residue of a morphological opening of the void by a DISC of the
+    one-nozzle probe radius (``0.45 * min_detail``, the same radius Stage 4's
+    ``embossed gap`` reading erodes by), kept above :func:`text_area_floor`.
+    Width is the part's inscribed width - the gap - and length is area over
+    width, exact for a slot between two stems and short for a wedge.
+
+    A disc, and not the mitred opening :func:`thicken.narrowest_width` (the
+    gate's own measure) uses, for two reasons that were measured rather than
+    argued.  The gate's mitre is right about the WIDTH of what survives it, but
+    a mitre join at the mouth of a slit spikes up to ten radii into the slit
+    (``RESIDUE_MITRE_LIMIT``), so it cannot say how far a pair of letters run
+    together: it reads the 2.47 mm slot between Milano's ``i`` and ``l`` as
+    1.52 mm and covers a 1.7 mm slot between Kalamazoo's letters entirely,
+    while leaving a 1.2 mm wedge between the digits of a date at its full
+    length.  And the spike is each library's own: Clipper2 squares a join GEOS
+    truncates, so the browser mirror could not decide as this does from a
+    mitred residue (``docs/handoff/FAILURES.md``, [V3.1-P2-5]), where a disc of
+    16 segments is the same operation in both.  On every string measured the
+    disc's residue CONTAINS the mitred one, so filling it leaves nothing the
+    gate fails; the gate's own reading is still taken last, in ``verify``.
+    """
+    detail = T.min_detail_mm(params)
+    area_floor = text_area_floor(params)
+    radius = thicken.MIN_WALL_PROBE_FACTOR * detail
+    tolerance = detail * thicken.MIC_TOLERANCE_RATIO
+    eroded = shapely.buffer(void, -radius, quad_segs=GAP_DISC_QUAD_SEGS, join_style="round")
+    if eroded.is_empty:
+        residue = [void]
+    else:
+        opened = shapely.buffer(eroded, radius, quad_segs=GAP_DISC_QUAD_SEGS, join_style="round")
+        residue = thicken.valid_polygons(void.difference(opened))
+    out: list[tuple[Polygon, float, float]] = []
+    for part in residue:
+        if part.area < area_floor:
+            continue
+        width = thicken.inscribed_width(part, tolerance)
+        if width <= 0.0 or width >= detail:
+            continue
+        out.append((part, width, part.area / width))
+    return out
+
+
+@dataclass
+class EmbossMerge:
+    """What closing the sub-nozzle gaps of an embossed line did."""
+
+    polygons: list[Polygon] = field(default_factory=list)
+    #: The material the merge added, as placed: one polygon per gap it closed.
+    #: Empty when no gap was under a nozzle, in which case ``polygons`` is the
+    #: input, regridded and nothing more.
+    bridges: list[Polygon] = field(default_factory=list)
+    #: Connected raised pieces before and after.  Their difference is the number
+    #: of letter pairs the merge joined, which is what the user is told.
+    pieces_before: int = 0
+    pieces_after: int = 0
+    #: The longest stretch of void BETWEEN letters (never a counter's tail) that
+    #: was filled, print mm, as area over inscribed width.  What
+    #: :data:`EMBOSS_JOIN_MAX_EM` is held against.
+    longest_join_mm: float = 0.0
+    #: The narrowest gap that stretch had before it was filled, print mm.
+    narrowest_join_gap_mm: float = 0.0
+    #: The narrowest gap between letters that was filled at all, print mm: what
+    #: the user is told the letters came within.  0.0 when none was.
+    narrowest_gap_mm: float = 0.0
+
+    @property
+    def joined(self) -> int:
+        return max(0, self.pieces_before - self.pieces_after)
+
+    def fuses(self, size_mm: float) -> bool:
+        """True when a join is long enough to make one shape of two letters."""
+        return self.longest_join_mm > EMBOSS_JOIN_MAX_EM * float(size_mm)
+
+
+def merge_emboss_gaps(
+    pieces: Sequence[Polygon],
+    domain: Polygon,
+    params: T.ParamsLike,
+    grid_mm: float = thicken.PRINT_GRID_MM,
+    passes: int = 4,
+) -> EmbossMerge:
+    """The complement-ridge rule, applied to embossed text.
+
+    What prints between two raised letters is a void on the lip's top face, and
+    a void under one nozzle is one the printer cannot leave: the outer perimeter
+    of each letter is a full nozzle wide, so two letters 0.2 mm apart have
+    perimeters that overlap by 0.2 mm and fuse on the bed anyway, with the
+    surplus squeezed up into a lump.  Handing the slicer the fused outline
+    prints the same join cleanly, exactly as :func:`merge_stroke_ridges` hands
+    an engraved groove the ridge no nozzle could have laid down between it and
+    its neighbour.  The Stage 4 ``lettering`` row measures the voids that
+    survive (``embossed gap``) at the same one-nozzle floor and its own reading
+    is taken last (``verify`` in :func:`build`), so nothing here is unmeasured,
+    and the layout's "will touch where they are closest" warning is now true of
+    the geometry rather than a hope.
+
+    The engraved merge's shape - find the sub-nozzle parts of the complement,
+    bridge them into the strokes, repeat - at the same one-nozzle floor, with
+    three differences, each deliberate:
+
+    * the stretches are found by :func:`gap_stretches`, a disc opening, rather
+      than by the gate's mitred one, because a mitre spike cannot measure how
+      far two letters run together and the browser mirror cannot reproduce
+      GEOS's spike (see there);
+    * the area floor is the text floor (:func:`text_area_floor`, one nozzle
+      squared) rather than :func:`thicken.residue_area_floor`'s quarter of it,
+      the floor the ``lettering`` row judges gaps by.  Joining two letters the
+      gate would have passed buys no printability and costs legibility, which
+      embossed text - the whole letter standing in the light - has less of to
+      spare than a groove;
+    * an ENCLOSED void, a counter, is never filled whole.  Whether a counter is
+      wide enough is the counter rule's question (``verify`` in :func:`build`,
+      at the same floor), and a merge that closed the eye of an ``e`` on its
+      way past would ship a blob with no refusal.  Only a counter's sub-nozzle
+      tails are filled, which rounds the apex of an ``A`` by under a nozzle -
+      the mirror image of what the engraved merge does to the ridge tip inside
+      an engraved ``A``.
+
+    Bridged rather than merely unioned, for :func:`thicken.merge_recess_ridges`'s
+    reason: a void between two dilated letters can be a hairline of nearly zero
+    area, and unioning that would change nothing.  Up to ``passes`` rounds,
+    because a bridge can leave a new sub-nozzle notch at its own end.
+    """
+    out = EmbossMerge()
+    if not pieces:
+        return out
+    detail = T.min_detail_mm(params)
+    area_floor = text_area_floor(params)
+    material = shapely.union_all(list(pieces))
+    if material.is_empty:
+        return out
+    out.pieces_before = len(thicken.explode(material))
+    for _ in range(passes):
+        bad: list[Polygon] = []
+        for void in thicken.explode(domain.difference(material)):
+            if void.area < area_floor:
+                continue  # the gate skips it too: a lens, not a gap
+            enclosed = void.disjoint(domain.exterior)
+            if enclosed and not thicken.survives_min_wall(void, detail):
+                continue  # a whole counter under a nozzle is the counter rule's
+            for part, width, length in gap_stretches(void, params):
+                bad.append(part)
+                if enclosed:
+                    continue  # a counter's tail rounds a corner; it joins nothing
+                if out.narrowest_gap_mm <= 0.0 or width < out.narrowest_gap_mm:
+                    out.narrowest_gap_mm = width
+                if length > out.longest_join_mm:
+                    out.longest_join_mm = length
+                    out.narrowest_join_gap_mm = width
+        if not bad:
+            break
+        bridge = shapely.buffer(
+            shapely.union_all(bad),
+            thicken.RIDGE_BRIDGE_CELLS * grid_mm,
+            quad_segs=2,
+            join_style="mitre",
+        ).intersection(domain)
+        out.bridges.extend(thicken.valid_polygons(bridge))
+        merged = thicken.regrid_layer(
+            thicken.snap(thicken.valid_polygons(shapely.union_all([material, bridge])), grid_mm),
+            grid_mm,
+        )
+        material = shapely.union_all(merged)
+    out.polygons = thicken.regrid_layer(thicken.valid_polygons(material), grid_mm)
+    out.pieces_after = len(thicken.explode(material))
+    return out
+
+
+def widen_joins(
+    polys: Sequence[Polygon],
+    bridges: Sequence[Polygon],
+    target_mm: float,
+    area_floor: float,
+    grid_mm: float = thicken.PRINT_GRID_MM,
+    rounds: int = thicken.APPENDAGE_ROUNDS,
+) -> list[Polygon]:
+    """04's appendage rule, applied to the joins the emboss merge made.
+
+    A bridge is material as long as the slit it filled and as wide as the gap
+    was, i.e. a neck between two letters narrower than the emboss target (a
+    full wall), and the Stage 4 ``lettering`` row measures a raised neck as an
+    ``embossed stroke``.  It is widened to the target the way every other thin
+    appendage is (:func:`thicken.widen_thin_parts`, ``(target - w) / 2`` per
+    part), which extends the join along the slit until it is a wall long.
+
+    Only a thin part that TOUCHES a bridge is grown.  The engraved path
+    re-widens every neck of the groove after its merge (``widen_necks`` in
+    :func:`build`), but at the one-nozzle engrave target that pass finds
+    nothing the repair did not already widen; at the two-nozzle emboss target a
+    blanket pass would also move strokes the merge never touched, and a
+    string's shape is not this repair's to change beyond the gaps it closed.
+    """
+    if not bridges or not polys:
+        return list(polys)
+    bridge = shapely.union_all(list(bridges))
+    tolerance = target_mm * thicken.MIC_TOLERANCE_RATIO
+    fixed: list[Polygon] = []
+    for poly in polys:
+        out = poly
+        for _ in range(max(1, int(rounds))):
+            parts = [
+                part
+                for part in thicken.thin_parts(out, target_mm, area_floor)
+                if part.intersects(bridge)
+            ]
+            if not parts:
+                break
+            grown = [
+                shapely.buffer(
+                    part,
+                    max((target_mm - thicken.inscribed_width(part, tolerance)) / 2.0, tolerance),
+                    join_style="mitre",
+                    quad_segs=thicken.CLOSE_QUAD_SEGS,
+                    mitre_limit=thicken.CLOSE_MITRE_LIMIT,
+                )
+                for part in parts
+            ]
+            merged = thicken.valid_polygons(shapely.union_all([out, *grown]))
+            if not merged:
+                break
+            out = max(merged, key=lambda p: p.area)
+        fixed.extend(thicken.valid_polygons(out))
+    return thicken.regrid_layer(fixed, grid_mm)
+
+
 # --------------------------------------------------------------------------
 # Ornaments
 # --------------------------------------------------------------------------
@@ -1054,7 +1317,9 @@ def build(
     3. place it on the plate and clip it to :func:`lip_keep_region`;
     4. for engraved text, hand the sub-nozzle ridges between the strokes to the
        strokes (:func:`merge_stroke_ridges`) and re-widen whatever neck the
-       bridge leaves in the groove;
+       bridge leaves in the groove; for embossed text, the mirror image: fill
+       the sub-nozzle voids between the raised letters (:func:`merge_emboss_gaps`)
+       and widen the joins that leaves to a full wall (:func:`widen_joins`);
     5. MEASURE the finished geometry - the narrowest stroke against
        ``0.9 * min_wall`` and the narrowest counter against ``0.9 * min_detail``,
        which are the Stage 4 ``lettering`` validator's own thresholds - and cut
@@ -1139,10 +1404,11 @@ def build(
         :func:`thicken.narrowest_width` at the one-nozzle floor), taken here on
         the pieces before they are extruded.  Engraved text never needs it:
         :func:`merge_stroke_ridges` hands a sub-nozzle ridge to the groove
-        before anything is measured.  Embossed text has no such merge yet
-        ([V3.1-P2-5]), so a pair of letters that come within a nozzle of each
-        other leave a slit the printer cannot lay down and the gate fails; this
-        is what lets the refusal below see that slit first.
+        before anything is measured.  Embossed text gets the mirror image,
+        :func:`merge_emboss_gaps`, before it reaches this; what this measures is
+        whatever that merge and the join widening after it could not close, so
+        the refusal below still sees a slit the gate would fail before the gate
+        does ([V3.1-P2-5]).
         """
         material = shapely.union_all(list(polys))
         if material.is_empty:
@@ -1177,8 +1443,10 @@ def build(
 
         ``gap_domain`` is given for EMBOSSED text: the band the pieces stand in,
         so the void between two raised letters is judged by the same one-nozzle
-        floor the gate applies to it (``ridge_fail``).  An engraved line's
-        ridges were merged before this point and need no such check.
+        floor the gate applies to it (``ridge_fail``).  The line's sub-nozzle
+        gaps were merged before this point (:func:`merge_emboss_gaps`), as an
+        engraved line's ridges were; what fails here is a gap that merge could
+        not close, and the refusal says so.
         """
         if not polys:
             return False
@@ -1206,12 +1474,42 @@ def build(
             if gap is not None and gap < ridge_fail:
                 out.warnings.append(
                     f"the {what} was not cut: two of its raised letters come within "
-                    f"{gap:.2f} mm of each other, under the {ridge_fail:.2f} mm a "
+                    f"{gap:.2f} mm of each other even after joining the pairs a nozzle "
+                    f"cannot part, under the {ridge_fail:.2f} mm a "
                     f"{float(params.nozzle_mm):g} mm nozzle can leave between them; "
                     + remedy(search, min_size_mm)
                 )
                 return False
         return True
+
+    def close_emboss_gaps(
+        polys: Sequence[Polygon], edge: str, target: float
+    ) -> "tuple[list[Polygon], EmbossMerge]":
+        """Step 4 for an embossed line: the merge, then the joins widened.
+
+        Returns the line as it will be extruded and what the merge did, so the
+        caller can tell the user which pairs were joined and why.  The engraved
+        step is :func:`merge_stroke_ridges` followed by ``widen_necks``; this is
+        its mirror image with the widening confined to the joins (see
+        :func:`widen_joins` for why).
+        """
+        merge = merge_emboss_gaps(polys, _band_domain(params, edge), params, grid)
+        if not merge.bridges:
+            return list(polys), merge
+        return (
+            _clip(widen_joins(merge.polygons, merge.bridges, target, area_floor, grid), keep),
+            merge,
+        )
+
+    def fusion_refusal(what: str, merge: EmbossMerge, size_mm: float) -> str:
+        """The refusal for a join :data:`EMBOSS_JOIN_MAX_EM` rules a fusion."""
+        return (
+            f"the {what} was not cut: at {size_mm:.2f} mm two of its raised letters run "
+            f"within {merge.narrowest_join_gap_mm:.2f} mm of each other along "
+            f"{merge.longest_join_mm:.2f} mm of their height, under the {ridge_fail:.2f} mm "
+            f"a {float(params.nozzle_mm):g} mm nozzle can leave between them, and would print "
+            f"as one shape rather than as two letters that touch; "
+        )
 
     probed: dict[tuple[int, float], bool] = {}
 
@@ -1273,6 +1571,14 @@ def build(
         if counters2 and min(counters2) < ridge_fail:
             return False
         if placed.mode == "emboss":
+            # the same merge the real line gets, in the same order: only a line
+            # the stroke and counter rules let through is merged, and the joins
+            # it leaves are measured as strokes before the gaps are
+            polys2, merge2 = close_emboss_gaps(polys2, placed.edge, target2)
+            if merge2.fuses(fit2.size_mm) or not polys2:
+                return False
+            if narrowest_of(polys2, target2) < thicken.MIN_WALL_FAIL_FACTOR * target2:
+                return False
             gap2 = narrowest_gap_mm(polys2, _band_domain(params, placed.edge))
             if gap2 is not None and gap2 < ridge_fail:
                 return False
@@ -1322,6 +1628,7 @@ def build(
         polys: Sequence[Polygon],
         repair: TextRepair,
         target: float,
+        merge: EmbossMerge | None = None,
     ) -> None:
         counters = counter_widths_mm(polys, params)
         out.measures.append(
@@ -1335,6 +1642,11 @@ def build(
                 "widened": repair.widened,
                 "dropped": repair.dropped,
                 "counters": len(counters),
+                # Embossed lines only: gaps under a nozzle that were filled, and
+                # how many letter pairs that joined.  0 for an engraved line,
+                # whose ridge merge keeps no such count.
+                "gaps_closed": 0 if merge is None else len(merge.bridges),
+                "joined": 0 if merge is None else merge.joined,
             }
         )
 
@@ -1408,6 +1720,47 @@ def build(
             # at 0.303 mm and the whole bake fails.  A refusal costs the user
             # one string; a failed bake costs them the model.
             polys = separated(polys)
+        merge: EmbossMerge | None = None
+        if engraving.mode == "emboss" and polys:
+            # The mirror image of the engraved step above: the sub-nozzle voids
+            # between the raised letters are filled and the joins widened to a
+            # wall, so the layout's "will touch where they are closest" is what
+            # the geometry does rather than what the validator then fails.  A
+            # join is user-visible where a merged ridge is not, so it is said,
+            # with the gap that forced it and the size that would not have.
+            # Stroke and counter are judged FIRST: a line those rules refuse is
+            # not merged (the merge adds material between letters only, never
+            # to a counter's body, so it could not change their verdict), and
+            # the verify below then judges the merged line whole.
+            if not verify(
+                polys,
+                what,
+                fit.min_size_mm,
+                target,
+                search=lambda i=engraving.index: smallest_working_size(i, fit.size_mm),
+            ):
+                continue
+            polys, merge = close_emboss_gaps(polys, engraving.edge, target)
+            if merge.fuses(fit.size_mm):
+                # A slot, not a wedge: the pair would print as one clean bar,
+                # which is not the text that was asked for.  Refused, naming
+                # the gap, the height it runs along and a size that cuts.
+                out.warnings.append(
+                    fusion_refusal(what, merge, fit.size_mm)
+                    + remedy(
+                        lambda i=engraving.index: smallest_working_size(i, fit.size_mm),
+                        fit.min_size_mm,
+                    )
+                )
+                continue
+            if merge.joined:
+                out.warnings.append(
+                    f"the {what}: {merge.joined} pair(s) of its raised letters came within "
+                    f"{merge.narrowest_gap_mm:.2f} mm of each other, "
+                    f"under the {ridge_fail:.2f} mm a {float(params.nozzle_mm):g} mm nozzle "
+                    f"can leave between them, and were joined where they touch; "
+                    f"{fit.gap_size_mm:.2f} mm would keep them apart"
+                )
         if not verify(
             polys,
             what,
@@ -1434,6 +1787,7 @@ def build(
             polys,
             repair,
             target,
+            merge,
         )
 
     # ---- north arrow ----------------------------------------------------

@@ -1593,3 +1593,47 @@ Append-only. Format: `- [phase] decision, one line`.
   with the default framing. Every unit test passed while that was true, and `e2e/shell.spec.ts`
   is what failed -- the same lesson as `[V3.1-O8]`, that a test which drives the mechanism can
   agree with a feature that does not work.
+
+- `[V3.1-U7]` **Embossed text gets the gap treatment engraved text has, and what it exposed in the
+  validator outlives it.** `merge_emboss_gaps` and `widen_joins` in
+  `services/bake/app/geom/lettering.py`, mirrored by `mergeEmbossGaps` and `widenJoins` in
+  `apps/web/lib/engine/solid/lettering.ts`, wired between the stroke and counter rules and the gap
+  check; the gate's own reading of the void is still taken LAST, so a gap the merge cannot close
+  still refuses. Written by w11-emboss; the three measured decisions (a disc opening rather than
+  the gate's mitred one, the 0.4 em fusion rule, join-confined widening) are recorded in
+  `docs/handoff/FAILURES.md` with the numbers behind each.
+  Verified here rather than accepted, because the implementer is not the auditor. What I ran:
+  `uv run pytest` 747 passed; `tsc` and `eslint` clean; the whole vitest suite 2418 passed; the
+  whole Playwright suite 115 passed; `make gate-v2` PASS, its G6 row reading
+  `lettering PASS 121 strokes of 7 piece(s); 0.450 mm stroke / 0.491 mm ridge` against floors of
+  0.360 and 0.360; and the six-city matrix, where the reference pipeline passes six of six and the
+  browser engine passes five with Tokyo's pre-existing `min_wall FAIL 0.2539` on 2 of 468 regions,
+  the recorded baseline to the digit. What I checked by reading:
+  `fixtures/lettering-expected.json` is untouched in the working tree AND carries 2 emboss cases
+  among its 24 engrave ones, so it is evidence and not merely an absence -- no line that built
+  before refuses now.
+  Two corrections I made to the work rather than to the report.
+  **The one case where the two engines disagree was documented in prose and kept OUT of the parity
+  fixture.** That is how a parity fixture stops being one: nothing then fails if the divergence
+  widens, moves to a string someone types, or becomes a built/refused disagreement rather than a
+  count difference. It is now a `divergences` row holding each engine to its own number, and the
+  assertion that the two counts still DIFFER means a row whose engines have converged fails as
+  stale instead of passing quietly. The `>= 11` shape guard counts only the agreeing cases, so a
+  divergence cannot dilute it. The author's own bound is honest and worth keeping: the divergence
+  cannot be bounded for every geometry, so the row asserts built and not-fused on both sides,
+  which makes the unbounded case red rather than silent.
+  **G6's join count moves with the calendar** and its verdict does not. `bake.py` stamps `{date}`
+  in UTC, so a run either side of midnight bakes a different date and joins one pair or two. I
+  checked why the verdict is safe rather than believing it: `Makefile:513` and its three siblings
+  grep `lettering +PASS +[1-9][0-9]* strokes of [1-9][0-9]* piece`, a NON-ZERO count and never a
+  literal one, which the comment above them says was deliberate because `PASS` alone was not
+  enough. Written into FAILURES.md next to the Makefile line, because the next person to tighten
+  that regex to a literal stroke count would build a gate that fails on one day in two.
+  **OPEN, and the finding worth more than the fix, because it is about the JUDGE.**
+  `thicken.narrowest_width` opens a void with a mitred buffer, and a mitre join at the mouth of a
+  slit spikes up to ten radii into it, so the reference validator's reading of a GAP is optimistic
+  in that shape. The 0.28 mm gap between the mono date's digits shipped in 3.1.0 and passed at
+  0.491 only because those spikes covered it. The merge closes that gap, so the exported model is
+  better, but the blind spot is in the independent judge this project measures itself against and
+  is NOT fixed by this work. Also open, and pre-existing: the remedy tail "no size up to 7.71 mm
+  cuts this string", which is vacuous because the band cap clamps every probe.

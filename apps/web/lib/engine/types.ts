@@ -166,6 +166,12 @@ export interface ResolvedLine {
   reason?: string;
   depthMm?: number;
   sizeMm?: number;
+  /**
+   * Embossed frame-edge lines only: letter pairs the gap merge joined because
+   * they came within a nozzle of each other (`solid/lettering.ts`,
+   * `mergeEmbossGaps`). Absent when nothing was joined.
+   */
+  joined?: number;
 }
 
 export interface EngineStats {

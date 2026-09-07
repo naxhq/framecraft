@@ -33,10 +33,11 @@ import type { TokenContext } from "../../tokens";
 import { expand_tokens } from "../../tokens";
 import * as T from "../../transform";
 import type { AuditFinding, ResolvedLine } from "../types";
-import { placementFor, type SurfaceName } from "./areas";
+import { RIDGE_BRIDGE_CELLS, RIDGE_MERGE_PASSES, placementFor, type SurfaceName } from "./areas";
 import {
   CUTTER_OVERSHOOT_MM,
   PART_OVERLAP_MM,
+  SIMPLIFY_EPS_MM,
   addFinding,
   finding,
   withEngravings,
@@ -45,15 +46,24 @@ import {
 import { lipKeepSection, lipTopMm } from "./frame";
 import type { Contour, CrossSection, Manifold } from "./manifold";
 import {
+  MITRE,
   ROUND,
   contourFromFlat,
   extrudeSection,
   intersectSection,
+  offsetSection,
   sectionOf,
   subtractSection,
+  unionSections,
 } from "./manifold";
 import { inscribedWidthMm, openingWidthMm } from "./measure";
-import { MIN_WALL_PROBE_FACTOR, widenThinParts } from "./repair";
+import {
+  APPENDAGE_ROUNDS,
+  MIN_WALL_PROBE_FACTOR,
+  residueParts,
+  survivesMinWall,
+  widenThinParts,
+} from "./repair";
 
 /** Segments per full circle in a glyph dilation. */
 export const GLYPH_JOIN_SEGMENTS = 16;
@@ -251,27 +261,12 @@ export function repairText(
 }
 
 /**
- * The narrowest void between raised pieces on an edge's band, print mm, or
- * null when the band holds no void narrow enough to measure.
- *
- * Stage 4's own reading of an embossed band (`check_lettering` in the
- * reference validator: the band less the material, every part measured at the
- * one-nozzle floor), taken here on the section before it is extruded. Engraved
- * text never needs it: `mergeRecessRidges` hands a sub-nozzle ridge to the
- * groove before anything is measured. Embossed text has no such merge yet
- * (`[V3.1-P2-5]`), so two letters that come within a nozzle of each other
- * leave a slit the printer cannot lay down and the gate fails the plate; this
- * is what lets `buildLettering` refuse that slit first.
- *
- * The domain is the rectangle the reference measures in (`_band_domain`): the
- * lip's full width along the edge, centred on the flat face. The whole void's
- * own inscribed width is the band's, so what decides is the opening residue,
- * the parts of the void narrower than `0.9 x min_detail`, each measured by its
- * inscribed width: `thicken.narrowest_width` at that floor. Measured 0.208 mm
- * on a sans date embossed at the 4.80 mm the default face allows, which is the
- * number the validator read off the mesh.
+ * The rectangle of lip an edge's text may occupy, plate mm: the reference's
+ * `_band_domain`, the lip's full width along the edge, centred on the flat
+ * face. It is what the reference measures embossed gaps in and merges them
+ * over, so both are done in it here. The caller owns what comes back.
  */
-export function narrowestEmbossGapMm(ctx: BuildContext, section: CrossSection, edge: string): number | null {
+function bandDomainSection(ctx: BuildContext, edge: string): CrossSection | null {
   const { wasm, arena, params } = ctx;
   const [cx, cy] = T.edge_band_center_mm(params, edge);
   const halfLen = params.plate_mm / 2;
@@ -285,75 +280,397 @@ export function narrowestEmbossGapMm(ctx: BuildContext, section: CrossSection, e
     [cx + hx, cy + hy],
     [cx - hx, cy + hy],
   ];
-  const domain = sectionOf(wasm, arena, [rect]);
-  if (domain === null) return null;
-  const voids = domain.subtract(section);
-  arena.drop(domain);
-  if (voids.isEmpty()) {
-    voids.delete();
-    return null;
-  }
-  arena.keep(voids);
+  return sectionOf(wasm, arena, [rect]);
+}
+
+/** One stretch of a void under a nozzle, as the gate reads it. */
+interface GapStretch {
+  /** The stretch itself, live in the caller's arena. The caller drops it. */
+  part: CrossSection;
+  /** Its inscribed width, print mm: the gap. */
+  widthMm: number;
+  /** How far it runs, print mm, with the reference's reach at each mouth (see below). */
+  lengthMm: number;
+}
+
+/**
+ * The stretches of `voids` under one nozzle: the residue of opening the void
+ * by a DISC of the one-nozzle probe radius (`0.45 x min_detail`, the radius
+ * the Stage 4 `lettering` row erodes by), kept above `text_area_floor`.
+ *
+ * Two rules, for two callers:
+ *
+ * `"merge"` is the reference's `lettering.gap_stretches`: every part of the
+ * disc's residue above the floor, its inscribed width as the gap and area
+ * over width as the length. A disc of 16 segments is the same operation in
+ * Clipper2 and GEOS, which is what lets `mergeEmbossGaps` fill the stretches
+ * `merge_emboss_gaps` fills and hold them to the same fusion rule.
+ *
+ * `"gate"` is the mirror of the validator's own reading, which opens the void
+ * with GEOS's MITRED buffer, and where this mirror has to differ from that
+ * recipe to reach its answers. Clipper2's mitred dilation of the eroded void
+ * spikes back into a wedge-shaped slit and cuts its residue into fragments of
+ * 0.08 mm2 where GEOS reads one part of 0.21 (a sans date embossed at
+ * 4.80 mm), so the same recipe here would build what the validator fails. The
+ * disc reads the whole sub-nozzle stretch: 0.29 mm2 for that slit, but also
+ * 0.20 mm2 for a 0.30 mm wide, 0.7 mm long gap between two mono digits that
+ * GEOS's mitred opening covers entirely and the validator then reads at
+ * 0.49 mm on the mesh. GEOS's mitre reaches about one probe radius further
+ * into each mouth of a slit than the disc does, so one radius per end is taken
+ * off the stretch before it is held to the area floor. Measured on the three
+ * faces of that date: sans read at 0.24 mm (the validator: 0.21 on the mesh),
+ * mono and serif clean, as the reference reads them. The decision is what the
+ * mirror promises; the second decimal of the width is Clipper2's against
+ * GEOS's.
+ *
+ * The caller owns every `part` that comes back.
+ */
+function gapStretches(ctx: BuildContext, voids: CrossSection, rule: "merge" | "gate"): GapStretch[] {
+  const { arena, params } = ctx;
   const minDetail = T.min_detail_mm(params);
   // The text repair's own area floor (`text_area_floor`): a lens under one
   // nozzle squared is a corner artefact of the opening, not a gap.
   const areaFloor = minDetail * minDetail;
-  // The opening residue of the void at the one-nozzle floor, and where this
-  // mirror has to differ from the reference's recipe to reach its answers.
-  // The reference and the validator open the void with GEOS's MITRED buffer;
-  // Clipper2's mitred dilation of the eroded void spikes back into a
-  // wedge-shaped slit and cuts its residue into fragments of 0.08 mm2 where
-  // GEOS reads one part of 0.21 (a sans date embossed at 4.80 mm), so the
-  // same recipe here would build what the validator fails. A ROUND dilation
-  // reaches exactly one radius back into the slit, which is what an opening
-  // means, and reads the whole sub-nozzle stretch: 0.29 mm2 for that slit,
-  // but also 0.20 mm2 for a 0.30 mm wide, 0.7 mm long gap between two mono
-  // digits that GEOS's mitred opening covers entirely and the validator then
-  // reads at 0.49 mm on the mesh. GEOS's mitre reaches about one probe radius
-  // further into each mouth of a slit than the round opening does, so one
-  // radius per end is taken off the stretch before it is held to the area
-  // floor (below). Measured on the three faces of that date: sans refused at
-  // 0.24 mm (the validator: 0.21 on the mesh), mono and serif built, as the
-  // reference decides them. The decision is what the mirror promises; the
-  // second decimal of the width is Clipper2's against GEOS's.
   const radius = MIN_WALL_PROBE_FACTOR * minDetail;
   const eroded = voids.offset(-radius, ROUND, 2, GLYPH_JOIN_SEGMENTS);
   if (eroded.isEmpty()) {
     eroded.delete();
-    arena.drop(voids);
-    return null;
+    return [];
   }
   arena.keep(eroded);
   const opened = arena.keep(eroded.offset(radius, ROUND, 2, GLYPH_JOIN_SEGMENTS));
   arena.drop(eroded);
   const residue = subtractSection(arena, voids, opened);
   arena.drop(opened);
-  if (residue === null || residue === voids) {
-    arena.drop(voids);
-    return null;
-  }
-  arena.drop(voids);
+  if (residue === null || residue === voids) return [];
   const parts = arena.keepAll(residue.decompose());
   arena.drop(residue);
-  let narrowest: number | null = null;
+  const out: GapStretch[] = [];
   for (const part of parts) {
     const area = part.area();
     if (area >= areaFloor) {
       const width = inscribedWidthMm(part, minDetail, minDetail * GAP_WIDTH_TOLERANCE);
-      // What the reference's mitred opening leaves of this stretch: see the
-      // note above. A part is a stretch of slit `area / width` long; one probe
-      // radius at each mouth is taken off before it is held to the floor.
+      // A part is a stretch of slit `area / width` long. Under the gate rule
+      // one probe radius at each mouth is taken off before it is held to the
+      // floor (see above); under the merge rule the whole stretch counts.
       const stretchMm = width > 0 ? area / width : 0;
-      const counted = width * Math.max(0, stretchMm - 2 * radius);
-      if (counted >= areaFloor) narrowest = narrowest === null ? width : Math.min(narrowest, width);
+      const lengthMm = rule === "gate" ? Math.max(0, stretchMm - 2 * radius) : stretchMm;
+      if (width > 0 && width < minDetail && width * lengthMm >= areaFloor) {
+        out.push({ part, widthMm: width, lengthMm });
+        continue;
+      }
     }
     arena.drop(part);
   }
+  return out;
+}
+
+/**
+ * The narrowest void between raised pieces on an edge's band, print mm, or
+ * null when the band holds no void narrow enough to measure.
+ *
+ * Stage 4's own reading of an embossed band (`check_lettering` in the
+ * reference validator: the band less the material, every part measured at the
+ * one-nozzle floor), taken here on the section before it is extruded. Engraved
+ * text never needs it: `mergeRecessRidges` hands a sub-nozzle ridge to the
+ * groove before anything is measured. Embossed text gets the mirror image,
+ * {@link mergeEmbossGaps}, before it reaches this; what this measures is
+ * whatever that merge could not close, so `buildLettering` still refuses a
+ * slit the gate would fail before the gate does (`[V3.1-P2-5]`).
+ *
+ * The whole void's own inscribed width is the band's, so what decides is the
+ * opening residue, the parts of the void narrower than `0.9 x min_detail`,
+ * each measured by its inscribed width: `thicken.narrowest_width` at that
+ * floor. Measured 0.208 mm on a sans date embossed at the 4.80 mm the default
+ * face allows, which is the number the validator read off the mesh.
+ */
+export function narrowestEmbossGapMm(ctx: BuildContext, section: CrossSection, edge: string): number | null {
+  const { arena } = ctx;
+  const domain = bandDomainSection(ctx, edge);
+  if (domain === null) return null;
+  const voids = subtractSection(arena, domain, section);
+  arena.drop(domain);
+  if (voids === null || voids === domain) return null;
+  let narrowest: number | null = null;
+  for (const stretch of gapStretches(ctx, voids, "gate")) {
+    narrowest = narrowest === null ? stretch.widthMm : Math.min(narrowest, stretch.widthMm);
+    arena.drop(stretch.part);
+  }
+  arena.drop(voids);
   return narrowest;
 }
 
 /** Resolution of the gap's inscribed-width search as a fraction of a nozzle: `thicken.MIC_TOLERANCE_RATIO`. */
 const GAP_WIDTH_TOLERANCE = 0.01;
+
+/**
+ * The longest join two embossed letters may be given, as a fraction of the
+ * fitted size, before the pair is one shape rather than two letters that touch
+ * (`lettering.EMBOSS_JOIN_MAX_EM`, whose docstring carries the derivation: a
+ * wedge - a bowl against anything - is under a nozzle only near its closest
+ * point and joins over at most about 0.4 em; a slot - two straight stems - is
+ * under a nozzle along the whole height the stems share, an x-height and up,
+ * and prints as one clean bar). Held against `lengthMm` of the stretch that is
+ * filled, which is exact for a slot and reads a wedge short, the safe way.
+ */
+export const EMBOSS_JOIN_MAX_EM = 0.4;
+
+export interface EmbossMerge {
+  /** The line with its sub-nozzle gaps filled and the joins widened. The input when nothing was. */
+  section: CrossSection;
+  /** Every gap filled, as one section, or null when none was. The caller drops it. */
+  bridge: CrossSection | null;
+  /** Letter pairs joined: connected raised pieces before less after. */
+  joined: number;
+  /** Stretches of void filled, counters' tails included. */
+  gapsClosed: number;
+  /** The longest stretch BETWEEN letters that was filled, mm; 0 when none. */
+  longestJoinMm: number;
+  /** The narrowest gap that stretch had, mm. */
+  narrowestJoinGapMm: number;
+  /** The narrowest gap between letters before anything was filled, mm, or null. */
+  gapBeforeMm: number | null;
+}
+
+/**
+ * The complement-ridge rule, applied to embossed text (the reference's
+ * `lettering.merge_emboss_gaps`).
+ *
+ * What prints between two raised letters is a void on the lip's top face, and
+ * a void under one nozzle is one the printer cannot leave: the outer perimeter
+ * of each letter is a full nozzle wide, so two letters 0.2 mm apart have
+ * perimeters that overlap and fuse on the bed anyway, lumpily. Handing the
+ * slicer the fused outline prints the same join cleanly, exactly as
+ * `mergeRecessRidges` hands a groove the ridge no nozzle could have laid down
+ * beside it. The stretches filled are the ones {@link gapStretches} reads,
+ * which are the ones the Stage 4 `lettering` row fails, so this closes exactly
+ * that set and not one more: joining two letters the gate would have passed
+ * buys no printability and costs legibility.
+ *
+ * An ENCLOSED void, a counter, is never filled whole - whether a counter is
+ * wide enough is the counter rule's question, asked before this - only its
+ * sub-nozzle tails are, which rounds the apex of an `A` by under a nozzle.
+ * Every filled stretch is then a neck of material narrower than the emboss
+ * target, which the gate measures as an `embossed stroke`, so the joins are
+ * widened to a full wall ({@link widenJoins}). Up to `RIDGE_MERGE_PASSES`
+ * rounds, because a bridge can leave a new sub-nozzle notch at its own end.
+ *
+ * The caller keeps ownership of `section`; `result.section` is new when
+ * anything changed and must be dropped by the caller, as must `bridge`.
+ */
+export function mergeEmbossGaps(
+  ctx: BuildContext,
+  section: CrossSection,
+  edge: string,
+  keep: CrossSection | null,
+  targetMm: number,
+): EmbossMerge {
+  const { wasm, arena, params } = ctx;
+  const none: EmbossMerge = {
+    section,
+    bridge: null,
+    joined: 0,
+    gapsClosed: 0,
+    longestJoinMm: 0,
+    narrowestJoinGapMm: 0,
+    gapBeforeMm: null,
+  };
+  const domain = bandDomainSection(ctx, edge);
+  if (domain === null) return none;
+  const minDetail = T.min_detail_mm(params);
+  const areaFloor = minDetail * minDetail;
+  const bounds = domain.bounds();
+  const eps = 1e-6;
+  const enclosedIn = (part: CrossSection): boolean => {
+    const b = part.bounds();
+    return (
+      b.min[0] > bounds.min[0] + eps &&
+      b.min[1] > bounds.min[1] + eps &&
+      b.max[0] < bounds.max[0] - eps &&
+      b.max[1] < bounds.max[1] - eps
+    );
+  };
+  const countPieces = (of: CrossSection): number => {
+    const pieces = of.decompose();
+    const count = pieces.length;
+    for (const piece of pieces) piece.delete();
+    return count;
+  };
+
+  const piecesBefore = countPieces(section);
+  let current = section;
+  const bridges: CrossSection[] = [];
+  let gapsClosed = 0;
+  let longestJoin = 0;
+  let narrowestJoinGap = 0;
+  let gapBefore: number | null = null;
+  for (let pass = 0; pass < RIDGE_MERGE_PASSES; pass += 1) {
+    const voids = subtractSection(arena, domain, current);
+    if (voids === null || voids === domain) break;
+    const bad: CrossSection[] = [];
+    for (const component of arena.keepAll(voids.decompose())) {
+      if (component.area() < areaFloor) {
+        arena.drop(component); // the gate skips it too: a lens, not a gap
+        continue;
+      }
+      const enclosed = enclosedIn(component);
+      if (enclosed && !survivesMinWall(ctx, component, minDetail)) {
+        arena.drop(component); // a whole counter under a nozzle is the counter rule's
+        continue;
+      }
+      for (const stretch of gapStretches(ctx, component, "merge")) {
+        bad.push(stretch.part);
+        if (enclosed) continue; // a counter's tail rounds a corner; it joins nothing
+        if (pass === 0) {
+          gapBefore = gapBefore === null ? stretch.widthMm : Math.min(gapBefore, stretch.widthMm);
+        }
+        if (stretch.lengthMm > longestJoin) {
+          longestJoin = stretch.lengthMm;
+          narrowestJoinGap = stretch.widthMm;
+        }
+      }
+      arena.drop(component);
+    }
+    arena.drop(voids);
+    if (bad.length === 0) break;
+    gapsClosed += bad.length;
+    // Bridged rather than merely unioned, for `mergeRecessRidges`' reason: a
+    // void between two dilated letters can be a hairline of nearly zero area.
+    const together = unionSections(wasm, arena, bad);
+    const grownBridge = together === null ? null : offsetSection(arena, together, RIDGE_BRIDGE_CELLS * SIMPLIFY_EPS_MM, MITRE);
+    for (const part of bad) {
+      if (part !== together && part !== grownBridge) arena.drop(part);
+    }
+    if (grownBridge !== together) arena.drop(together);
+    const bridge = grownBridge === null ? null : intersectSection(arena, grownBridge, domain);
+    if (bridge !== grownBridge) arena.drop(grownBridge);
+    if (bridge === null) break;
+    bridges.push(bridge);
+    const merged = unionSections(wasm, arena, [current, bridge]);
+    if (merged === null || merged === current) break;
+    if (current !== section) arena.drop(current);
+    current = merged;
+  }
+  arena.drop(domain);
+  if (bridges.length === 0) {
+    if (current !== section) arena.drop(current);
+    return none;
+  }
+  const bridge = unionSections(wasm, arena, bridges);
+  for (const one of bridges) {
+    if (one !== bridge) arena.drop(one);
+  }
+  const widened = widenJoins(ctx, current, bridge, targetMm, keep);
+  if (widened !== current && current !== section) arena.drop(current);
+  current = widened;
+  if (keep !== null) {
+    const inside = intersectSection(arena, current, keep);
+    if (inside !== null && inside !== current) {
+      if (current !== section) arena.drop(current);
+      current = inside;
+    }
+  }
+  return {
+    section: current,
+    bridge,
+    joined: Math.max(0, piecesBefore - countPieces(current)),
+    gapsClosed,
+    longestJoinMm: longestJoin,
+    narrowestJoinGapMm: narrowestJoinGap,
+    gapBeforeMm: gapBefore,
+  };
+}
+
+/**
+ * 04's appendage rule, applied to the joins the emboss merge made
+ * (`lettering.widen_joins`).
+ *
+ * Only a thin part that TOUCHES `bridge` is grown. `widenThinParts` would
+ * re-widen every neck of the line at the two-nozzle emboss target and move
+ * strokes the merge never touched; a string's shape is not this repair's to
+ * change beyond the gaps it closed. The caller keeps ownership of `section`
+ * and of `bridge`; what comes back is new when anything grew.
+ */
+export function widenJoins(
+  ctx: BuildContext,
+  section: CrossSection,
+  bridge: CrossSection | null,
+  targetMm: number,
+  keep: CrossSection | null,
+): CrossSection {
+  const { arena, wasm } = ctx;
+  if (bridge === null || !(targetMm > 0)) return section;
+  const minDetail = T.min_detail_mm(ctx.params);
+  const areaFloor = minDetail * minDetail;
+  let current = section;
+  for (let round = 0; round < APPENDAGE_ROUNDS; round += 1) {
+    const parts = residueParts(ctx, current, MIN_WALL_PROBE_FACTOR * targetMm, areaFloor);
+    if (parts === null || parts.length === 0) break;
+    const grown: CrossSection[] = [];
+    for (const part of parts) {
+      const touch = intersectSection(arena, part, bridge);
+      if (touch === null) {
+        arena.drop(part);
+        continue;
+      }
+      if (touch !== part) arena.drop(touch);
+      const width = inscribedWidthMm(part, targetMm);
+      if (width >= targetMm) {
+        arena.drop(part);
+        continue;
+      }
+      const fatter = offsetSection(arena, part, (targetMm - width) / 2);
+      arena.drop(part);
+      if (fatter !== null) grown.push(fatter);
+    }
+    if (grown.length === 0) break;
+    let merged = unionSections(wasm, arena, [current, ...grown]);
+    for (const part of grown) {
+      if (part !== merged) arena.drop(part);
+    }
+    if (merged === null || merged === current) break;
+    if (keep !== null) {
+      const inside = intersectSection(arena, merged, keep);
+      if (inside !== merged) arena.drop(merged);
+      if (inside === null) break;
+      merged = inside;
+    }
+    if (current !== section) arena.drop(current);
+    current = merged;
+  }
+  return current;
+}
+
+/**
+ * The narrowest join left under the gate's stroke floor after
+ * {@link widenJoins}, mm, or null when every join reached it.
+ *
+ * The reference measures the finished line with `thicken.narrowest_width` at
+ * the emboss target, which lowers the stroke by every appendage's width; the
+ * only appendages a merge can add are its joins, so only those are asked.
+ */
+export function thinJoinMm(
+  ctx: BuildContext,
+  section: CrossSection,
+  bridge: CrossSection,
+  targetMm: number,
+): number | null {
+  const { arena } = ctx;
+  const minDetail = T.min_detail_mm(ctx.params);
+  const parts = residueParts(ctx, section, MIN_WALL_PROBE_FACTOR * targetMm, minDetail * minDetail);
+  if (parts === null) return null;
+  let thin: number | null = null;
+  for (const part of parts) {
+    const touch = intersectSection(arena, part, bridge);
+    if (touch !== null) {
+      if (touch !== part) arena.drop(touch);
+      const width = inscribedWidthMm(part, targetMm);
+      if (width < STROKE_FAIL_FACTOR * targetMm) thin = thin === null ? width : Math.min(thin, width);
+    }
+    arena.drop(part);
+  }
+  return thin;
+}
 
 // ---------------------------------------------------------------------------
 // The whole thing
@@ -510,6 +827,7 @@ function resolved(
   status: "cuts" | "skipped",
   depthMm: number,
   reason?: string,
+  joined = 0,
 ): ResolvedLine {
   const line: ResolvedLine = {
     id,
@@ -521,6 +839,7 @@ function resolved(
     sizeMm: fit.size_mm,
   };
   if (reason !== undefined) line.reason = reason;
+  if (joined > 0) line.joined = joined;
   return line;
 }
 
@@ -838,18 +1157,23 @@ export function buildLettering(
       ctx.arena.drop(repaired.section);
       continue;
     }
+    let joined = 0;
     if (piece.mode === "emboss" && piece.edge !== null) {
-      // Stage 4 fails a void under one nozzle between two raised letters, and
-      // embossed text has no ridge merge to close one ([V3.1-P2-5]), so the
-      // slit is measured here, the way the gate measures it, and refused
-      // before it is built. The layout's own gap estimate is the size named.
+      // Stage 4 fails a void under one nozzle between two raised letters. The
+      // mirror image of the engraved ridge merge closes it ([V3.1-P2-5]): the
+      // sub-nozzle voids between the letters are filled and the joins widened
+      // to a wall, so the layout's "will touch where they are closest" is what
+      // the geometry does rather than what the validator then fails. What the
+      // merge cannot make printable, or would make one shape of, is refused
+      // here, measured the way the gate measures it, before it is built.
+      const edge = piece.edge;
       const gapFail = STROKE_FAIL_FACTOR * T.min_detail_mm(params);
-      const gapMm = perfSpan("lettering.gap", () => narrowestEmbossGapMm(ctx, repaired.section, piece.edge ?? "top"));
-      if (gapMm !== null && gapMm < gapFail) {
-        const reason =
-          `two of its raised letters come within ${gapMm.toFixed(2)} mm of each other, under the ` +
-          `${gapFail.toFixed(2)} mm a ${params.nozzle_mm} mm nozzle can leave between them; ` +
-          `${piece.fit.gap_size_mm.toFixed(2)} mm would keep them apart`;
+      const merged = perfSpan("lettering.gap", () => mergeEmbossGaps(ctx, repaired.section, edge, keep, target));
+      if (merged.section !== repaired.section) {
+        ctx.arena.drop(repaired.section);
+        repaired.section = merged.section;
+      }
+      const refuse = (reason: string): void => {
         ctx.resolvedText.push(
           resolved(piece.id, piece.fit, piece.surface, piece.mode, "skipped", piece.depthMm, reason),
         );
@@ -864,8 +1188,60 @@ export function buildLettering(
             piece.verifySize,
           ),
         );
+        ctx.arena.drop(merged.bridge);
         ctx.arena.drop(repaired.section);
+      };
+      if (merged.longestJoinMm > EMBOSS_JOIN_MAX_EM * piece.fit.size_mm) {
+        // A slot, not a wedge: the pair would print as one clean bar, which is
+        // not the text that was asked for.
+        refuse(
+          `at ${piece.fit.size_mm.toFixed(2)} mm two of its raised letters run within ` +
+            `${merged.narrowestJoinGapMm.toFixed(2)} mm of each other along ` +
+            `${merged.longestJoinMm.toFixed(2)} mm of their height, under the ${gapFail.toFixed(2)} mm a ` +
+            `${params.nozzle_mm} mm nozzle can leave between them, and would print as one shape ` +
+            `rather than as two letters that touch; ${piece.fit.gap_size_mm.toFixed(2)} mm would keep them apart`,
+        );
         continue;
+      }
+      if (merged.bridge !== null) {
+        const thin = perfSpan("lettering.gap", () => thinJoinMm(ctx, repaired.section, merged.bridge as CrossSection, target));
+        if (thin !== null) {
+          refuse(
+            `a join between two of its raised letters measures ${thin.toFixed(2)} mm against a ` +
+              `${target.toFixed(2)} mm target for a ${params.nozzle_mm} mm nozzle`,
+          );
+          continue;
+        }
+      }
+      const gapMm = perfSpan("lettering.gap", () => narrowestEmbossGapMm(ctx, repaired.section, edge));
+      if (gapMm !== null && gapMm < gapFail) {
+        refuse(
+          `two of its raised letters come within ${gapMm.toFixed(2)} mm of each other even after ` +
+            `joining the pairs a nozzle cannot part, under the ${gapFail.toFixed(2)} mm a ` +
+            `${params.nozzle_mm} mm nozzle can leave between them; ` +
+            `${piece.fit.gap_size_mm.toFixed(2)} mm would keep them apart`,
+        );
+        continue;
+      }
+      ctx.arena.drop(merged.bridge);
+      joined = merged.joined;
+      if (joined > 0) {
+        // A join is user-visible where a merged ridge is not, so it is said,
+        // with the gap that forced it and the size that would not have. An
+        // `info`, like the layout's own adjustments: the line was cut.
+        const gapBefore = merged.gapBeforeMm ?? 0;
+        addFinding(
+          ctx,
+          finding(
+            "lettering-adjusted",
+            "info",
+            `"${piece.fit.text}" had ${joined} pair(s) of letters joined`,
+            `${joined} pair(s) of its raised letters came within ${gapBefore.toFixed(2)} mm of each other, ` +
+              `under the ${gapFail.toFixed(2)} mm a ${params.nozzle_mm} mm nozzle can leave between them, ` +
+              `and were joined where they touch; ${piece.fit.gap_size_mm.toFixed(2)} mm would keep them apart.`,
+            "lettering",
+          ),
+        );
       }
     }
 
@@ -883,7 +1259,7 @@ export function buildLettering(
     for (const solid of cut.baseCut) out.baseCut.push(solid);
     for (const solid of cut.inlay) out.inlay.push(solid);
     ctx.resolvedText.push(
-      resolved(piece.id, piece.fit, piece.surface, piece.mode, "cuts", piece.depthMm),
+      resolved(piece.id, piece.fit, piece.surface, piece.mode, "cuts", piece.depthMm, undefined, joined),
     );
     ctx.arena.drop(repaired.section);
   }

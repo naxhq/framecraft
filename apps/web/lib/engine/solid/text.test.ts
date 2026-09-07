@@ -7,6 +7,8 @@
  * not fit is refused with a reason instead of being cut badly.
  */
 
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import { defaultPrintParams, type PrintParams } from "../../contracts";
@@ -64,32 +66,65 @@ describe("edge engravings", () => {
     expect(frame.bodies).toBe(1);
   }, 60_000);
 
-  it("refuses an embossed line whose letters come within a nozzle, as the validator would", async () => {
-    // [V3.1-P2-5]: the layout only WARNS that adjacent letters will touch, and
-    // for engraved text the ridge merge makes that true; embossed text has no
-    // merge, so the slit between two raised letters is a void the reference
-    // validator fails at the one-nozzle floor (0.208 mm on this string at the
-    // 4.80 mm the 5 mm face allows). The build refuses it first, naming the
-    // gap and the floor, instead of shipping it to be failed later.
+  it("joins an embossed pair a nozzle cannot part, and says so", async () => {
+    // [V3.1-P2-5], the larger half: the layout only WARNS that adjacent
+    // letters will touch, and for engraved text the ridge merge makes that
+    // true. Embossed text now gets the mirror image: the slit between two
+    // raised letters (0.208 mm on this string at the 4.80 mm the 5 mm face
+    // allows, which the reference validator fails at the one-nozzle floor) is
+    // filled and the join widened to a wall, so the line is BUILT and the
+    // user is told which pairs were joined and how close they came.
+    const plain = await buildWith(defaultPrintParams());
     const sans = await buildWith({
       ...defaultPrintParams(),
       engravings: [{ edge: "right", text: "2026-09-06", mode: "emboss", size_mm: 8 }],
     });
     const line = sans.resolvedText.find((entry) => entry.id === "engraving-0");
+    expect(line?.status).toBe("cuts");
+    expect(line?.joined).toBeGreaterThanOrEqual(1);
+    const note = sans.findings.find((f) => f.id === "lettering-adjusted" && f.title.includes("joined"));
+    expect(note?.severity).toBe("info");
+    expect(note?.title).toBe(`"2026-09-06" had ${line?.joined} pair(s) of letters joined`);
+    const gap = Number(/came within (\d+\.\d\d) mm/.exec(note?.detail ?? "")?.[1]);
+    expect(gap).toBeGreaterThan(0);
+    expect(gap).toBeLessThan(0.36);
+    expect(note?.detail).toContain("0.36 mm");
+    expect(note?.detail).toContain("6.01 mm would keep them apart");
+    expect(sans.findings.some((f) => f.id === "text-too-small")).toBe(false);
+    const frame = regionOf(sans, "frame")!;
+    expect(frame.volumeMm3).toBeGreaterThan(regionOf(plain, "frame")!.volumeMm3);
+    expect(frame.bodies).toBe(1);
+    expect(outstandingWasmObjects()).toBe(0);
+  }, 120_000);
+
+  it("refuses an embossed pair that would fuse into one shape, naming the run", async () => {
+    // Two straight stems are under a nozzle along the whole height they
+    // share, and filling that prints one clean bar where the user typed two
+    // letters. `EMBOSS_JOIN_MAX_EM` draws the line at 0.4 em; the refusal
+    // names the gap, how far it runs and the size that keeps the pair apart.
+    const sans = await buildWith({
+      ...defaultPrintParams(),
+      engravings: [{ edge: "right", text: "Illinois", mode: "emboss", size_mm: 8 }],
+    });
+    const line = sans.resolvedText.find((entry) => entry.id === "engraving-0");
     expect(line?.status).toBe("skipped");
-    expect(line?.reason).toMatch(/raised letters come within 0\.\d\d mm of each other/);
-    const gap = Number(/come within (\d+\.\d\d) mm/.exec(line?.reason ?? "")?.[1]);
+    expect(line?.reason).toContain("would print as one shape rather than as two letters that touch");
+    const run = Number(/along (\d+\.\d\d) mm of their height/.exec(line?.reason ?? "")?.[1]);
+    expect(run).toBeGreaterThan(0.4 * (line?.sizeMm ?? 0));
+    const gap = Number(/run within (\d+\.\d\d) mm/.exec(line?.reason ?? "")?.[1]);
     expect(gap).toBeGreaterThan(0);
     expect(gap).toBeLessThan(0.36);
     expect(line?.reason).toContain("0.36 mm");
     expect(sans.findings.some((f) => f.id === "text-too-small")).toBe(true);
-    // The same string in mono keeps a nozzle between its letters at the same
-    // band and is built: the refusal is about the measured gap, not the mode.
+    // The same string in mono keeps a nozzle between its stems and is built
+    // with nothing joined: the rule is about the measured slot, not the mode.
     const mono = await buildWith({
       ...defaultPrintParams(),
-      engravings: [{ edge: "right", text: "2026-09-06", mode: "emboss", size_mm: 8, font: "mono" }],
+      engravings: [{ edge: "right", text: "Illinois", mode: "emboss", size_mm: 8, font: "mono" }],
     });
-    expect(mono.resolvedText.find((entry) => entry.id === "engraving-0")?.status).toBe("cuts");
+    const monoLine = mono.resolvedText.find((entry) => entry.id === "engraving-0");
+    expect(monoLine?.status).toBe("cuts");
+    expect(monoLine?.joined).toBeUndefined();
     expect(outstandingWasmObjects()).toBe(0);
   }, 120_000);
 
@@ -104,6 +139,73 @@ describe("edge engravings", () => {
     expect(line?.status).toBe("skipped");
     expect(line?.reason).toContain("frame is off");
     expect(result.findings.some((f) => f.id === "text-too-small")).toBe(true);
+  }, 60_000);
+});
+
+/**
+ * The emboss gap merge's decisions, pinned against the reference implementation
+ * (`fixtures/emboss-gaps-expected.json`, generated by
+ * `services/bake/tests/test_lettering.py`): built or refused, the pairs
+ * joined, and whether the refusal was the fusion rule. The geometry of a join
+ * is each library's own (Clipper2's disc against GEOS's); the decision is what
+ * the mirror promises.
+ */
+const embossGaps = JSON.parse(
+  readFileSync(new URL("../../../../../fixtures/emboss-gaps-expected.json", import.meta.url), "utf8"),
+) as {
+  cases: {
+    name: string;
+    engravings: PrintParams["engravings"];
+    expect: { built: boolean; joined: number; fused: boolean };
+  }[];
+  /**
+   * Lines the two engines are KNOWN to count differently, pinned rather than
+   * left out (the `matrix.probes.ts:KNOWN_DEFECTS` idiom): each side is held
+   * to ITS number, so a change on either side is a red test, and a row whose
+   * two numbers have become equal is stale and belongs in `cases`.
+   */
+  divergences: {
+    name: string;
+    engravings: PrintParams["engravings"];
+    reason: string;
+    expect: { built: boolean; fused: boolean; reference_joined: number; engine_joined: number };
+  }[];
+};
+
+describe("emboss gap parity with the reference", () => {
+  it("pins every outcome the mirror could get wrong, counting only the agreeing lines", () => {
+    const byName = Object.fromEntries(embossGaps.cases.map((c) => [c.name, c.expect]));
+    expect(embossGaps.cases.length).toBeGreaterThanOrEqual(11);
+    expect(Object.values(byName).filter((e) => e.built && e.joined >= 1).length).toBeGreaterThanOrEqual(3);
+    expect(Object.values(byName).filter((e) => e.fused).length).toBeGreaterThanOrEqual(2);
+    expect(Object.values(byName).filter((e) => e.built && e.joined === 0).length).toBeGreaterThanOrEqual(2);
+    for (const row of embossGaps.divergences) {
+      expect(row.expect.reference_joined, row.name).not.toBe(row.expect.engine_joined);
+      expect(row.reason.length, row.name).toBeGreaterThan(0);
+    }
+  });
+
+  it.each(embossGaps.cases)("decides $name as the reference does", async (testCase) => {
+    const result = await buildWith({ ...defaultPrintParams(), engravings: testCase.engravings });
+    const line = result.resolvedText.find((entry) => entry.id === "engraving-0");
+    expect(line?.status).toBe(testCase.expect.built ? "cuts" : "skipped");
+    expect(line?.joined ?? 0).toBe(testCase.expect.joined);
+    expect(/one shape rather than as two letters/.test(line?.reason ?? "")).toBe(testCase.expect.fused);
+    expect(outstandingWasmObjects()).toBe(0);
+  }, 60_000);
+
+  it.each(embossGaps.divergences)("counts $name as the engine is known to, not as the reference does", async (row) => {
+    const result = await buildWith({ ...defaultPrintParams(), engravings: row.engravings });
+    const line = result.resolvedText.find((entry) => entry.id === "engraving-0");
+    const head = `KNOWN DIVERGENCE (docs/handoff/FAILURES.md): ${row.reason}`;
+    expect(line?.status, head).toBe(row.expect.built ? "cuts" : "skipped");
+    expect(/one shape rather than as two letters/.test(line?.reason ?? ""), head).toBe(row.expect.fused);
+    expect(line?.joined ?? 0, head).toBe(row.expect.engine_joined);
+    // Agreement here is not a pass: the row is stale and belongs in `cases`.
+    expect(line?.joined ?? 0, `${row.name}: the engines agree now; move it to EMBOSS_GAP_CASES`).not.toBe(
+      row.expect.reference_joined,
+    );
+    expect(outstandingWasmObjects()).toBe(0);
   }, 60_000);
 });
 

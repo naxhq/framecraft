@@ -418,37 +418,156 @@ def test_layout_auto_fit_also_respects_the_lip_band() -> None:
     assert not any("6 mm" in w for w in fit.warnings)
 
 
-def test_build_refuses_an_embossed_line_whose_letters_come_within_a_nozzle() -> None:
-    """[V3.1-P2-5]: Stage 1 and Stage 4 speak one measure for embossed gaps.
+def emboss_mesh(p: PrintParams, geom: L.LetteringGeometry) -> trimesh.Trimesh:
+    """Plate + lip with the built emboss solids on it, as the validator sees it."""
+    import numpy as np
 
-    The layout WARNS when adjacent letters come within a nozzle (a wedge that
-    touches at one end stays legible), and for engraved text the ridge merge
-    then makes that true.  Embossed text has no merge: the slit between two
-    raised letters is a void the printer cannot lay down, and the Stage 4
-    ``lettering`` row fails it at the one-nozzle floor - measured 0.208 mm on a
-    sans date at the 4.80 mm the 5 mm face allows.  So the build refuses it
-    first, naming the gap and the floor, exactly as it refuses a starved
-    stroke; shipping it and failing the bake later is the outcome this closes.
+    solid = Manifold.batch_boolean([extrude.base_plate(p), extrude.frame_lip(p)], OpType.Add)
+    solid = Manifold.batch_boolean([solid, *geom.emboss], OpType.Add)
+    mesh = solid.to_mesh64()
+    return trimesh.Trimesh(
+        vertices=np.asarray(mesh.vert_properties)[:, :3].astype(float),
+        faces=np.asarray(mesh.tri_verts).astype(int),
+        process=False,
+        validate=False,
+    )
+
+
+def test_build_joins_an_embossed_pair_a_nozzle_cannot_part_and_the_gate_passes() -> None:
+    """[V3.1-P2-5], the larger half: embossed text gets the gap treatment
+    engraved text has.
+
+    The layout WARNS when adjacent letters come within a nozzle, and for
+    engraved text the ridge merge makes that true.  Until this, embossed text
+    had no merge: a sans date at the 4.80 mm the 5 mm face allows put two
+    raised digits 0.208 mm apart, the Stage 4 ``lettering`` row failed the
+    slit, and the interim fix was to refuse the line.  Now the slit is filled
+    and the join widened to a wall (:func:`L.merge_emboss_gaps`,
+    :func:`L.widen_joins`): the line is BUILT, the user is told which pairs
+    were joined and how close they came, and the validator's own reading of
+    the finished mesh passes with the joined pair as one stroke.
     """
     p = params(engravings=[engraving(edge="right", text="2026-09-06", size_mm=8.0, mode="emboss")])
     fit = T.lettering_layout(p, ctx()).engravings[0].fit
     assert not fit.refused
     assert fit.size_mm < fit.gap_size_mm, "the premise: the layout only warns about this gap"
     geom = L.build(p, ctx(), rotation_deg=0.0)
+    assert geom.emboss != []
+    assert not any("was not cut" in w for w in geom.warnings)
+    [note] = [w for w in geom.warnings if "were joined where they touch" in w]
+    joined = int(re.search(r": (\d+) pair\(s\)", note).group(1))
+    gap = float(re.search(r"came within (\d+\.\d\d) mm", note).group(1))
+    assert joined >= 1 and 0.0 < gap < 0.36
+    assert "0.36 mm" in note and f"{fit.gap_size_mm:.2f} mm would keep them apart" in note
+    [measure] = geom.measures
+    assert measure["joined"] == joined and measure["gaps_closed"] >= joined
+    # The joins are strokes and were widened to the emboss target, so the
+    # narrowest stroke is a full wall and the gate agrees on the mesh.
+    assert measure["narrowest_mm"] >= 0.9 * T.min_wall_mm(p)
+    [row] = validators.validate_lettering(emboss_mesh(p, geom), p)
+    assert row.passed, row.message
+    assert "1 piece(s)" in str(row.value)
+
+
+def test_build_refuses_an_embossed_pair_that_would_fuse_into_one_shape() -> None:
+    """The case a repair cannot honestly save: two straight stems.
+
+    A wedge (a bowl against anything) is under a nozzle only near its closest
+    point and the join is a short touch; a SLOT between two stems is under a
+    nozzle along the whole height the stems share, and filling it prints one
+    clean bar where the user typed two letters.  :data:`L.EMBOSS_JOIN_MAX_EM`
+    draws that line at 0.4 em, and the refusal names the gap, how far it runs
+    and the size that keeps the pair apart.
+    """
+    p = params(engravings=[engraving(edge="right", text="Illinois", size_mm=8.0, mode="emboss")])
+    fit = T.lettering_layout(p, ctx()).engravings[0].fit
+    assert not fit.refused
+    geom = L.build(p, ctx(), rotation_deg=0.0)
+    assert geom.emboss == []
+    [refusal] = [w for w in geom.warnings if "was not cut" in w]
+    assert "would print as one shape rather than as two letters that touch" in refusal
+    run = float(re.search(r"along (\d+\.\d\d) mm of their height", refusal).group(1))
+    gap = float(re.search(r"run within (\d+\.\d\d) mm", refusal).group(1))
+    assert run > L.EMBOSS_JOIN_MAX_EM * fit.size_mm
+    assert 0.0 < gap < 0.36
+    assert "0.36 mm" in refusal
+    # The same string in mono keeps a nozzle between its stems and is built
+    # with nothing joined: the rule is about the measured slot, not the mode.
+    q = params(engravings=[engraving(edge="right", text="Illinois", size_mm=8.0, mode="emboss", font="mono")])
+    built = L.build(q, ctx(), rotation_deg=0.0)
+    assert built.emboss != [] and built.measures[0]["joined"] == 0
+    assert not any("was not cut" in w or "were joined" in w for w in built.warnings)
+
+
+def test_build_still_refuses_an_embossed_gap_the_merge_cannot_close(monkeypatch) -> None:
+    """The belt under the braces: when the merge closes nothing, the gate's own
+    reading of the void still refuses the line before Stage 4 fails it, and
+    the message says the merge was tried."""
+    monkeypatch.setattr(L, "gap_stretches", lambda void, params: [])
+    p = params(engravings=[engraving(edge="right", text="2026-09-06", size_mm=8.0, mode="emboss")])
+    geom = L.build(p, ctx(), rotation_deg=0.0)
     assert geom.emboss == []
     [refusal] = [w for w in geom.warnings if "was not cut" in w]
     assert "raised letters come within" in refusal
+    assert "even after joining the pairs a nozzle cannot part" in refusal
     gap = float(re.search(r"come within (\d+\.\d\d) mm", refusal).group(1))
-    assert 0.0 < gap < 0.36
-    assert "0.36 mm" in refusal
-    # The same string in mono keeps a nozzle between its letters at the same
-    # band and is built: the refusal is about the measured gap, not the mode.
-    q = params(
-        engravings=[engraving(edge="right", text="2026-09-06", size_mm=8.0, mode="emboss", font="mono")]
-    )
-    built = L.build(q, ctx(), rotation_deg=0.0)
-    assert built.emboss != []
-    assert not any("was not cut" in w for w in built.warnings)
+    assert 0.0 < gap < 0.36 and "0.36 mm" in refusal
+
+
+def test_merge_emboss_gaps_joins_only_what_a_nozzle_cannot_part() -> None:
+    """Two raised bars closer than a nozzle are joined and the join is widened
+    to a wall; further apart they stay two bars (the emboss mirror of
+    ``test_repair_merges_only_the_ridges_a_nozzle_cannot_lay_down``)."""
+    p = params()
+    band = shapely.box(-20.0, -3.0, 20.0, 3.0)
+    target = T.text_stroke_target_mm(p, "emboss")
+    floor = L.text_area_floor(p)
+    near = [shapely.box(-3.0, -1.5, -0.15, 1.5), shapely.box(0.15, -1.5, 3.0, 1.5)]
+    far = [shapely.box(-3.0, -1.5, -0.5, 1.5), shapely.box(0.5, -1.5, 3.0, 1.5)]
+    merged_near = L.merge_emboss_gaps(near, band, p)
+    merged_far = L.merge_emboss_gaps(far, band, p)
+    assert merged_near.joined == 1 and len(merged_near.bridges) == 1, "0.3 mm gap joined"
+    assert merged_near.narrowest_gap_mm == pytest.approx(0.3, abs=0.02)
+    assert merged_far.joined == 0 and merged_far.bridges == [], "1.0 mm gap kept"
+    # A 3 mm slot (read a tenth short at each mouth, where the disc's cap
+    # reaches in) is a fusion at any size the lip band allows and a touch at
+    # the contract's 8 mm maximum ...
+    assert merged_near.longest_join_mm == pytest.approx(2.85, abs=0.15)
+    assert merged_near.fuses(4.8) and not merged_near.fuses(8.0)
+    # ... and the join, a neck as wide as the slot was long, is a full wall
+    # after widening, measured the way the gate measures a raised stroke.
+    joined = L.widen_joins(merged_near.polygons, merged_near.bridges, target, floor)
+    [piece] = thicken.explode(shapely.union_all(joined))
+    assert thicken.narrowest_width(piece, target, floor) >= 0.9 * target
+
+
+def test_merge_emboss_gaps_never_fills_a_counter_whole() -> None:
+    """An enclosed void is the counter rule's to judge, not the merge's to fill:
+    a 0.3 mm slot inside one bar is left standing (and would be refused by
+    ``verify``), while a counter wide enough to keep has only its sub-nozzle
+    tail filled and its body untouched."""
+    p = params()
+    band = shapely.box(-20.0, -3.0, 20.0, 3.0)
+    detail = T.min_detail_mm(p)
+    bar = shapely.box(-3.0, -1.5, 3.0, 1.5)
+    slot = shapely.box(-1.0, -0.15, 1.0, 0.15)
+    [holed] = thicken.valid_polygons(bar.difference(slot))
+    kept = L.merge_emboss_gaps([holed], band, p)
+    assert kept.bridges == [] and len(kept.polygons[0].interiors) == 1
+    # A counter 1.2 mm wide with a 0.3 mm wide, 1 mm long tail off one side.
+    eye = shapely.union_all([shapely.box(-0.6, -0.6, 0.6, 0.6), shapely.box(0.6, -0.15, 1.6, 0.15)])
+    [tailed] = thicken.valid_polygons(bar.difference(eye))
+    merged = L.merge_emboss_gaps([tailed], band, p)
+    assert len(merged.bridges) == 1 and merged.joined == 0
+    assert merged.longest_join_mm == 0.0, "a counter's tail is not a join between letters"
+    [counter] = L.counter_regions(shapely.union_all(merged.polygons))
+    body = shapely.box(-0.6, -0.6, 0.6, 0.6)
+    # The tail (0.3 mm^2) is gone; the body keeps its area to within the
+    # bridge's four grid cells of growth at the mouth, and its width to within
+    # a tenth of a millimetre of the 1.2 it had.
+    assert body.area - 0.05 < counter.area < eye.area - 0.25
+    assert thicken.inscribed_width(counter, 1e-3) == pytest.approx(1.2, abs=0.1)
+    assert thicken.narrowest_width(counter, detail, L.text_area_floor(p)) >= 0.9 * detail
 
 
 def test_layout_refuses_text_whose_counters_cannot_survive() -> None:
@@ -1625,6 +1744,162 @@ def test_parity_lettering_matches_the_committed_fixture() -> None:
     )
     committed = json.loads(LETTERING_EXPECTED.read_text(encoding="utf-8"))
     assert committed == fresh
+
+
+EMBOSS_GAPS_EXPECTED = FIXTURES / "emboss-gaps-expected.json"
+
+#: The emboss gap merge's decisions, pinned for both engines ([V3.1-P2-5]).
+#: Every case is one embossed frame-edge line at the contract defaults; the
+#: decision is built or refused, how many letter pairs were joined, and whether
+#: the refusal was the fusion rule.  Strings are literal so the token context
+#: cannot enter.  Chosen clear of the area floor: the disc opening both
+#: libraries take reads the same stretch a few hundredths of a mm^2 apart, and
+#: a stretch AT the floor (sans "HELLO WORLD" at 8 mm, 0.157 mm^2 in GEOS
+#: against 0.194 in Clipper2) is a case the two decide differently.
+EMBOSS_GAP_CASES: List[Dict[str, Any]] = [
+    {"name": "sans-date-joined", "edge": "right", "text": "2026-09-06", "font": "sans", "size_mm": 8.0},
+    {"name": "mono-date-joined", "edge": "right", "text": "2026-09-06", "font": "mono", "size_mm": 8.0},
+    {"name": "serif-date-joined", "edge": "right", "text": "2026-09-06", "font": "serif", "size_mm": 8.0},
+    {"name": "sans-stems-fuse", "edge": "right", "text": "Illinois", "font": "sans", "size_mm": 8.0},
+    {"name": "mono-stems-clear", "edge": "right", "text": "Illinois", "font": "mono", "size_mm": 8.0},
+    {"name": "sans-il-fuses", "edge": "right", "text": "Milano", "font": "sans", "size_mm": 8.0},
+    {"name": "sans-bowls-joined", "edge": "right", "text": "Brooklyn", "font": "sans", "size_mm": 8.0},
+    {"name": "sans-many-joined", "edge": "right", "text": "Kalamazoo", "font": "sans", "size_mm": 8.0},
+    {"name": "sans-two-joined", "edge": "right", "text": "Toronto", "font": "sans", "size_mm": 8.0},
+    {"name": "sans-caps-one-joined", "edge": "right", "text": "LOOP", "font": "sans", "size_mm": 8.0},
+    {"name": "sans-caps-clear", "edge": "bottom", "text": "FRAMECRAFT", "font": "sans", "size_mm": 5.0},
+]
+
+
+#: Lines the two engines are KNOWN to decide differently, pinned rather than
+#: left out (the `matrix.probes.ts:KNOWN_DEFECTS` idiom: the row, the reason
+#: beside it, each side held to ITS number so a change on either side is a red
+#: test).  Kept apart from ``EMBOSS_GAP_CASES`` so the agreeing count cannot be
+#: diluted.  ``engine_joined`` is the browser engine's count, a literal here
+#: because only `text.test.ts` can measure it; the reference's own count is
+#: measured at generation and pinned beside it.
+EMBOSS_GAP_DIVERGENCES: List[Dict[str, Any]] = [
+    {
+        "name": "sans-hello-world-at-the-floor",
+        "edge": "right",
+        "text": "HELLO WORLD",
+        "font": "sans",
+        "size_mm": 8.0,
+        "engine_joined": 2,
+        "reason": (
+            "one stretch of void sits AT the text area floor: the disc opening "
+            "reads it 0.157 mm^2 in GEOS and 0.194 in Clipper2 against a 0.16 "
+            "floor, so the reference leaves that pair apart and the engine joins "
+            "it. A count difference only: at 0.31 mm wide the stretch is 0.5 to "
+            "0.6 mm long, far under the 0.4 em fusion rule, and a stretch under "
+            "the floor is under the gate's floor too, so built/refused cannot move."
+        ),
+    },
+]
+
+
+def _emboss_line(case: Dict[str, Any]) -> Dict[str, Any]:
+    return engraving(
+        edge=case["edge"], text=case["text"], font=case["font"], size_mm=case["size_mm"], mode="emboss"
+    )
+
+
+def _emboss_decision(line: Dict[str, Any]) -> Dict[str, Any]:
+    p = params(engravings=[line])
+    geom = L.build(p, ctx(), rotation_deg=0.0)
+    built = bool(geom.emboss)
+    return {
+        "built": built,
+        "joined": int(geom.measures[0]["joined"]) if built else 0,
+        "fused": any("one shape rather than as two letters" in w for w in geom.warnings),
+    }
+
+
+def build_emboss_parity() -> Dict[str, Any]:
+    cases = []
+    for case in EMBOSS_GAP_CASES:
+        line = _emboss_line(case)
+        cases.append({"name": case["name"], "engravings": [line], "expect": _emboss_decision(line)})
+    divergences = []
+    for case in EMBOSS_GAP_DIVERGENCES:
+        line = _emboss_line(case)
+        decision = _emboss_decision(line)
+        divergences.append(
+            {
+                "name": case["name"],
+                "engravings": [line],
+                "reason": case["reason"],
+                "expect": {
+                    "built": decision["built"],
+                    "fused": decision["fused"],
+                    "reference_joined": decision["joined"],
+                    "engine_joined": int(case["engine_joined"]),
+                },
+            }
+        )
+    return {
+        "_comment": (
+            "GENERATED by services/bake/tests/test_lettering.py. The emboss gap "
+            "merge's decisions ([V3.1-P2-5]): app/geom/lettering.py's build and "
+            "apps/web/lib/engine/solid/lettering.ts's buildLettering must agree "
+            "on built/refused, the pairs joined and the fusion rule for each line "
+            "in `cases`; `divergences` are the lines they are KNOWN to count "
+            "differently, each side held to its own number, with the reason. "
+            "Regenerate with FRAMECRAFT_WRITE_PARITY=1 uv run pytest tests/test_lettering.py"
+        ),
+        "cases": cases,
+        "divergences": divergences,
+    }
+
+
+def test_parity_emboss_gaps_match_the_committed_fixture() -> None:
+    fresh = build_emboss_parity()
+    if os.environ.get("FRAMECRAFT_WRITE_PARITY") == "1":
+        EMBOSS_GAPS_EXPECTED.write_text(
+            json.dumps(fresh, indent=2, sort_keys=False) + "\n", encoding="utf-8"
+        )
+    assert EMBOSS_GAPS_EXPECTED.is_file(), (
+        "fixtures/emboss-gaps-expected.json is missing; regenerate with "
+        "FRAMECRAFT_WRITE_PARITY=1 uv run pytest tests/test_lettering.py"
+    )
+    committed = json.loads(EMBOSS_GAPS_EXPECTED.read_text(encoding="utf-8"))
+    assert committed == fresh
+
+
+def test_parity_emboss_gap_divergences_still_diverge() -> None:
+    """A known divergence is a row expected to differ, with the reason beside
+    it.  The reference is held to ITS count here (the regeneration above pins
+    it), and a row whose two counts have become equal is stale: the engines
+    agree on it now and it belongs in ``EMBOSS_GAP_CASES``, where the
+    agreement is what gets pinned."""
+    data = json.loads(EMBOSS_GAPS_EXPECTED.read_text(encoding="utf-8"))
+    rows = {row["name"]: row for row in data["divergences"]}
+    assert set(rows) == {case["name"] for case in EMBOSS_GAP_DIVERGENCES}
+    for case in EMBOSS_GAP_DIVERGENCES:
+        expect = rows[case["name"]]["expect"]
+        assert expect["reference_joined"] != expect["engine_joined"], (
+            f"{case['name']}: the engines agree now; move it to EMBOSS_GAP_CASES"
+        )
+        # Bounded to the count: both engines build it, and neither fuses it.
+        assert expect["built"] and not expect["fused"], case["name"]
+        assert rows[case["name"]]["reason"] == case["reason"]
+
+
+def test_parity_emboss_gaps_fixture_is_not_vacuous() -> None:
+    """Every outcome the mirror could get wrong has to be represented: a join
+    in each face, a fusion refusal, a clean line in each of two faces, and a
+    line with several joins."""
+    data = json.loads(EMBOSS_GAPS_EXPECTED.read_text(encoding="utf-8"))
+    cases = {c["name"]: c["expect"] for c in data["cases"]}
+    assert len(cases) == len(EMBOSS_GAP_CASES) >= 11
+    for name in ("sans-date-joined", "mono-date-joined", "serif-date-joined"):
+        assert cases[name]["built"] and cases[name]["joined"] >= 1 and not cases[name]["fused"], name
+    for name in ("sans-stems-fuse", "sans-il-fuses"):
+        assert not cases[name]["built"] and cases[name]["fused"], name
+    for name in ("mono-stems-clear", "sans-caps-clear"):
+        assert cases[name]["built"] and cases[name]["joined"] == 0, name
+    assert cases["sans-many-joined"]["joined"] >= 3
+    assert cases["sans-caps-one-joined"]["joined"] == 1
 
 
 def test_parity_lettering_fixture_is_not_vacuous() -> None:
