@@ -89,16 +89,26 @@ def test_query_text_matches_the_spec():
     query = overpass.build_query(presets.PRESETS_BY_ID["chicago-loop"].request())
     assert query.startswith("[out:json][timeout:180];\n(\n")
     assert query.rstrip().endswith("out geom;")
+    # The tag sets, spelled once so the assertions below cannot drift from
+    # each other ([V3.1-U9]).
+    NAT = "water|bay|strait|wood|scrub|grassland|heath|shrubbery|wetland"
+    LU = "grass|forest|meadow|recreation_ground|village_green|allotments|orchard|vineyard|cemetery|greenfield|reservoir|basin"
+    LE = "park|garden|pitch|playground|golf_course|nature_reserve|dog_park|common"
     for line in (
         'way["building"]',
         'relation["building"]',
         'way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|'
         'unclassified|service|pedestrian|footway)$"]',
-        'way["natural"="water"]',
-        'relation["natural"="water"]',
-        'way["waterway"="riverbank"]',
-        'way["landuse"~"^(grass|forest|meadow|recreation_ground)$"]',
-        'way["leisure"~"^(park|garden|pitch)$"]',
+        f'way["natural"~"^({NAT})$"]',
+        f'relation["natural"~"^({NAT})$"]',
+        'way["waterway"~"^(riverbank|dock)$"]',
+        'relation["waterway"~"^(riverbank|dock)$"]',
+        f'way["landuse"~"^({LU})$"]',
+        f'relation["landuse"~"^({LU})$"]',
+        f'way["leisure"~"^({LE})$"]',
+        # Relations as well as ways, which is the half that was missing:
+        # a park mapped as a multipolygon was never downloaded ([V3.1-U9]).
+        f'relation["leisure"~"^({LE})$"]',
         'node["natural"="tree"]',
     ):
         assert line in query

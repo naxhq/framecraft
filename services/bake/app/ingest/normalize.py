@@ -127,8 +127,44 @@ LANE_WIDTH_M = 3.5
 MIN_ROAD_WIDTH_M = 0.5
 MAX_ROAD_WIDTH_M = 60.0
 
-GREEN_LANDUSE = frozenset({"grass", "forest", "meadow", "recreation_ground"})
-GREEN_LEISURE = frozenset({"park", "garden", "pitch"})
+# What counts as green and what counts as water, mirrored in
+# ``apps/web/lib/engine/osm/heights.ts`` ([V3.1-U9]). Every value was measured
+# against OSM rather than guessed; the reasoning is on the TypeScript side.
+GREEN_LANDUSE = frozenset(
+    {
+        "grass",
+        "forest",
+        "meadow",
+        "recreation_ground",
+        "village_green",
+        "allotments",
+        "orchard",
+        "vineyard",
+        "cemetery",
+        "greenfield",
+    }
+)
+GREEN_LEISURE = frozenset(
+    {
+        "park",
+        "garden",
+        "pitch",
+        "playground",
+        "golf_course",
+        "nature_reserve",
+        "dog_park",
+        "common",
+    }
+)
+# ``wetland`` is green and not water: it is marsh you can stand on, and OSM
+# maps the open water beside it as water in its own right.
+GREEN_NATURAL = frozenset({"wood", "scrub", "grassland", "heath", "shrubbery", "wetland"})
+# ``bay`` is why a coast renders at all: the sea is not a polygon in OSM (open
+# coast is ``natural=coastline``), while a bay is, and measured with ``is_in``
+# it respects the shoreline.
+WATER_NATURAL = frozenset({"water", "bay", "strait"})
+WATER_WATERWAY = frozenset({"riverbank", "dock"})
+WATER_LANDUSE = frozenset({"reservoir", "basin"})
 
 SIMPLIFY_TOLERANCE_M = 0.25
 #: SceneGraph coordinates are emitted rounded to 1 mm.  Geometry is snap-rounded
@@ -368,9 +404,19 @@ def _layer_of(element: dict[str, Any], tags: dict[str, Any]) -> str | None:
         highway = tags.get("highway")
         if highway in HIGHWAY_WIDTH_M:
             return "road"
-    if tags.get("natural") == "water" or tags.get("waterway") == "riverbank":
+    # Water first, and water wins a tie: a polygon carrying both a water tag
+    # and a green one is water with something growing at its edge.
+    if (
+        tags.get("natural") in WATER_NATURAL
+        or tags.get("waterway") in WATER_WATERWAY
+        or tags.get("landuse") in WATER_LANDUSE
+    ):
         return "water"
-    if tags.get("landuse") in GREEN_LANDUSE or tags.get("leisure") in GREEN_LEISURE:
+    if (
+        tags.get("landuse") in GREEN_LANDUSE
+        or tags.get("leisure") in GREEN_LEISURE
+        or tags.get("natural") in GREEN_NATURAL
+    ):
         return "green"
     return None
 

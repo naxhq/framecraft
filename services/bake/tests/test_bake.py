@@ -1144,26 +1144,36 @@ def test_detail_advisor_scores_on_the_real_preset(chicago_scene, case):
 def test_detail_advisor_score_composition_on_the_default_preset(chicago_scene):
     """Every term of the default preset's 70, from the counts it came from.
 
-    Widened 370/994 = 37.2 % -> 22.33, trees 5 762/5 762 = 100 % -> 5.00, areas
-    360/753 = 47.8 % -> 2.39, dropped 0 -> 0.00; penalty 29.72, score 70.  The
-    claimed 80 was not reachable from any weighting in the file.
+    Widened 374/1 000 = 37.4 % -> 22.44, trees 5 762/5 762 = 100 % -> 5.00,
+    areas 50.9 % of 696 -> 2.54, dropped 0 -> 0.00; penalty 29.98, score 70.
+    The claimed 80 was not reachable from any weighting in the file.
+
+    The counts moved with the [V3.1-U9] ingest refresh and the score did not.
+    Two separate causes, and neither is the geometry pipeline. The buildings
+    went 994 -> 1 000 because refetching picked up six buildings OSM has gained
+    since the old fixture was captured: the `way["building"]` and
+    `relation["building"]` clauses are byte-identical across that change, so
+    nothing else could have moved them, and the raw fixture confirms it at
+    1 337 -> 1 343. The areas went 753 -> 696, DOWN while the query asked for
+    more, because a park mapped as a multipolygon relation now arrives as one
+    area instead of as its several member ways.
     """
     report = T.detail_report(chicago_scene, PrintParams(), 900.0)
-    assert (report.buildings_total, report.widened, report.dropped) == (994, 370, 0)
+    assert (report.buildings_total, report.widened, report.dropped) == (1000, 374, 0)
     assert report.trees_total == 5762
     assert report.trees_dropped_fraction == 1.0, (
         "every OSM tree here is the normalizer's default 4 m crown, which is "
         "0.37 mm of radius at 1:10,714 - under the 0.5 mm floor, so the bake "
         "prints none of them and 5 of the 100 points are a constant on this preset"
     )
-    assert report.areas_total == 753
+    assert report.areas_total == 696
     penalty = (
         T.SCORE_WEIGHT_DROPPED * report.dropped_fraction
         + T.SCORE_WEIGHT_WIDENED * report.widened_fraction
         + T.SCORE_WEIGHT_TREES * report.trees_dropped_fraction
         + T.SCORE_WEIGHT_AREAS * report.areas_dropped_fraction
     )
-    assert penalty == pytest.approx(29.72, abs=0.01)
+    assert penalty == pytest.approx(29.98, abs=0.01)
     assert report.score == 70 and report.band == "fair"
     # The BAKE stays quiet at `fair` - `_detail_advice` gates on the band - so
     # nothing user-visible changes with the corrected number.  The editor's HUD

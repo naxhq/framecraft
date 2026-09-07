@@ -13,10 +13,10 @@
         "rotation_deg": 0.0,
         "preset_id": "chicago-loop"
       },
-      "fixture_file": "a4e5375818f309940313e0ac08b8ebb88c615f9e.json",
-      "fetched_at": "2026-08-29T10:26:11+00:00",
-      "element_count": 16051,
-      "bytes": 12725477
+      "fixture_file": "35476c9e8eb87f1d55562d3b352f6db87993703d.json",
+      "fetched_at": "2026-09-07T17:46:16+00:00",
+      "element_count": 16129,
+      "bytes": 13083974
     },
     {
       "preset_id": "new-york-midtown",
@@ -28,10 +28,10 @@
         "rotation_deg": 29.0,
         "preset_id": "new-york-midtown"
       },
-      "fixture_file": "f41c2522860df8ead22956b8087aa0632b78c78c.json",
-      "fetched_at": "2026-08-29T11:01:25+00:00",
-      "element_count": 16998,
-      "bytes": 13501888
+      "fixture_file": "0c5d13d8e9badc2aec175a53bf2cff9973c1f804.json",
+      "fetched_at": "2026-09-07T17:48:00+00:00",
+      "element_count": 16991,
+      "bytes": 13659662
     },
     {
       "preset_id": "paris-eiffel",
@@ -43,10 +43,10 @@
         "rotation_deg": 0.0,
         "preset_id": "paris-eiffel"
       },
-      "fixture_file": "f37cfe5a65e7a7b1c8753d51e41393edb335120f.json",
-      "fetched_at": "2026-08-29T10:26:37+00:00",
-      "element_count": 19421,
-      "bytes": 12860764
+      "fixture_file": "915f68cd274688a8732e1b9a17c8eb865fb7eeed.json",
+      "fetched_at": "2026-09-07T17:48:12+00:00",
+      "element_count": 19461,
+      "bytes": 12923705
     },
     {
       "preset_id": "tokyo-shinjuku",
@@ -58,10 +58,10 @@
         "rotation_deg": 0.0,
         "preset_id": "tokyo-shinjuku"
       },
-      "fixture_file": "2889affd6a79d6138c5ef13ec34d513751f15ae3.json",
-      "fetched_at": "2026-08-29T10:26:46+00:00",
-      "element_count": 12681,
-      "bytes": 8519786
+      "fixture_file": "08c10525d31d5354bd59704bfc989bf8e3d203a4.json",
+      "fetched_at": "2026-09-07T17:48:24+00:00",
+      "element_count": 12856,
+      "bytes": 8743785
     },
     {
       "preset_id": "london-city",
@@ -73,10 +73,10 @@
         "rotation_deg": 0.0,
         "preset_id": "london-city"
       },
-      "fixture_file": "e9ffa1a1e08167cfbbad93105151fe0a66235d64.json",
-      "fetched_at": "2026-08-29T10:27:08+00:00",
-      "element_count": 17743,
-      "bytes": 12695572
+      "fixture_file": "65fedfcfdb565598898689751f67af0d284c8b7c.json",
+      "fetched_at": "2026-09-07T17:49:41+00:00",
+      "element_count": 17436,
+      "bytes": 12563504
     },
     {
       "preset_id": "san-francisco-fidi",
@@ -88,10 +88,10 @@
         "rotation_deg": 0.0,
         "preset_id": "san-francisco-fidi"
       },
-      "fixture_file": "0210e990619f1e505069b41003f4ece83d6d91a0.json",
-      "fetched_at": "2026-08-29T10:27:16+00:00",
-      "element_count": 9088,
-      "bytes": 7197699
+      "fixture_file": "1af3d7dcce2241989cefc22c5644b26c1fef2be1.json",
+      "fetched_at": "2026-09-07T17:49:53+00:00",
+      "element_count": 9132,
+      "bytes": 7366340
     }
   ]
 }

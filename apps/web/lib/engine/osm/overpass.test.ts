@@ -26,7 +26,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 describe("buildQuery / querySha1", () => {
   it("produces the byte-identical 03 query text and sha1 as the Python builder, for the Chicago Loop preset", () => {
     const query = buildQuery(CHICAGO_LOOP);
-    expect(querySha1(query)).toBe("a4e5375818f309940313e0ac08b8ebb88c615f9e");
+    expect(querySha1(query)).toBe("35476c9e8eb87f1d55562d3b352f6db87993703d");
   });
 
   it("contains every 03 element clause, out geom, and a 180s timeout", () => {
@@ -37,11 +37,16 @@ describe("buildQuery / querySha1", () => {
       'way["building"]',
       'relation["building"]',
       'way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|service|pedestrian|footway)$"]',
-      'way["natural"="water"]',
-      'relation["natural"="water"]',
-      'way["waterway"="riverbank"]',
-      'way["landuse"~"^(grass|forest|meadow|recreation_ground)$"]',
-      'way["leisure"~"^(park|garden|pitch)$"]',
+      'way["natural"~"^(water|bay|strait|wood|scrub|grassland|heath|shrubbery|wetland)$"]',
+      'way["waterway"~"^(riverbank|dock)$"]',
+      'way["landuse"~"^(grass|forest|meadow|recreation_ground|village_green|allotments|orchard|vineyard|cemetery|greenfield|reservoir|basin)$"]',
+      'way["leisure"~"^(park|garden|pitch|playground|golf_course|nature_reserve|dog_park|common)$"]',
+      // Relations too, which is the half that was missing: two of the parks at
+      // the reported location are multipolygons, and a way-only query left them
+      // on the ground ([V3.1-U9]).
+      'relation["leisure"~"^(park|garden|pitch|playground|golf_course|nature_reserve|dog_park|common)$"]',
+      'relation["landuse"~"^(grass|forest|meadow|recreation_ground|village_green|allotments|orchard|vineyard|cemetery|greenfield|reservoir|basin)$"]',
+      'relation["natural"~"^(water|bay|strait|wood|scrub|grassland|heath|shrubbery|wetland)$"]',
       'node["natural"="tree"]',
     ]) {
       expect(query).toContain(fragment);
@@ -300,7 +305,7 @@ describe("fetchOverpass", () => {
 describe("fetchOverpass, bundled preset assets", () => {
   const MANIFEST = {
     queries: {
-      a4e5375818f309940313e0ac08b8ebb88c615f9e: {
+      "35476c9e8eb87f1d55562d3b352f6db87993703d": {
         preset_id: "chicago-loop",
         bytes: 12725477,
         gzip_bytes: 1738011,
@@ -341,7 +346,7 @@ describe("fetchOverpass, bundled preset assets", () => {
       throw new Error("a bundled hit must not reach the network");
     });
     const assetFetchImpl = assetHost(MANIFEST, {
-      "a4e5375818f309940313e0ac08b8ebb88c615f9e.json.gz": () => gzipResponse(PRESET_BODY),
+      "35476c9e8eb87f1d55562d3b352f6db87993703d.json.gz": () => gzipResponse(PRESET_BODY),
     });
     const cache = new MemoryOverpassCache();
 
@@ -359,7 +364,7 @@ describe("fetchOverpass, bundled preset assets", () => {
 
   it("asks the manifest once per realm, hit or miss", async () => {
     const assetFetchImpl = assetHost(MANIFEST, {
-      "a4e5375818f309940313e0ac08b8ebb88c615f9e.json.gz": () => gzipResponse(PRESET_BODY),
+      "35476c9e8eb87f1d55562d3b352f6db87993703d.json.gz": () => gzipResponse(PRESET_BODY),
     });
     await fetchOverpass(CHICAGO_LOOP, { fetchImpl: vi.fn(), assetFetchImpl, cache: new MemoryOverpassCache(), sleep: noSleep });
     await fetchOverpass(CHICAGO_LOOP, { fetchImpl: vi.fn(), assetFetchImpl, cache: new MemoryOverpassCache(), sleep: noSleep });
@@ -400,7 +405,7 @@ describe("fetchOverpass, bundled preset assets", () => {
   it("falls back to the mirrors when the asset is corrupt", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ elements: [{ type: "way", id: 9 }] }));
     const assetFetchImpl = assetHost(MANIFEST, {
-      "a4e5375818f309940313e0ac08b8ebb88c615f9e.json.gz": () =>
+      "35476c9e8eb87f1d55562d3b352f6db87993703d.json.gz": () =>
         new Response(Buffer.from("this is not gzip"), { status: 200 }),
     });
 
@@ -414,7 +419,7 @@ describe("fetchOverpass, bundled preset assets", () => {
   it("falls back to the mirrors when the asset inflates to something that is not an Overpass response", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ elements: [{ type: "way", id: 11 }] }));
     const assetFetchImpl = assetHost(MANIFEST, {
-      "a4e5375818f309940313e0ac08b8ebb88c615f9e.json.gz": () => gzipResponse({ elements: "not an array" }),
+      "35476c9e8eb87f1d55562d3b352f6db87993703d.json.gz": () => gzipResponse({ elements: "not an array" }),
     });
 
     const result = await fetchOverpass(CHICAGO_LOOP, { fetchImpl, assetFetchImpl, cache: new MemoryOverpassCache(), sleep: noSleep });
@@ -448,7 +453,7 @@ describe("fetchOverpass, bundled preset assets", () => {
 
   it("reads the assets from under the deployment's base path", async () => {
     const assetFetchImpl = assetHost(MANIFEST, {
-      "a4e5375818f309940313e0ac08b8ebb88c615f9e.json.gz": () => gzipResponse(PRESET_BODY),
+      "35476c9e8eb87f1d55562d3b352f6db87993703d.json.gz": () => gzipResponse(PRESET_BODY),
     });
     await fetchOverpass(CHICAGO_LOOP, {
       fetchImpl: vi.fn(),
@@ -459,7 +464,7 @@ describe("fetchOverpass, bundled preset assets", () => {
     });
     expect(assetFetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
       "/framecraft/presets/index.json",
-      "/framecraft/presets/a4e5375818f309940313e0ac08b8ebb88c615f9e.json.gz",
+      "/framecraft/presets/35476c9e8eb87f1d55562d3b352f6db87993703d.json.gz",
     ]);
   });
 });

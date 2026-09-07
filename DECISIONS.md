@@ -1666,3 +1666,62 @@ Append-only. Format: `- [phase] decision, one line`.
   with the other's words; `recessBands.test.ts` builds exactly that case.
   The caption reads the FRESH result's `resolvedText` and never the editor's own prediction, so it
   can never claim a line the build has not cut.
+
+- `[V3.1-U9]` **The ingest asked for too little, so a coast had no water and a park could be
+  invisible.** Reported as "some places it doesn't detect water and green area", with Coney Island
+  building no water region at all and therefore no Water filament slot. Measured against OSM
+  before changing anything, because the interesting part is WHY.
+  **The sea is not a polygon in OpenStreetMap.** Open coast is `natural=coastline`, an open way
+  with land on its left, and renderers build sea polygons from it separately. Coney Island returns
+  7 coastline ways and 4 `natural=water` polygons, all about 15 by 20 m, out by the aquarium. So a
+  query for `natural=water` finds essentially nothing on any coast, and every one of the six
+  presets happens to sit on a river or a lake, which is why nothing caught it: all six fixtures
+  carry `natural=water` and not one carries coastline.
+  Writing coastline-to-polygon geometry in two languages was the obvious fix and is not the one
+  taken, because a cheaper one is correct: **`natural=bay` IS a polygon and respects the
+  shoreline.** Verified with `is_in` rather than assumed -- a point in the water off Coney Island
+  returns Lower New York Bay, a point on dry land 700 m away returns no bay at all. Payload
+  measured too, since a bay can be enormous: Lower New York Bay spans 22 by 29 km and costs
+  152 kB and 2 904 nodes, which is nothing beside a preset fixture's megabytes.
+  The green half was a plainer omission: the query asked for WAYS only, so two of the parks at the
+  reported location, both mapped as multipolygon relations, were never downloaded. The tag census
+  there also found 7 playgrounds, 3 dog parks, 8 wetlands, 2 scrub, a wood, a shrubbery and a
+  village green that no rule could have classified because nothing asked for them.
+  So the query gains bays, straits, docks, reservoirs and basins on the water side; wood, scrub,
+  grassland, heath, shrubbery and wetland on the green side, plus village green, allotments,
+  orchard, vineyard, cemetery, greenfield, playground, golf course, nature reserve, dog park and
+  common; and RELATIONS for every area clause. Both engines move together and still produce
+  byte-identical query text: the Chicago sha1 is `35476c9e8eb87f1d55562d3b352f6db87993703d` from
+  the TypeScript builder and from the Python one. Water wins a tie over green, because a polygon
+  carrying both tags is water with something growing at its edge.
+  **The v1 golden's INPUT is now frozen beside its output**, and this is the ruling that needed
+  the most care. `test_v1_compat.py` called `overpass.load_raw(allow_network=False)`, which
+  resolves a fixture by the sha1 of the CURRENT query, so broadening the ingest made the frozen
+  compatibility test raise `FixtureMissing`. Regenerating the golden to clear that would have been
+  the forbidden move: the digest it pins would then follow whatever the ingest returns and could
+  never fail again. What the test is for is that the geometry pipeline still turns v1 input into
+  v1 output, so the v1 input is now a committed artifact like the v1 output, and neither moves
+  when the query does. It passes unchanged, 11 of 11, against the frozen input. Whether a NEW
+  query still produces printable models is a different question and the six-city preset matrix is
+  what asks it.
+  Three test failures came out of the refresh and none was answered by loosening an assertion.
+  The two query-text pins were updated to the new clauses. `fixtures/chicago-scene.json` was
+  regenerated from the new raw fixture, which is what that test exists to check. And the detail
+  advisor's score composition moved, which needed the most care to answer honestly: buildings
+  994 -> 1 000 and widened 370 -> 374 are NOT this change, they are six buildings OSM has gained
+  since the old fixture was captured -- the `way["building"]` and `relation["building"]` clauses
+  are byte-identical across it, and the raw fixture confirms 1 337 -> 1 343 buildings. Areas went
+  753 -> 696, DOWN while the query asked for more, because a park mapped as a multipolygon
+  relation now arrives as one area instead of as its several member ways. The score and the band
+  are unchanged at 70 and `fair`, and the recommendation string is identical, so nothing
+  user-visible moved; the numbers in the test were re-derived rather than relaxed.
+  Verified after the refresh: the six-city matrix is unmoved to the digit -- reference six of six
+  ALL CHECKS PASS, browser engine chicago 0.874, new-york 0.8873, paris 1.0, london 0.8174,
+  san-francisco 1.14 and Tokyo's pre-existing `min_wall FAIL 0.2539` (now 2 of 466 sampled
+  regions, was 2 of 468, the same narrowest value). And on the reported location, Coney Island
+  now normalises to 10 water areas and 77 green where the shipped build produced no water region
+  at all and therefore no Water filament slot.
+  STILL OPEN and stated rather than implied: a coast with NO mapped bay still renders without
+  sea. `natural=coastline` is the complete answer and needs coastline-to-polygon geometry written
+  twice with a parity fixture; this ruling buys the common case for a fraction of that, and the
+  uncommon one is honestly still broken.

@@ -56,6 +56,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 GOLDEN_DIR = REPO_ROOT / "fixtures" / "v1-golden"
 GOLDEN_JSON = GOLDEN_DIR / "chicago-default.json"
 GOLDEN_SIDECAR = GOLDEN_DIR / "chicago-default.sidecar.json"
+GOLDEN_OVERPASS = GOLDEN_DIR / "chicago-overpass.json"
 GOLDEN_3MF = GOLDEN_DIR / "chicago-default.3mf"
 PRINT_PARAMS_SCHEMA = REPO_ROOT / "packages" / "contracts" / "schema" / "print_params.json"
 
@@ -112,7 +113,24 @@ def baked(tmp_path_factory) -> dict:
     special-cased.
     """
     request = presets.get_preset("chicago-loop").request()
-    raw = overpass.load_raw(request, allow_network=False)
+    # The golden's INPUT is frozen beside its output, and is deliberately NOT
+    # resolved through ``overpass.load_raw`` ([V3.1-U9]).
+    #
+    # ``load_raw`` finds a fixture by the sha1 of the CURRENT query text, so
+    # broadening the ingest -- asking OSM for bays, for relations, for the
+    # green tags a coast actually carries -- changes the key and this test
+    # raises FixtureMissing. Chasing that by regenerating the golden would be
+    # exactly the move this project forbids: the digest it pins would then
+    # follow whatever the ingest happens to return, and it would stop being
+    # able to fail.
+    #
+    # What this test is for is that the GEOMETRY PIPELINE still turns v1 input
+    # into v1 output. So the v1 input is a committed artifact, like the v1
+    # output it is compared against, and neither moves when the query does.
+    # Whether a NEW query still produces printable models is a different
+    # question, asked by the six-city preset matrix, which runs the whole
+    # ingest for real.
+    raw = json.loads(GOLDEN_OVERPASS.read_text(encoding="utf-8"))
     scene = normalize.build_scene(raw, request)
     out_dir = tmp_path_factory.mktemp("v1compat")
     output = bake_pipeline.run_pipeline(

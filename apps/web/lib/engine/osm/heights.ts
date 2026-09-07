@@ -70,8 +70,56 @@ const LANE_WIDTH_M = 3.5;
 export const MIN_ROAD_WIDTH_M = 0.5;
 export const MAX_ROAD_WIDTH_M = 60.0;
 
-export const GREEN_LANDUSE = new Set(["grass", "forest", "meadow", "recreation_ground"]);
-export const GREEN_LEISURE = new Set(["park", "garden", "pitch"]);
+/*
+ * What counts as green and what counts as water, in one place per language and
+ * mirrored ([V3.1-U9]).
+ *
+ * Every value here was measured against OSM rather than guessed. The reported
+ * case was Coney Island, where the old sets left two real parks on the ground
+ * (both mapped as RELATIONS, which the query did not ask for), plus seven
+ * playgrounds, three dog parks, eight wetlands, a wood, a scrub and a village
+ * green. The query and these sets move together: a tag asked for and not
+ * classified is a download nobody reads, and a tag classified and not asked
+ * for is a rule that never fires.
+ */
+export const GREEN_LANDUSE = new Set([
+  "grass",
+  "forest",
+  "meadow",
+  "recreation_ground",
+  "village_green",
+  "allotments",
+  "orchard",
+  "vineyard",
+  "cemetery",
+  "greenfield",
+]);
+export const GREEN_LEISURE = new Set([
+  "park",
+  "garden",
+  "pitch",
+  "playground",
+  "golf_course",
+  "nature_reserve",
+  "dog_park",
+  "common",
+]);
+/** Vegetated `natural` values. `wetland` is here and not in water: it is marsh you can stand on, and OSM maps open water beside it as water. */
+export const GREEN_NATURAL = new Set(["wood", "scrub", "grassland", "heath", "shrubbery", "wetland"]);
+/**
+ * Water `natural` values.
+ *
+ * `bay` is the one that matters and the reason a coast renders at all. The sea
+ * is NOT a polygon in OpenStreetMap -- open coast is `natural=coastline`, an
+ * open way with land on its left -- so a query for `natural=water` finds
+ * nothing offshore. A bay IS a polygon and, measured with `is_in` at Coney
+ * Island, respects the shoreline: it contains a point in the water and does
+ * not contain a point on land. That is what makes it usable directly instead
+ * of writing coastline-to-polygon geometry twice.
+ */
+export const WATER_NATURAL = new Set(["water", "bay", "strait"]);
+export const WATER_WATERWAY = new Set(["riverbank", "dock"]);
+export const WATER_LANDUSE = new Set(["reservoir", "basin"]);
 
 export const COVERAGE_GOOD_COUNT = 150;
 export const COVERAGE_GOOD_AREA_FRACTION = 0.04;

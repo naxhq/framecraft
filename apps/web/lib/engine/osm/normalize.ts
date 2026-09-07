@@ -29,6 +29,10 @@ import {
 import {
   GREEN_LANDUSE,
   GREEN_LEISURE,
+  GREEN_NATURAL,
+  WATER_LANDUSE,
+  WATER_NATURAL,
+  WATER_WATERWAY,
   HIGHWAY_WIDTH_M,
   classifyCoverage,
   heightRulesFrom,
@@ -144,11 +148,16 @@ function kindOf(layer: Exclude<Layer, null>, tags: Tags): string | undefined {
     case "rail":
       return pair("railway");
     case "water":
-      return tags["natural"] === "water" ? "natural=water" : pair("waterway");
+      // The tag that actually put it in this layer, in the order `layerOf`
+      // tests them. A bare `pair("waterway")` was right when water could only
+      // be `natural=water` or a riverbank, and would name a bay `undefined`.
+      if (typeof tags["natural"] === "string" && WATER_NATURAL.has(tags["natural"])) return pair("natural");
+      if (typeof tags["waterway"] === "string" && WATER_WATERWAY.has(tags["waterway"])) return pair("waterway");
+      return pair("landuse");
     case "green":
-      return typeof tags["landuse"] === "string" && GREEN_LANDUSE.has(tags["landuse"])
-        ? pair("landuse")
-        : pair("leisure");
+      if (typeof tags["landuse"] === "string" && GREEN_LANDUSE.has(tags["landuse"])) return pair("landuse");
+      if (typeof tags["leisure"] === "string" && GREEN_LEISURE.has(tags["leisure"])) return pair("leisure");
+      return pair("natural");
     case "tree":
       return "natural=tree";
   }
@@ -251,10 +260,25 @@ function layerOf(e: OverpassElement, tags: Tags): Layer {
       return "rail";
     }
   }
-  if (tags["natural"] === "water" || tags["waterway"] === "riverbank") return "water";
+  const natural = tags["natural"];
+  const waterway = tags["waterway"];
   const landuse = tags["landuse"];
   const leisure = tags["leisure"];
-  if ((typeof landuse === "string" && GREEN_LANDUSE.has(landuse)) || (typeof leisure === "string" && GREEN_LEISURE.has(leisure))) {
+  // Water first, and water wins a tie: a polygon carrying both a water tag and
+  // a green one is water with something growing at its edge, and painting it
+  // green would put a lawn where a bay is.
+  if (
+    (typeof natural === "string" && WATER_NATURAL.has(natural)) ||
+    (typeof waterway === "string" && WATER_WATERWAY.has(waterway)) ||
+    (typeof landuse === "string" && WATER_LANDUSE.has(landuse))
+  ) {
+    return "water";
+  }
+  if (
+    (typeof landuse === "string" && GREEN_LANDUSE.has(landuse)) ||
+    (typeof leisure === "string" && GREEN_LEISURE.has(leisure)) ||
+    (typeof natural === "string" && GREEN_NATURAL.has(natural))
+  ) {
     return "green";
   }
   return null;
